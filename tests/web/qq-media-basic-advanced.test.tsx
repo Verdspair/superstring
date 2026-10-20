@@ -3,7 +3,7 @@
 // 高级区 = 本地折叠（forceMount 隐藏），含输入模式、逐阶段开关、动图规格与媒体提示词。
 // 这些用例只通过界面与 store 观察行为：打开/收起折叠不是草稿改动，保存只发契约里存在的键。
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSchemeResponse } from "../../src/shared/contracts/qq";
@@ -11,6 +11,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-10-10T00:00:00.000Z";
 const OTHER = "33333333-3333-4333-8333-333333333333";

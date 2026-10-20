@@ -37,13 +37,41 @@ export interface ExecutionDraft {
   loopConcurrency: string;
   loopModelConcurrency: string;
   loopProviderConcurrency: string;
-  qqRetryDelayMs: string;
+  systemMaxAttempts: string;
+  systemRetryDelaySeconds: string;
+  qqRetryDelaySeconds: string;
   qqMaxAttempts: string;
   qqDeliveryTtlSeconds: string;
 }
 
 export const MEBIBYTE = 1_048_576;
 export const KIBIBYTE = 1024;
+
+/**
+ * 秒数草稿转毫秒：
+ * 仅接受标准十进制输入（可选正负号、整数与至多 3 位小数，不含科学计数法），避免 IEEE-754 乘法精度误差。
+ * 若小数位超过 3 位且包含非零数字（亚毫秒超精度），直接返回 NaN 供校验拒绝。
+ * 超过 3 位全为 0（如 15.0000）自动按整数毫秒处理。
+ */
+export function secondsToMs(raw: string): number {
+  const s = raw.trim();
+  if (!s) return NaN;
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(s)) return NaN;
+  const num = Number(s);
+  if (!Number.isFinite(num)) return NaN;
+  if (!s.includes(".")) {
+    return num * 1000;
+  }
+  const [intPart, fracPart] = s.split(".");
+  if (fracPart.length > 3 && /[1-9]/.test(fracPart.slice(3))) {
+    return NaN;
+  }
+  const frac3 = (fracPart.slice(0, 3) + "000").slice(0, 3);
+  const sign = s.startsWith("-") ? -1 : 1;
+  const cleanInt = intPart.replace(/^[+-]/, "");
+  const absInt = cleanInt ? parseInt(cleanInt, 10) : 0;
+  return sign * (absInt * 1000 + parseInt(frac3, 10));
+}
 
 export function executionDraftOf(execution: ExecutionPolicy): ExecutionDraft {
   return {
@@ -74,7 +102,9 @@ export function executionDraftOf(execution: ExecutionPolicy): ExecutionDraft {
     loopConcurrency: String(execution.loop.concurrency),
     loopModelConcurrency: String(execution.loop.modelConcurrency),
     loopProviderConcurrency: String(execution.loop.providerConcurrency),
-    qqRetryDelayMs: String(execution.qq.retryDelayMs),
+    systemMaxAttempts: String(execution.system.maxAttempts),
+    systemRetryDelaySeconds: String(execution.system.retryDelayMs / 1000),
+    qqRetryDelaySeconds: String(execution.qq.retryDelayMs / 1000),
     qqMaxAttempts: String(execution.qq.maxAttempts),
     qqDeliveryTtlSeconds: String(execution.qq.deliveryTtlSeconds),
   };
@@ -130,8 +160,12 @@ export function executionPayload(
       modelConcurrency: number("loopModelConcurrency"),
       providerConcurrency: number("loopProviderConcurrency"),
     },
+    system: {
+      maxAttempts: number("systemMaxAttempts"),
+      retryDelayMs: secondsToMs(draft.systemRetryDelaySeconds),
+    },
     qq: {
-      retryDelayMs: number("qqRetryDelayMs"),
+      retryDelayMs: secondsToMs(draft.qqRetryDelaySeconds),
       maxAttempts: number("qqMaxAttempts"),
       deliveryTtlSeconds: number("qqDeliveryTtlSeconds"),
     },
@@ -177,7 +211,9 @@ export const NUMERIC_KEYS: readonly ExecutionDraftKey[] = [
   "loopConcurrency",
   "loopModelConcurrency",
   "loopProviderConcurrency",
-  "qqRetryDelayMs",
+  "systemMaxAttempts",
+  "systemRetryDelaySeconds",
+  "qqRetryDelaySeconds",
   "qqMaxAttempts",
   "qqDeliveryTtlSeconds",
 ];
@@ -208,7 +244,9 @@ export function draftKeyPath(key: ExecutionDraftKey): string {
     loopConcurrency: "loop.concurrency",
     loopModelConcurrency: "loop.modelConcurrency",
     loopProviderConcurrency: "loop.providerConcurrency",
-    qqRetryDelayMs: "qq.retryDelayMs",
+    systemMaxAttempts: "system.maxAttempts",
+    systemRetryDelaySeconds: "system.retryDelayMs",
+    qqRetryDelaySeconds: "qq.retryDelayMs",
     qqMaxAttempts: "qq.maxAttempts",
     qqDeliveryTtlSeconds: "qq.deliveryTtlSeconds",
   };

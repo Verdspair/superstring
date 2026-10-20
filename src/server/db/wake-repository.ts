@@ -3,7 +3,7 @@ import type { WakeSignal } from "../../shared/contracts/conversation";
 import { publishConversationChange } from "../conversation/conversation-changes";
 import { ConversationEventRepository } from "./conversation-event-repository";
 
-/** 确定性失败：重排不会改变结果，直接判失败。 */
+/** 确定性失败不重排；停机取消也不转为自动重试。 */
 const NON_RETRYABLE_WAKE_FAILURES = new Set([
   "CONTEXT_BUDGET_EXCEEDED",
   "CONTEXT_CAPACITY_UNKNOWN",
@@ -12,6 +12,7 @@ const NON_RETRYABLE_WAKE_FAILURES = new Set([
   "MODEL_CAPACITY_UNAVAILABLE",
   "MODEL_CAPACITY_AMBIGUOUS",
   "STICKER_SEARCH_CONTEXT_LIMIT",
+  "BOT_STOPPED",
 ]);
 
 type Row = {

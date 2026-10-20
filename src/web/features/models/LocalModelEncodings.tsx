@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import type {
   LocalModelEncoding,
   LocalModelEncodingsResponse,
@@ -125,57 +125,69 @@ export function LocalModelEncodings({
     }
   }
   return (
-    <section className="mt-5 space-y-3">
-      <h3 className="text-sm font-medium">{t("models.localEncodingTitle")}</h3>
-      <p className="text-xs text-muted-foreground">{t("models.localEncodingHint")}</p>
+    <section className="mt-6 space-y-4 rounded-lg border bg-card p-5 text-card-foreground">
+      <div className="space-y-1">
+        <h3 className="text-base font-semibold">{t("models.localEncodingTitle")}</h3>
+        <p className="text-xs text-muted-foreground">{t("models.localEncodingHint")}</p>
+      </div>
+
       <TokenizerEncodingHelp />
-      {models.map((name) => (
-        <label
-          key={name}
-          htmlFor={`local-model-encoding-${encodeURIComponent(name)}`}
-          className="grid gap-2 text-sm sm:grid-cols-2"
-        >
-          <span className="break-all font-mono">{name}</span>
-          <NativeSelect
-            id={`local-model-encoding-${encodeURIComponent(name)}`}
-            aria-label={`${t("models.tokenizerEncoding")} · ${name}`}
-            disabled={loading || saving || !snapshot}
-            value={draft.find((model) => model.name === name)?.tokenizer_encoding ?? ""}
-            onChange={(event) => {
-              const value = event.target.value as Encoding | "";
-              setDraft((old) => [
-                ...old.filter((model) => model.name !== name),
-                ...(value ? [{ name, tokenizer_encoding: value }] : []),
-              ]);
-            }}
+
+      <div className="space-y-3 pt-1">
+        {models.map((name) => (
+          <label
+            key={name}
+            htmlFor={`local-model-encoding-${encodeURIComponent(name)}`}
+            className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 sm:items-center"
           >
-            <option value="">{t("models.tokenizerUnspecified")}</option>
-            <option value="cl100k_base" disabled={externalModels.includes(name)}>
-              cl100k_base
-            </option>
-            <option value="o200k_base" disabled={externalModels.includes(name)}>
-              o200k_base
-            </option>
-          </NativeSelect>
-        </label>
-      ))}
-      <div className="flex flex-wrap gap-2">
-        <Button disabled={loading || saving || !dirty} onClick={() => void save()}>
+            <span className="break-all font-mono text-foreground/90">{name}</span>
+            <NativeSelect
+              id={`local-model-encoding-${encodeURIComponent(name)}`}
+              aria-label={`${t("models.tokenizerEncoding")} · ${name}`}
+              disabled={loading || saving || !snapshot}
+              value={draft.find((model) => model.name === name)?.tokenizer_encoding ?? ""}
+              onChange={(event) => {
+                const value = event.target.value as Encoding | "";
+                setDraft((old) => [
+                  ...old.filter((model) => model.name !== name),
+                  ...(value ? [{ name, tokenizer_encoding: value }] : []),
+                ]);
+              }}
+            >
+              <option value="">{t("models.tokenizerUnspecified")}</option>
+              <option value="cl100k_base" disabled={externalModels.includes(name)}>
+                cl100k_base
+              </option>
+              <option value="o200k_base" disabled={externalModels.includes(name)}>
+                o200k_base
+              </option>
+            </NativeSelect>
+          </label>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 border-t pt-4">
+        <Button
+          tooltip={<Trans i18nKey="hints.complete.encodingSave" />}
+          disabled={loading || saving || !dirty}
+          onClick={() => void save()}
+        >
           {t("models.localEncodingSave")}
         </Button>
         <Button
+          tooltip={<Trans i18nKey="hints.complete.encodingRefresh" />}
           variant="outline"
           disabled={loading || saving}
           onClick={() => setRefresh((value) => value + 1)}
         >
           {t("models.localEncodingRefresh")}
         </Button>
+        {notice && (
+          <p role="status" className="text-xs text-muted-foreground">
+            {notice}
+          </p>
+        )}
       </div>
-      {notice && (
-        <p role="status" className="text-xs text-muted-foreground">
-          {notice}
-        </p>
-      )}
     </section>
   );
 }

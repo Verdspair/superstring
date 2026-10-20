@@ -358,6 +358,10 @@ export class KnowledgeOrganizer {
             },
             {
               messages,
+              // 独立 worker 没有宿主 ALS：来源在叶子输入声明；每次额外物理发送前复用
+              // 本任务的租约/纪元/停用检查（变更即抛，重试循环据此停止）。
+              retryOrigin: "system",
+              assertSources: () => this.check(job, signal),
               signal,
               validate: (text) => {
                 try {

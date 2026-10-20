@@ -10,10 +10,11 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { AlertDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
+import { SettingsGroup } from "@/components/settings-group";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -37,6 +38,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { latestKnowledgeSettings } from "@/features/knowledge/types";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
@@ -159,137 +161,162 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
 
   const activeCategory = s.knowledgeCategories.find((item) => item.id === filters.category);
   return (
-    <section className="space-y-4" aria-label={t("library.document.library")}>
-      <div className="flex flex-wrap gap-2">
-        <Input
-          className="min-w-48 flex-1"
-          aria-label={t("library.search.documents")}
-          placeholder={t("library.search.titles.summaries.or.tags")}
-          value={localSearch}
-          onChange={(e) => {
-            const nextVal = e.target.value;
-            localEditSeqRef.current += 1;
-            setLocalSearch(nextVal);
-            if (!isComposingRef.current) {
-              scheduleSearch(nextVal);
-            }
-          }}
-          onCompositionStart={() => {
-            isComposingRef.current = true;
-            if (searchTimerRef.current) {
-              clearTimeout(searchTimerRef.current);
-              searchTimerRef.current = null;
-            }
-          }}
-          onCompositionEnd={(e) => {
-            isComposingRef.current = false;
-            localEditSeqRef.current += 1;
-            scheduleSearch(e.currentTarget.value);
-          }}
-        />
-        <NativeSelect
-          aria-label={t("library.filter.categories")}
-          value={filters.category}
-          onChange={(e) => changeList(flushPendingSearch({ category: e.target.value }))}
-        >
-          <option value="all">{t("library.all.categories")}</option>
-          {s.knowledgeCategories.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name} ({item.document_count})
-            </option>
-          ))}
-        </NativeSelect>
-        <NativeSelect
-          aria-label={t("library.organization.status")}
-          value={filters.status}
-          onChange={(e) => changeList(flushPendingSearch({ status: e.target.value }))}
-        >
-          <option value="all">{t("library.all.statuses")}</option>
-          {["pending", "queued", "running", "succeeded", "failed", "cancelled", "disabled"].map(
-            (item) => (
-              <option key={item} value={item}>
-                {t(`library.status.${item}`)}
-              </option>
-            ),
-          )}
-        </NativeSelect>
-        <Button
-          variant="outline"
-          disabled={s.knowledgeLoading || s.knowledgeDirty || s.knowledgeBusy}
-          onClick={() => changeList(flushPendingSearch())}
-        >
-          <RefreshCw />
-          {t("library.refresh")}
-        </Button>
-        <Button onClick={() => s.requestKnowledgeEditor({ kind: "import" })}>
-          <Plus />
-          {t("library.import.document")}
-        </Button>
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <Badge variant="secondary">
-          {s.knowledgeTotal} {t("library.documents")}
-        </Badge>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => s.requestKnowledgeEditor({ kind: "category-new" })}
-        >
-          <FolderPlus />
-          {t("library.new.category")}
-        </Button>
-        {activeCategory && (
-          <>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => s.requestKnowledgeEditor({ kind: "category", id: activeCategory.id })}
-            >
-              {t("library.rename.category")}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={s.knowledgeCategories.length < 2}
-              onClick={() => {
-                setMoveTo(
-                  s.knowledgeCategories.find((item) => item.id !== activeCategory.id)?.id ?? "",
-                );
-                setDeleting({ kind: "category", ...activeCategory });
+    <section className="space-y-6" aria-label={t("library.document.library")}>
+      <SettingsGroup
+        title={t("library.documents")}
+        description={t("library.search.titles.summaries.or.tags")}
+      >
+        <div className="space-y-3 p-4">
+          <div className="flex flex-wrap gap-2">
+            <Input
+              className="min-w-48 flex-1"
+              aria-label={t("library.search.documents")}
+              placeholder={t("library.search.titles.summaries.or.tags")}
+              value={localSearch}
+              onChange={(e) => {
+                const nextVal = e.target.value;
+                localEditSeqRef.current += 1;
+                setLocalSearch(nextVal);
+                if (!isComposingRef.current) {
+                  scheduleSearch(nextVal);
+                }
               }}
+              onCompositionStart={() => {
+                isComposingRef.current = true;
+                if (searchTimerRef.current) {
+                  clearTimeout(searchTimerRef.current);
+                  searchTimerRef.current = null;
+                }
+              }}
+              onCompositionEnd={(e) => {
+                isComposingRef.current = false;
+                localEditSeqRef.current += 1;
+                scheduleSearch(e.currentTarget.value);
+              }}
+            />
+            <NativeSelect
+              aria-label={t("library.filter.categories")}
+              value={filters.category}
+              onChange={(e) => changeList(flushPendingSearch({ category: e.target.value }))}
             >
-              {t("library.delete.category")}
+              <option value="all">{t("library.all.categories")}</option>
+              {s.knowledgeCategories.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name} ({item.document_count})
+                </option>
+              ))}
+            </NativeSelect>
+            <NativeSelect
+              aria-label={t("library.organization.status")}
+              value={filters.status}
+              onChange={(e) => changeList(flushPendingSearch({ status: e.target.value }))}
+            >
+              <option value="all">{t("library.all.statuses")}</option>
+              {["pending", "queued", "running", "succeeded", "failed", "cancelled", "disabled"].map(
+                (item) => (
+                  <option key={item} value={item}>
+                    {t(`library.status.${item}`)}
+                  </option>
+                ),
+              )}
+            </NativeSelect>
+            <Button
+              variant="outline"
+              disabled={s.knowledgeLoading || s.knowledgeDirty || s.knowledgeBusy}
+              tooltip={t("hints.library.knowledge.refresh")}
+              onClick={() => changeList(flushPendingSearch())}
+            >
+              <RefreshCw />
+              {t("library.refresh")}
             </Button>
-          </>
-        )}
-        {/* Agent 的读取规则已迁到系统能力页：文档区只保留直达入口，草稿安全跳转。 */}
-        <Button
-          variant="outline"
-          className="ml-auto min-h-8 h-auto whitespace-normal"
-          onClick={() => s.openSettingsRoute("knowledge-tools")}
-        >
-          <SlidersHorizontal />
-          {t("capabilities.resources.openKnowledgeTools")}
-        </Button>
-        <Button
-          variant="outline"
-          className="min-h-8 h-auto whitespace-normal"
-          onClick={() => s.requestKnowledgeEditor({ kind: "settings" })}
-        >
-          <Settings2 />
-          {t("library.organization.workspace.budget")}
-        </Button>
-      </div>
+            <Button
+              tooltip={t("hints.library.knowledge.import")}
+              onClick={() => s.requestKnowledgeEditor({ kind: "import" })}
+            >
+              <Plus />
+              {t("library.import.document")}
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Badge variant="secondary">
+              {s.knowledgeTotal} {t("library.documents")}
+            </Badge>
+            <Button
+              tooltip={<Trans i18nKey="hints.complete.categoryNew" />}
+              size="sm"
+              variant="ghost"
+              onClick={() => s.requestKnowledgeEditor({ kind: "category-new" })}
+            >
+              <FolderPlus />
+              {t("library.new.category")}
+            </Button>
+            {activeCategory && (
+              <>
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.categoryRename" />}
+                  size="sm"
+                  variant="ghost"
+                  onClick={() =>
+                    s.requestKnowledgeEditor({ kind: "category", id: activeCategory.id })
+                  }
+                >
+                  {t("library.rename.category")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={s.knowledgeCategories.length < 2}
+                  disabledReason={t("hints.library.knowledge.categoryDeleteDisabled")}
+                  tooltip={t("hints.library.knowledge.deleteCategory")}
+                  onClick={() => {
+                    setMoveTo(
+                      s.knowledgeCategories.find((item) => item.id !== activeCategory.id)?.id ?? "",
+                    );
+                    setDeleting({ kind: "category", ...activeCategory });
+                  }}
+                >
+                  {t("library.delete.category")}
+                </Button>
+              </>
+            )}
+            {/* Agent 的读取规则已迁到系统能力页：文档区只保留直达入口，草稿安全跳转。 */}
+            <Button
+              variant="outline"
+              className="ml-auto min-h-8 h-auto whitespace-normal"
+              tooltip={t("hints.library.knowledge.tools")}
+              onClick={() => s.openSettingsRoute("knowledge-tools")}
+            >
+              <SlidersHorizontal />
+              {t("capabilities.resources.openKnowledgeTools")}
+            </Button>
+            <Button
+              variant="outline"
+              className="min-h-8 h-auto whitespace-normal"
+              tooltip={t("hints.library.knowledge.budget")}
+              onClick={() => s.requestKnowledgeEditor({ kind: "settings" })}
+            >
+              <Settings2 />
+              {t("library.organization.workspace.budget")}
+            </Button>
+          </div>
+        </div>
+      </SettingsGroup>
       {selected.length > 0 && (
-        <div className="flex items-center gap-3 rounded-lg bg-primary/5 p-3">
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-primary/20 bg-primary/5 p-3">
           <span className="text-sm">{t("library.value.selected", { "0": selected.length })}</span>
           <Button
             size="sm"
+            tooltip={t("hints.library.knowledge.batchAccess")}
             onClick={() => s.requestKnowledgeEditor({ kind: "batch", ids: selected })}
           >
             {t("library.batch.access")}
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setSelected([])}>
+          <Button
+            tooltip={<Trans i18nKey="hints.complete.selectionClear" />}
+            variant="ghost"
+            size="sm"
+            onClick={() => setSelected([])}
+          >
             {t("library.clear.selection")}
           </Button>
         </div>
@@ -304,6 +331,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
             <Button
               variant="outline"
               disabled={s.knowledgeLoading}
+              tooltip={t("hints.library.knowledge.retry")}
               onClick={() => changeList(s.loadKnowledge())}
             >
               {t("capabilities.retry")}
@@ -311,7 +339,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
           )}
         </div>
       )}
-      <div className="overflow-hidden rounded-xl border">
+      <div className="overflow-hidden rounded-xl border border-border/80 bg-card">
         <Table>
           <TableHeader>
             <TableRow>
@@ -345,6 +373,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
                 </TableCell>
                 <TableCell className="max-w-lg">
                   <Button
+                    tooltip={<Trans i18nKey="hints.complete.documentOpen" />}
                     variant="link"
                     className="h-auto justify-start p-0 font-medium"
                     onClick={() => s.requestKnowledgeEditor({ kind: "document", id: doc.id })}
@@ -389,6 +418,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
                   <Button
                     variant="ghost"
                     size="sm"
+                    tooltip={t("hints.library.knowledge.docGrants")}
                     onClick={() => s.requestKnowledgeEditor({ kind: "grants", id: doc.id })}
                   >
                     {doc.agent_ids.length} {t("library.assistant")}
@@ -398,6 +428,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
                   <Button
                     variant="ghost"
                     size="icon"
+                    tooltip={t("hints.library.knowledge.docDelete")}
                     aria-label={t("library.delete.value", { "0": doc.name })}
                     onClick={() =>
                       setDeleting({
@@ -436,6 +467,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
               size="icon"
               variant="outline"
               aria-label={t("library.previous.page")}
+              tooltip={t("hints.library.knowledge.prevPage")}
               disabled={page <= 1 || paging}
               onClick={() => {
                 cancelPendingSearch();
@@ -448,6 +480,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
               size="icon"
               variant="outline"
               aria-label={t("library.next.page")}
+              tooltip={t("hints.library.knowledge.nextPage")}
               disabled={s.knowledgeNextCursor === null || paging}
               onClick={() => {
                 cancelPendingSearch();
@@ -474,7 +507,10 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
             )}
           </p>
           {deleting.kind === "category" && (
-            <Field label="library.move.documents.to">
+            <Field
+              label="library.move.documents.to"
+              tooltip={t("hints.library.knowledge.moveDocsToField")}
+            >
               <NativeSelect value={moveTo} onChange={(e) => setMoveTo(e.target.value)}>
                 {s.knowledgeCategories
                   .filter((c) => c.id !== deleting.id)
@@ -487,12 +523,18 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
             </Field>
           )}
           <div className="flex justify-end gap-2">
-            <Button variant="outline" data-dialog-cancel onClick={() => setDeleting(null)}>
+            <Button
+              variant="outline"
+              data-dialog-cancel
+              tooltip={t("hints.library.common.cancel")}
+              onClick={() => setDeleting(null)}
+            >
               {t("library.cancel")}
             </Button>
             <Button
               variant="destructive"
               disabled={s.knowledgeBusy}
+              tooltip={t("hints.library.knowledge.confirmDelete")}
               onClick={() => {
                 void s
                   .deleteKnowledgeItem(
@@ -572,8 +614,8 @@ function KnowledgeEditorPanel() {
         if (!open) s.requestKnowledgeEditor({ kind: "none" });
       }}
     >
-      <SheetContent className="w-full sm:max-w-3xl">
-        <SheetHeader>
+      <SheetContent className="flex h-full w-full flex-col gap-0 p-0 sm:max-w-3xl">
+        <SheetHeader className="border-b px-4 py-4 pr-12">
           <SheetTitle>{editor ? t(titles[editor.kind]) : ""}</SheetTitle>
           <SheetDescription>
             {t("library.changes.take.effect.when.saved.closing.asks.how.to")}
@@ -581,7 +623,7 @@ function KnowledgeEditorPanel() {
         </SheetHeader>
         {editor && (
           <>
-            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-6">
+            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5">
               {s.error && (
                 <p role="alert" className="text-sm text-destructive">
                   {translateNotice(s.error)}
@@ -590,7 +632,7 @@ function KnowledgeEditorPanel() {
               {(editor.kind === "import" || editor.kind === "document") && (
                 <>
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label="library.name">
+                    <Field label="library.name" tooltip={t("hints.library.knowledge.nameField")}>
                       <Input
                         value={editor.name}
                         onChange={(e) =>
@@ -598,7 +640,10 @@ function KnowledgeEditorPanel() {
                         }
                       />
                     </Field>
-                    <Field label="library.category">
+                    <Field
+                      label="library.category"
+                      tooltip={t("hints.library.knowledge.categoryField")}
+                    >
                       <CategorySelect
                         value={editor.category_id}
                         categories={s.knowledgeCategories}
@@ -610,7 +655,10 @@ function KnowledgeEditorPanel() {
                   </div>
                   {editor.kind === "import" ? (
                     <>
-                      <Field label="library.upload.txt.markdown">
+                      <Field
+                        label="library.upload.txt.markdown"
+                        tooltip={t("hints.library.knowledge.uploadField")}
+                      >
                         <Input
                           type="file"
                           accept=".txt,.md,text/plain,text/markdown"
@@ -626,6 +674,7 @@ function KnowledgeEditorPanel() {
                       </Field>
                       {editor.file && (
                         <Button
+                          tooltip={<Trans i18nKey="hints.complete.fileRemove" />}
                           variant="ghost"
                           size="sm"
                           onClick={() => s.updateKnowledgeEditor({ ...editor, file: null })}
@@ -633,7 +682,10 @@ function KnowledgeEditorPanel() {
                           {t("library.remove.file.and.paste.text.instead")}
                         </Button>
                       )}
-                      <Field label="library.original.text">
+                      <Field
+                        label="library.original.text"
+                        tooltip={t("hints.library.knowledge.originalTextField")}
+                      >
                         <Textarea
                           rows={15}
                           disabled={!!editor.file}
@@ -646,7 +698,10 @@ function KnowledgeEditorPanel() {
                     </>
                   ) : (
                     <>
-                      <Field label="library.version.used.by.models">
+                      <Field
+                        label="library.version.used.by.models"
+                        tooltip={t("hints.library.knowledge.versionField")}
+                      >
                         <NativeSelect
                           value={editor.content_mode}
                           onChange={(e) =>
@@ -662,14 +717,40 @@ function KnowledgeEditorPanel() {
                       </Field>
                       <Tabs defaultValue="original">
                         <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
-                          <TabsTrigger value="original">{t("library.edit.original")}</TabsTrigger>
-                          <TabsTrigger value="draft">{t("library.organized.draft")}</TabsTrigger>
-                          <TabsTrigger value="sources">{t("library.sources")}</TabsTrigger>
+                          <Tooltip>
+                            <TooltipTrigger asChild preserveTriggerState>
+                              <TabsTrigger value="original">
+                                {t("library.edit.original")}
+                              </TabsTrigger>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {t("hints.library.knowledge.tabOriginal")}
+                            </TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild preserveTriggerState>
+                              <TabsTrigger value="draft">
+                                {t("library.organized.draft")}
+                              </TabsTrigger>
+                            </TooltipTrigger>
+                            <TooltipContent>{t("hints.library.knowledge.tabDraft")}</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild preserveTriggerState>
+                              <TabsTrigger value="sources">{t("library.sources")}</TabsTrigger>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {t("hints.library.knowledge.tabSources")}
+                            </TooltipContent>
+                          </Tooltip>
                         </TabsList>
                         <TabsContent value="original">
                           <Field
                             label="library.original.text"
                             info="library.changing.the.original.invalidates.the.old.draft.until.it"
+                            tooltip={t(
+                              "library.changing.the.original.invalidates.the.old.draft.until.it",
+                            )}
                           >
                             <Textarea
                               rows={18}
@@ -707,32 +788,34 @@ function KnowledgeEditorPanel() {
                   <p className="text-sm text-muted-foreground">
                     {t("library.only.selected.agents.may.access.this.document")}
                   </p>
-                  {s.agents.map((agent) => (
-                    <label
-                      htmlFor={`document-grant-${agent.id}`}
-                      key={agent.id}
-                      className="flex items-center gap-3 rounded-lg border p-4"
-                    >
-                      <Checkbox
-                        id={`document-grant-${agent.id}`}
-                        aria-label={agent.name}
-                        checked={editor.agent_ids.includes(agent.id)}
-                        onCheckedChange={(v) =>
-                          s.updateKnowledgeEditor({
-                            ...editor,
-                            agent_ids:
-                              v === true
-                                ? [...editor.agent_ids, agent.id]
-                                : editor.agent_ids.filter((id) => id !== agent.id),
-                          })
-                        }
-                      />
-                      <span>{agent.name}</span>
-                      <Badge variant="outline" className="ml-auto">
-                        {agent.model_name}
-                      </Badge>
-                    </label>
-                  ))}
+                  <div className="divide-y divide-border/60 overflow-hidden rounded-xl border bg-card">
+                    {s.agents.map((agent) => (
+                      <label
+                        htmlFor={`document-grant-${agent.id}`}
+                        key={agent.id}
+                        className="flex items-center gap-3 px-4 py-3"
+                      >
+                        <Checkbox
+                          id={`document-grant-${agent.id}`}
+                          aria-label={agent.name}
+                          checked={editor.agent_ids.includes(agent.id)}
+                          onCheckedChange={(v) =>
+                            s.updateKnowledgeEditor({
+                              ...editor,
+                              agent_ids:
+                                v === true
+                                  ? [...editor.agent_ids, agent.id]
+                                  : editor.agent_ids.filter((id) => id !== agent.id),
+                            })
+                          }
+                        />
+                        <span>{agent.name}</span>
+                        <Badge variant="outline" className="ml-auto">
+                          {agent.model_name}
+                        </Badge>
+                      </label>
+                    ))}
+                  </div>
                 </>
               )}
               {editor.kind === "batch" && (
@@ -742,7 +825,10 @@ function KnowledgeEditorPanel() {
                       "0": editor.documents.length,
                     })}
                   </p>
-                  <Field label="library.assistant">
+                  <Field
+                    label="library.assistant"
+                    tooltip={t("hints.library.knowledge.batchAssistantField")}
+                  >
                     <NativeSelect
                       value={editor.agent_id}
                       onChange={(e) =>
@@ -756,7 +842,10 @@ function KnowledgeEditorPanel() {
                       ))}
                     </NativeSelect>
                   </Field>
-                  <Field label="library.access.action">
+                  <Field
+                    label="library.access.action"
+                    tooltip={t("hints.library.knowledge.accessAction")}
+                  >
                     <NativeSelect
                       value={String(editor.granted)}
                       onChange={(e) =>
@@ -775,7 +864,10 @@ function KnowledgeEditorPanel() {
                 </>
               )}
               {(editor.kind === "category" || editor.kind === "category-new") && (
-                <Field label="library.category.name">
+                <Field
+                  label="library.category.name"
+                  tooltip={t("hints.library.knowledge.categoryNameField")}
+                >
                   <Input
                     value={editor.name}
                     onChange={(e) => s.updateKnowledgeEditor({ ...editor, name: e.target.value })}
@@ -784,7 +876,10 @@ function KnowledgeEditorPanel() {
               )}
               {editor.kind === "settings" && (
                 <>
-                  <Field label="library.automatically.organize.new.documents">
+                  <Field
+                    label="library.automatically.organize.new.documents"
+                    tooltip={t("hints.library.knowledge.autoOrganize")}
+                  >
                     <Checkbox
                       checked={editor.auto_enabled}
                       onCheckedChange={(v) =>
@@ -793,7 +888,10 @@ function KnowledgeEditorPanel() {
                     />
                   </Field>
                   {/* 预算归系统能力→知识查询的全局分组：这里只读展示已存上限并直达，避免双写。 */}
-                  <Field label="library.workspace.knowledge.budget.tokens">
+                  <Field
+                    label="library.workspace.knowledge.budget.tokens"
+                    tooltip={t("hints.library.knowledge.budgetField")}
+                  >
                     <Input
                       type="number"
                       disabled
@@ -813,12 +911,14 @@ function KnowledgeEditorPanel() {
                   <div className="flex flex-wrap gap-2">
                     <Button
                       variant="outline"
+                      tooltip={t("hints.library.knowledge.tools")}
                       onClick={() => s.openSettingsRoute("knowledge-tools")}
                     >
                       {t("capabilities.resources.openKnowledgeTools")}
                     </Button>
                     <Button
                       variant="outline"
+                      tooltip={t("hints.library.knowledge.modelServices")}
                       onClick={() => s.openSettingsRoute("knowledge-model")}
                     >
                       {t("library.open.model.services")}
@@ -836,11 +936,16 @@ function KnowledgeEditorPanel() {
                   <Button
                     variant="outline"
                     disabled={s.knowledgeBusy}
+                    tooltip={t("hints.library.knowledge.closeEditor")}
                     onClick={() => s.requestKnowledgeEditor({ kind: "none" })}
                   >
                     {t("library.close")}
                   </Button>
-                  <Button disabled={s.knowledgeBusy} onClick={() => void s.saveKnowledgeEditor()}>
+                  <Button
+                    disabled={s.knowledgeBusy}
+                    tooltip={t("hints.library.knowledge.saveEditor")}
+                    onClick={() => void s.saveKnowledgeEditor()}
+                  >
                     {t("library.save")}
                   </Button>
                 </div>

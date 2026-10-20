@@ -25,6 +25,12 @@ export const SPACES = [
     description: "workspace.shape_an_assistant_s_identity_capabilities_and_material_rules",
   },
   {
+    id: "models",
+    label: "workspace.model_services",
+    icon: Cpu,
+    description: "workspace.manage_workspace_model_services_and_default_uses",
+  },
+  {
     id: "capabilities",
     label: "workspace.capabilities",
     icon: Wrench,
@@ -50,13 +56,8 @@ export const SPACES = [
     description: "workspace.manage_external_extensions",
   },
 ] as const;
+
 export const ENVIRONMENT = [
-  {
-    id: "models",
-    label: "workspace.model_services",
-    icon: Cpu,
-    description: "workspace.manage_workspace_model_services_and_default_uses",
-  },
   {
     id: "preferences",
     label: "workspace.preferences_dfdf11",
@@ -64,7 +65,9 @@ export const ENVIRONMENT = [
     description: "workspace.language_appearance_and_desktop_behavior",
   },
 ] as const;
+
 export type SpaceId = (typeof SPACES)[number]["id"] | (typeof ENVIRONMENT)[number]["id"];
+
 export function activeSpace(
   state: Pick<SuperstringState, "page" | "settingsView" | "settingsRoute">,
 ): SpaceId {
@@ -78,15 +81,19 @@ export function activeSpace(
   if (state.settingsView === "agents") return "assistants";
   // "models" is the canonical route every quick-management entry normalizes to; the legacy aliases
   // and the external API entry stay here so each destination keeps its own screen and tab.
-  if (["models", "external-api", "management", "knowledge-model"].includes(state.settingsRoute))
+  // context-allocation 是既有定向目标路由（requestContextAllocation 生命周期不变），
+  // 现投影到模型服务空间；唯一宿主是 environment/ModelPurposes。
+  if (
+    ["models", "external-api", "management", "knowledge-model", "context-allocation"].includes(
+      state.settingsRoute,
+    )
+  )
     return "models";
   if (["long-memory", "profile", "knowledge-config", "qq-stickers"].includes(state.settingsRoute))
     return "library";
   if (
     [
       "system-capabilities",
-      "memory-tools",
-      "knowledge-tools",
       "media-tools",
       "web-access",
       "execution-settings",
@@ -95,12 +102,13 @@ export function activeSpace(
     ].includes(state.settingsRoute)
   )
     return "capabilities";
+  // memory-tools 与 knowledge-tools 统一归属助手空间 (access 标签)，系统能力目录仅保留功能元信息与跳转链接
+  if (["memory-tools", "knowledge-tools"].includes(state.settingsRoute)) return "assistants";
   // 原 qq-scheme-config 详情归方案一级；目录入口是 scheme-library，绑定首次发现入口是 scheme-bindings。
   // QQ 应用级管理（方案目录/连接/数据）也归方案，接入只留外置扩展。
   if (
     [
       "scheme-library",
-      "context-allocation",
       "qq-scheme-config",
       "scheme-bindings",
       "qq-app-schemes",
@@ -117,6 +125,7 @@ export function activeSpace(
   if (["task-ledger", "execution-ledger"].includes(state.settingsRoute)) return "conversations";
   return "assistants";
 }
+
 /** Every global destination uses the existing draft-aware transition, never a direct state patch. */
 export function openSpace(space: SpaceId) {
   const state = useSuperstringStore.getState();

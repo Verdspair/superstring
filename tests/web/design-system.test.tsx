@@ -1,6 +1,7 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { BrandLogo } from "../../src/web/design-system/BrandLogo";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(cleanup);
 

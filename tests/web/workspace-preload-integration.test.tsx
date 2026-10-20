@@ -1,5 +1,5 @@
 // 启动数据预热：工作区前台消费集成（真实 store + 替身 API + 真实组件挂载）。
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { ExecutionPolicySchema } from "../../src/shared/contracts/permissions";
@@ -10,6 +10,7 @@ import { CapabilitiesWorkspace } from "../../src/web/screens/connections/Capabil
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { PRELOAD_REGISTRY } from "../../src/web/state/preload-registry";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-30T00:00:00.000Z";
 const SCHEME_A = "22222222-2222-4222-8222-222222222222";

@@ -1,6 +1,6 @@
 import { ArrowDown, Bot, Trash2, UserRound } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
 import type { ChatItem } from "../../state/types";
@@ -56,7 +56,7 @@ export function ChatTranscript({
           }
         }}
       >
-        <div className="mx-auto flex max-w-3xl flex-col gap-7">
+        <div className="mx-auto flex max-w-[880px] flex-col gap-8">
           {messages
             .filter((message) => message.role !== "system")
             .map((message) => (
@@ -70,9 +70,10 @@ export function ChatTranscript({
       </section>
       {away && (
         <Button
+          tooltip={<Trans i18nKey="hints.complete.latest" />}
           size="sm"
           variant="secondary"
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border shadow-sm"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border"
           onClick={latest}
         >
           <ArrowDown />
@@ -91,7 +92,13 @@ function TranscriptMessage({ message, onDelete }: { message: ChatItem; onDelete:
       label={t("workspace.message_actions")}
       disabled={!actionable}
       actions={[
-        { label: t("workspace.delete_message"), icon: Trash2, destructive: true, run: onDelete },
+        {
+          label: t("workspace.delete_message"),
+          tooltip: t("hints.recordMenu.deleteMessage"),
+          icon: Trash2,
+          destructive: true,
+          run: onDelete,
+        },
       ]}
     >
       {(trigger) => (

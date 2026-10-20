@@ -37,9 +37,34 @@ export function resetContextAllocationTarget(): void {
 }
 
 export function openContextAllocation(target: Partial<ContextAllocationTarget> = {}): void {
-  useSuperstringStore
-    .getState()
-    .requestContextAllocation({ ...getContextAllocationTarget(), ...target });
+  const current = getContextAllocationTarget();
+  // 仅在目标仍为 QQ purpose 时保留 QQ 专属实体身份；切换至非 QQ purpose 时清理无关的 bindingId 与 schemeId，
+  // 避免在 performNavigation 中被 binding?.agent_id 误改写目标助手身份；但合法来源 returnRoute 与 returnLabel 照常保留
+  const isQqPurpose = (target.purpose ?? current.purpose) === "qq";
+  const shouldPreserveAgent =
+    target.agentId !== undefined
+      ? target.agentId !== null
+      : target.purpose
+        ? target.purpose === current.purpose || target.purpose === "assistant"
+        : true;
+  const merged: ContextAllocationTarget = {
+    returnRoute: current.returnRoute,
+    returnLabel: current.returnLabel,
+    ...current,
+    ...target,
+    schemeId: isQqPurpose
+      ? target.schemeId !== undefined
+        ? target.schemeId
+        : current.schemeId
+      : null,
+    bindingId: isQqPurpose
+      ? target.bindingId !== undefined
+        ? target.bindingId
+        : current.bindingId
+      : null,
+    agentId: shouldPreserveAgent ? (target.agentId ?? current.agentId) : null,
+  };
+  useSuperstringStore.getState().requestContextAllocation(merged);
 }
 
 export function returnFromContextAllocation(): void {

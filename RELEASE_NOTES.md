@@ -38,6 +38,10 @@
 
 以下功能属于 main 源码更新，未重发 v0.4.0-alpha-2 安装包。
 
+- **导航与方案工作区**：七个工作区入口按日常、应用和系统分组，底部提供偏好与搜索；主导航和会话列表可拖动细线调整宽度。方案、会话与绑定、QQ 设置共用一个工作区，可查看方案的使用会话、管理绑定并进入本群配置。
+- **主题、间距与滚动**：提供五套精选北欧配色与渐变樱粉，支持浅色、深色及跟随系统。移除装饰性阴影，调整文字、控件和内容分组间距，保留焦点与选中提示；修复 QQ 设置长内容被裁切、无法滚动的问题。统一界面动效，并遵循减少动效偏好。
+- **调用与唤醒重试**：系统能力执行设置可配置模型与受信任只读工具的调用重试，默认共 3 次尝试（含首次）、间隔 2 秒，仅对明确的 HTTP 429／503 拒收重试；不盲目重放写操作、超时或结果未知的请求。QQ 设置可单独配置唤醒失败重试，默认共 3 次尝试（含首次）、间隔 15 秒。
+
 - **自主文字与表情回复**：Agent 可选择纯文字、单张表情或图文组合。只发文字时无需额外声明不用表情。方案可设置较少使用、平衡选择或积极考虑三档表情倾向，默认平衡；本群可覆盖，私聊跟随方案。这是软倾向，不是发送比例或次数限制。
 - **表情关闭即时生效**：关闭全局或本群表情后，尚未开始发送的表情（含排队部件）不再发送，合法文字照常。已开始的请求不撤回，未知送达结果不盲目重发。回复仍至多一张表情，旧数量控件退役但不重写已保存值。
 
@@ -96,6 +100,10 @@ Fully exit the application and back up your data directory before updating. The 
 ### Current source updates on main (not a packaged release)
 
 These features are source updates on main. The v0.4.0-alpha-2 packages have not been reissued.
+
+- **Navigation and the scheme workspace**: Seven workspace sections are grouped under Daily, Apps, and System, with Preferences and search at the bottom. Resize the navigation and conversation list by dragging their divider lines. Schemes, Conversations & bindings, and QQ settings share one workspace for viewing scheme usage, managing bindings, and opening group settings.
+- **Themes, spacing, and scrolling**: Choose five curated Nordic palettes or Blossom with soft gradients, in light, dark, or system mode. Decorative shadows are removed and spacing between text, controls, and content groups is adjusted, while focus and selection indicators remain. Fixed clipped, unscrollable long content in QQ settings. Interface animations are consistent and respect reduced-motion preferences.
+- **Call and wake retries**: System capabilities execution settings offer retries for model calls and trusted read-only tools, defaulting to 3 attempts including the first, with a 2-second delay. Only explicit HTTP 429/503 rejections are retried; writes, timeouts, and requests with unknown outcomes are not blindly replayed. QQ settings have separate wake retry controls, defaulting to 3 attempts including the first, with a 15-second delay.
 
 - **Independent text and sticker replies**: The Agent can choose text, one sticker, or a combination. Text-only replies need no extra sticker opt-out. Schemes offer low, medium, or high sticker-use guidance, defaulting to medium; groups can override it, while private chats follow the scheme. This is a soft preference, not a sending ratio or count limit.
 - **Immediate sticker disable**: Turning off global or group stickers blocks unstarted sticker sends, including queued parts, without blocking valid text. Started requests are not withdrawn, and unknown delivery results are not blindly retried. Replies still allow at most one sticker. The old count control is retired without rewriting stored values.

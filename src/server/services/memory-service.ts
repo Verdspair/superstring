@@ -14,6 +14,7 @@ import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
+import type { RetryOrigin } from "../agent/built-in-actions";
 import { AgentRunRepository } from "../db/agent-run-repository";
 import {
   assertQqConsolidationPublishable,
@@ -107,6 +108,8 @@ export interface MemoryInputs {
    * merge/Web 任务无此字段，publication 复验按无操作处理。
    */
   publication?: QqPublication;
+  /** 按任务快照 scope_key 形态派生的叶子来源，在 loadInputs 冻结并随任务传递。 */
+  retryOrigin: RetryOrigin;
 }
 
 export class MemoryService {
@@ -366,6 +369,17 @@ export class MemoryService {
         scope_key?: string;
         source_event_ids?: string[];
       };
+      // 来源按任务快照里 scope_key 的真实形态判定（网页键＝纯 agentId；QQ 键＝
+      // qqMemoryScopeKey 的 ["qq",accountId,kind,peerId,agentId] JSON，QQ 事实任务与
+      // 网页手动整理 QQ 分区的任务都带这种键）：QQ 形态 → qq，网页会话/普通任务 → system。
+      const retryOrigin: RetryOrigin = (() => {
+        try {
+          const parsed: unknown = JSON.parse(snapshot.scope_key ?? "");
+          return Array.isArray(parsed) && parsed[0] === "qq" ? "qq" : "system";
+        } catch {
+          return "system";
+        }
+      })();
       // QQ 观察任务的输入加载复验本群能力：停用后不得再把来源正文交给模型
       // （不花这次调用；重试入队的任务同样在这里被拒）。
       assertQqConsolidationPublishable(this.orm, jobId, agentId, snapshot.scope_key);
@@ -440,6 +454,7 @@ export class MemoryService {
       return {
         kind: job.kind,
         config,
+        retryOrigin,
         sources,
         blocked: blockedWithRefs.map((entry) => entry.value),
         sourceRefs,
@@ -475,6 +490,8 @@ export class MemoryService {
       owner: { kind: string; id: string; userId?: string; agentId?: string };
       sources: SourceRef[];
       blockedSources: SourceRef[][];
+      /** loadInputs 按任务快照冻结的叶子来源。 */
+      retryOrigin: RetryOrigin;
     },
     publication?: QqPublication,
   ): Promise<MemoryDraft | null> {
@@ -503,6 +520,11 @@ export class MemoryService {
     const checkCapture = () => {
       guard.assert(context.owner, "memory_organize");
       if (typeof capCheckpoint === "function") capCheckpoint();
+    };
+    // 每次额外物理发送前的叶子复验：既有纪元检查 + publication 冻结复核组合，不重造。
+    const recheckLeaf = (): void => {
+      checkCapture();
+      verifyPublication();
     };
     // 冻结在入队快照里的辅助分配档（0068）：output_reserved 是两种模式下都硬性的
     // max_tokens；缺席（含显式 null）＝角色现值（不发送输出帽）。输入门按完整请求计
@@ -547,6 +569,8 @@ export class MemoryService {
         messages: consolidateMessages,
         signal,
         owner: context.owner,
+        retryOrigin: context.retryOrigin,
+        assertSources: recheckLeaf,
         sources: liveSources(),
         validate: parseResult,
       },
@@ -587,6 +611,8 @@ export class MemoryService {
           messages: suppressionMessages,
           signal,
           owner: context.owner,
+          retryOrigin: context.retryOrigin,
+          assertSources: recheckLeaf,
           sources: [...liveSources(), ...context.blockedSources.slice(start, start + 8).flat()],
           validate: (text) => SuppressionResultSchema.parse(JSON.parse(text)),
         },
@@ -742,6 +768,7 @@ export class MemoryService {
           owner: { kind: "memory_job", id: jobId, userId: DEFAULT_USER_ID, agentId },
           sources: inputs.sourceRefs,
           blockedSources: inputs.blockedRefs,
+          retryOrigin: inputs.retryOrigin,
         },
         inputs.publication,
       ).then(

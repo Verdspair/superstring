@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { TaskList, TaskSummary } from "../../src/shared/contracts/agent-task";
 import type { SuperstringApi } from "../../src/web/api";
@@ -8,6 +8,7 @@ import {
   resetConversationChangesForTests,
 } from "../../src/web/services/conversation-changes";
 import { A, D, setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const row: TaskSummary = {
   id: D,

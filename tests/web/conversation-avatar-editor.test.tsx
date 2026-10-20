@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
@@ -16,6 +16,7 @@ import { AvatarEditor } from "../../src/web/screens/conversations/avatar-editor"
 import { ConversationIdentity } from "../../src/web/screens/conversations/ConversationIdentity";
 import { ConversationIndex } from "../../src/web/screens/conversations/ConversationIndex";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const conversation = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -327,4 +328,29 @@ it("keeps a corrupt image disabled after the browser reports a decode error", as
     true,
   );
   expect(save).not.toHaveBeenCalled();
+});
+
+it("renders Nordic line-art defaults without generating or requesting an image", () => {
+  const { container, rerender } = render(
+    <AvatarView conversation={conversation} value={null} label="Default group" />,
+  );
+  const avatar = screen.getByRole("img", { name: "Default group" });
+  const groupIcon = container.querySelector("svg.lucide-users");
+  expect(groupIcon).toBeTruthy();
+  expect(container.querySelector("img")).toBeNull();
+  expect(pendingImages).toHaveLength(0);
+  rerender(
+    <AvatarView
+      conversation={{ ...conversation, title: "Renamed" }}
+      value={null}
+      label="Default group"
+    />,
+  );
+  expect(screen.getByRole("img", { name: "Default group" })).toBe(avatar);
+  expect(container.querySelector("svg.lucide-users")).toBe(groupIcon);
+  rerender(
+    <AvatarView conversation={{ ...conversation, topology: "direct" }} label="Default direct" />,
+  );
+  expect(container.querySelector("svg.lucide-message-circle")).toBeTruthy();
+  expect(pendingImages).toHaveLength(0);
 });

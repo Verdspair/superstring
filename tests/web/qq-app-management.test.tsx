@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -15,6 +15,7 @@ import { selectLocale, translate } from "../../src/web/i18n";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { NavigationGuard } from "../../src/web/workspace/NavigationGuard";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-24T00:00:00.000Z";
 const SCHEME_ID = "22222222-2222-4222-8222-222222222222";
@@ -216,58 +217,59 @@ afterEach(() => {
   cleanup();
 });
 
-describe("QQ app management shell", () => {
-  it("keeps the four tasks on one app page and filters the directory to QQ only", async () => {
+describe("unified workspace QQ sections", () => {
+  it("keeps the three sections on one workspace and maps the app alias onto the shared directory", async () => {
     const fake = await renderApp("qq-app-schemes");
     expect(screen.getAllByRole("tab").map((node) => node.textContent)).toEqual([
-      translate("workspace.schemes"),
-      translate("schemes.qq.groupConfigTitle"),
-      translate("connections.transportPage.tab"),
-      translate("connections.dataRetention"),
+      translate("schemes.workspace.schemes"),
+      translate("schemes.workspace.bindings"),
+      translate("schemes.workspace.settings"),
     ]);
     expect(screen.getByRole("tab", { selected: true }).textContent).toBe(
-      translate("workspace.schemes"),
+      translate("schemes.workspace.schemes"),
     );
     const tablist = screen.getByRole("tablist");
-    expect(tablist.className).toContain("flex-wrap");
-    expect(tablist.className).toContain("[&_[role=tab]]:flex-none");
-    expect(tablist.className).toContain("[&_[role=tab]]:whitespace-normal");
-    // 复用的目录组件只留 QQ：应用筛选不再出现，方案行与新建入口仍在。
-    expect(screen.queryByLabelText(translate("schemes.appFilter"))).toBeNull();
+    expect(within(tablist).getAllByRole("tab")).toHaveLength(3);
+    // 复用的目录组件：方案行与新建入口仍在；碎片快捷入口不再出现。
     expect(screen.getByText("默认方案")).toBeTruthy();
     expect(screen.getByRole("button", { name: translate("connections.newScheme") })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "本群配置" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "数据与保留" })).toBeNull();
     // 作用域提示只服务连接与数据；方案目录不显示，也不假装在管理连接。
     expect(screen.queryByText(translate("schemes.qq.scopeNote"))).toBeNull();
     expect(fake.getQqStatus).not.toHaveBeenCalled();
     expect(fake.getQqSettings).not.toHaveBeenCalled();
   });
 
-  it("switches between the four tasks by route and shows the scope note there", async () => {
+  it("switches sections and settings subtabs by route and shows the scope note there", async () => {
     await renderApp("qq-app-schemes");
     await userEvent.click(
-      screen.getByRole("tab", { name: translate("schemes.qq.groupConfigTitle") }),
+      screen.getByRole("tab", { name: translate("schemes.workspace.bindings") }),
     );
     await act(async () => {});
-    expect(store.getState().settingsRoute).toBe("qq-app-groups");
+    expect(store.getState().settingsRoute).toBe("scheme-bindings");
+    expect(screen.getByLabelText(translate("connections.searchConversationBindings"))).toBeTruthy();
     await userEvent.click(
-      screen.getByRole("tab", { name: translate("connections.transportPage.tab") }),
+      screen.getByRole("tab", { name: translate("schemes.workspace.settings") }),
     );
     await act(async () => {});
     expect(store.getState().settingsRoute).toBe("qq-connection");
     expect(screen.getByText(translate("schemes.qq.scopeNote"))).toBeTruthy();
     expect(screen.getByLabelText(translate("connections.websocketAddress"))).toBeTruthy();
+    // 设置分区内的连接/数据子页保留双入口。
     await userEvent.click(
       screen.getByRole("tab", { name: translate("connections.dataRetention") }),
     );
     await act(async () => {});
     expect(store.getState().settingsRoute).toBe("qq-storage");
-    expect(screen.getByText(translate("schemes.qq.scopeNote"))).toBeTruthy();
     expect(screen.getByText(translate("connections.storage.title"))).toBeTruthy();
   });
 
-  it("returns to the shared scheme catalog from the app header", async () => {
+  it("returns to the shared scheme catalog through the primary schemes section", async () => {
     await renderApp("qq-connection");
-    fireEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
+    await userEvent.click(
+      screen.getByRole("tab", { name: translate("schemes.workspace.schemes") }),
+    );
     await act(async () => {});
     expect(store.getState().settingsRoute).toBe("scheme-library");
     expect(screen.getByRole("heading", { name: translate("workspace.schemes") })).toBeTruthy();
@@ -275,29 +277,34 @@ describe("QQ app management shell", () => {
 
   it("recognises the legacy operating-mode state instead of rendering an empty page", async () => {
     await renderApp("basic", "operating-mode");
-    // 旧别名落到连接页：表单可见、连接 Tab 选中，且不是死空。
-    expect(screen.getByRole("tab", { selected: true }).textContent).toBe(
-      translate("connections.transportPage.tab"),
-    );
+    // 旧别名落到连接页：表单可见、QQ 设置分区选中，且不是死空。
+    // 双层 tab（primary 三分区 + 设置子页）：按可访问名逐层断言选中，不做全局 selected 查询。
+    expect(
+      (
+        screen.getByRole("tab", {
+          name: translate("schemes.workspace.settings"),
+        }) as HTMLButtonElement
+      ).getAttribute("aria-selected"),
+    ).toBe("true");
+    expect(
+      (
+        screen.getByRole("tab", {
+          name: translate("connections.transportPage.tab"),
+        }) as HTMLButtonElement
+      ).getAttribute("aria-selected"),
+    ).toBe("true");
     expect(screen.getByLabelText(translate("connections.websocketAddress"))).toBeTruthy();
   });
 
-  it("disables the header navigation while a save is in flight", async () => {
+  it("disables the section navigation while a save is in flight", async () => {
     await renderApp("qq-connection");
     act(() => {
       store.setState({ qqAccessSaving: true });
     });
-    expect(
-      (
-        screen.getByRole("button", {
-          name: translate("schemes.backToCatalog"),
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
     for (const name of [
-      "workspace.schemes",
-      "schemes.qq.groupConfigTitle",
-      "connections.dataRetention",
+      "schemes.workspace.schemes",
+      "schemes.workspace.bindings",
+      "schemes.workspace.settings",
     ]) {
       expect(
         (screen.getByRole("tab", { name: translate(name) }) as HTMLButtonElement).disabled,
@@ -445,8 +452,10 @@ describe("QQ app data & retention", () => {
       translate("connections.storage.manage.retentionDays"),
     ) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "30" } });
-    // 切到方案 Tab：共享 revision 链上的保留草稿触发三选确认，明细如实列出改动。
-    await userEvent.click(screen.getByRole("tab", { name: translate("workspace.schemes") }));
+    // 切到方案分区：共享 revision 链上的保留草稿触发三选确认，明细如实列出改动。
+    await userEvent.click(
+      screen.getByRole("tab", { name: translate("schemes.workspace.schemes") }),
+    );
     await act(async () => {});
     const dialog = screen.getByRole("alertdialog");
     expect(dialog.textContent).toContain("数据与保留");
@@ -460,8 +469,10 @@ describe("QQ app data & retention", () => {
     expect(store.getState().settingsRoute).toBe("qq-storage");
     expect(input.value).toBe("30");
     expect(fake.updateQqStorageSettings).not.toHaveBeenCalled();
-    // 保存并继续：独立 storage PUT 成功后清草稿，才切到方案 Tab。
-    await userEvent.click(screen.getByRole("tab", { name: translate("workspace.schemes") }));
+    // 保存并继续：独立 storage PUT 成功后清草稿，才切到方案分区。
+    await userEvent.click(
+      screen.getByRole("tab", { name: translate("schemes.workspace.schemes") }),
+    );
     await act(async () => {});
     await userEvent.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
@@ -473,7 +484,7 @@ describe("QQ app data & retention", () => {
       retention_days: 30,
       expected_revision: 3,
     });
-    expect(store.getState().settingsRoute).toBe("qq-app-schemes");
+    expect(store.getState().settingsRoute).toBe("scheme-library");
     expect(store.getState().qqInputs.storage).toBeNull();
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
@@ -483,7 +494,9 @@ describe("QQ app data & retention", () => {
     fireEvent.change(screen.getByLabelText(translate("connections.storage.manage.retentionDays")), {
       target: { value: "25" },
     });
-    await userEvent.click(screen.getByRole("tab", { name: translate("workspace.schemes") }));
+    await userEvent.click(
+      screen.getByRole("tab", { name: translate("schemes.workspace.schemes") }),
+    );
     await act(async () => {});
     await userEvent.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
@@ -493,25 +506,18 @@ describe("QQ app data & retention", () => {
     await act(async () => {});
     expect(fake.updateQqStorageSettings).not.toHaveBeenCalled();
     expect(store.getState().qqInputs.storage).toBeNull();
-    expect(store.getState().settingsRoute).toBe("qq-app-schemes");
+    expect(store.getState().settingsRoute).toBe("scheme-library");
   });
 
-  it("blocks app-header navigation while the storage surface is saving", async () => {
+  it("blocks section navigation while the storage surface is saving", async () => {
     await renderApp("qq-storage");
     act(() => {
       store.setState({ qqStorageSaving: true });
     });
-    expect(
-      (
-        screen.getByRole("button", {
-          name: translate("schemes.backToCatalog"),
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
     for (const name of [
-      "workspace.schemes",
-      "schemes.qq.groupConfigTitle",
-      "connections.transportPage.tab",
+      "schemes.workspace.schemes",
+      "schemes.workspace.bindings",
+      "schemes.workspace.settings",
     ]) {
       expect(
         (screen.getByRole("tab", { name: translate(name) }) as HTMLButtonElement).disabled,

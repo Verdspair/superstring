@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
@@ -8,6 +8,7 @@ import { api, type SuperstringApi } from "../../src/web/api";
 import { i18n } from "../../src/web/i18n/runtime";
 import { ExternalConversation } from "../../src/web/screens/conversations/ExternalConversation";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-10-17T03:30:00Z";
 

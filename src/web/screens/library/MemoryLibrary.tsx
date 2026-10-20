@@ -1,17 +1,23 @@
 import {
+  Brain,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Combine,
   Cpu,
+  Database,
+  ListFilter,
   RefreshCw,
   RotateCcw,
   SlidersHorizontal,
+  Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { ConfirmDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
+import { SettingsGroup } from "@/components/settings-group";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -285,10 +291,11 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
     ? t("library.memory.job.retry.confirm", { "0": retryJob.id })
     : "";
   return (
-    <section className="space-y-5" aria-label={t("library.memory.library")}>
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="min-w-52 flex-1">
-          <Field label="library.agent.owner">
+    <section className="space-y-6" aria-label={t("library.memory.library")}>
+      {/* 顶部导航与上下文任务栏：Agent 归属、刷新与直达通道 */}
+      <div className="flex flex-wrap items-end justify-between gap-4 rounded-xl border border-border/70 bg-card p-4">
+        <div className="min-w-60 flex-1">
+          <Field label="library.agent.owner" tooltip={t("hints.library.memory.ownerAgentField")}>
             <NativeSelect
               value={ready ? agentId : ""}
               onChange={(e) => s.requestAgentNavigation(e.target.value)}
@@ -302,23 +309,36 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
             </NativeSelect>
           </Field>
         </div>
-        <Button variant="outline" disabled={!ready || locked} onClick={refresh}>
-          <RefreshCw />
-          {t("library.refresh")}
-        </Button>
-        <Button disabled={!ready || locked} onClick={() => setManual(true)}>
-          {t("library.organize.memories.from.a.conversation")}
-        </Button>
-        {/* 读取额度已迁到系统能力页：内容区只保留直达入口，草稿安全跳转。 */}
-        <Button
-          variant="outline"
-          className="h-auto min-h-8 max-w-full whitespace-normal break-words"
-          onClick={() => s.openSettingsRoute("memory-tools")}
-        >
-          <SlidersHorizontal />
-          {t("capabilities.resources.openMemoryTools")}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            disabled={!ready || locked}
+            tooltip={t("hints.library.memory.refresh")}
+            onClick={refresh}
+          >
+            <RefreshCw />
+            {t("library.refresh")}
+          </Button>
+          <Button
+            disabled={!ready || locked}
+            tooltip={t("hints.library.memory.manualOrganize")}
+            onClick={() => setManual(true)}
+          >
+            {t("library.organize.memories.from.a.conversation")}
+          </Button>
+          {/* 读取额度已迁到系统能力页：内容区只保留直达入口，草稿安全跳转。 */}
+          <Button
+            variant="outline"
+            className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+            tooltip={t("hints.library.memory.tools")}
+            onClick={() => s.openSettingsRoute("memory-tools")}
+          >
+            <SlidersHorizontal />
+            {t("capabilities.resources.openMemoryTools")}
+          </Button>
+        </div>
       </div>
+
       {connectionData?.connectionError && (
         <p role="status" className="text-sm text-muted-foreground">
           {t("library.connection.metadata.unavailable")}
@@ -334,175 +354,238 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
           {translateNotice(s.feedback)}
         </p>
       )}
+
       {ready && (
         <>
-          <div className="grid items-start gap-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+          <div className="grid items-start gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+            {/* 左侧：分区与隔离侧栏 */}
             <aside className="space-y-4">
-              <div className="space-y-1 rounded-xl border p-2">
-                <Button
-                  variant={scope === "" ? "secondary" : "ghost"}
-                  className="w-full justify-between"
-                  disabled={locked}
-                  onClick={() => {
-                    setScope("");
-                    setPage(1);
-                    setSelected([]);
-                  }}
-                >
-                  {t("library.all.partitions")}
-                  <Badge variant="outline">{scopes.reduce((sum, row) => sum + row.count, 0)}</Badge>
-                </Button>
-                {scopes.map((item) => (
+              <div className="space-y-4 rounded-xl border border-border/80 bg-card p-4">
+                <div className="flex items-center gap-2 px-2 py-1">
+                  <Database className="size-4 text-muted-foreground" />
+                  <span className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                    {t("library.all.partitions")}
+                  </span>
+                </div>
+                <div className="space-y-1">
                   <Button
-                    key={item.scope_key}
-                    variant={scope === item.scope_key ? "secondary" : "ghost"}
-                    className="h-auto w-full justify-between gap-3 py-3 text-left"
+                    tooltip={<Trans i18nKey="hints.complete.memoryAll" />}
+                    variant={scope === "" ? "secondary" : "ghost"}
+                    className="w-full justify-between font-medium"
                     disabled={locked}
                     onClick={() => {
-                      setScope(item.scope_key);
+                      setScope("");
                       setPage(1);
                       setSelected([]);
                     }}
                   >
-                    <span className="whitespace-normal text-xs leading-relaxed">
-                      {memoryScopeLabel(item.scope_key, agentId, t)}
-                    </span>
-                    <span className="text-xs tabular-nums">{item.count}</span>
+                    <span>{t("library.all.partitions")}</span>
+                    <Badge variant="outline" className="tabular-nums">
+                      {scopes.reduce((sum, row) => sum + row.count, 0)}
+                    </Badge>
                   </Button>
-                ))}
+                  {scopes.map((item) => (
+                    <Button
+                      tooltip={<Trans i18nKey="hints.complete.memoryScope" />}
+                      key={item.scope_key}
+                      variant={scope === item.scope_key ? "secondary" : "ghost"}
+                      className="h-auto w-full justify-between gap-3 py-2.5 text-left"
+                      disabled={locked}
+                      onClick={() => {
+                        setScope(item.scope_key);
+                        setPage(1);
+                        setSelected([]);
+                      }}
+                    >
+                      <span className="min-w-0 flex-1 whitespace-normal text-xs leading-relaxed">
+                        {memoryScopeLabel(item.scope_key, agentId, t)}
+                      </span>
+                      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                        {item.count}
+                      </span>
+                    </Button>
+                  ))}
+                </div>
               </div>
+
               {selectedScope && (
-                <Card>
-                  <CardContent className="space-y-4">
-                    <p className="text-xs text-muted-foreground">
+                <Card className="rounded-xl border-border/80">
+                  <CardHeader className="p-4 pb-2">
+                    <CardTitle className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                      {t("library.read.partitions")}
+                    </CardTitle>
+                    <CardDescription className="text-xs">
                       {t("library.value.active.value.total", {
                         "0": selectedScope.active_count,
                         "1": selectedScope.count,
                       })}
-                    </p>
-                    <div className="space-y-1 text-xs">
-                      <p className="font-medium">{t("library.read.partitions")}</p>
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4 p-4 pt-2">
+                    <div className="space-y-1.5 text-xs">
+                      <p className="font-medium text-foreground">{t("library.read.partitions")}</p>
                       {selectedScope.read_scope_keys === null ? (
-                        <p className="text-muted-foreground">
+                        <p className="rounded-md bg-muted/60 p-2 text-muted-foreground">
                           {t("library.reading.scope.unavailable")}
                         </p>
                       ) : (
-                        selectedScope.read_scope_keys.map((key) => (
-                          <p key={key} className="break-all text-muted-foreground">
-                            {memoryScopeLabel(key, agentId, t)}
-                          </p>
-                        ))
+                        <div className="space-y-1">
+                          {selectedScope.read_scope_keys.map((key) => (
+                            <p
+                              key={key}
+                              className="break-all rounded-md bg-muted/50 p-1.5 text-muted-foreground"
+                            >
+                              {memoryScopeLabel(key, agentId, t)}
+                            </p>
+                          ))}
+                        </div>
                       )}
-                      <p className="pt-2 font-medium">{t("library.write.partition")}</p>
-                      <p className="text-muted-foreground">
+                      <p className="pt-2 font-medium text-foreground">
+                        {t("library.write.partition")}
+                      </p>
+                      <p className="break-all rounded-md bg-muted/50 p-1.5 text-muted-foreground">
                         {memoryScopeLabel(selectedScope.write_scope_key, agentId, t)}
                       </p>
                     </div>
+
                     {binding && (
-                      <BindingMemoryControls
-                        binding={binding}
-                        pending={selectedScope.pending ?? undefined}
-                        onChanged={refresh}
-                      />
-                    )}
-                    {binding && shareEligible && (
-                      <Field
-                        label="library.share.with.web.memories"
-                        info="library.turning.sharing.off.does.not.move.or.delete.existing"
-                      >
-                        <Checkbox
-                          disabled={shareBusy}
-                          checked={binding.share_web_memory}
-                          onCheckedChange={(value) => {
-                            setShareBusy(true);
-                            void s.apiClient
-                              .updateQqBinding(binding.id, {
-                                expected_revision: binding.revision,
-                                share_web_memory: value === true,
-                              })
-                              .then(refresh)
-                              .catch((error) => s.setNotice({ error: errorText(error) }))
-                              .finally(() => setShareBusy(false));
-                          }}
+                      <div className="border-t border-border/60 pt-3">
+                        <BindingMemoryControls
+                          binding={binding}
+                          pending={selectedScope.pending ?? undefined}
+                          onChanged={refresh}
                         />
-                      </Field>
+                      </div>
                     )}
+
+                    {binding && shareEligible && (
+                      <div className="border-t border-border/60 pt-3">
+                        <Field
+                          label="library.share.with.web.memories"
+                          info="library.turning.sharing.off.does.not.move.or.delete.existing"
+                          tooltip={t(
+                            "library.turning.sharing.off.does.not.move.or.delete.existing",
+                          )}
+                        >
+                          <Checkbox
+                            disabled={shareBusy}
+                            checked={binding.share_web_memory}
+                            onCheckedChange={(value) => {
+                              setShareBusy(true);
+                              void s.apiClient
+                                .updateQqBinding(binding.id, {
+                                  expected_revision: binding.revision,
+                                  share_web_memory: value === true,
+                                })
+                                .then(refresh)
+                                .catch((error) => s.setNotice({ error: errorText(error) }))
+                                .finally(() => setShareBusy(false));
+                            }}
+                          />
+                        </Field>
+                      </div>
+                    )}
+
                     {selectedScope.latest_job && (
-                      <JobRunLink ownerKind="memory_job" ownerId={selectedScope.latest_job.id} />
+                      <div className="border-t border-border/60 pt-3">
+                        <JobRunLink ownerKind="memory_job" ownerId={selectedScope.latest_job.id} />
+                      </div>
                     )}
                   </CardContent>
                 </Card>
               )}
             </aside>
-            <div className="min-w-0 space-y-4">
-              <form
-                className="flex flex-wrap gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  setQuery(search);
-                  setPage(1);
-                  setSelected([]);
-                }}
-              >
-                <Input
-                  className="min-w-40 flex-1"
-                  aria-label={t("library.search.memories")}
-                  placeholder={t("library.search.memories")}
-                  value={search}
-                  disabled={locked}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-                <NativeSelect
-                  value={status}
-                  aria-label={t("library.memory.status")}
-                  disabled={locked}
-                  onChange={(e) => {
-                    setStatus(e.target.value);
+
+            {/* 右侧：记忆检索、治理操作与维护政策 */}
+            <div className="min-w-0 space-y-5">
+              {/* 搜索与状态过滤任务栏 */}
+              <div className="space-y-3 rounded-xl border border-border/80 bg-card p-4">
+                <form
+                  className="flex flex-wrap items-center gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setQuery(search);
                     setPage(1);
                     setSelected([]);
                   }}
                 >
-                  <option value="all">{t("library.all.statuses")}</option>
-                  {["active", "suppressed", "replaced", "invalid"].map((value) => (
-                    <option key={value} value={value}>
-                      {t(`library.status.${value}`)}
-                    </option>
-                  ))}
-                </NativeSelect>
-                <Button type="submit" variant="outline" disabled={locked}>
-                  {t("library.search")}
-                </Button>
-              </form>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={locked || !s.memoryEntries.length}
-                onClick={() => setSelected(s.memoryEntries.map((entry) => entry.id))}
-              >
-                {t("library.select.current.results")}
-              </Button>
+                  <div className="min-w-48 flex-1">
+                    <Input
+                      aria-label={t("library.search.memories")}
+                      placeholder={t("library.search.memories")}
+                      value={search}
+                      disabled={locked}
+                      onChange={(e) => setSearch(e.target.value)}
+                    />
+                  </div>
+                  <NativeSelect
+                    value={status}
+                    aria-label={t("library.memory.status")}
+                    disabled={locked}
+                    onChange={(e) => {
+                      setStatus(e.target.value);
+                      setPage(1);
+                      setSelected([]);
+                    }}
+                  >
+                    <option value="all">{t("library.all.statuses")}</option>
+                    {["active", "suppressed", "replaced", "invalid"].map((value) => (
+                      <option key={value} value={value}>
+                        {t(`library.status.${value}`)}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    disabled={locked}
+                    tooltip={t("hints.library.memory.search")}
+                  >
+                    {t("library.search")}
+                  </Button>
+                </form>
+
+                <div className="flex items-center justify-between pt-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-xs text-muted-foreground"
+                    disabled={locked || !s.memoryEntries.length}
+                    disabledReason={t("hints.library.memory.selectAllDisabled")}
+                    onClick={() => setSelected(s.memoryEntries.map((entry) => entry.id))}
+                  >
+                    <ListFilter className="mr-1.5 size-3.5" />
+                    {t("library.select.current.results")}
+                  </Button>
+                </div>
+              </div>
+
+              {/* 批量治理操作栏（选中时浮出） */}
               {selected.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 rounded-lg bg-primary/5 p-3">
-                  <span className="mr-2 text-sm">
+                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-primary/20 bg-primary/5 p-4">
+                  <span className="mr-2 text-sm font-medium text-foreground">
                     {t("library.value.selected", { "0": selected.length })}
                   </span>
                   <Button
                     size="sm"
                     variant="outline"
                     disabled={!mergeable || locked}
+                    disabledReason={t("hints.library.memory.mergeDisabled")}
+                    tooltip={t("hints.library.memory.merge")}
                     onClick={() =>
                       void s.mergeMemories(agentId, selected).then((ok) => {
                         if (ok) refresh();
                       })
                     }
                   >
-                    <Combine />
+                    <Combine className="mr-1.5 size-3.5" />
                     {t("library.merge")}
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
                     disabled={locked}
+                    tooltip={t("hints.library.memory.suppress")}
                     onClick={() =>
                       void s.governMemories(agentId, selected, "suppress", false).then((ok) => {
                         if (ok) refresh();
@@ -515,6 +598,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                     size="sm"
                     variant="outline"
                     disabled={locked}
+                    tooltip={t("hints.library.memory.enable")}
                     onClick={() =>
                       void s.governMemories(agentId, selected, "enable", false).then((ok) => {
                         if (ok) refresh();
@@ -527,18 +611,30 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                     size="sm"
                     variant="destructive"
                     disabled={locked}
+                    tooltip={t("hints.library.memory.purge")}
                     onClick={() => setPurge(true)}
                   >
                     {t("library.permanently.delete")}
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setSelected([])}>
+                  <Button
+                    tooltip={<Trans i18nKey="hints.complete.selectionClear" />}
+                    size="sm"
+                    variant="ghost"
+                    className="ml-auto text-xs"
+                    onClick={() => setSelected([])}
+                  >
                     {t("library.clear.selection")}
                   </Button>
                 </div>
               )}
-              <div className="divide-y rounded-xl border">
+
+              {/* 记忆条目列表 */}
+              <div className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border/80 bg-card">
                 {s.memoryEntries.map((entry) => (
-                  <div key={entry.id} className="flex gap-3 p-4">
+                  <div
+                    key={entry.id}
+                    className="flex gap-4 p-4 transition-colors hover:bg-muted/30"
+                  >
                     <Checkbox
                       className="mt-1"
                       aria-label={t("library.select.value", { "0": entry.name })}
@@ -550,29 +646,34 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                         )
                       }
                     />
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 space-y-1.5">
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
+                          tooltip={<Trans i18nKey="hints.complete.memoryOpen" />}
                           variant="link"
-                          className="h-auto p-0 text-left font-medium"
+                          className="h-auto p-0 text-left font-semibold text-foreground hover:underline"
                           disabled={locked}
                           onClick={() => void s.loadMemoryEntryDetail(entry.id)}
                         >
                           {entry.name}
                         </Button>
-                        <Badge variant="outline">{t(`library.status.${entry.status}`)}</Badge>
+                        <Badge variant="outline" className="text-2xs">
+                          {t(`library.status.${entry.status}`)}
+                        </Badge>
                       </div>
-                      <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-sm text-muted-foreground">
+                      <p className="line-clamp-3 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
                         {entry.summary}
                       </p>
-                      <div className="mt-3 flex flex-wrap gap-1">
-                        {entry.tags.map((tag) => (
-                          <Badge key={tag} variant="secondary">
-                            {tag}
-                          </Badge>
-                        ))}
-                      </div>
-                      <p className="mt-2 text-xs text-muted-foreground">
+                      {entry.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-1">
+                          {entry.tags.map((tag) => (
+                            <Badge key={tag} variant="secondary" className="text-2xs font-normal">
+                              {tag}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                      <p className="text-2xs text-muted-foreground">
                         {memoryScopeLabel(entry.scope_key, agentId, t)} ·{" "}
                         {formatDate(entry.created_at, i18n.resolvedLanguage ?? i18n.language, {
                           year: "numeric",
@@ -587,12 +688,19 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                   </div>
                 ))}
                 {s.memoryEntries.length === 0 && (
-                  <p className="p-12 text-center text-sm text-muted-foreground">
-                    {t("library.no.memories.in.this.scope.organize.completed.conversation.turns")}
-                  </p>
+                  <div className="flex flex-col items-center justify-center p-12 text-center">
+                    <div className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground mb-3">
+                      <Brain className="size-5" />
+                    </div>
+                    <p className="max-w-sm text-sm text-muted-foreground">
+                      {t("library.no.memories.in.this.scope.organize.completed.conversation.turns")}
+                    </p>
+                  </div>
                 )}
               </div>
-              <div className="flex items-center justify-between">
+
+              {/* 分页控制 */}
+              <div className="flex items-center justify-between px-1">
                 <span className="text-xs text-muted-foreground">
                   {t("library.value.entries.page.value", { "0": s.memoryEntryTotal, "1": page })}
                 </span>
@@ -601,45 +709,52 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                     size="icon"
                     variant="outline"
                     aria-label={t("library.previous.page")}
+                    tooltip={t("hints.library.memory.prevPage")}
                     disabled={page <= 1 || locked}
                     onClick={() => {
                       setPage(page - 1);
                       setSelected([]);
                     }}
                   >
-                    <ChevronLeft />
+                    <ChevronLeft className="size-4" />
                   </Button>
                   <Button
                     size="icon"
                     variant="outline"
                     aria-label={t("library.next.page")}
+                    tooltip={t("hints.library.memory.nextPage")}
                     disabled={page * 100 >= s.memoryEntryTotal || locked}
                     onClick={() => {
                       setPage(page + 1);
                       setSelected([]);
                     }}
                   >
-                    <ChevronRight />
+                    <ChevronRight className="size-4" />
                   </Button>
                 </div>
               </div>
+
+              {/* 网页对话记忆维护政策（仅当选中网页 scope 或空 scope 时显示） */}
               {showMaintenance && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex flex-wrap items-center gap-2">
-                      {t("library.memory.maintenance")}
+                <SettingsGroup
+                  title={
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span>{t("library.memory.maintenance")}</span>
                       <Badge variant="secondary">{t("library.scope.web")}</Badge>
-                    </CardTitle>
-                    <CardDescription>
-                      {t(
-                        "library.web.conversations.use.a.turn.based.policy.connected.conversations",
-                      )}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
+                    </div>
+                  }
+                  description={t(
+                    "library.web.conversations.use.a.turn.based.policy.connected.conversations",
+                  )}
+                  icon={Sparkles}
+                >
+                  <div className="space-y-4 p-4">
                     {editor?.policyDraft ? (
-                      <>
-                        <Field label="library.automatically.organize.web.memories">
+                      <div className="space-y-4">
+                        <Field
+                          label="library.automatically.organize.web.memories"
+                          tooltip={t("hints.library.memory.autoOrganizeField")}
+                        >
                           <Checkbox
                             disabled={locked}
                             checked={editor.policyDraft.auto_enabled}
@@ -648,35 +763,46 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                             }
                           />
                         </Field>
-                        <Field label="library.organize.every.n.turns">
-                          <Input
-                            type="number"
-                            min={1}
-                            max={200}
-                            disabled={locked}
-                            value={editor.policyDraft.every_turns}
-                            onChange={(e) =>
-                              s.patchPagePolicy({ every_turns: Number(e.target.value) })
-                            }
-                          />
-                        </Field>
-                        <Field label="library.target.memory.characters">
-                          <Input
-                            type="number"
-                            min={50}
-                            max={4000}
-                            disabled={locked}
-                            value={editor.policyDraft.target_chars}
-                            onChange={(e) =>
-                              s.patchPagePolicy({ target_chars: Number(e.target.value) })
-                            }
-                          />
-                        </Field>
-                      </>
+                        <div className="grid gap-4 sm:grid-cols-2">
+                          <Field
+                            label="library.organize.every.n.turns"
+                            tooltip={t("hints.library.memory.everyTurnsField")}
+                          >
+                            <Input
+                              type="number"
+                              min={1}
+                              max={200}
+                              disabled={locked}
+                              value={editor.policyDraft.every_turns}
+                              onChange={(e) =>
+                                s.patchPagePolicy({ every_turns: Number(e.target.value) })
+                              }
+                            />
+                          </Field>
+                          <Field
+                            label="library.target.memory.characters"
+                            tooltip={t("hints.library.memory.targetCharsField")}
+                          >
+                            <Input
+                              type="number"
+                              min={50}
+                              max={4000}
+                              disabled={locked}
+                              value={editor.policyDraft.target_chars}
+                              onChange={(e) =>
+                                s.patchPagePolicy({ target_chars: Number(e.target.value) })
+                              }
+                            />
+                          </Field>
+                        </div>
+                      </div>
                     ) : (
                       <p className="text-xs text-muted-foreground">{t("library.loading")}</p>
                     )}
-                    <Field label="library.memory.organization.prompt">
+                    <Field
+                      label="library.memory.organization.prompt"
+                      tooltip={t("hints.library.memory.orgPromptField")}
+                    >
                       <Textarea
                         rows={4}
                         disabled={locked}
@@ -688,7 +814,10 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                         }
                       />
                     </Field>
-                    <Field label="library.additional.organization.instructions">
+                    <Field
+                      label="library.additional.organization.instructions"
+                      tooltip={t("hints.library.memory.orgExtraField")}
+                    >
                       <Textarea
                         rows={3}
                         disabled={locked}
@@ -700,10 +829,11 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                         }
                       />
                     </Field>
-                    <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
+                    <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/60 pt-3">
                       <Button
                         variant="outline"
                         className="mr-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
+                        tooltip={t("hints.library.memory.modelServices")}
                         onClick={() => s.openSettingsRoute("models")}
                       >
                         <Cpu />
@@ -713,6 +843,8 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                         size="sm"
                         variant="outline"
                         disabled={!maintenanceDirty || locked || s.settingsSaving}
+                        disabledReason={t("hints.library.memory.discardDisabled")}
+                        tooltip={t("hints.library.memory.discard")}
                         onClick={discardMaintenance}
                       >
                         {t("library.discard.changes")}
@@ -720,66 +852,79 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                       <Button
                         size="sm"
                         disabled={!maintenanceDirty || locked || s.settingsSaving}
+                        disabledReason={t("hints.library.memory.saveDisabled")}
+                        tooltip={t("hints.library.memory.save")}
                         onClick={() => void saveMaintenance()}
                       >
                         {t("library.save.memory.rules")}
                       </Button>
                     </div>
-                  </CardContent>
-                </Card>
+                  </div>
+                </SettingsGroup>
               )}
             </div>
           </div>
-          <Card>
-            <CardHeader>
-              <CardTitle>{t("library.maintenance.jobs")}</CardTitle>
-              <CardDescription>
-                {t("library.inspect.organization.and.merge.results.and.their.model.runs")}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="divide-y">
-                {s.memoryJobs.map((job) => (
-                  <div key={job.id} className="flex flex-wrap items-center gap-3 py-3 text-sm">
-                    <Badge variant="outline">{job.kind}</Badge>
-                    <span>{t(`library.status.${job.status}`)}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {formatDate(job.created_at, i18n.resolvedLanguage ?? i18n.language, {
-                        year: "numeric",
-                        month: "numeric",
-                        day: "numeric",
-                        hour: "numeric",
-                        minute: "numeric",
-                        second: "numeric",
-                      })}
-                    </span>
-                    {job.error_code && <span className="text-destructive">{job.error_code}</span>}
-                    <div className="ml-auto flex items-center gap-2">
-                      {job.status === "failed" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={hasActiveJob || retryBusy}
-                          onClick={() => {
-                            setRetryError("");
-                            setRetryJob(job);
-                          }}
-                        >
-                          <RotateCcw />
-                          {t("capabilities.retry")}
-                        </Button>
-                      )}
-                      <JobRunLink ownerKind="memory_job" ownerId={job.id} />
-                    </div>
+
+          {/* 整理与合并作业任务流 (Maintenance Jobs) */}
+          <SettingsGroup
+            title={t("library.maintenance.jobs")}
+            description={t("library.inspect.organization.and.merge.results.and.their.model.runs")}
+            icon={Clock}
+          >
+            <div className="divide-y divide-border/60">
+              {s.memoryJobs.map((job) => (
+                <div
+                  key={job.id}
+                  className="flex flex-wrap items-center gap-3 p-3.5 text-sm transition-colors hover:bg-muted/20"
+                >
+                  <Badge variant="outline">{job.kind}</Badge>
+                  <span className="font-medium">{t(`library.status.${job.status}`)}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {formatDate(job.created_at, i18n.resolvedLanguage ?? i18n.language, {
+                      year: "numeric",
+                      month: "numeric",
+                      day: "numeric",
+                      hour: "numeric",
+                      minute: "numeric",
+                      second: "numeric",
+                    })}
+                  </span>
+                  {job.error_code && (
+                    <span className="text-destructive font-mono text-xs">{job.error_code}</span>
+                  )}
+                  <div className="ml-auto flex items-center gap-2">
+                    {job.status === "failed" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={hasActiveJob || retryBusy}
+                        disabledReason={t("hints.library.memory.retryDisabled")}
+                        tooltip={t("hints.library.memory.retry")}
+                        onClick={() => {
+                          setRetryError("");
+                          setRetryJob(job);
+                        }}
+                      >
+                        <RotateCcw className="size-3.5" />
+                        {t("capabilities.retry")}
+                      </Button>
+                    )}
+                    <JobRunLink ownerKind="memory_job" ownerId={job.id} />
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                </div>
+              ))}
+            </div>
+          </SettingsGroup>
         </>
       )}
+
+      {/* 记忆详情与纠正 Sheet */}
       <MemoryDetail active={active} />
+
+      {/* 对话手动整理 Sheet */}
       {manual && <ManualMemory active={active} onClose={() => setManual(false)} />}
+
+      {/* 永久删除确认弹窗 */}
       {active && purge && (
         <ConfirmDialog
           message={t("library.permanently.delete.value.memories.this.cannot.be.undone", {
@@ -797,6 +942,8 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
           }}
         />
       )}
+
+      {/* 作业重试确认弹窗 */}
       {active && retryJob && (
         <ConfirmDialog
           message={
@@ -886,7 +1033,7 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                 </TabsList>
                 <TabsContent value="content" className="space-y-4">
                   <p className="text-sm text-muted-foreground">{entry.summary}</p>
-                  <pre className="whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-sm">
+                  <pre className="whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-sm font-mono leading-relaxed">
                     {content?.content.body ?? entry.body}
                   </pre>
                 </TabsContent>
@@ -930,14 +1077,17 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                 <TabsContent value="edit" className="space-y-4">
                   {draft ? (
                     <>
-                      <Field label="library.name">
+                      <Field label="library.name" tooltip={t("hints.library.memory.nameField")}>
                         <Input
                           maxLength={100}
                           value={draft.name}
                           onChange={(e) => s.patchMemoryCorrection({ name: e.target.value })}
                         />
                       </Field>
-                      <Field label="library.summary">
+                      <Field
+                        label="library.summary"
+                        tooltip={t("hints.library.memory.summaryField")}
+                      >
                         <Textarea
                           maxLength={500}
                           rows={3}
@@ -945,7 +1095,10 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                           onChange={(e) => s.patchMemoryCorrection({ summary: e.target.value })}
                         />
                       </Field>
-                      <Field label="library.tags.comma.separated">
+                      <Field
+                        label="library.tags.comma.separated"
+                        tooltip={t("hints.library.memory.tagsField")}
+                      >
                         <Input
                           value={tagText}
                           onChange={(e) => {
@@ -959,7 +1112,10 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                           }}
                         />
                       </Field>
-                      <Field label="library.memory.body">
+                      <Field
+                        label="library.memory.body"
+                        tooltip={t("hints.library.memory.bodyField")}
+                      >
                         <Textarea
                           rows={14}
                           maxLength={16000}
@@ -973,7 +1129,7 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                   )}
                 </TabsContent>
                 <TabsContent value="snapshot">
-                  <pre className="overflow-auto rounded-lg bg-muted p-4 text-xs">
+                  <pre className="overflow-auto rounded-lg bg-muted p-4 text-xs font-mono">
                     {JSON.stringify(entry.config_snapshot, null, 2)}
                   </pre>
                 </TabsContent>
@@ -982,12 +1138,19 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
           )}
           <SheetFooter className="border-t">
             <div className="flex justify-end gap-2">
-              <Button variant="outline" disabled={s.memoryCorrectionSaving} onClick={close}>
+              <Button
+                variant="outline"
+                disabled={s.memoryCorrectionSaving}
+                tooltip={t("hints.library.memory.closeDetail")}
+                onClick={close}
+              >
                 {t("library.close")}
               </Button>
               <Button
                 variant="outline"
                 disabled={!s.memoryCorrectionDirty || s.memoryCorrectionSaving}
+                disabledReason={t("hints.library.memory.discardDisabled")}
+                tooltip={t("hints.library.memory.discardCorrection")}
                 onClick={() => {
                   s.discardMemoryCorrection();
                   void s.loadMemoryContent();
@@ -997,6 +1160,8 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
               </Button>
               <Button
                 disabled={!s.memoryCorrectionDirty || s.memoryCorrectionSaving}
+                disabledReason={t("hints.library.memory.saveDisabled")}
+                tooltip={t("hints.library.memory.saveCorrection")}
                 onClick={() => void s.saveMemoryCorrection()}
               >
                 {t("library.save.correction")}
@@ -1054,7 +1219,10 @@ function ManualMemory({ onClose, active }: { onClose: () => void; active: boolea
           </SheetDescription>
         </SheetHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6">
-          <Field label="library.source.conversation">
+          <Field
+            label="library.source.conversation"
+            tooltip={t("hints.library.memory.sourceConversationField")}
+          >
             <NativeSelect
               value={session}
               onChange={(e) => {
@@ -1072,7 +1240,10 @@ function ManualMemory({ onClose, active }: { onClose: () => void; active: boolea
           </Field>
           <div className="flex items-end gap-3">
             <div className="flex-1">
-              <Field label="library.turns.to.load">
+              <Field
+                label="library.turns.to.load"
+                tooltip={t("hints.library.memory.turnsToLoadField")}
+              >
                 <Input
                   type="number"
                   min={1}
@@ -1085,6 +1256,7 @@ function ManualMemory({ onClose, active }: { onClose: () => void; active: boolea
             <Button
               variant="outline"
               disabled={!session}
+              tooltip={t("hints.library.memory.loadTurns")}
               onClick={() => {
                 setSelected([]);
                 void s.loadMemoryTurns(session, limit);
@@ -1124,6 +1296,7 @@ function ManualMemory({ onClose, active }: { onClose: () => void; active: boolea
         <SheetFooter className="border-t">
           <Button
             disabled={!selected.length || s.pendingOperations > 0}
+            tooltip={t("hints.library.memory.organizeTurns")}
             onClick={() => void s.manualConsolidate(session, selected)}
           >
             {t("library.organize.value.selected.turns", { "0": selected.length })}

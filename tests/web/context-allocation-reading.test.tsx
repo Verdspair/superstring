@@ -1,8 +1,9 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RetrievalPresets } from "../../src/shared/contracts/models";
 import { ContextAllocationReading } from "../../src/web/screens/connections/ContextAllocationReading";
+import { render } from "./helpers/render-with-providers";
 
 describe("ContextAllocationReading", () => {
   afterEach(() => {

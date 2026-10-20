@@ -26,22 +26,43 @@ async function performNavigation(
 ): Promise<void> {
   if (pending.kind === "context-allocation") {
     const requested = pending.target;
-    const binding = requested.bindingId
-      ? get().qqBindings.find((item) => item.id === requested.bindingId)
-      : undefined;
+    if (!pending.returning && requested.purpose === "qq") {
+      const api = get().apiClient;
+      const [schemesReady] = await Promise.all([
+        get().qqSchemesLoaded ? true : get().loadQqSchemes({ editor: false }),
+        get().qqBindingsLoaded ? undefined : get().loadQqBindings(),
+      ]);
+      if (get().apiClient !== api || !schemesReady || !get().qqBindingsLoaded) return;
+    }
+    const isQq = requested.purpose === "qq";
+    // 非 QQ 目的不读取 QQ 绑定实体；仅在 QQ 目的下解析 binding
+    const binding =
+      isQq && requested.bindingId
+        ? get().qqBindings.find((item) => item.id === requested.bindingId)
+        : undefined;
+    // 全局意图判定严格限定于 reading / aux 目的，且明确 requested.agentId === null 或未指定 agentId；
+    // QQ 目的绝不误判为全局意图，严格遵循绑定/默认助手水合契约
+    const isGlobalIntent =
+      !isQq &&
+      (requested.purpose === "reading" || requested.purpose === "aux") &&
+      (requested.agentId === null || requested.agentId === undefined);
+    const resolvedAgentId = isGlobalIntent
+      ? null
+      : (binding?.agent_id ??
+        requested.agentId ??
+        (get().editorAgentId !== "__new__" ? get().editorAgentId : get().agents[0]?.id));
     const target = pending.returning
       ? requested
       : {
           ...requested,
-          agentId:
-            binding?.agent_id ??
-            requested.agentId ??
-            (get().editorAgentId !== "__new__" ? get().editorAgentId : get().agents[0]?.id),
-          schemeId:
-            binding?.scheme_id ??
-            requested.schemeId ??
-            get().qqSchemeEditor?.source.id ??
-            get().qqSchemes[0]?.id,
+          agentId: resolvedAgentId,
+          schemeId: isQq
+            ? (binding?.scheme_id ??
+              requested.schemeId ??
+              get().qqSchemeEditor?.source.id ??
+              get().qqSchemes[0]?.id)
+            : null,
+          bindingId: isQq ? (requested.bindingId ?? null) : null,
         };
     if (discard) {
       get().discardSettingsPages();
@@ -60,20 +81,40 @@ async function performNavigation(
       set({ pendingNavigation: pending, navigationConfirmOpen: true });
       return;
     }
+    // 仅在 QQ 目的下选择 scheme 与 binding，非 QQ 目的绝不引入 QQ 实体状态与副作用
     if (
       !pending.returning &&
+      isQq &&
       target.schemeId &&
       target.schemeId !== get().qqSchemeEditor?.source.id
     )
       get().selectQqScheme(target.schemeId);
     if (
       !pending.returning &&
+      isQq &&
       target.bindingId &&
       !(await get().selectQqGroupConfig(target.bindingId))
     )
       return;
     if (pending.returning) resetContextAllocationTarget();
     else setContextAllocationTarget(target);
+    // 着陆路由判定：根据目的和目标精细分流，不使用 returnRoute 猜测目的
+    // - 助手主目的 (assistant) 或带 Agent 的辅助用途 (aux): 着陆于 "context" (CapabilityEditor)
+    // - 带 Agent 的读取目的 (reading): 统一着陆于 "memory-tools" (AssistantWorkspace access 标签页，同屏呈现 MemoryReadingRules 与 KnowledgeToolSettings)
+    // - QQ 目的: 根据是否有 bindingId 精确着陆于 "qq-group-config" 或 "qq-scheme-config"，不落目录丢编辑，不绕 guard
+    // - 全局 reading / aux: 着陆于 "context-allocation" (ModelPurposes)
+    let landingRoute = pending.route;
+    if (!landingRoute) {
+      if (target.purpose === "assistant" || (target.purpose === "aux" && target.agentId)) {
+        landingRoute = "context";
+      } else if (target.purpose === "reading" && target.agentId) {
+        landingRoute = "memory-tools";
+      } else if (target.purpose === "qq") {
+        landingRoute = target.bindingId ? "qq-group-config" : "qq-scheme-config";
+      } else {
+        landingRoute = "context-allocation";
+      }
+    }
     set({
       page: "settings",
       settingsView: "workspace",
@@ -81,7 +122,7 @@ async function performNavigation(
         pending.route === "external-api"
           ? (target.capacityModel ?? null)
           : get().modelCapacityTarget,
-      settingsRoute: pending.route ?? "context-allocation",
+      settingsRoute: landingRoute,
       pendingNavigation: null,
       navigationConfirmOpen: false,
       navigationConfirmMessage: "",
@@ -326,7 +367,9 @@ export function createNavigationActions(
     if (
       get().page !== "settings" ||
       get().settingsView !== "workspace" ||
-      get().settingsRoute !== "context-allocation"
+      !["context-allocation", "context", "memory-tools", "knowledge-tools"].includes(
+        get().settingsRoute,
+      )
     ) {
       resetContextAllocationTarget();
     }

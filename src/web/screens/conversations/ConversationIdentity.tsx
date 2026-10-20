@@ -75,6 +75,7 @@ export function ConversationIdentity({
               <Button
                 size="icon-sm"
                 variant="ghost"
+                tooltip={t("hints.conversation.details")}
                 aria-label={t("workspace.conversation_details")}
               >
                 <Info />

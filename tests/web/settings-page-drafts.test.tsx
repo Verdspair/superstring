@@ -1,5 +1,5 @@
 // Presentation-specific cases moved to fresh-product-workspaces.test.tsx.
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderView, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentResponse,
@@ -9,15 +9,19 @@ import {
   UpdateAgentRequestSchema,
 } from "../../src/shared/contracts";
 import type { SuperstringApi } from "../../src/web/api";
-
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import {
   dirtyPages,
   newPageEditor,
   pageAgentPayload,
 } from "../../src/web/features/agents/page-drafts";
 import { selectLocale } from "../../src/web/i18n";
-import { MemoryToolSettings } from "../../src/web/screens/assistants/ResourceRules";
+import { MemoryReadingRules } from "../../src/web/screens/assistants/ResourceRules";
 import { useSuperstringStore as store } from "../../src/web/store";
+
+/** 显式 tooltip（保存按钮/字段帮助）必须挂在真实 DesignSystemProvider 下渲染。 */
+const render = (...[ui, options]: Parameters<typeof renderView>) =>
+  renderView(ui, { wrapper: DesignSystemProvider, ...options });
 
 function agent(id = "A") {
   return AgentResponseSchema.parse({
@@ -100,7 +104,7 @@ it("存量 full 档：两输入按真实模式显示，改批次保存仍 full�
   };
   await store.getState().editAgent("A");
   store.getState().openSettingsRoute("memory-tools");
-  await act(async () => render(<MemoryToolSettings />));
+  await act(async () => render(<MemoryReadingRules />));
   // 模式选择按真实值显示 full_catalog，不伪装成 broad。
   const modeSelect = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
   expect(modeSelect.value).toBe("full_catalog");
@@ -154,27 +158,28 @@ it("目录批次非法原文：空/0/越界显示错误且拦保存，不误写�
   };
   await store.getState().editAgent("A");
   store.getState().openSettingsRoute("memory-tools");
-  await act(async () => render(<MemoryToolSettings />));
+  await act(async () => render(<MemoryReadingRules />));
   const batches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
-  const save = screen.getByRole("button", { name: "保存记忆规则" });
+  const save = () => screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement;
 
   // 空：非法、无错误写草稿、拦保存。
   fireEvent.change(batches, { target: { value: "" } });
   expect(screen.getByRole("alert")).toBeTruthy();
-  expect((save as HTMLButtonElement).disabled).toBe(true);
+  expect(save().disabled).toBe(true);
   expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
 
   // 0 与越界：同样拦。
   fireEvent.change(batches, { target: { value: "0" } });
-  expect((save as HTMLButtonElement).disabled).toBe(true);
+  expect(save().disabled).toBe(true);
   fireEvent.change(batches, { target: { value: "10001" } });
-  expect((save as HTMLButtonElement).disabled).toBe(true);
+  expect(save().disabled).toBe(true);
   expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
 
-  // 改成合法值：错误消失、保存恢复可用，且另一字段草稿未被动过。
+  // 改成合法值：错误消失、保存恢复可用（禁用/可用切换会替换 DOM 节点，取当前按钮），且另一字段草稿未被动过。
   fireEvent.change(batches, { target: { value: "55" } });
   expect(screen.queryByRole("alert")).toBeNull();
-  expect((save as HTMLButtonElement).disabled).toBe(false);
+  expect(save().isConnected).toBe(true);
+  expect(save().disabled).toBe(false);
   expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(55);
   expect(store.getState().pageEditor?.draft.p5_config.catalog_batch_size).toBe(23);
 });
@@ -742,7 +747,7 @@ describe("页面草稿与白名单保存", () => {
 describe("memory reading text settings", () => {
   it("edits preset relevance and the common prompt through the page save without other drafts", async () => {
     store.getState().openSettingsRoute("memory-tools");
-    await act(async () => render(<MemoryToolSettings />));
+    await act(async () => render(<MemoryReadingRules />));
     const originalPresets = structuredClone(persisted.p5_config.retrieval_presets);
     store.getState().patchPageAgent("models", { model_name: "unsaved model" });
     store
@@ -780,7 +785,7 @@ describe("memory reading text settings", () => {
 
   it("keeps edited text after a save conflict and discards only the memory page", async () => {
     store.getState().openSettingsRoute("memory-tools");
-    await act(async () => render(<MemoryToolSettings />));
+    await act(async () => render(<MemoryReadingRules />));
     fireEvent.change(screen.getByLabelText("记忆检索提示词"), { target: { value: "保留草稿" } });
     fireEvent.change(screen.getAllByLabelText("相关性要求")[0], {
       target: { value: "只选直接相关" },
@@ -810,7 +815,7 @@ describe("memory reading text settings", () => {
       persist(id, UpdateAgentRequestSchema.parse(body)),
     );
     store.getState().openSettingsRoute("memory-tools");
-    await act(async () => render(<MemoryToolSettings />));
+    await act(async () => render(<MemoryReadingRules />));
     const candidates = screen.getAllByLabelText("每次查询扫描候选上限")[0] as HTMLInputElement;
     const entries = screen.getAllByLabelText("每页最大返回项")[0] as HTMLInputElement;
     expect(candidates.max).toBe("10000");

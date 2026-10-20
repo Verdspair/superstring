@@ -49,6 +49,8 @@ export function ContentReader({ text, label }: { text: string; label: string }) 
           variant="outline"
           size="sm"
           disabled={!matches.length}
+          disabledReason={t("hints.investigation.reader.nextMatchDisabled")}
+          tooltip={t("hints.investigation.reader.nextMatch")}
           onClick={() => {
             setPosition((value) => (value + 1) % matches.length);
             requestAnimationFrame(() =>
@@ -65,6 +67,9 @@ export function ContentReader({ text, label }: { text: string; label: string }) 
           variant="outline"
           size="sm"
           aria-pressed={wrap}
+          tooltip={
+            wrap ? t("hints.investigation.reader.wrapOn") : t("hints.investigation.reader.wrapOff")
+          }
           onClick={() => setWrap((value) => !value)}
         >
           <WrapText />
@@ -73,6 +78,9 @@ export function ContentReader({ text, label }: { text: string; label: string }) 
         <Button
           variant="outline"
           size="sm"
+          tooltip={
+            copied ? t("observability.copied") : t("hints.investigation.reader.copyOriginal")
+          }
           onClick={async () => {
             try {
               await navigator.clipboard.writeText(text);

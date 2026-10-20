@@ -19,19 +19,46 @@ export function SchemeFieldCard({
   title,
   description,
   children,
+  unframed = false,
 }: {
   title: string;
   description?: string;
   children: ReactNode;
+  unframed?: boolean;
 }) {
   const { t } = useTranslation();
   return (
-    <Card size="sm" className="min-w-0 gap-0 pt-0">
-      <CardHeader className="border-b bg-muted/50">
-        <CardTitle className="text-sm">{title}</CardTitle>
-        {description && <CardDescription className="text-xs">{t(description)}</CardDescription>}
+    <Card
+      size="sm"
+      className={
+        unframed
+          ? "min-w-0 gap-[14px] rounded-none border-0 bg-transparent py-0 shadow-none"
+          : "min-w-0 gap-[16px] rounded-[10px] border border-border bg-card py-[18px] hover:border-[var(--border-hover)]"
+      }
+    >
+      <CardHeader
+        className={
+          unframed
+            ? "flex flex-wrap items-baseline justify-between gap-[8px] px-0"
+            : "mx-[20px] border-b border-dashed border-border px-0 pb-[8px]"
+        }
+      >
+        <CardTitle
+          className={
+            unframed
+              ? "text-[15px] leading-[1.5] font-bold group-data-[size=sm]/card:text-[15px]"
+              : "text-[14px] font-bold"
+          }
+        >
+          {title}
+        </CardTitle>
+        {description && (
+          <CardDescription className="text-[12px] leading-[1.5]">{t(description)}</CardDescription>
+        )}
       </CardHeader>
-      <CardContent className="space-y-5 pt-3">{children}</CardContent>
+      <CardContent className={unframed ? "space-y-[16px] px-0" : "space-y-[16px] px-[20px]"}>
+        {children}
+      </CardContent>
     </Card>
   );
 }
@@ -86,7 +113,7 @@ export function StickerFrequencyOptions({
         <Label
           key={opt.value}
           htmlFor={`${radioId}-${opt.value}`}
-          className="flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/30 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+          className="selection-card flex items-start gap-3 p-3.5 transition-colors"
         >
           <RadioGroupItem value={opt.value} id={`${radioId}-${opt.value}`} className="mt-0.5" />
           <div className="space-y-1">

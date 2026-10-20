@@ -134,6 +134,8 @@ export function createBotCompressionJob(options: {
         assertSources: check,
         usage: options.usage,
         budget: options.budget,
+        // 水位压缩由后台队列在宿主 ALS 之外驱动：来源在这里定为 qq，随压缩器传入每个压缩叶子。
+        retryOrigin: "qq",
       });
       const newPackages: Parameters<typeof saveQqConversationSummary>[1]["packages"][number][] = [];
       try {

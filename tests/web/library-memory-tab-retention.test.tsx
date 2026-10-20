@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SuperstringApi } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { LibraryWorkspace } from "../../src/web/screens/library/LibraryWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { memory, setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 beforeEach(() => {
   selectLocale("zh-CN");

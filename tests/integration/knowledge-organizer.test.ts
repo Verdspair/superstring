@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { setTimeout as delay } from "node:timers/promises";
+import type { LeafAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { ensureDefaults } from "../../src/server/db/repositories";
@@ -524,5 +526,63 @@ describe("durable knowledge organizer", () => {
     await runtime.stop();
     result.resolve(output);
     business.close = () => {};
+  });
+});
+
+describe("knowledge organizer leaf origin and per-send guard", () => {
+  it("declares system origin and re-verifies real job state before each extra send", async () => {
+    const captured: {
+      specId: string | undefined;
+      retryOrigin: string | undefined;
+      assertSources: (() => void) | undefined;
+    }[] = [];
+    let release!: (value: string) => void;
+    const blocked = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    let leafCalls = 0;
+    const draft = JSON.stringify({
+      summary: "设备条件",
+      tags: ["设备"],
+      body: "低于10°C禁止启动。",
+    });
+    const capturingRuntime = {
+      completeLeaf: async (
+        spec: { id?: string },
+        input: { retryOrigin?: string; assertSources?: () => void },
+      ) => {
+        captured.push({
+          specId: spec.id,
+          retryOrigin: input.retryOrigin,
+          assertSources: input.assertSources,
+        });
+        leafCalls += 1;
+        return leafCalls === 1 ? blocked : draft;
+      },
+      completeVisionLeaf: async () => {
+        throw new Error("knowledge organizer never calls the vision leaf");
+      },
+    } as unknown as LeafAgentRuntime;
+    // Two segments so the second send happens only after the guard is exercised.
+    const doc = add(`${text}\n\n${text}`);
+    const instance = worker({
+      agentRuntime: capturingRuntime,
+      heartbeatIntervalMs: 1000,
+      leaseMs: 60000,
+    });
+    const running = instance.runCycle();
+    for (let i = 0; i < 400 && captured.length === 0; i++) await delay(5);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.specId).toBe("knowledge.organize");
+    expect(captured[0]?.retryOrigin).toBe("system");
+    expect(() => captured[0]?.assertSources?.()).not.toThrow();
+    // Real change while in flight: auto organize disabled → the same closure must reject.
+    settings(false);
+    expect(() => captured[0]?.assertSources?.()).toThrow();
+    release(draft);
+    await running;
+    // The real change prevented publication of either segment.
+    expect(repo.detail(doc.id).organization_status).not.toBe("succeeded");
+    assertEmptyDrafts();
   });
 });

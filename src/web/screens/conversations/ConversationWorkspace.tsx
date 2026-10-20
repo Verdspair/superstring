@@ -78,10 +78,11 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
   const switchScope = (value: ConversationScope) => requestView(view, value);
   const canvas = (directoryTrigger?: ReactNode) => (
     <section
+      data-slot="conversation-surface"
       className="flex h-full min-h-0 min-w-0 flex-col bg-background"
       aria-label={t("workspace.current_conversation")}
     >
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-4 py-2.5">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-background px-4 py-2.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {directoryTrigger}
           <Tabs value={view} onValueChange={switchView} className="min-w-0 max-w-full">
@@ -97,19 +98,20 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {view === "messages" && conversation?.channel === "onebot11" && (
-            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <LockKeyhole className="size-3" />
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+              <LockKeyhole className="size-3 text-muted-foreground/80" />
               {t("workspace.read_only_conversation_history")}
             </span>
           )}
           {view !== "messages" && (
             <fieldset
               aria-label={t("workspace.conversationHub.scope")}
-              className="flex flex-wrap items-center gap-1"
+              className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-border/40 bg-muted/30 p-0.5"
             >
               <Button
                 size="sm"
                 variant={global ? "ghost" : "secondary"}
+                tooltip={t("hints.conversation.scopeCurrent")}
                 aria-pressed={!global}
                 disabled={!conversation}
                 onClick={() => switchScope("current")}
@@ -119,13 +121,14 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
               <Button
                 size="sm"
                 variant={global ? "secondary" : "ghost"}
+                tooltip={t("hints.conversation.scopeGlobal")}
                 aria-pressed={global}
                 onClick={() => switchScope("global")}
               >
                 {t("workspace.conversationHub.scopeGlobal")}
               </Button>
               {!global && conversation && (
-                <span className="max-w-full break-words text-xs text-muted-foreground">
+                <span className="max-w-full break-words px-1.5 text-xs text-muted-foreground">
                   {t("workspace.conversationHub.currentScope", { "0": conversation.title })}
                 </span>
               )}
@@ -135,6 +138,7 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
             <Button
               size="icon-sm"
               variant="ghost"
+              tooltip={t("hints.conversation.toggleDirectory")}
               aria-label={t(
                 collapsed
                   ? "workspace.conversationHub.expandDirectory"
@@ -208,22 +212,51 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
       </div>
     </section>
   );
-  if (mobile)
-    return (
-      <Sheet open={directory} onOpenChange={setDirectory}>
-        <div className="h-full">
+  // 折叠只隐藏左侧面板，画布子树不换位：消息滚动、草稿与弹窗状态不因折叠丢失。
+  const hideDirectory = collapsed && global;
+  return (
+    <Sheet open={directory} onOpenChange={setDirectory}>
+      <ResizablePanelGroup
+        orientation="horizontal"
+        className="h-full"
+        resizeTargetMinimumSize={{ fine: 12, coarse: 24 }}
+      >
+        {!mobile && !hideDirectory && (
+          <ResizablePanel
+            id="conversation-index"
+            defaultSize="260px"
+            minSize="200px"
+            maxSize="420px"
+            groupResizeBehavior="preserve-pixel-size"
+          >
+            <ConversationIndex />
+          </ResizablePanel>
+        )}
+        {!mobile && !hideDirectory && (
+          <ResizableHandle
+            aria-label={t("workspace.resize_conversation_index")}
+            title={t("hints.conversation.resizeIndex")}
+            className="w-px cursor-col-resize bg-border hover:bg-border focus-visible:bg-border"
+          />
+        )}
+        <ResizablePanel id="conversation-canvas" minSize={mobile ? "0px" : "380px"}>
           {canvas(
-            <SheetTrigger asChild>
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                aria-label={t("workspace.open_conversation_index")}
-              >
-                <PanelLeft />
-              </Button>
-            </SheetTrigger>,
+            mobile ? (
+              <SheetTrigger asChild>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  tooltip={t("hints.conversation.openIndex")}
+                  aria-label={t("workspace.open_conversation_index")}
+                >
+                  <PanelLeft />
+                </Button>
+              </SheetTrigger>
+            ) : undefined,
           )}
-        </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+      {mobile && (
         <SheetContent side="left" className="w-[min(22rem,100vw-2rem)] p-0" showCloseButton={false}>
           <SheetHeader className="sr-only">
             <SheetTitle>{t("workspace.conversation_index")}</SheetTitle>
@@ -236,6 +269,7 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
             <Button
               variant="outline"
               size="icon-sm"
+              tooltip={t("hints.conversation.closeIndex")}
               aria-label={t("workspace.close_conversation_index")}
               className="absolute right-3 top-2"
             >
@@ -243,21 +277,7 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
             </Button>
           </SheetClose>
         </SheetContent>
-      </Sheet>
-    );
-  // 折叠只隐藏左侧面板，画布子树不换位：消息滚动、草稿与弹窗状态不因折叠丢失。
-  const hideDirectory = collapsed && global;
-  return (
-    <ResizablePanelGroup orientation="horizontal" className="h-full">
-      {!hideDirectory && (
-        <ResizablePanel id="conversation-index" defaultSize="310px" minSize="250px" maxSize="420px">
-          <ConversationIndex />
-        </ResizablePanel>
       )}
-      {!hideDirectory && <ResizableHandle withHandle />}
-      <ResizablePanel id="conversation-canvas" minSize="380px">
-        {canvas()}
-      </ResizablePanel>
-    </ResizablePanelGroup>
+    </Sheet>
   );
 }

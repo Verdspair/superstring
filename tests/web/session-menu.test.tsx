@@ -1,6 +1,7 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { MODES, SELECTABLE_THEMES } from "../../src/shared/appearance";
 import type { SessionResponse } from "../../src/shared/contracts";
 import { api, type SuperstringApi } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
@@ -8,6 +9,7 @@ import { ConversationIndex as SessionList } from "../../src/web/screens/conversa
 import { DirectConversation as ChatPage } from "../../src/web/screens/conversations/DirectConversation";
 import { Preferences as GeneralSettings } from "../../src/web/screens/environment/Preferences";
 import { fixtureStore as store } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const a: SessionResponse = {
   id: "a",
@@ -52,7 +54,7 @@ function openOther() {
     clientY: 120,
   });
 }
-it("environment exposes language and all sixteen themes without mixing connection controls", () => {
+it("environment exposes language and curated themes without mixing connection controls", () => {
   store.setState({ page: "settings", settingsView: "general" });
   render(<GeneralSettings />);
   expect(screen.getByRole("combobox", { name: "语言" })).toBeTruthy();
@@ -60,7 +62,7 @@ it("environment exposes language and all sixteen themes without mixing connectio
   expect(
     screen.getAllByRole("button", { pressed: false }).length +
       screen.getAllByRole("button", { pressed: true }).length,
-  ).toBeGreaterThanOrEqual(16);
+  ).toBe(MODES.length + SELECTABLE_THEMES.length);
   expect(screen.queryByText("运行模式")).toBeNull();
 });
 it("聊天页不再显示会话操作按钮和配置版本注释", () => {
@@ -157,6 +159,14 @@ it("菜单支持键盘导航与Escape恢复焦点", async () => {
   await waitFor(() => expect(document.activeElement?.textContent).toBe("重命名"));
   await userEvent.keyboard("{ArrowDown}");
   await waitFor(() => expect(document.activeElement?.textContent).toBe("刷新会话"));
+  expect((await screen.findByRole("tooltip")).textContent).toBe(
+    "重新读取此会话的消息与状态，不重新发送消息。",
+  );
+  if (screen.queryByRole("tooltip")) {
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+    expect(screen.getByRole("menu")).toBeTruthy();
+  }
   await userEvent.keyboard("{Escape}");
   await waitFor(() => expect(document.activeElement).toBe(button));
   expect(screen.queryByRole("menu")).toBeNull();

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type SuperstringApi } from "../../src/web/api";
@@ -6,6 +6,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { DirectConversation as ChatPage } from "../../src/web/screens/conversations/DirectConversation";
 import type { RuntimeEffects } from "../../src/web/state/types";
 import { summaryFixture, fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const session = "22222222-2222-4222-8222-222222222222";
 let stream: ReturnType<typeof vi.fn<RuntimeEffects["streamChatV2"]>>;

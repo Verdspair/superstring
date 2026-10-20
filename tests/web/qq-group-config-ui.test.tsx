@@ -2,7 +2,7 @@
 //
 // 页面键文案随后由别的写者补进 locale：断言只看 data-* 标记、DOM 顺序与 store 状态，不依赖文案。
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponse } from "../../src/shared/contracts/agent";
@@ -24,6 +24,7 @@ import { qqGroupConfigDirty } from "../../src/web/features/qq/group-config-state
 import { selectLocale } from "../../src/web/i18n";
 import { QqGroupConfigPage } from "../../src/web/screens/connections/group-config";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-30T00:00:00.000Z";
 const BINDING_ID = "11111111-1111-4111-8111-111111111111";
@@ -245,16 +246,19 @@ it("显式钉住与基线同值也保留；钉住从基线初始化，装配冗�
   fireEvent.change(hourlyState, { target: { value: "follow" } });
   expect(editorOf()?.overrides).toEqual({ rhythm: { merge_window_seconds: 30 } });
 
-  // 装配冗余钉住初始化成整数百分比（0.05 → 输入 5）。压缩装配归「历史压缩」组。
+  // 装配冗余钉住在本页历史压缩任务：同一个本群编辑器做稀疏改写，不建新 store。
+  // 切到该任务页签后再查询，避免同 data-field 双挂；钉住初始化仍是整数百分比（0.05 → 输入 5）。
   await userEvent.click(screen.getByRole("tab", { name: "历史压缩" }));
-  const headroomState = fieldOf(view, "compression.headroom_ratio").getByRole(
-    "combobox",
-  ) as HTMLSelectElement;
+  const headroomField = view.container
+    .querySelector('input[data-field="compression.headroom_ratio"]')
+    ?.closest('[data-slot="field"]') as HTMLElement;
+  const headroomState = within(headroomField).getByRole("combobox") as HTMLSelectElement;
   fireEvent.change(headroomState, { target: { value: "custom" } });
   expect(editorOf()?.overrides).toEqual({
     rhythm: { merge_window_seconds: 30 },
     compression: { headroom_ratio: 0.05 },
   });
+  expect(headroomState.value).toBe("custom");
   expect(
     (
       view.container.querySelector(

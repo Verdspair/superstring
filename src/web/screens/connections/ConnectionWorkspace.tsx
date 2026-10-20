@@ -1,4 +1,3 @@
-import { Puzzle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
@@ -22,21 +21,20 @@ export function ConnectionWorkspace({ active = true }: { active?: boolean } = {}
         value === "skills" ? "skill-catalog" : value === "grants" ? "tool-grants" : "mcp-servers",
       );
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label={t("workspace.extensions")}>
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b px-4 py-5">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <Puzzle className="size-4 text-muted-foreground" />
-            <h1 className="text-xl font-semibold tracking-tight">{t("workspace.extensions")}</h1>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            {t("workspace.manage_external_extensions")}
-          </p>
-        </div>
+    <section
+      className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
+      aria-label={t("workspace.extensions")}
+    >
+      <header className="workspace-page-header mb-[24px]">
+        <p className="workspace-page-location">
+          {t("brand.workspace", { "0": t("workspace.extensions") })}
+        </p>
+        <h1 className="workspace-page-title">{t("workspace.extensions")}</h1>
+        <p className="workspace-page-description">{t("workspace.manage_external_extensions")}</p>
       </header>
       <Tabs value={tab} onValueChange={openTab} className="flex min-h-0 flex-1 flex-col gap-0">
-        <div className="border-b px-4 py-3">
-          <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
+        <div className="mb-[24px]">
+          <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">
             <TabsTrigger value="mcp">{t("connections.mcp.title")}</TabsTrigger>
             <TabsTrigger value="skills">{t("connections.skills.title")}</TabsTrigger>
             <TabsTrigger value="grants">{t("connections.tools.title")}</TabsTrigger>

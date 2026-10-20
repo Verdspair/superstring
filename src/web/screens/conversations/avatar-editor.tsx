@@ -1,6 +1,6 @@
 import { ImagePlus, RotateCcw, Shuffle } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import {
   AVATAR_MEDIA_TYPES,
   AVATAR_UPLOAD_MAX_BYTES,
@@ -216,7 +216,7 @@ function AvatarEditorForm({
           </TabsTrigger>
         </TabsList>
         <TabsContent value="presets" className="space-y-4 pt-3">
-          <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-wrap items-end gap-4">
             <div className="min-w-36 flex-1 space-y-2">
               <Label htmlFor={styleId}>{t("avatar.style")}</Label>
               <NativeSelect
@@ -238,7 +238,12 @@ function AvatarEditorForm({
                 ))}
               </NativeSelect>
             </div>
-            <Button variant="outline" disabled={busy} onClick={() => setBatch(crypto.randomUUID())}>
+            <Button
+              tooltip={<Trans i18nKey="hints.complete.avatarMore" />}
+              variant="outline"
+              disabled={busy}
+              onClick={() => setBatch(crypto.randomUUID())}
+            >
               <Shuffle />
               {t("avatar.more")}
             </Button>
@@ -260,7 +265,7 @@ function AvatarEditorForm({
               <Label
                 key={choice.seed}
                 htmlFor={`${radioId}-${index}`}
-                className="relative flex cursor-pointer items-center justify-center rounded-xl border border-transparent bg-muted/30 p-2 transition-colors has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/10 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                className="selection-card selection-card--thumbnail relative flex items-center justify-center p-2 transition-colors"
               >
                 <RadioGroupItem
                   id={`${radioId}-${index}`}
@@ -317,6 +322,7 @@ function AvatarEditorForm({
       )}
       <DialogFooter className="flex-row flex-wrap items-center sm:justify-between">
         <Button
+          tooltip={<Trans i18nKey="hints.complete.avatarReset" />}
           variant="ghost"
           disabled={busy || draft === null}
           onClick={() => {
@@ -334,10 +340,16 @@ function AvatarEditorForm({
           {t("avatar.reset")}
         </Button>
         <div className="ml-auto flex gap-2">
-          <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
+          <Button
+            tooltip={<Trans i18nKey="hints.complete.cancel" />}
+            variant="outline"
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+          >
             {t("avatar.cancel")}
           </Button>
           <Button
+            tooltip={<Trans i18nKey="hints.complete.avatarSave" />}
             disabled={busy || !dirty || imageFailed || (!!file && !uploadReady)}
             onClick={() => void save()}
           >

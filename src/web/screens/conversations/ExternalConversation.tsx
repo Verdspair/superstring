@@ -1,6 +1,6 @@
 import { ArrowDown, RefreshCw } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import type {
   ConversationEventView,
   ConversationSummary,
@@ -126,6 +126,7 @@ export function ExternalConversation({
             agentName={agent?.name}
             actions={
               <Button
+                tooltip={<Trans i18nKey="hints.complete.historyRefresh" />}
                 variant="ghost"
                 size="icon-sm"
                 aria-label={t("workspace.refresh_history")}
@@ -190,6 +191,7 @@ export function ExternalConversation({
             )}
             {history.hasMore && (
               <Button
+                tooltip={<Trans i18nKey="hints.complete.loadMore" />}
                 variant="outline"
                 size="sm"
                 className="mb-5 w-full"
@@ -199,7 +201,7 @@ export function ExternalConversation({
                 {t("workspace.load_earlier_history")}
               </Button>
             )}
-            <ol className="space-y-5">
+            <ol className="space-y-6">
               {rows.map((event) => (
                 <EventRecord
                   key={timelineKey(event)}
@@ -217,9 +219,10 @@ export function ExternalConversation({
         </section>
         {active && scroll.away && (
           <Button
+            tooltip={<Trans i18nKey="hints.complete.latest" />}
             variant="secondary"
             size="sm"
-            className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border shadow-sm"
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border"
             onClick={scroll.toLatest}
           >
             <ArrowDown />

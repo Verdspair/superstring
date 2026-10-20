@@ -1,6 +1,6 @@
 // 联网端点草稿的 store 持久化、离页守卫与面板接线：草稿跨路由/跨刷新保留，
 // 离开设置页按作用域统一保存或放弃，自检只针对已保存配置。
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { api, type WebAccessConfig } from "../../src/web/api";
@@ -9,6 +9,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { WebAccessPanel } from "../../src/web/screens/connections/web-access-panel";
 import { hasUnsavedDrafts } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const permissions: PermissionsResponse = {
   revision: "pr-1",

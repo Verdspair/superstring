@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentStepSnapshot,
@@ -9,6 +9,7 @@ import { api } from "../../src/web/api";
 import { i18n } from "../../src/web/i18n/runtime";
 import { RunAttempts, RunWorkspace } from "../../src/web/screens/runs/RunEntry";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 // 用户 2026-10-17 最新要求（LATEST-BOTH-VIEWS-COLLAPSIBLE-REQUEST / RUN-LOCAL-PREFETCH-AND-TWO-BOARD-SHARING）：
 // 运行详情加载时，两块看板共用的同一次模型调用证据在全部行收起的状态下就自动读取真实调用体（并发上限 3）；

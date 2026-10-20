@@ -476,6 +476,8 @@ export function createQqMediaInputService(
     fetchSource: options.fetchSource,
     agentRuntime: options.agentRuntime,
     prompt,
+    // 本服务只由 QQ 通道装配：媒体描述叶子来源为 qq，经适配器转发视觉叶子。
+    retryOrigin: "qq",
   });
   const db = options.store.db;
   const orm = options.store.orm;

@@ -6,7 +6,7 @@
 //「本群配置」按行打开并读取该行真实的配置；群会话顶部控制行与身份栏分离且不随隐藏页签渲染，
 // 私聊会话不渲染群控制。
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema } from "../../src/shared/contracts";
@@ -32,6 +32,7 @@ import { i18n } from "../../src/web/i18n/runtime";
 import { ExternalConversation } from "../../src/web/screens/conversations/ExternalConversation";
 import { QqGroupControls } from "../../src/web/screens/conversations/QqGroupControls";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const ui = (key: string, values?: Record<string, unknown>) => i18n.t(key, values) as string;
 const ctrl = (key: string) => ui(`schemes.qq.groupConfig.controls.${key}`);

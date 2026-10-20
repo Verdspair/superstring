@@ -14,13 +14,6 @@ export interface SchemeAppEntry {
   keywordKeys: readonly string[];
   /** The registered detail route this app's schemes live under. */
   route: SettingsRoute;
-  /** App-level management destinations; only apps with real app settings register them. */
-  management?: {
-    schemes: SettingsRoute;
-    groups?: SettingsRoute;
-    connection: SettingsRoute;
-    data: SettingsRoute;
-  };
   icon: typeof MessagesSquare;
 }
 
@@ -31,12 +24,6 @@ export const SCHEME_CATALOG: readonly SchemeAppEntry[] = [
     descriptionKey: "schemes.qq.description",
     keywordKeys: ["schemes.qq.keywords"],
     route: "qq-scheme-config",
-    management: {
-      schemes: "qq-app-schemes",
-      groups: "qq-app-groups",
-      connection: "qq-connection",
-      data: "qq-storage",
-    },
     icon: MessagesSquare,
   },
 ] as const;

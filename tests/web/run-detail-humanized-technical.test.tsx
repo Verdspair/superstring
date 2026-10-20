@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentStepSnapshot,
@@ -15,6 +15,7 @@ import { i18n } from "../../src/web/i18n/runtime";
 import { TraceTimeline } from "../../src/web/screens/observability/TraceTimeline";
 import { RunWorkspace } from "../../src/web/screens/runs/RunEntry";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 // 技术追踪单一全局选择契约（2026-10-17）：一条时间线，一个跨 trace 的全局选中 span，
 // 只渲染一个共享 ModelEvidence；未匹配时间线的 own call 用既有步骤标签回退；不复制整份 span 列表。

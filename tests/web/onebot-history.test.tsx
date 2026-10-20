@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
@@ -7,6 +7,7 @@ import type {
 import { api, type SuperstringApi } from "../../src/web/api";
 import { ExternalConversation as ConversationTimeline } from "../../src/web/screens/conversations/ExternalConversation";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const at = "2026-09-26T00:00:00Z";
 const conversation: ConversationSummary = {

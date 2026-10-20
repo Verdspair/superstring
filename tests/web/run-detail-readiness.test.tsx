@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunSnapshot } from "../../src/shared/contracts/agent-run";
@@ -10,6 +10,7 @@ import {
   resetConversationChangesForTests,
 } from "../../src/web/services/conversation-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-09-26T00:00:00.000Z";
 

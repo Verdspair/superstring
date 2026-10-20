@@ -1,5 +1,5 @@
 import { type ReactNode, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { AlertDialogContent, AlertDialogTitle, AlertDialog as Root } from "./ui/alert-dialog";
 
 /** Shared modal mechanics only; callers own actions and when successful work closes. */
@@ -90,6 +90,7 @@ export function ConfirmDialog({
     <AlertDialog title={message} onCancel={onCancel} busy={busy || pending}>
       <AlertDialogFooter>
         <Button
+          tooltip={<Trans i18nKey="hints.complete.cancel" />}
           type="button"
           variant="outline"
           data-dialog-cancel
@@ -99,6 +100,7 @@ export function ConfirmDialog({
           {t("connections.cancel")}
         </Button>
         <Button
+          tooltip={<Trans i18nKey="hints.complete.confirm" />}
           type="button"
           variant="destructive"
           disabled={busy || pending}

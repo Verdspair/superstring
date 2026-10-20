@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqBindingResponse, QqSettingsResponse } from "../../src/shared/contracts/qq";
@@ -7,6 +7,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const SCHEME_ID = "22222222-2222-4222-8222-222222222222";
@@ -239,11 +240,13 @@ describe("scheme bindings (详情「使用会话」与全局「会话绑定」�
     fireEvent.change(dialog().getByLabelText(i18n.t("schemes.bindings.pickConversation")), {
       target: { value: "10001:group:30003" },
     });
-    // 绑定 Agent 与方案必需：Agent 未显式选择前不可提交，方案默认当前方案。
+    // 绑定 Agent 与方案必需：全局 ALL 入口不预选方案，Agent 与方案都显式选择后才可提交。
     const bind = () => dialog().getByRole("button", { name: "绑定" }) as HTMLButtonElement;
     expect(bind().disabled).toBe(true);
-    expect((dialog().getByLabelText("方案") as HTMLSelectElement).value).toBe(SCHEME_ID);
+    expect((dialog().getByLabelText("方案") as HTMLSelectElement).value).toBe("");
     fireEvent.change(dialog().getByLabelText("Agent"), { target: { value: AGENT_ID } });
+    expect(bind().disabled).toBe(true);
+    fireEvent.change(dialog().getByLabelText("方案"), { target: { value: SCHEME_ID } });
     expect(bind().disabled).toBe(false);
     await act(async () => fireEvent.click(bind()));
     expect(fake.createQqBinding).toHaveBeenCalledWith(
@@ -262,6 +265,8 @@ describe("scheme bindings (详情「使用会话」与全局「会话绑定」�
     const dialog = () => within(screen.getByRole("dialog"));
     fireEvent.change(dialog().getByLabelText("号码"), { target: { value: "50005" } });
     fireEvent.change(dialog().getByLabelText("Agent"), { target: { value: AGENT_ID } });
+    // ALL 入口无默认首方案：显式选择方案后绑定才可用。
+    fireEvent.change(dialog().getByLabelText("方案"), { target: { value: SCHEME_ID } });
     await act(async () => fireEvent.click(dialog().getByRole("button", { name: "绑定" })));
     expect(fake.createQqBinding).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -313,29 +318,26 @@ describe("scheme bindings (详情「使用会话」与全局「会话绑定」�
 });
 
 describe("QQ connection page (本人身份依赖机器人账号)", () => {
-  it("QQ 应用任务导航统一为方案/本群配置/连接/数据与保留；本群配置直达群目录", async () => {
+  it("统一壳层三分区常驻导航：QQ 设置含连接/数据与保留子页；会话与绑定直达绑定看板", async () => {
     await renderConnection();
-    const shell = screen.getByLabelText(i18n.t("schemes.qq.appTitle"));
-    const tabNames = within(shell)
-      .getAllByRole("tab")
-      .map((tab) => tab.textContent);
-    expect(tabNames).toEqual([
-      i18n.t("workspace.schemes"),
-      i18n.t("schemes.qq.groupConfigTitle"),
-      i18n.t("connections.transportPage.tab"),
-      i18n.t("connections.dataRetention"),
-    ]);
+    // 旧四任务应用外壳删除：方案/会话与绑定/QQ设置 三个常驻分区一次到位。
+    expect(screen.getByRole("tab", { name: i18n.t("schemes.workspace.schemes") })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: i18n.t("schemes.workspace.bindings") })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: i18n.t("schemes.workspace.settings") })).toBeTruthy();
+    // QQ 设置分区落地连接子页：连接子页选中，数据与保留子页在列。
     expect(
-      within(shell)
-        .getByRole("tab", { name: i18n.t("connections.transportPage.tab") })
-        .getAttribute("aria-selected"),
+      (
+        screen.getByRole("tab", {
+          name: i18n.t("connections.transportPage.tab"),
+        }) as HTMLButtonElement
+      ).getAttribute("aria-selected"),
     ).toBe("true");
+    expect(screen.getByRole("tab", { name: i18n.t("connections.dataRetention") })).toBeTruthy();
+    expect(screen.getByLabelText(i18n.t("connections.websocketAddress"))).toBeTruthy();
     // Radix Tab 以真实指针事件激活，不用合成 click。
-    await userEvent.click(
-      within(shell).getByRole("tab", { name: i18n.t("schemes.qq.groupConfigTitle") }),
-    );
+    await userEvent.click(screen.getByRole("tab", { name: i18n.t("schemes.workspace.bindings") }));
     await act(async () => {});
-    expect(store.getState().settingsRoute).toBe("qq-app-groups");
+    expect(store.getState().settingsRoute).toBe("scheme-bindings");
   });
 
   const renderConnection = async (

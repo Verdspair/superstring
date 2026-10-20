@@ -212,7 +212,17 @@ export function ModelEvidence({
             {t("observability.inputsAndOutputsAreLoadedOnlyWhenYouInspectThem")}
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={onUserInspect} disabled={loading}>
+            <Button
+              size="sm"
+              onClick={onUserInspect}
+              disabled={loading}
+              disabledReason={t("hints.investigation.evidence.inspectLoading")}
+              tooltip={
+                value
+                  ? t("hints.investigation.evidence.recheck")
+                  : t("hints.investigation.evidence.inspect")
+              }
+            >
               <Eye />
               {t(
                 value
@@ -221,7 +231,12 @@ export function ModelEvidence({
               )}
             </Button>
             {(value || loading) && (
-              <Button variant="ghost" size="sm" onClick={onUserClear}>
+              <Button
+                variant="ghost"
+                size="sm"
+                tooltip={t("hints.investigation.evidence.hide")}
+                onClick={onUserClear}
+              >
                 <EyeOff />
                 {t("observability.hideActualInputAndOutput")}
               </Button>
@@ -471,6 +486,13 @@ export function InspectedEvidence({
                 ? "observability.modelInput"
                 : "observability.sourcesAndRevisions",
           );
+          const hint = t(
+            section === "output"
+              ? "hints.investigation.evidence.sectionOutput"
+              : section === "input"
+                ? "hints.investigation.evidence.sectionInput"
+                : "hints.investigation.evidence.sectionSources",
+          );
           return (
             <Collapsible
               key={section}
@@ -490,6 +512,7 @@ export function InspectedEvidence({
                   variant="ghost"
                   className="h-auto min-h-12 w-full justify-between gap-3 rounded-none px-3 py-2 text-left whitespace-normal"
                   aria-label={label}
+                  tooltip={hint}
                 >
                   <span className="text-sm font-semibold">{label}</span>
                   <ChevronDown

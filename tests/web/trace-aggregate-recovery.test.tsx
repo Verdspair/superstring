@@ -7,7 +7,7 @@
 // 4. 最新尝试为进行中（started）时不报告已完成（返回 null）。
 // 5. 自然呈现任务用途（复用 traceTask 与 traceCause 标签），不泄露私信内容。
 
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   RuntimeSpan,
@@ -19,6 +19,7 @@ import { i18n } from "../../src/web/i18n/runtime";
 import { InvestigationCanvas } from "../../src/web/screens/observability/InvestigationCanvas";
 import { latestWakeOutcome } from "../../src/web/screens/observability/presentation";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 // 合成 32 字符十六进制标识，不使用实际会话报告 ID
 const traceId = "11111111222222223333333344444444";

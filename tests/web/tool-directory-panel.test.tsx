@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ExecutionPolicySchema } from "../../src/shared/contracts/permissions";
 import type { ToolDirectoryEntry } from "../../src/shared/contracts/tool-directory";
@@ -6,6 +6,7 @@ import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { ToolDirectoryPanel } from "../../src/web/screens/connections/tool-directory-panel";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const tool = (
   name: string,

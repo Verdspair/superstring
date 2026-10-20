@@ -1,4 +1,4 @@
-import { act, cleanup, render, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BrowserStateConfig } from "../../src/shared/contracts";
 import type {
@@ -22,6 +22,7 @@ import {
 } from "../../src/web/services/page-snapshot-cache";
 import type { ChatItem } from "../../src/web/state/types";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(() => {
   cleanup();

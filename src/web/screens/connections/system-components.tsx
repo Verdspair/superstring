@@ -111,6 +111,7 @@ export function SystemComponents({
           <Button
             variant="outline"
             size="sm"
+            tooltip={t("hints.extensions.components.retry")}
             className="min-h-8 h-auto px-2.5 py-1 text-xs"
             onClick={() => toolRefresh()}
           >
@@ -138,6 +139,11 @@ export function SystemComponents({
                   key={`tool:${tool.name}`}
                   variant="outline"
                   size="sm"
+                  tooltip={
+                    isOff
+                      ? t("hints.extensions.components.openToolOff")
+                      : t("hints.extensions.components.openTool")
+                  }
                   className={`min-h-8 h-auto gap-2 px-2.5 py-1 text-xs whitespace-normal break-words text-left ${
                     isOff ? "opacity-60 bg-muted/50" : ""
                   }`}
@@ -171,6 +177,7 @@ export function SystemComponents({
           <Button
             variant="outline"
             size="sm"
+            tooltip={t("hints.extensions.components.retry")}
             className="min-h-8 h-auto px-2.5 py-1 text-xs"
             onClick={() => skillRefresh()}
           >
@@ -198,6 +205,11 @@ export function SystemComponents({
                   key={`skill:${skill.name}`}
                   variant="outline"
                   size="sm"
+                  tooltip={
+                    isOff
+                      ? t("hints.extensions.components.openSkillOff")
+                      : t("hints.extensions.components.openSkill")
+                  }
                   className={`min-h-8 h-auto gap-2 px-2.5 py-1 text-xs whitespace-normal break-words text-left ${
                     isOff ? "opacity-60 bg-muted/50" : ""
                   }`}

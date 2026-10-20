@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -12,6 +12,7 @@ import { qqDraftChanges } from "../../src/web/features/qq/draft-state";
 import { selectLocale } from "../../src/web/i18n";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-30T00:00:00.000Z";
 const AGENT_ID = "44444444-4444-4444-8444-444444444444";
@@ -201,7 +202,8 @@ describe("QQ Admin Navigation & Integration", () => {
 
     render(<SchemesWorkspace active />);
 
-    const adminBtn = screen.getByRole("button", { name: "管理员" });
+    // 统一目录读取在挂载时进行，缓存 loaded 快照会被「读取中/未知」重置：等真实落定再断言。
+    const adminBtn = await screen.findByRole("button", { name: "管理员" });
     await userEvent.click(adminBtn);
 
     const sheet = screen.getByRole("dialog");
@@ -217,13 +219,17 @@ describe("QQ Admin Navigation & Integration", () => {
 
   it("spies scrollIntoView directly targeting administrators section from group config header", async () => {
     setupStore();
-    await store.getState().selectQqGroupConfig(BINDING_ID);
+    // 群配置页的真实入口是 openQqGroupConfig：selectQqGroupConfig 只读不导航；
+    // 等路由落地后再挂载，才能按真实入口断言页头管理员入口。
+    store.getState().openQqGroupConfig(BINDING_ID);
+    await act(async () => {});
+    expect(store.getState().settingsRoute).toBe("qq-group-config");
 
     const scrollSpy = vi.spyOn(window.HTMLElement.prototype, "scrollIntoView");
 
     render(<SchemesWorkspace active />);
 
-    const adminBtn = screen.getByRole("button", { name: "管理员" });
+    const adminBtn = await screen.findByRole("button", { name: "管理员" });
     await userEvent.click(adminBtn);
 
     const sheet = screen.getByRole("dialog");
@@ -249,7 +255,7 @@ describe("QQ Admin Navigation & Integration", () => {
     const scrollSpy = vi.spyOn(window.HTMLElement.prototype, "scrollIntoView");
 
     render(<SchemesWorkspace active />);
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
 
     expect(scrollSpy).toHaveBeenCalledWith({ behavior: "auto", block: "start" });
   });
@@ -257,7 +263,7 @@ describe("QQ Admin Navigation & Integration", () => {
   it("displays saved binding Agent as active scope, indicating pending uncommitted reassignment", async () => {
     setupStore();
     render(<SchemesWorkspace active />);
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
 
     const sheet = screen.getByRole("dialog");
     expect(within(sheet).getByText("Agent: 本地助手")).toBeTruthy();
@@ -272,7 +278,7 @@ describe("QQ Admin Navigation & Integration", () => {
   it("presents three clear admin modes: off, soft priority, and hard trigger allowlist", async () => {
     setupStore();
     render(<SchemesWorkspace active />);
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
 
     const select = screen.getByLabelText("管理员模式") as HTMLSelectElement;
     expect(select.value).toBe("soft");
@@ -286,7 +292,7 @@ describe("QQ Admin Navigation & Integration", () => {
   it("preserves draft members when switching to off, and saves empty members under off mode", async () => {
     const fake = setupStore();
     render(<SchemesWorkspace active />);
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
 
     const select = screen.getByLabelText("管理员模式");
     const input = screen.getByLabelText("管理员名单") as HTMLInputElement;
@@ -307,7 +313,7 @@ describe("QQ Admin Navigation & Integration", () => {
   it("normalizes leading zeros and saves canonical deduplicated members", async () => {
     const fake = setupStore();
     render(<SchemesWorkspace active />);
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
 
     const select = screen.getByLabelText("管理员模式");
     const input = screen.getByLabelText("管理员名单");
@@ -328,7 +334,7 @@ describe("QQ Admin Navigation & Integration", () => {
   it("disables save button and prevents submit when input contains invalid tokens", async () => {
     setupStore();
     render(<SchemesWorkspace active />);
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
 
     const input = screen.getByLabelText("管理员名单");
     fireEvent.change(input, { target: { value: "10001 abc" } });
@@ -358,7 +364,7 @@ describe("QQ Admin Navigation & Integration", () => {
     });
 
     render(<SchemesWorkspace active />);
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
 
     const input = screen.getByLabelText("管理员名单");
     fireEvent.change(input, { target: { value: "10001 10003" } });
@@ -456,7 +462,7 @@ describe("QQ Admin Navigation & Integration", () => {
     setupStore();
     render(<SchemesWorkspace active />);
 
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
     const sheet = screen.getByRole("dialog");
 
     const input = within(sheet).getByLabelText("管理员名单");

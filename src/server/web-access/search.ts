@@ -82,9 +82,12 @@ export async function searchSearxng(
     throw webError(
       "WEB_SEARCH_JSON_DISABLED",
       "SearXNG 实例拒绝了 JSON 请求（HTTP 403）；需在实例设置中开启 json 输出格式",
+      { status: response.status },
     );
   if (!response.ok)
-    throw webError("WEB_SEARCH_FAILED", `SearXNG 请求失败：HTTP ${response.status}`);
+    throw webError("WEB_SEARCH_FAILED", `SearXNG 请求失败：HTTP ${response.status}`, {
+      status: response.status,
+    });
   let raw: string;
   try {
     raw = new TextDecoder("utf-8").decode((await readBodyCapped(response, SEARCH_MAX_BYTES)).bytes);
@@ -162,7 +165,10 @@ export async function searchBing(
   } catch (error) {
     throwFetchFailure(error, options.signal, target, "WEB_SEARCH_FAILED", "必应请求");
   }
-  if (!response.ok) throw webError("WEB_SEARCH_FAILED", `必应请求失败：HTTP ${response.status}`);
+  if (!response.ok)
+    throw webError("WEB_SEARCH_FAILED", `必应请求失败：HTTP ${response.status}`, {
+      status: response.status,
+    });
   let html: string;
   try {
     html = new TextDecoder("utf-8").decode(
@@ -192,12 +198,19 @@ export async function searchBing(
 }
 
 function attemptOf(channel: SearchChannel, error: unknown): WebAccessAttempt {
+  const status = (error as { status?: number } | null)?.status;
   if (error instanceof Error && "code" in error && typeof error.code === "string")
-    return { channel, code: error.code, message: error.message };
+    return {
+      channel,
+      code: error.code,
+      message: error.message,
+      ...(typeof status === "number" ? { status } : {}),
+    };
   return {
     channel,
     code: "WEB_SEARCH_FAILED",
     message: error instanceof Error ? error.message : String(error),
+    ...(typeof status === "number" ? { status } : {}),
   };
 }
 
@@ -224,9 +237,18 @@ export async function searchWeb(query: string, options: SearchOptions = {}): Pro
     if (options.signal?.aborted === true) throw options.signal.reason ?? error;
     attempts.push(attemptOf("bing", error));
   }
+  // 聚合错误只有当每条尝试都带同一真实 status 时才在顶层附带它；状态不一致（或某条是网络层
+  // 失败没有 status）时顶层不编造一个"总失败状态"，逐 attempt 的 status 原样保留。
+  const statuses = attempts.map((attempt) => attempt.status);
+  const aggregateStatus =
+    attempts.length > 0 &&
+    statuses.every((status) => typeof status === "number") &&
+    new Set(statuses).size === 1
+      ? statuses[0]
+      : undefined;
   throw webError(
     "WEB_SEARCH_FAILED",
     `搜索失败：${attempts.map((attempt) => `${attempt.channel}（${attempt.message}）`).join("；")}`,
-    { attempts },
+    { attempts, ...(aggregateStatus === undefined ? {} : { status: aggregateStatus }) },
   );
 }

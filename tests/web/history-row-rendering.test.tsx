@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
@@ -8,6 +8,7 @@ import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { ExternalConversation } from "../../src/web/screens/conversations/ExternalConversation";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-10-08T00:00:00Z";
 const conversation: ConversationSummary = {

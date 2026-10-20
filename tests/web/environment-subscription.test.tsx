@@ -1,10 +1,11 @@
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
 import { Preferences } from "../../src/web/screens/environment/Preferences";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(() => {
   cleanup();

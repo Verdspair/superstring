@@ -77,8 +77,8 @@ export function generatePalette(root, outDir) {
     (m) => m[1],
   );
   if (
-    themes.length !== 16 ||
-    new Set(themes.map((t) => t[0])).size !== 16 ||
+    themes.length !== 22 ||
+    new Set(themes.map((t) => t[0])).size !== 22 ||
     themes[0][0] !== "slate" ||
     modes.join(",") !== "system,light,dark"
   )

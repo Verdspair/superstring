@@ -54,9 +54,15 @@ function mapError(error: unknown): Error {
   if (error instanceof Error && "code" in error && String(error.code).startsWith("MCP_"))
     return error;
   if (error instanceof SdkHttpError)
-    return mcpError("MCP_HTTP_ERROR", `HTTP ${error.status}`, error);
+    // 保留服务返回的真实 HTTP status（SdkHttpError 自带结构化 status），调用方按状态分类，
+    // 不解析消息文本；这只是事实元数据，本文件不据此改变任何重试行为。
+    return Object.assign(mcpError("MCP_HTTP_ERROR", `HTTP ${error.status}`, error), {
+      status: error.status,
+    });
   if (error instanceof UnauthorizedError)
-    return mcpError("MCP_HTTP_ERROR", "MCP 服务器需要有效授权", error);
+    return Object.assign(mcpError("MCP_HTTP_ERROR", "MCP 服务器需要有效授权", error), {
+      status: 401,
+    });
   if (error instanceof ZodError || error instanceof SyntaxError)
     return mcpError("MCP_PROTOCOL_ERROR", "MCP 消息不符合协议", error);
   if (error instanceof ProtocolError)

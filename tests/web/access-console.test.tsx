@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpStatusResponse } from "../../src/shared/contracts/mcp";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
@@ -13,6 +13,7 @@ import { ToolGrantsPanel } from "../../src/web/screens/connections/tool-grants-p
 import { ExecutionSettings } from "../../src/web/screens/runs/execution-settings";
 import { TaskLedger } from "../../src/web/screens/runs/task-ledger";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const PROVIDER = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -100,6 +101,7 @@ const permissions: PermissionsResponse = {
         providerConcurrency: 1,
       },
       qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
+      system: { maxAttempts: 3, retryDelayMs: 2000 },
     },
   },
   resources: [

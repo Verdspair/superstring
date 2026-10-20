@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectedContext } from "../../src/shared/contracts/agent-run";
 import { api } from "../../src/web/api";
 import { i18n } from "../../src/web/i18n/runtime";
 import { ModelEvidence } from "../../src/web/screens/observability/ModelEvidence";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 // 用户 2026-10-17 最新要求：选中步详情三行（输出/输入/来源）独立可折叠，默认全部收起，输出在最前；
 // 选中即自动读取进本地内存，展开/收起只是视觉切换，不发新请求；内容全量保留，无过滤截断。

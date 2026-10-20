@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponse } from "../../src/shared/contracts";
 import type { TaskDetail, TaskList, TaskSummary } from "../../src/shared/contracts/agent-task";
@@ -13,6 +13,7 @@ import { TaskLedger } from "../../src/web/screens/runs/task-ledger";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { activeSpace, openSpace } from "../../src/web/workspace/navigation";
 import { summaryFixture } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_AGENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -103,6 +104,7 @@ const permissions: PermissionsResponse = {
         providerConcurrency: 1,
       },
       qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
+      system: { maxAttempts: 3, retryDelayMs: 2000 },
     },
   },
   resources: [],
@@ -220,19 +222,21 @@ describe("model entry routing", () => {
 describe("model services route-driven tab", () => {
   it("follows the route in both directions between providers and defaults", async () => {
     await renderModels("external-api");
-    expect(screen.getByRole("tab", { selected: true }).textContent).toBe(
-      i18n.t("models.providers"),
-    );
+    expect(
+      screen.getByRole("tab", { selected: true, name: i18n.t("models.resources") }).textContent,
+    ).toBe(i18n.t("models.resources"));
     await act(async () => {
       store.setState({ settingsRoute: "models" });
     });
-    expect(screen.getByRole("tab", { selected: true }).textContent).toBe(i18n.t("models.defaults"));
+    expect(
+      screen.getByRole("tab", { selected: true, name: i18n.t("models.purposes") }).textContent,
+    ).toBe(i18n.t("models.purposes"));
     await act(async () => {
       store.setState({ settingsRoute: "external-api" });
     });
-    expect(screen.getByRole("tab", { selected: true }).textContent).toBe(
-      i18n.t("models.providers"),
-    );
+    expect(
+      screen.getByRole("tab", { selected: true, name: i18n.t("models.resources") }).textContent,
+    ).toBe(i18n.t("models.resources"));
   });
 
   it("keeps an unsaved provider draft open when a route change retargets the tab", async () => {
@@ -246,9 +250,13 @@ describe("model services route-driven tab", () => {
       store.setState({ settingsRoute: "models" });
     });
     // The modal editor marks the workspace behind it aria-hidden; the tab still moved underneath.
-    expect(screen.getByRole("tab", { selected: true, hidden: true }).textContent).toBe(
-      i18n.t("models.defaults"),
-    );
+    expect(
+      screen.getByRole("tab", {
+        selected: true,
+        hidden: true,
+        name: i18n.t("models.purposes"),
+      }).textContent,
+    ).toBe(i18n.t("models.purposes"));
     // The editor Sheet lives outside the tab panels: the draft is still there, unsaved and unsent.
     expect((screen.getByLabelText(i18n.t("models.name")) as HTMLInputElement).value).toBe(
       "草稿服务",

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
 import type { QqBindingResponse, QqSchemeResponse } from "../../src/shared/contracts/qq";
@@ -8,6 +8,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-30T00:00:00.000Z";
 const AGENT_ID = "44444444-4444-4444-8444-444444444444";
@@ -113,7 +114,7 @@ const qqBinding = (overrides: Partial<QqBindingResponse> = {}): QqBindingRespons
   ...overrides,
 });
 
-/** 只看 id/绑定/Agent/标题：目录投影不读别的字段，按真实形状裁剪。 */
+/** 只看 id/绑定/Agent/标题：摘要投影只提供显示名，按真实形状裁剪。 */
 const summary = (
   id: string,
   sourceId: string,
@@ -166,6 +167,16 @@ const knowledgeReadResponse = {
 function client(overrides: Partial<typeof api> = {}) {
   return {
     ...api,
+    // 统一目录读取 loadQqBindingDirectory = Promise.all(settings, conversations, bindings,
+    // schemes)，任一失败整目录失败：四个读方法都必须是显式 fake，缺一个就落到真实 fetch。
+    getQqSettings: vi.fn().mockResolvedValue({
+      enabled: false,
+      account_id: "10001",
+      judgement_model_name: null,
+      transport: { endpoint: null, has_token: false },
+      revision: 1,
+    }),
+    listQqConversations: vi.fn().mockResolvedValue([]),
     listQqBindings: vi.fn().mockResolvedValue([]),
     listQqSchemes: vi
       .fn()
@@ -173,10 +184,13 @@ function client(overrides: Partial<typeof api> = {}) {
     getQqGroupConfig: vi.fn(async (bindingId: string) => groupConfig(qqBinding({ id: bindingId }))),
     getAgentKnowledgeRead: vi.fn().mockResolvedValue(knowledgeReadResponse),
     getQqSchemeUsage: vi.fn().mockResolvedValue({ scheme_id: SCHEME_ID, bindings: 0 }),
+    updateQqBinding: vi.fn(),
+    createQqBinding: vi.fn(),
     ...overrides,
   } as unknown as typeof api;
 }
 
+/** 旧的 qq-app-groups 目录已并入统一绑定看板：同一路由落到全局 ALL 板。 */
 async function renderDirectory({
   bindings = [],
   summaries = {},
@@ -200,15 +214,14 @@ async function renderDirectory({
   return fake;
 }
 
-const searchBox = () => screen.getByLabelText(i18n.t("schemes.qq.groups.search"));
+const searchBox = () =>
+  screen.getByLabelText(i18n.t("connections.searchConversationBindings")) as HTMLInputElement;
 
-/** 群号在「群 30003」徽标里与「群」同元素；按整段文本定位徽标所在行。 */
-const groupBadge = (peerId: string) => (_content: string, element: Element | null) =>
-  element !== null &&
-  element.children.length === 0 &&
-  element.textContent === `${i18n.t("connections.group")} ${peerId}`;
+const kindFilter = () =>
+  screen.getByLabelText(i18n.t("connections.conversationType")) as HTMLSelectElement;
 
-const rowOf = (peerId: string) => screen.getByText(groupBadge(peerId)).closest("li") as HTMLElement;
+/** 看板行以群号文本定位所在 li。 */
+const rowOf = (peerId: string) => screen.getByText(peerId).closest("li") as HTMLElement;
 
 beforeEach(() => {
   selectLocale("zh-CN");
@@ -218,26 +231,40 @@ afterEach(() => {
   cleanup();
 });
 
-it("跨方案已绑定的群都进目录；私聊不混入群列表", async () => {
+it("全局看板跨方案群与私聊同列：行显显示名/账号/基础方案/Agent；类型筛选收窄", async () => {
   await renderDirectory({
     bindings: [
       qqBinding(),
       qqBinding({
         id: PAUSED_BINDING_ID,
         peer_id: "40004",
+        account_id: "10002",
         agent_id: OTHER_AGENT_ID,
         scheme_id: OTHER_SCHEME_ID,
       }),
       qqBinding({ id: PRIVATE_BINDING_ID, kind: "private", peer_id: "20002" }),
     ],
+    summaries: { right: summary("right", BINDING_ID, AGENT_ID, "晨会群") },
   });
+  expect(rowOf("30003").textContent).toContain("晨会群");
   expect(rowOf("30003").textContent).toContain("默认方案");
+  expect(rowOf("30003").textContent).toContain("本地助手");
+  expect(rowOf("30003").textContent).toContain("10001");
   expect(rowOf("40004").textContent).toContain("夜间方案");
   expect(rowOf("40004").textContent).toContain("夜间助手");
-  expect(screen.queryByText(groupBadge("20002"))).toBeNull();
+  expect(rowOf("40004").textContent).toContain("10002");
+  // 全局 ALL 不再默认第一个方案：私聊同列。
+  expect(rowOf("20002").textContent).toContain(i18n.t("connections.privateChat"));
+  // 会话类型筛选是真实的收窄，不是装饰。
+  fireEvent.change(kindFilter(), { target: { value: "group" } });
+  expect(rowOf("30003")).toBeTruthy();
+  expect(screen.queryByText("20002")).toBeNull();
+  fireEvent.change(kindFilter(), { target: { value: "private" } });
+  expect(screen.queryByText("30003")).toBeNull();
+  expect(rowOf("20002")).toBeTruthy();
 });
 
-it("群显示名只来自同绑定同 Agent 的摘要：没有摘要只显示群号；暂停徽标只标真实 paused", async () => {
+it("显示名只来自同绑定同 Agent 的摘要：不借另一群的显示名；暂停徽标只标真实 paused", async () => {
   await renderDirectory({
     bindings: [
       qqBinding(),
@@ -257,17 +284,22 @@ it("群显示名只来自同绑定同 Agent 的摘要：没有摘要只显示群
   expect(within(rowOf("30003")).getByText("晨会群")).toBeTruthy();
   expect(within(rowOf("30003")).queryByText(i18n.t("connections.paused"))).toBeNull();
   expect(screen.queryByText("旧助手群名")).toBeNull();
-  expect(rowOf("40004").textContent).toContain("40004");
   expect(within(rowOf("40004")).getByText(i18n.t("connections.paused"))).toBeTruthy();
+  // 搜索同样只命中正确配对的摘要。
+  fireEvent.change(searchBox(), { target: { value: "旧助手群名" } });
+  expect(screen.queryByText("30003")).toBeNull();
+  expect(screen.queryByText("40004")).toBeNull();
+  expect(screen.getByText(i18n.t("connections.noMatchingConversations"))).toBeTruthy();
 });
 
-it("搜索命中群显示名、群号、方案名或 Agent 名；无命中给提示", async () => {
+it("搜索命中显示名、群号、账号、方案名或 Agent 名", async () => {
   await renderDirectory({
     bindings: [
       qqBinding(),
       qqBinding({
         id: PAUSED_BINDING_ID,
         peer_id: "40004",
+        account_id: "10002",
         agent_id: OTHER_AGENT_ID,
         scheme_id: OTHER_SCHEME_ID,
       }),
@@ -275,30 +307,56 @@ it("搜索命中群显示名、群号、方案名或 Agent 名；无命中给提
     summaries: { right: summary("right", BINDING_ID, AGENT_ID, "晨会群") },
   });
   fireEvent.change(searchBox(), { target: { value: "晨会" } });
-  expect(screen.getByText(groupBadge("30003"))).toBeTruthy();
-  expect(screen.queryByText(groupBadge("40004"))).toBeNull();
+  expect(screen.getByText("30003")).toBeTruthy();
+  expect(screen.queryByText("40004")).toBeNull();
   fireEvent.change(searchBox(), { target: { value: "40004" } });
-  expect(screen.queryByText(groupBadge("30003"))).toBeNull();
+  expect(screen.queryByText("30003")).toBeNull();
+  expect(screen.getByText("40004")).toBeTruthy();
+  fireEvent.change(searchBox(), { target: { value: "10002" } });
+  expect(screen.getByText("40004")).toBeTruthy();
+  expect(screen.queryByText("30003")).toBeNull();
   fireEvent.change(searchBox(), { target: { value: "夜间方案" } });
-  expect(screen.getByText(groupBadge("40004"))).toBeTruthy();
+  expect(screen.getByText("40004")).toBeTruthy();
   fireEvent.change(searchBox(), { target: { value: "本地助手" } });
-  expect(screen.getByText(groupBadge("30003"))).toBeTruthy();
+  expect(screen.getByText("30003")).toBeTruthy();
+  expect(screen.queryByText("40004")).toBeNull();
   fireEvent.change(searchBox(), { target: { value: "没有这个群" } });
-  expect(screen.queryByText(groupBadge("30003"))).toBeNull();
-  expect(screen.queryByText(groupBadge("40004"))).toBeNull();
-  expect(screen.getByText(i18n.t("schemes.qq.groups.noMatch"))).toBeTruthy();
+  expect(screen.getByText(i18n.t("connections.noMatchingConversations"))).toBeTruthy();
 });
 
-it("目录为空时引导先绑定，入口落在会话绑定视图", async () => {
-  await renderDirectory();
-  expect(screen.getByText(i18n.t("schemes.qq.groups.emptyNote"))).toBeTruthy();
-  // 工具栏与空态各有真实入口：点空态范围内的引导按钮。
-  const emptyCard = screen.getByText(i18n.t("schemes.qq.groups.emptyNote"))
-    .parentElement as HTMLElement;
+it("群行管理员入口打开唯一编辑器并直接定位管理员分区，不写任何绑定", async () => {
+  const fake = await renderDirectory({
+    bindings: [qqBinding()],
+  });
   fireEvent.click(
-    within(emptyCard).getByRole("button", { name: i18n.t("schemes.bindings.entry") }),
+    within(rowOf("30003")).getByRole("button", { name: i18n.t("connections.administrators") }),
   );
-  expect(store.getState().settingsRoute).toBe("scheme-bindings");
+  const sheet = screen.getByRole("dialog");
+  expect(within(sheet).getByText("群 30003")).toBeTruthy();
+  expect(sheet.querySelector('[data-section="administrators"]')).toBeTruthy();
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(fake.updateQqBinding).not.toHaveBeenCalled();
+  expect(fake.createQqBinding).not.toHaveBeenCalled();
+});
+
+it("群行级「本群配置」直入：真实行按钮直达对应群配置页（与管理员定位同级行内入口）", async () => {
+  await renderDirectory({ bindings: [qqBinding()] });
+  // 行内直入按钮来自 QqGroupControls（kind=group 常显），不依赖管理抽屉间接路径。
+  fireEvent.click(
+    within(rowOf("30003")).getByRole("button", {
+      name: i18n.t("schemes.qq.groupConfig.controls.configure"),
+    }),
+  );
+  await act(async () => {});
+  expect(store.getState().settingsRoute).toBe("qq-group-config");
+  expect(store.getState().qqGroupConfigBindingId).toBe(BINDING_ID);
+  expect(store.getState().qqGroupConfigEditor?.source.binding.id).toBe(BINDING_ID);
+});
+
+it("目录为空时如实给出 ALL 空态，不伪装成方案过滤结果", async () => {
+  await renderDirectory();
+  expect(screen.getByText(i18n.t("schemes.bindings.allEmpty"))).toBeTruthy();
+  expect(screen.getByRole("button", { name: i18n.t("schemes.bindings.add") })).toBeTruthy();
 });
 
 it("读取失败给失败与重试；重试成功后出列表", async () => {
@@ -313,12 +371,11 @@ it("读取失败给失败与重试；重试成功后出列表", async () => {
   expect(screen.getByText(i18n.t("schemes.bindings.loadFailed"))).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: i18n.t("capabilities.retry") }));
   await act(async () => {});
-  expect(screen.getByText(groupBadge("30003"))).toBeTruthy();
+  expect(screen.getByText("30003")).toBeTruthy();
   expect(fake.listQqBindings).toHaveBeenCalledTimes(2);
 });
 
-it("已预热（loaded）再进目录不重复 GET；显式刷新才重读且不动草稿", async () => {
-  // mock 句柄保存在类型转换前，断言读句柄而不是读 typed API 形参上的 .mock。
+it("挂载恰好读一次目录；显式刷新才重读且不动草稿", async () => {
   const listBindings = vi.fn().mockResolvedValue([qqBinding()]);
   const listSchemes = vi.fn().mockResolvedValue([qqScheme()]);
   const schemeUsage = vi.fn().mockResolvedValue({ scheme_id: SCHEME_ID, bindings: 0 });
@@ -333,43 +390,51 @@ it("已预热（loaded）再进目录不重复 GET；显式刷新才重读且不
     settingsView: "workspace",
     settingsRoute: "qq-app-groups",
     agents: [agentResponse(AGENT_ID, "本地助手")],
-    qqBindings: [qqBinding()],
-    qqBindingsLoaded: true,
-    qqSchemes: [qqScheme()],
-    qqSchemesLoaded: true,
   });
   render(<SchemesWorkspace />);
   await act(async () => {});
-  expect(listBindings).not.toHaveBeenCalled();
-  expect(listSchemes).not.toHaveBeenCalled();
-  expect(screen.getByText(groupBadge("30003"))).toBeTruthy();
-  const bindingsReads = listBindings.mock.calls.length;
-  const schemeReads = listSchemes.mock.calls.length;
-  fireEvent.click(screen.getByRole("button", { name: i18n.t("schemes.refresh") }));
+  // 统一看板是该分区的唯一读主：挂载恰好一次，不双读。
+  expect(listBindings).toHaveBeenCalledTimes(1);
+  expect(listSchemes).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("30003")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: i18n.t("schemes.bindings.refresh") }));
   await act(async () => {});
-  // 显式刷新强制重读两个目录；原生 API 只收读取请求，不带 store 层 force 标记。
-  expect(listBindings.mock.calls.length).toBe(bindingsReads + 1);
-  expect(listSchemes.mock.calls.length).toBe(schemeReads + 1);
+  expect(listBindings.mock.calls.length).toBe(2);
+  expect(listSchemes.mock.calls.length).toBe(2);
   expect(schemeUsage).not.toHaveBeenCalled();
   // 目录读不产生本群配置草稿，也不留导航确认。
   expect(store.getState().qqGroupConfigEditor).toBeNull();
   expect(store.getState().navigationConfirmOpen).toBe(false);
 });
 
-it("点群的配置进对应群的本群配置页", async () => {
+it("选中查看的方案被删：停在显式 missing，不回退全部方案", async () => {
   await renderDirectory({
     bindings: [
       qqBinding(),
-      qqBinding({ id: PAUSED_BINDING_ID, peer_id: "40004", agent_id: OTHER_AGENT_ID }),
+      qqBinding({
+        id: PAUSED_BINDING_ID,
+        peer_id: "40004",
+        agent_id: OTHER_AGENT_ID,
+        scheme_id: OTHER_SCHEME_ID,
+      }),
     ],
   });
-  fireEvent.click(
-    within(rowOf("30003")).getByRole("button", {
-      name: i18n.t("schemes.qq.groupConfig.controls.configure"),
-    }),
-  );
-  await act(async () => {});
-  expect(store.getState().settingsRoute).toBe("qq-group-config");
-  expect(store.getState().qqGroupConfigBindingId).toBe(BINDING_ID);
-  expect(store.getState().qqGroupConfigEditor?.source.binding.id).toBe(BINDING_ID);
+  const picker = screen.getByLabelText(
+    i18n.t("schemes.bindings.chooseScheme"),
+  ) as HTMLSelectElement;
+  await act(async () => {
+    fireEvent.change(picker, { target: { value: OTHER_SCHEME_ID } });
+  });
+  expect(screen.getByText("40004")).toBeTruthy();
+  expect(screen.queryByText("30003")).toBeNull();
+  // 该方案从目录删除：列表收窄为空并显式提示 missing，绝不把全部方案的行兜底回来。
+  act(() => store.setState({ qqSchemes: [qqScheme()] }));
+  expect(screen.queryByText("40004")).toBeNull();
+  expect(screen.queryByText("30003")).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe(i18n.t("schemes.bindings.schemeMissing"));
+  expect(
+    within(
+      screen.getByLabelText(i18n.t("schemes.bindings.chooseScheme")).closest("div") as HTMLElement,
+    ).queryByText(i18n.t("schemes.bindings.schemeMissing")),
+  ).toBeTruthy();
 });

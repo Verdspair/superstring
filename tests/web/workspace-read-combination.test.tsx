@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponse, PersonaResponse } from "../../src/shared/contracts";
 import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import { navigationBusy } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { A, agent, B, persona, setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

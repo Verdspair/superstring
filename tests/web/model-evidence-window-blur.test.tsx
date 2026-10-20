@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { InspectedContext } from "../../src/shared/contracts/agent-run";
 import { api } from "../../src/web/api";
 import { i18n } from "../../src/web/i18n/runtime";
 import { ModelEvidence } from "../../src/web/screens/observability/ModelEvidence";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const exact: InspectedContext = {
   status: "exact",

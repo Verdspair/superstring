@@ -2,6 +2,7 @@ import { BookOpen, Brain, Smile } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSuperstringStore } from "@/store";
 import { KnowledgeLibrary } from "./KnowledgeLibrary";
 import { MemoryLibrary } from "./MemoryLibrary";
@@ -43,14 +44,14 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
       ref={workspaceScroll}
       data-testid="library-workspace-scroll"
       onScroll={(event) => scrollPositions.current.set(tab, event.currentTarget.scrollTop)}
-      className="h-full min-h-0 w-full space-y-6 overflow-y-auto px-4 py-6"
+      className="mx-auto h-full min-h-0 w-full max-w-[1160px] space-y-[24px] overflow-y-auto px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
     >
-      <header className="space-y-1">
-        <p className="text-xs font-medium tracking-widest text-muted-foreground">
+      <header className="workspace-page-header space-y-[6px]">
+        <p className="workspace-page-location">
           {t("brand.workspace", { "0": t("library.materials") })}
         </p>
-        <h1 className="text-3xl font-semibold tracking-tight">{t("library.library")}</h1>
-        <p className="text-sm text-muted-foreground">
+        <h1 className="workspace-page-title">{t("library.library")}</h1>
+        <p className="workspace-page-description">
           {t("library.documents.provide.knowledge.memories.preserve.experience.and.assets.enrich")}
         </p>
       </header>
@@ -66,19 +67,34 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
           )
         }
       >
-        <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
-          <TabsTrigger value="knowledge">
-            <BookOpen />
-            {t("library.documents")}
-          </TabsTrigger>
-          <TabsTrigger value="memory">
-            <Brain />
-            {t("library.memory")}
-          </TabsTrigger>
-          <TabsTrigger value="stickers">
-            <Smile />
-            {t("library.sticker.library")}
-          </TabsTrigger>
+        <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">
+          <Tooltip>
+            <TooltipTrigger asChild preserveTriggerState>
+              <TabsTrigger value="knowledge">
+                <BookOpen />
+                {t("library.documents")}
+              </TabsTrigger>
+            </TooltipTrigger>
+            <TooltipContent>{t("hints.library.tabs.knowledge")}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild preserveTriggerState>
+              <TabsTrigger value="memory">
+                <Brain />
+                {t("library.memory")}
+              </TabsTrigger>
+            </TooltipTrigger>
+            <TooltipContent>{t("hints.library.tabs.memory")}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild preserveTriggerState>
+              <TabsTrigger value="stickers">
+                <Smile />
+                {t("library.sticker.library")}
+              </TabsTrigger>
+            </TooltipTrigger>
+            <TooltipContent>{t("hints.library.tabs.stickers")}</TooltipContent>
+          </Tooltip>
         </TabsList>
       </Tabs>
       {panel("knowledge", <KnowledgeLibrary active={active && tab === "knowledge"} />)}

@@ -1,11 +1,12 @@
 // 联网面板交互守卫：自检锁定期不产生可点却无效的按钮，迟到结果不作数，提示不与未保存状态并存。
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { api, type WebAccessSnapshot, type WebAccessTestResult } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { WebAccessPanel } from "../../src/web/screens/connections/web-access-panel";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const permissions: PermissionsResponse = {
   revision: "pr-1",

@@ -1,8 +1,9 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { InspectedContext } from "../../src/shared/contracts/agent-run";
 import { selectLocale } from "../../src/web/i18n";
 import { InspectedEvidence } from "../../src/web/screens/observability/ModelEvidence";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(() => {
   cleanup();

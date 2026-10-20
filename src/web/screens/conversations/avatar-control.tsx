@@ -1,6 +1,6 @@
 import { Camera } from "lucide-react";
 import { useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import type { ConversationSummary } from "../../../shared/contracts/conversation";
 import { Button } from "../../components/ui/button";
 import { useConversationAvatar } from "../../features/conversations/use-conversation-avatar";
@@ -44,6 +44,7 @@ export function ConversationAvatarButton({
   return (
     <>
       <Button
+        tooltip={<Trans i18nKey="hints.complete.avatarEdit" />}
         variant="ghost"
         className={
           detailed

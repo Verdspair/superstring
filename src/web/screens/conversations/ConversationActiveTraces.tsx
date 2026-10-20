@@ -1,6 +1,6 @@
 import { Activity, ArrowUpRight, ChevronRight, X } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -84,6 +84,7 @@ export function ConversationActiveTraces({
               const title = taskLabel || causeLabel || trace.traceId.slice(0, 8);
               return (
                 <Button
+                  tooltip={<Trans i18nKey="hints.complete.trace" />}
                   key={trace.traceId}
                   variant="outline"
                   size="sm"
@@ -101,6 +102,7 @@ export function ConversationActiveTraces({
             })}
             {hasMore && (
               <Button
+                tooltip={<Trans i18nKey="hints.complete.activity" />}
                 variant="ghost"
                 size="sm"
                 className="h-6 gap-1 px-1.5 text-xs text-muted-foreground"
@@ -131,7 +133,11 @@ export function ConversationActiveTraces({
               <DialogDescription id={descriptionId}>{inspectTraceId}</DialogDescription>
             </div>
             <DialogClose asChild>
-              <Button variant="outline" size="sm">
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.close" />}
+                variant="outline"
+                size="sm"
+              >
                 <X className="size-4" />
                 {t("observability.close")}
               </Button>

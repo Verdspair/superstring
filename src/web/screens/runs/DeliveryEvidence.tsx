@@ -1,6 +1,6 @@
 import { CheckCheck, PackageOpen, RefreshCw } from "lucide-react";
 import { useCallback, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -57,7 +57,11 @@ export function DeliveryDetails({
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="min-w-0 rounded-lg border">
       <CollapsibleTrigger asChild>
-        <Button variant="ghost" className="w-full justify-start">
+        <Button
+          tooltip={<Trans i18nKey="hints.complete.delivery" />}
+          variant="ghost"
+          className="w-full justify-start"
+        >
           <PackageOpen />
           {t("observability.deliveryDetails")}
           <span className="ml-auto max-w-28 truncate font-mono text-xs text-muted-foreground">
@@ -105,7 +109,13 @@ export function DeliveryEvidence({
             </Badge>
           )}
         </div>
-        <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+        <Button
+          tooltip={<Trans i18nKey="hints.complete.deliveryRefresh" />}
+          variant="outline"
+          size="sm"
+          onClick={refresh}
+          disabled={loading}
+        >
           <RefreshCw />
           {t("observability.refreshDeliveryResult")}
         </Button>

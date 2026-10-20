@@ -1437,4 +1437,153 @@ describe("0052 两组进本群稀疏覆盖（T12）", () => {
       expect(qqGroupConfigHasInvalidInputs(store.getState().qqGroupConfigEditor)).toBe(false);
     });
   });
+
+  // ---- 0068 分配模式随 batch-2 进本群稀疏覆盖（judgement.mode / reply.mode 点路径） ----
+  describe("0068 分配模式本群稀疏覆盖", () => {
+    it("judgement.mode 钉住进 allocation 稀疏组：生效值逐档合并，reply.mode 保持跟随；CAS 四段照常", async () => {
+      const save = vi.fn(async (_id: string, body: UpdateQqGroupConfigRequest) => ({
+        ...qqConfig({ revision: 1, overrides: body.overrides }),
+        binding: qqBinding({ revision: 5 }),
+      }));
+      ready(fakeClient({ getQqGroupConfig: async () => qqConfig(), saveQqGroupConfig: save }));
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+      const patch = store.getState().patchQqGroupOverride;
+
+      // 只钉判断档：基线 fixed → 本群 auto；回复档没有覆盖，生效值仍是基线的 fixed。
+      patch("allocation", "judgement.mode", "auto");
+      expect(editorOf()?.overrides).toEqual({ allocation: { judgement: { mode: "auto" } } });
+      const effective = qqGroupConfigEffectiveScheme(editorOf());
+      expect(effective?.allocation).toEqual({
+        judgement: { mode: "auto" },
+        reply: { mode: "fixed" },
+      });
+      expect(qqGroupConfigDirty(editorOf())).toBe(true);
+
+      expect(await store.getState().saveQqGroupConfig()).toBe(true);
+      // 一次 PUT：三段 CAS + 稀疏 allocation，不带整份方案。
+      expect(save).toHaveBeenCalledWith(BINDING_ID, {
+        agent_id: AGENT_ID,
+        expected_binding_revision: 4,
+        expected_scheme_revision: 3,
+        expected_revision: 0,
+        overrides: { allocation: { judgement: { mode: "auto" } } },
+        disabled_capabilities: [],
+      });
+      expect(UpdateQqGroupConfigRequestSchema.safeParse(save.mock.calls[0][1]).success).toBe(true);
+      expect(store.getState().qqGroupConfigEditor?.overrides).toEqual({
+        allocation: { judgement: { mode: "auto" } },
+      });
+      expect(qqGroupConfigDirty(editorOf())).toBe(false);
+    });
+
+    it("inherit/reset 语义同一口径：undefined 只取消这一档；与基线同值也是钉住；非法档值被忽略", async () => {
+      const save = vi.fn(async (_id: string, body: UpdateQqGroupConfigRequest) => ({
+        ...qqConfig({ revision: 1, overrides: body.overrides }),
+        binding: qqBinding({ revision: 5 }),
+      }));
+      ready(fakeClient({ getQqGroupConfig: async () => qqConfig(), saveQqGroupConfig: save }));
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+      const patch = store.getState().patchQqGroupOverride;
+
+      // 两档都钉住再逐档取消：undefined 只摘这一档；最后一档取消后整组消失。
+      patch("allocation", "judgement.mode", "auto");
+      patch("allocation", "reply.mode", "auto");
+      expect(editorOf()?.overrides).toEqual({
+        allocation: { judgement: { mode: "auto" }, reply: { mode: "auto" } },
+      });
+      patch("allocation", "judgement.mode", undefined);
+      expect(editorOf()?.overrides).toEqual({ allocation: { reply: { mode: "auto" } } });
+      patch("allocation", "reply.mode", undefined);
+      expect(editorOf()?.overrides).toEqual({});
+
+      // 与基线同值（fixed）也是显式钉住；不是「没改」。
+      patch("allocation", "judgement.mode", "fixed");
+      expect(editorOf()?.overrides).toEqual({ allocation: { judgement: { mode: "fixed" } } });
+      expect(qqGroupConfigDirty(editorOf())).toBe(true);
+      expect(await store.getState().saveQqGroupConfig()).toBe(true);
+      expect(save.mock.calls[0][1].overrides).toEqual({
+        allocation: { judgement: { mode: "fixed" } },
+      });
+
+      // 非法档值一律忽略，不写半截状态；相对已存记录取消钉住是一条改动，保存后记录回到空覆盖。
+      patch("allocation", "reply.mode", "bogus");
+      expect(editorOf()?.overrides).toEqual({ allocation: { judgement: { mode: "fixed" } } });
+      patch("allocation", "judgement.mode", undefined);
+      expect(editorOf()?.overrides).toEqual({});
+      expect(qqGroupConfigDirty(editorOf())).toBe(true);
+      expect(await store.getState().saveQqGroupConfig()).toBe(true);
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(save.mock.calls[1][1].overrides).toEqual({});
+      expect(qqGroupConfigDirty(editorOf())).toBe(false);
+    });
+
+    it("统一草稿预览列出判断/回复分配模式行；改过的档进行预览，放弃回到已存记录", async () => {
+      const save = vi.fn(async (_id: string, body: UpdateQqGroupConfigRequest) => ({
+        ...qqConfig({ revision: 1, overrides: body.overrides }),
+        binding: qqBinding({ revision: 5 }),
+      }));
+      ready(fakeClient({ getQqGroupConfig: async () => qqConfig(), saveQqGroupConfig: save }));
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+      const patch = store.getState().patchQqGroupOverride;
+
+      patch("allocation", "judgement.mode", "auto");
+      patch("allocation", "reply.mode", "auto");
+      const row = qqDraftChanges(store.getState()).find((item) =>
+        item.id.startsWith("group-config:"),
+      );
+      expect(row?.changes).toEqual([
+        "「判断分配模式」：fixed → auto",
+        "「回复分配模式」：fixed → auto",
+      ]);
+      expect(hasUnsavedDrafts(store.getState())).toBe(true);
+
+      expect(await store.getState().saveQqDrafts()).toBe(true);
+      expect(save).toHaveBeenCalledOnce();
+      expect(qqDraftChanges(store.getState())).toEqual([]);
+      expect(hasUnsavedDrafts(store.getState())).toBe(false);
+
+      // 放弃回到已存记录：上一次保存的钉住仍在。
+      patch("allocation", "reply.mode", "fixed");
+      store.getState().discardQqDrafts();
+      expect(qqGroupConfigDirty(editorOf())).toBe(false);
+      expect(editorOf()?.overrides).toEqual({
+        allocation: { judgement: { mode: "auto" }, reply: { mode: "auto" } },
+      });
+    });
+
+    it("显式刷新三路合并覆盖分配档：本地改过的档保留方向，没动过的档跟随最新答案", async () => {
+      const get = vi
+        .fn()
+        .mockResolvedValueOnce(
+          qqConfig({
+            overrides: overridesOf({ allocation: { judgement: { mode: "auto" } } }),
+            revision: 1,
+          }),
+        )
+        .mockResolvedValueOnce(
+          qqConfig({
+            binding: qqBinding({ revision: 7 }),
+            base_scheme: qqScheme({ revision: 6 }),
+            overrides: overridesOf({ allocation: { reply: { mode: "auto" } } }),
+            revision: 2,
+          }),
+        );
+      ready(fakeClient({ getQqGroupConfig: get }));
+      await store.getState().selectQqGroupConfig(BINDING_ID);
+
+      // 本地把 reply 档改成 fixed；judgement 档没动过。
+      store.getState().patchQqGroupOverride("allocation", "reply.mode", "fixed");
+      // 本地改过的 reply 档保留 fixed；未动过的 judgement 档跟随最新答案（对方取消钉住）。
+      expect(await store.getState().refreshQqGroupConfig()).toBe(true);
+      expect(editorOf()?.overrides).toEqual({
+        allocation: { reply: { mode: "fixed" } },
+      });
+      expect(editorOf()?.source.revision).toBe(2);
+      const effective = qqGroupConfigEffectiveScheme(editorOf());
+      expect(effective?.allocation).toEqual({
+        judgement: { mode: "fixed" },
+        reply: { mode: "fixed" },
+      });
+    });
+  });
 });

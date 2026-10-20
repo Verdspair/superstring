@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SuperstringApi } from "../../src/web/api";
 import { currentSessionId } from "../../src/web/features/conversations/directory-state";
 import { ConversationIndex as ConversationList } from "../../src/web/screens/conversations/ConversationIndex";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { summaryFixture } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const web = summaryFixture("empty");
 const direct = { ...summaryFixture("private"), id: "direct", channel: "onebot11" as const };

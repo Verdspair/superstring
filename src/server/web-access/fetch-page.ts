@@ -88,7 +88,9 @@ export async function fetchPage(url: string, options: FetchPageOptions = {}): Pr
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => {});
-      throw webError("WEB_FETCH_FAILED", `网页请求失败：HTTP ${response.status}`);
+      throw webError("WEB_FETCH_FAILED", `网页请求失败：HTTP ${response.status}`, {
+        status: response.status,
+      });
     }
     let body: CappedBody;
     try {

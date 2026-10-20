@@ -1,7 +1,7 @@
 // QQ 群自定义名称（小功能）：会话目录菜单复用重命名 Dialog，保存走群名接口并回写目录；
 // 空输入清除备注恢复默认；原 Web 重命名路径不变；保存失败保留输入并显示错误，不假成功。
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
 import type { SuperstringApi } from "../../src/web/api";
@@ -10,6 +10,7 @@ import { ConversationIdentity } from "../../src/web/screens/conversations/Conver
 import { ConversationIndex } from "../../src/web/screens/conversations/ConversationIndex";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { summaryFixture } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const group = (overrides: Partial<ConversationSummary> = {}): ConversationSummary => ({
   ...summaryFixture("binding-group"),

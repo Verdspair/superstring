@@ -1,8 +1,9 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Preferences } from "../../src/web/screens/environment/Preferences";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 let remove: () => void = () => {};
 beforeEach(() => {

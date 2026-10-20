@@ -69,6 +69,7 @@ export function WebAccessPanel({ active = true }: { active?: boolean } = {}) {
         </div>
         <Button
           variant="outline"
+          tooltip={t("hints.system.webRefresh")}
           disabled={loading || saving || testing}
           onClick={() => void load()}
         >
@@ -110,7 +111,11 @@ export function WebAccessPanel({ active = true }: { active?: boolean } = {}) {
             <p className="mt-1 text-xs text-muted-foreground">{t("connections.web.builtinHint")}</p>
           </div>
           <div className="space-y-3 p-4">
-            <Field label="connections.web.endpointLabel" info="connections.web.endpointHint">
+            <Field
+              label="connections.web.endpointLabel"
+              info="connections.web.endpointHint"
+              tooltip={t("connections.web.endpointHint")}
+            >
               <Input
                 value={value}
                 disabled={busy}
@@ -122,11 +127,16 @@ export function WebAccessPanel({ active = true }: { active?: boolean } = {}) {
               />
             </Field>
             <div className="flex flex-wrap gap-2">
-              <Button disabled={!dirty || busy} onClick={() => void saveEndpoint()}>
+              <Button
+                tooltip={dirty ? t("hints.system.webSave") : t("hints.system.webSaveUnchanged")}
+                disabled={!dirty || busy}
+                onClick={() => void saveEndpoint()}
+              >
                 {t("connections.web.save")}
               </Button>
               <Button
                 variant="outline"
+                tooltip={t("hints.system.webDiscard")}
                 disabled={!dirty || busy}
                 onClick={() => {
                   setVerdict(null);
@@ -137,6 +147,7 @@ export function WebAccessPanel({ active = true }: { active?: boolean } = {}) {
               </Button>
               <Button
                 variant="outline"
+                tooltip={dirty ? t("hints.system.webTestDirty") : t("hints.system.webTest")}
                 disabled={busy || dirty}
                 onClick={() => {
                   setVerdict(null);

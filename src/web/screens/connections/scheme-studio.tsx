@@ -8,9 +8,10 @@ import {
   Save,
   Trash2,
 } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
+import type { AllocationMode } from "../../../shared/contracts/context-allocation";
 import {
   QQ_REPLY_DEFAULT_PROMPT,
   type QqSchemePrompts,
@@ -48,7 +49,6 @@ import {
 } from "../../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Textarea } from "../../components/ui/textarea";
-import { openContextAllocation } from "../../features/context-allocation";
 import { invalidSchemeInputs, invalidSchemeTimezone } from "../../features/qq/draft-state";
 import {
   imageFields,
@@ -66,6 +66,7 @@ import { translateNotice } from "../../i18n";
 import type { SuperstringState } from "../../state/types";
 import { useSuperstringStore } from "../../store";
 import { QqMessagePreview } from "./qq-message-preview";
+import { SchemeNumber, SchemePercent } from "./qq-number-fields";
 import {
   DerivedRhythmIntervals,
   SchemeFieldCard,
@@ -73,16 +74,22 @@ import {
 } from "./scheme-field-shared";
 import {
   fieldBounds,
-  headroomPercentBounds,
   isValidTimezone,
   localClock,
-  type NumberEditorGroup,
-  numberEditorGroups,
   type SchemeTask,
   schemeFieldTask,
   TIMEZONE_SUGGESTIONS,
   utcMinutes,
 } from "./scheme-fields";
+
+export { SchemeNumber };
+
+const schemeTaskLabels: Partial<Record<SchemeTask, string>> = {
+  participation: "strict.qq.participation",
+  response: "strict.qq.response",
+  context_reading: "strict.qq.context",
+  sticker_sending: "strict.qq.stickers",
+};
 
 /** Only these fields are switches; text that reads "true"/"开"/"关" is the user's own content. */
 const schemeBooleanFields: ReadonlySet<string> = new Set([
@@ -121,107 +128,6 @@ function schemeCollectionNames(
 /** 枚举选项的中话标签（值原样进入载荷，不在这里改写契约值）。 */
 const schemeEnumLabels = QQ_SCHEME_ENUM_OPTION_LABELS;
 
-/**
- * 数字输入：原文留在草稿里，只有契约 schema 认可的值才写回方案；无效原文不丢弃、保存被禁用。
- * min/max/step 现读契约（fieldBounds），浏览器拦下的范围就是服务端会拒绝的范围；
- * 错误用 aria-describedby 挂在同一个输入上，另有页脚的「定位」按钮把焦点送回这里。
- * 0052 的两组编辑器组同样走这里（messageSettings/mediaInput），canonical 键保持 message_settings.<key>。
- */
-export function SchemeNumber({
-  group,
-  name,
-  label,
-  info,
-  disabled = false,
-}: {
-  group: NumberEditorGroup;
-  name: string;
-  label: string;
-  info?: string;
-  /** 外部条件禁用（如 one_then_on_demand 下的层数）：控件不可改，配置值原样保留。 */
-  disabled?: boolean;
-}) {
-  const { t } = useTranslation();
-  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
-  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
-  const patch = useSuperstringStore((s) => s.patchQqSchemeGroup);
-  const [texts, setTexts] = useQqInput("schemeTexts");
-  const [invalid, setInvalid] = useQqInput("schemeInvalid");
-  if (!editor) return null;
-  const id = `${group}.${name}`;
-  const inputId = `scheme-field-${id}`;
-  const errorId = `${inputId}-error`;
-  const bounds = fieldBounds(group, name);
-  const value = (editor[group] as unknown as Record<string, number>)[name] ?? 0;
-  const fieldSchema = (
-    numberEditorGroups[group].shape as Record<
-      string,
-      { safeParse: (v: unknown) => { success: boolean } } | undefined
-    >
-  )[name];
-  const valid = (raw: string) =>
-    raw.trim() !== "" && fieldSchema?.safeParse(Number(raw)).success === true;
-  const clear = () => {
-    setTexts((old) => {
-      const next = { ...old };
-      delete next[id];
-      return next;
-    });
-    setInvalid((old) => {
-      const next = { ...old };
-      delete next[id];
-      return next;
-    });
-  };
-  return (
-    <Field label={label} info={info}>
-      <Input
-        id={inputId}
-        type="number"
-        min={bounds.min}
-        max={bounds.max}
-        step={bounds.step}
-        disabled={saving || disabled}
-        value={texts[id] ?? String(value)}
-        aria-invalid={!!invalid[id]}
-        aria-describedby={invalid[id] ? errorId : undefined}
-        onChange={(e) => {
-          const raw = e.target.value;
-          setTexts((old) => ({ ...old, [id]: raw }));
-          if (valid(raw)) {
-            patch(group, { [name]: Number(raw) });
-            setInvalid((old) => {
-              const next = { ...old };
-              delete next[id];
-              return next;
-            });
-          }
-        }}
-        onBlur={() => {
-          const raw = texts[id];
-          if (raw === undefined) return;
-          if (valid(raw)) {
-            patch(group, { [name]: Number(raw) });
-            clear();
-          } else
-            setInvalid((old) => ({
-              ...old,
-              [id]: t("schemes.studio.integerRange", {
-                "0": String(bounds.min ?? ""),
-                "1": String(bounds.max ?? ""),
-              }),
-            }));
-        }}
-      />
-      {invalid[id] && (
-        <p id={errorId} className="text-xs text-destructive" role="alert">
-          {invalid[id]}
-        </p>
-      )}
-    </Field>
-  );
-}
-
 /** 枚举选择（引用模式/时间模式/图片输入模式）：选项显示人话，载荷原样存契约值。 */
 function SchemeEnum({
   group,
@@ -249,7 +155,11 @@ function SchemeEnum({
         : group;
   const labels = schemeEnumLabels[`${canonicalGroup}.${name}`] ?? {};
   return (
-    <Field label={label} info={info}>
+    <Field
+      label={label}
+      info={info}
+      tooltip={info ? t(info) : t(`hints.qqEnum.${canonicalGroup}.${name}`)}
+    >
       <NativeSelect
         id={`scheme-field-${group}.${name}`}
         data-field={`${group}.${name}`}
@@ -285,7 +195,7 @@ function SchemeTimezone({ label }: { label: string }) {
   const raw = texts[id];
   const valid = isValidTimezone;
   return (
-    <Field label={label} info="connections.timezoneHint">
+    <Field label={label} info="connections.timezoneHint" tooltip={t("connections.timezoneHint")}>
       <Input
         id={inputId}
         type="text"
@@ -331,8 +241,9 @@ function StageSwitch({ phase }: { phase: "decision" | "evaluation" | "generation
   const labelKey = `schemes.studio.stage${phase[0].toUpperCase()}${phase.slice(1)}`;
   const label = t(labelKey);
   return (
-    <Label className="rounded-lg border p-4">
+    <Label className="selection-card items-start gap-3 p-4">
       <Checkbox
+        tooltip={t("schemes.studio.stageOffHint")}
         disabled={saving}
         aria-label={label}
         checked={editor.mediaInput.stages[phase]}
@@ -402,9 +313,14 @@ function ImageInputMethodRadio() {
       >
         <Label
           htmlFor={`${radioId}-auto`}
-          className="flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/30 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+          className="selection-card flex items-start gap-3 p-3.5 transition-colors"
         >
-          <RadioGroupItem value="auto" id={`${radioId}-auto`} className="mt-0.5" />
+          <RadioGroupItem
+            tooltip={t("schemes.studio.imageInputMethodAutoHint")}
+            value="auto"
+            id={`${radioId}-auto`}
+            className="mt-0.5"
+          />
           <div className="space-y-1">
             <span className="block font-medium leading-none">
               {t("schemes.studio.imageInputMethodAuto")}
@@ -416,9 +332,14 @@ function ImageInputMethodRadio() {
         </Label>
         <Label
           htmlFor={`${radioId}-ondemand`}
-          className="flex cursor-pointer items-start gap-3 rounded-lg border p-3.5 transition-colors hover:bg-muted/30 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+          className="selection-card flex items-start gap-3 p-3.5 transition-colors"
         >
-          <RadioGroupItem value="ondemand" id={`${radioId}-ondemand`} className="mt-0.5" />
+          <RadioGroupItem
+            tooltip={t("schemes.studio.imageInputMethodOnDemandHint")}
+            value="ondemand"
+            id={`${radioId}-ondemand`}
+            className="mt-0.5"
+          />
           <div className="space-y-1">
             <span className="block font-medium leading-none">
               {t("schemes.studio.imageInputMethodOnDemand")}
@@ -431,9 +352,14 @@ function ImageInputMethodRadio() {
         {derivedMode === "custom" && (
           <Label
             htmlFor={`${radioId}-custom`}
-            className="flex cursor-pointer items-start gap-3 rounded-lg border border-primary bg-muted/40 p-3.5 sm:col-span-2"
+            className="selection-card flex items-start gap-3 p-3.5 sm:col-span-2"
           >
-            <RadioGroupItem value="custom" id={`${radioId}-custom`} className="mt-0.5" />
+            <RadioGroupItem
+              tooltip={t("schemes.studio.imageInputMethodCustomHint")}
+              value="custom"
+              id={`${radioId}-custom`}
+              className="mt-0.5"
+            />
             <div className="space-y-1">
               <span className="block font-medium leading-none">
                 {t("schemes.studio.imageInputMethodCustom")}
@@ -528,7 +454,11 @@ function OrdinaryStillSpec() {
   return (
     // Field 的 control 探测取第一个表单子件（选择框），htmlFor 正确挂到它；
     // 数值框各自带显式 aria-label「长边上限」，两个控件可标注名不同，测试可各自唯一定位。
-    <Field label="connections.ordinaryStillChoice" info="connections.ordinaryStillOriginal">
+    <Field
+      label="connections.ordinaryStillChoice"
+      info="connections.ordinaryStillOriginal"
+      tooltip={t("connections.ordinaryStillOriginal")}
+    >
       <NativeSelect
         id={`${inputId}-choice`}
         data-field={`${id}.choice`}
@@ -636,97 +566,9 @@ function BoundRecentTurns() {
     <Field
       label="connections.replyRecentMessages"
       info="connections.followsTheBoundAssistantRecentTurns"
+      tooltip={t("connections.followsTheBoundAssistantRecentTurns")}
     >
       <p className="rounded-md bg-muted/50 px-3 py-2 text-sm text-muted-foreground">{value}</p>
-    </Field>
-  );
-}
-
-/** 装配冗余在界面上是整数百分比，存的是比例（5 ↔ 0.05）；边界同样来自契约（0–50）。 */
-export function SchemePercent({
-  name,
-  label,
-  info,
-}: {
-  name: "headroom_ratio";
-  label: string;
-  info: string;
-}) {
-  const { t } = useTranslation();
-  const editor = useSuperstringStore((s) => s.qqSchemeEditor);
-  const saving = useSuperstringStore((s) => s.qqSchemeSaving);
-  const patch = useSuperstringStore((s) => s.patchQqSchemeGroup);
-  const [texts, setTexts] = useQqInput("schemeTexts");
-  const [invalid, setInvalid] = useQqInput("schemeInvalid");
-  if (!editor) return null;
-  const id = `compression.${name}`;
-  const inputId = `scheme-field-${id}`;
-  const errorId = `${inputId}-error`;
-  const bounds = headroomPercentBounds();
-  const percent = Math.round(editor.compression[name] * 100);
-  const valid = (raw: string) =>
-    raw.trim() !== "" &&
-    Number.isInteger(Number(raw)) &&
-    Number(raw) >= bounds.min &&
-    Number(raw) <= bounds.max;
-  const write = (raw: string) => patch("compression", { [name]: Number(raw) / 100 });
-  const clear = () => {
-    setTexts((old) => {
-      const next = { ...old };
-      delete next[id];
-      return next;
-    });
-    setInvalid((old) => {
-      const next = { ...old };
-      delete next[id];
-      return next;
-    });
-  };
-  return (
-    <Field label={label} info={info}>
-      <Input
-        id={inputId}
-        type="number"
-        min={bounds.min}
-        max={bounds.max}
-        step={bounds.step}
-        disabled={saving}
-        value={texts[id] ?? String(percent)}
-        aria-invalid={!!invalid[id]}
-        aria-describedby={invalid[id] ? errorId : undefined}
-        onChange={(e) => {
-          const raw = e.target.value;
-          setTexts((old) => ({ ...old, [id]: raw }));
-          if (valid(raw)) {
-            write(raw);
-            setInvalid((old) => {
-              const next = { ...old };
-              delete next[id];
-              return next;
-            });
-          }
-        }}
-        onBlur={() => {
-          const raw = texts[id];
-          if (raw === undefined) return;
-          if (valid(raw)) {
-            write(raw);
-            clear();
-          } else
-            setInvalid((old) => ({
-              ...old,
-              [id]: t("schemes.studio.integerRange", {
-                "0": String(bounds.min),
-                "1": String(bounds.max),
-              }),
-            }));
-        }}
-      />
-      {invalid[id] && (
-        <p id={errorId} className="text-xs text-destructive" role="alert">
-          {invalid[id]}
-        </p>
-      )}
     </Field>
   );
 }
@@ -741,11 +583,12 @@ function PromptEditor({
   titleKey: string;
   hint?: string;
 }) {
+  const { t } = useTranslation();
   const qqSchemeEditor = useSuperstringStore((s) => s.qqSchemeEditor);
   const qqSchemeSaving = useSuperstringStore((s) => s.qqSchemeSaving);
   const patchQqSchemeGroup = useSuperstringStore((s) => s.patchQqSchemeGroup);
   return (
-    <Field label={titleKey} info={hint}>
+    <Field label={titleKey} info={hint} tooltip={hint ? t(hint) : t(`hints.qqPrompt.${slot}`)}>
       <Textarea
         className="min-h-36 font-mono text-xs leading-6"
         disabled={qqSchemeSaving}
@@ -756,7 +599,13 @@ function PromptEditor({
   );
 }
 
-export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
+export function SchemeStudio({
+  active = true,
+  breadcrumb,
+}: {
+  active?: boolean;
+  breadcrumb?: ReactNode;
+} = {}) {
   const { t } = useTranslation();
   const state = useSuperstringStore(
     useShallow((s) => ({
@@ -903,68 +752,97 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
     }
   };
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
-        <NativeSelect
-          className="min-w-48"
-          aria-label={t("connections.chooseAChatScheme")}
-          value={editor?.source.id ?? ""}
-          disabled={busy}
-          onChange={(e) => state.requestQqSchemeNavigation(e.target.value)}
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto lg:overflow-hidden">
+      {editor && (
+        <header
+          data-visual="qq-task-header"
+          className="mb-[24px] flex flex-col gap-[14px] border-b border-border pb-[20px] min-[768px]:flex-row min-[768px]:items-start min-[768px]:justify-between"
         >
-          {!state.qqSchemes.length && <option value="">{t("connections.noSchemesYet")}</option>}
-          {state.qqSchemes.map((scheme) => (
-            <option key={scheme.id} value={scheme.id}>
-              {scheme.name}
-            </option>
-          ))}
-        </NativeSelect>
-        <div className="ml-auto flex flex-wrap items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!editor || busy}
-            onClick={() => void state.refreshQqScheme()}
-          >
-            <RefreshCw />
-            {t("schemes.studio.refresh")}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={busy}
-            onClick={() => setNaming({ kind: "new", step: "name" })}
-          >
-            <Plus />
-            {t("connections.create")}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!editor || busy || invalid}
-            onClick={() => setNaming({ kind: "copy", step: "name" })}
-          >
-            <Copy />
-            {t("connections.saveAs")}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={t("connections.deleteScheme")}
-            disabled={!editor || busy || selectedUsage !== 0}
-            onClick={() => setConfirmDelete(true)}
-          >
-            <Trash2 />
-          </Button>
-        </div>
-        {editor && selectedUsage !== 0 && (
-          <p className="w-full text-xs text-muted-foreground">
-            {selectedUsage === null
-              ? t("schemes.studio.usageUnknownCannotDelete")
-              : t("schemes.studio.inUseCannotDelete", { "0": selectedUsage })}
-          </p>
-        )}
-      </div>
+          <div className="min-w-0 flex-1">
+            {breadcrumb ?? (
+              <div className="mb-[6px] text-[12.5px] text-[var(--text-tertiary)]">
+                {t("schemes.qq.name")} · {editor.name}
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-[12px]">
+              <h1 className="text-[22px] font-bold leading-[1.25] tracking-[-0.02em]">
+                {t(
+                  schemeTaskLabels[effectiveTab] ??
+                    QQ_SCHEME_SECTIONS.find((section) => section.id === effectiveTab)?.labelKey ??
+                    "connections.speechTriggers",
+                )}
+              </h1>
+              <span className="rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] text-muted-foreground">
+                {t("schemes.sharedScope")}
+              </span>
+            </div>
+            <p className="mt-[6px] max-w-[680px] text-[13.5px] leading-[1.55] text-muted-foreground">
+              {t(
+                effectiveTab === "participation"
+                  ? "strict.qq.participationDescription"
+                  : "schemes.sharedScopeNote",
+              )}
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-col items-start gap-[10px] min-[768px]:items-end">
+            <p
+              className={`rounded-[9999px] border px-[12px] py-[4px] text-[12px] font-semibold whitespace-nowrap ${dirty || invalid ? "border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning)]" : "border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success)]"}`}
+              role="status"
+            >
+              {invalid
+                ? t("connections.correctInvalidNumbersFirst")
+                : dirty
+                  ? t("connections.valueUnsavedChanges", { "0": changes.length })
+                  : t("strict.reading.clean")}
+            </p>
+            <div className="flex flex-wrap items-center gap-[8px]">
+              {invalid && invalidFields[0] && (
+                <Button
+                  variant="link"
+                  size="sm"
+                  tooltip={t("hints.qq.locateInvalid")}
+                  onClick={() => {
+                    const field = invalidFields[0];
+                    setTask(schemeFieldTask(field));
+                    setFocusField(field);
+                  }}
+                >
+                  <Crosshair />
+                  {t("schemes.studio.locateInvalid")}
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                tooltip={t("hints.qq.previewChanges")}
+                onClick={() => setPreview(true)}
+              >
+                <FileDiff />
+                {t("connections.reviewChanges")}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="gap-[8px]"
+                disabled={busy || !dirty}
+                tooltip={t("hints.qq.schemeDiscard")}
+                onClick={() => state.discardQqSchemeChanges()}
+              >
+                {t("connections.discardChanges")}
+              </Button>
+              <Button
+                aria-label={t("connections.saveScheme")}
+                disabled={busy || invalid || !changes.length || !editor.name.trim()}
+                tooltip={t("hints.qq.schemeSave")}
+                onClick={() => void state.saveQqScheme()}
+              >
+                <Save />
+                {t("strict.qq.saveConfig")}
+              </Button>
+            </div>
+          </div>
+        </header>
+      )}
       {!editor ? (
         <div className="grid flex-1 place-content-center gap-3 p-8 text-center">
           <h2 className="text-lg font-medium">
@@ -973,702 +851,879 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
           <p className="max-w-sm text-sm text-muted-foreground">
             {t("connections.aSchemeCanBeSharedBySeveralGroupsOr")}
           </p>
-          <Button disabled={saving} onClick={() => setNaming({ kind: "new", step: "name" })}>
+          <Button
+            disabled={saving}
+            tooltip={t("hints.qq.schemeNew")}
+            onClick={() => setNaming({ kind: "new", step: "name" })}
+          >
             <Plus />
             {t("connections.newScheme")}
           </Button>
         </div>
       ) : (
         <Tabs
+          orientation="horizontal"
           value={effectiveTab}
           onValueChange={(value) => setTask(value as SchemeTask)}
-          className="flex min-h-0 flex-1 flex-col gap-0"
+          className="flex min-h-[28rem] shrink-0 flex-col gap-0 lg:min-h-0 lg:flex-1"
         >
-          <div className="border-b px-4 py-3">
-            <div className="grid gap-5 sm:grid-cols-2">
-              <Field label="connections.schemeName">
-                <Input
-                  value={editor.name}
-                  disabled={saving}
-                  onChange={(e) => state.patchQqScheme({ name: e.target.value })}
-                />
-              </Field>
-              <Field label="connections.description">
-                <Input
-                  value={editor.description}
-                  disabled={saving}
-                  onChange={(e) => state.patchQqScheme({ description: e.target.value })}
-                />
-              </Field>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">{t("schemes.sharedScopeNote")}</p>
-          </div>
-          <div className="border-b px-4 py-3">
-            <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:h-auto [&_[role=tab]]:whitespace-normal">
-              {QQ_SCHEME_SECTIONS.map((section) => (
-                <TabsTrigger key={section.id} value={section.id}>
-                  {t(section.labelKey)}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
-          <ScrollArea ref={taskScrollRoot} className="min-h-0 flex-1">
-            <div className="min-w-0 space-y-6 px-4 py-6">
-              {(effectiveTab === "participation" || visitedTasks.includes("participation")) && (
-                <TabsContent
-                  value="participation"
-                  forceMount
-                  className="m-0 space-y-6 data-[state=inactive]:hidden"
-                >
-                  <SchemeFieldCard
-                    title={t("connections.speechTriggers")}
-                    description="schemes.studio.triggersHint"
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="shrink-0 pb-[24px]">
+              <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px] [&_[role=tab]]:rounded-[6px]">
+                {QQ_SCHEME_SECTIONS.map((section) => (
+                  <TabsTrigger
+                    key={section.id}
+                    value={section.id}
+                    tooltip={t(`hints.custom.qqTab.${section.id}`)}
+                    className="whitespace-nowrap"
+                    aria-label={t(section.labelKey)}
                   >
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {Object.entries(TRIGGER_LABELS).map(([key, label]) => (
-                        <Label key={key} className="flex items-start gap-3 rounded-lg border p-4">
+                    {t(schemeTaskLabels[section.id] ?? section.labelKey)}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+            <ScrollArea ref={taskScrollRoot} className="min-h-0 flex-1">
+              <div className="min-w-0 space-y-[28px] pb-[28px] text-[14px] leading-[1.5]">
+                {(effectiveTab === "participation" || visitedTasks.includes("participation")) && (
+                  <TabsContent
+                    value="participation"
+                    forceMount
+                    className="m-0 space-y-[52px] text-[14px] leading-[1.5] data-[state=inactive]:hidden"
+                  >
+                    <section>
+                      <div className="mb-[14px] flex flex-wrap items-baseline justify-between gap-[8px]">
+                        <h2 className="text-[15px] font-bold">{t("strict.qq.modelTitle")}</h2>
+                        <p className="text-[12.5px] text-[var(--text-tertiary)]">
+                          {t("strict.qq.modelHint")}
+                        </p>
+                      </div>
+                      <div className="rounded-[10px] border border-border bg-card p-[16px]">
+                        <div className="flex flex-wrap items-center justify-between gap-[6px] text-[13.5px] font-bold">
+                          <span>{t("strict.qq.modelRule")}</span>
+                          <span className="rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] font-semibold text-primary">
+                            {t("strict.qq.followsBinding")}
+                          </span>
+                        </div>
+                        <p className="mt-[6px] text-[13px] leading-[1.6] text-muted-foreground">
+                          {t("strict.qq.modelBody")}
+                        </p>
+                      </div>
+                    </section>
+                    <SchemeFieldCard
+                      unframed
+                      title={t("connections.speechTriggers")}
+                      description="schemes.studio.triggersHint"
+                    >
+                      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(230px,100%),1fr))] gap-[12px]">
+                        {Object.entries(TRIGGER_LABELS).map(([key, label]) => (
+                          <Label
+                            key={key}
+                            className="selection-card flex min-h-[104px] items-start gap-[12px] p-[16px] text-[13.5px] leading-[1.5] [&>button]:mt-[2px] [&>button]:size-[18px] [&>button]:rounded-[4px]"
+                          >
+                            <Checkbox
+                              tooltip={t(`strict.qq.trigger.${key}`)}
+                              disabled={saving}
+                              checked={editor.triggers[key as keyof typeof TRIGGER_LABELS]}
+                              onCheckedChange={(value) => {
+                                if (key === "follow_up" && value === true) {
+                                  state.patchQqSchemeGroup("triggers", {
+                                    follow_up: true,
+                                    chiming_in: false,
+                                  });
+                                } else if (key === "chiming_in" && value === true) {
+                                  state.patchQqSchemeGroup("triggers", {
+                                    chiming_in: true,
+                                    follow_up: false,
+                                  });
+                                } else {
+                                  state.patchQqSchemeGroup("triggers", { [key]: value === true });
+                                }
+                              }}
+                            />
+                            <span className="space-y-1">
+                              <span className="block">{t(label)}</span>
+                              <span className="block text-xs font-normal leading-5 text-muted-foreground">
+                                {t(`strict.qq.trigger.${key}`)}
+                              </span>
+                            </span>
+                          </Label>
+                        ))}
+                      </div>
+                      {editor.triggers.follow_up && editor.triggers.chiming_in && (
+                        <div className="mt-[14px] rounded-[10px] border border-[var(--warning-border)] bg-[var(--warning-bg)] p-[12px] text-[12.5px] text-[var(--warning)]">
+                          {t("connections.legacyChimingInPrecedenceNotice")}
+                        </div>
+                      )}
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      unframed
+                      title={t("schemes.studio.rhythmTitle")}
+                      description="schemes.studio.rhythmHint"
+                    >
+                      <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                        {[
+                          ["initiative_min_score", "merge_window_seconds"],
+                          ["reply_cooldown_seconds", "hourly_speech_limit", "idle_quiet_minutes"],
+                          [
+                            "initiative_batch_target_count",
+                            "initiative_batch_jitter_count",
+                            "initiative_time_target_seconds",
+                            "initiative_time_jitter_seconds",
+                          ],
+                        ].map((names, index) => (
+                          <div
+                            key={names[0]}
+                            className="rounded-[10px] border border-border bg-card px-[20px] py-[18px] sm:col-span-2"
+                          >
+                            <h3 className="mb-[14px] border-b border-dashed border-border pb-[8px] text-[13px] font-bold">
+                              {t(`strict.qq.rhythmGroup.${index}`)}
+                            </h3>
+                            <div className="grid grid-cols-[repeat(auto-fit,minmax(min(220px,100%),1fr))] gap-[16px]">
+                              {participationFields
+                                .filter(([name]) => names.includes(name))
+                                .map(([name, label, info]) => (
+                                  <SchemeNumber
+                                    key={name}
+                                    group="rhythm"
+                                    name={name}
+                                    label={label}
+                                    info={info}
+                                  />
+                                ))}
+                            </div>
+                          </div>
+                        ))}
+                        <div className="sm:col-span-2">
+                          <SchemeEnum
+                            group="rhythm"
+                            name="participation_timing"
+                            label="connections.participationTiming"
+                            info="connections.participationTimingHint"
+                          />
+                        </div>
+                        <DerivedRhythmIntervals
+                          timingMode={editor.rhythm.participation_timing ?? "resource_window"}
+                          mergeWindowSeconds={editor.rhythm.merge_window_seconds}
+                          batchTarget={editor.rhythm.initiative_batch_target_count}
+                          batchJitter={editor.rhythm.initiative_batch_jitter_count}
+                          timeWindowEnabled={editor.rhythm.initiative_time_window_enabled}
+                          timeTarget={editor.rhythm.initiative_time_target_seconds}
+                          timeJitter={editor.rhythm.initiative_time_jitter_seconds}
+                          testId="scheme-rhythm-derived-intervals"
+                        />
+                        <Label className="selection-card flex items-start gap-3 p-4 sm:col-span-2">
                           <Checkbox
+                            tooltip={t("connections.initiativeTimeWindowEnabledHint")}
                             disabled={saving}
-                            checked={editor.triggers[key as keyof typeof TRIGGER_LABELS]}
-                            onCheckedChange={(value) => {
-                              if (key === "follow_up" && value === true) {
-                                state.patchQqSchemeGroup("triggers", {
-                                  follow_up: true,
-                                  chiming_in: false,
-                                });
-                              } else if (key === "chiming_in" && value === true) {
-                                state.patchQqSchemeGroup("triggers", {
-                                  chiming_in: true,
-                                  follow_up: false,
-                                });
-                              } else {
-                                state.patchQqSchemeGroup("triggers", { [key]: value === true });
-                              }
-                            }}
+                            checked={editor.rhythm.initiative_time_window_enabled}
+                            onCheckedChange={(checked) =>
+                              state.patchQqSchemeGroup("rhythm", {
+                                initiative_time_window_enabled: checked === true,
+                              })
+                            }
                           />
                           <span className="space-y-1">
-                            <span className="block">{t(label)}</span>
+                            <span className="block">
+                              {t("connections.initiativeTimeWindowEnabled")}
+                            </span>
                             <span className="block text-xs font-normal leading-5 text-muted-foreground">
-                              {t(
-                                key === "direct_reply" || key === "follow_up"
-                                  ? "connections.directRepliesAndOngoingConversationsAreNotSubjectTo"
-                                  : "connections.subjectToScoreCooldownHourlyLimitsAndActiveHours",
-                              )}
+                              {t("connections.initiativeTimeWindowEnabledHint")}
+                            </span>
+                            {!editor.rhythm.initiative_time_window_enabled && (
+                              <span className="block text-xs font-normal text-muted-foreground">
+                                {t("connections.initiativeTimeWindowDisabledNotice")}
+                              </span>
+                            )}
+                          </span>
+                        </Label>
+                        <Label className="selection-card flex items-start gap-3 p-4 sm:col-span-2">
+                          <Checkbox
+                            tooltip={t("connections.initiativeQueueOnBusyHint")}
+                            disabled={saving}
+                            checked={editor.rhythm.initiative_queue_on_busy}
+                            onCheckedChange={(checked) =>
+                              state.patchQqSchemeGroup("rhythm", {
+                                initiative_queue_on_busy: checked === true,
+                              })
+                            }
+                          />
+                          <span className="space-y-1">
+                            <span className="block">{t("connections.initiativeQueueOnBusy")}</span>
+                            <span className="block text-xs font-normal leading-5 text-muted-foreground">
+                              {t("connections.initiativeQueueOnBusyHint")}
                             </span>
                           </span>
                         </Label>
-                      ))}
-                    </div>
-                    <p className="mt-3 text-xs text-muted-foreground">
-                      {t("connections.triggersMutualExclusionHint")}
-                    </p>
-                    {editor.triggers.follow_up && editor.triggers.chiming_in && (
-                      <div className="mt-3 rounded-md bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400">
-                        {t("connections.legacyChimingInPrecedenceNotice")}
                       </div>
-                    )}
-                  </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("schemes.studio.rhythmTitle")}
-                    description="schemes.studio.rhythmHint"
-                  >
-                    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
-                      <div className="sm:col-span-2">
-                        <SchemeEnum
-                          group="rhythm"
-                          name="participation_timing"
-                          label="connections.participationTiming"
-                          info="connections.participationTimingHint"
-                        />
-                      </div>
-                      <DerivedRhythmIntervals
-                        timingMode={editor.rhythm.participation_timing ?? "resource_window"}
-                        mergeWindowSeconds={editor.rhythm.merge_window_seconds}
-                        batchTarget={editor.rhythm.initiative_batch_target_count}
-                        batchJitter={editor.rhythm.initiative_batch_jitter_count}
-                        timeWindowEnabled={editor.rhythm.initiative_time_window_enabled}
-                        timeTarget={editor.rhythm.initiative_time_target_seconds}
-                        timeJitter={editor.rhythm.initiative_time_jitter_seconds}
-                        testId="scheme-rhythm-derived-intervals"
-                      />
-                      <Label className="flex items-start gap-3 rounded-lg border p-4 sm:col-span-2">
-                        <Checkbox
-                          disabled={saving}
-                          checked={editor.rhythm.initiative_time_window_enabled}
-                          onCheckedChange={(checked) =>
-                            state.patchQqSchemeGroup("rhythm", {
-                              initiative_time_window_enabled: checked === true,
-                            })
-                          }
-                        />
-                        <span className="space-y-1">
-                          <span className="block">
-                            {t("connections.initiativeTimeWindowEnabled")}
-                          </span>
-                          <span className="block text-xs font-normal leading-5 text-muted-foreground">
-                            {t("connections.initiativeTimeWindowEnabledHint")}
-                          </span>
-                          {!editor.rhythm.initiative_time_window_enabled && (
-                            <span className="block text-xs font-normal text-muted-foreground">
-                              {t("connections.initiativeTimeWindowDisabledNotice")}
-                            </span>
-                          )}
-                        </span>
-                      </Label>
-                      {participationFields.map(([name, label, info]) => (
-                        <SchemeNumber
-                          key={name}
-                          group="rhythm"
-                          name={name}
-                          label={label}
-                          info={info}
-                        />
-                      ))}
-                      <Label className="flex items-start gap-3 rounded-lg border p-4 sm:col-span-2">
-                        <Checkbox
-                          disabled={saving}
-                          checked={editor.rhythm.initiative_queue_on_busy}
-                          onCheckedChange={(checked) =>
-                            state.patchQqSchemeGroup("rhythm", {
-                              initiative_queue_on_busy: checked === true,
-                            })
-                          }
-                        />
-                        <span className="space-y-1">
-                          <span className="block">{t("connections.initiativeQueueOnBusy")}</span>
-                          <span className="block text-xs font-normal leading-5 text-muted-foreground">
-                            {t("connections.initiativeQueueOnBusyHint")}
-                          </span>
-                        </span>
-                      </Label>
-                    </div>
-                  </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("connections.allowedHours")}
-                    description="connections.useLocalTimeEqualStartAndEndMeansAll"
-                  >
-                    <Label>
-                      <Checkbox
-                        disabled={saving}
-                        checked={editor.rhythm.active_hours_enabled}
-                        onCheckedChange={(checked) =>
-                          state.patchQqSchemeGroup("rhythm", {
-                            active_hours_enabled: checked === true,
-                          })
-                        }
-                      />
-                      {t("connections.allowedHours")}
-                    </Label>
-                    {/* 窄屏单列：两个 time 输入并排会被压到内容裁切，sm 起恢复两列。 */}
-                    <div className="grid gap-5 sm:grid-cols-2">
-                      {(["start", "end"] as const).map((side) => {
-                        const key = `active_hours_${side}_minutes` as const;
-                        return (
-                          <Field
-                            key={key}
-                            label={
-                              side === "start"
-                                ? "connections.allowedHoursStart"
-                                : "connections.allowedHoursEnd"
-                            }
-                          >
-                            <Input
-                              type="time"
-                              value={localClock(editor.rhythm[key])}
-                              disabled={saving || !editor.rhythm.active_hours_enabled}
-                              onChange={(e) => {
-                                const minutes = utcMinutes(e.target.value);
-                                if (minutes !== null)
-                                  state.patchQqSchemeGroup("rhythm", { [key]: minutes });
-                              }}
-                            />
-                          </Field>
-                        );
-                      })}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {t("schemes.studio.activeHoursHint")}
-                    </p>
-                  </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("connections.inputAntiSpam")}
-                    description="schemes.studio.inputAntiSpamHint"
-                  >
-                    <Label className="flex items-start gap-3 rounded-lg border p-4">
-                      <Checkbox
-                        disabled={saving}
-                        checked={editor.inputAntiSpam.enabled}
-                        onCheckedChange={(checked) =>
-                          state.patchQqSchemeGroup("inputAntiSpam", {
-                            enabled: checked === true,
-                          })
-                        }
-                      />
-                      <span className="space-y-1">
-                        <span className="block">{t("connections.enableInputAntiSpam")}</span>
-                        <span className="block text-xs font-normal leading-5 text-muted-foreground">
-                          {t("connections.inputAntiSpamDesc")}
-                        </span>
-                      </span>
-                    </Label>
-                    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
-                      <SchemeNumber
-                        group="inputAntiSpam"
-                        name="burst_min_messages"
-                        label={t("connections.inputAntiSpamBurstMinMessages")}
-                        info="connections.inputAntiSpamBurstMinMessagesHint"
-                        disabled={!editor.inputAntiSpam.enabled}
-                      />
-                      <SchemeNumber
-                        group="inputAntiSpam"
-                        name="burst_window_seconds"
-                        label={t("connections.inputAntiSpamBurstWindowSeconds")}
-                        info="connections.inputAntiSpamBurstWindowSecondsHint"
-                        disabled={!editor.inputAntiSpam.enabled}
-                      />
-                    </div>
-                  </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("schemes.studio.judgePrompt")}
-                    description="connections.decideWhetherToSpeak"
-                  >
-                    <PromptEditor slot="judge" titleKey="connections.judgementTask" />
-                  </SchemeFieldCard>
-                </TabsContent>
-              )}
-              {(effectiveTab === "response" || visitedTasks.includes("response")) && (
-                <TabsContent
-                  value="response"
-                  forceMount
-                  className="m-0 space-y-6 data-[state=inactive]:hidden"
-                >
-                  <SchemeFieldCard
-                    title={t("schemes.studio.replyStructure")}
-                    description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
-                  >
-                    <Label>
-                      <Checkbox
-                        checked={editor.reply.split_by_speaker}
-                        disabled={saving}
-                        onCheckedChange={(value) =>
-                          state.patchQqSchemeGroup("reply", { split_by_speaker: value === true })
-                        }
-                      />
-                      {t("connections.answerEachSpeakerSeparately")}
-                    </Label>
-                  </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("schemes.studio.replyTasks")}
-                    description="schemes.studio.replyTasksHint"
-                  >
-                    <PromptEditor
-                      slot="scene"
-                      titleKey="connections.sceneAndBehaviour"
-                      hint="schemes.studio.sceneGlobalNote"
-                    />
-                    {/* 这一栏可配置。没改过时按上面的开关派生（显示即派生结果），
-                      一改就写进方案的 prompt_reply，服务端取的是同一个函数的结果。 */}
-                    <Field
-                      label="connections.effectiveReplyTask"
-                      info="connections.editTheReplyTaskItWinsOverTheSwitch"
-                    >
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">
-                          {editor.prompts.reply === QQ_REPLY_DEFAULT_PROMPT
-                            ? t("schemes.studio.replyPromptDerived")
-                            : t("schemes.studio.replyPromptCustom")}
-                        </span>
-                      </div>
-                      <Textarea
-                        className="min-h-36 font-mono text-xs leading-6"
-                        disabled={saving}
-                        value={qqEffectiveReplyPrompt(
-                          editor.prompts.reply,
-                          editor.reply.split_by_speaker,
-                        )}
-                        onChange={(e) =>
-                          state.patchQqSchemeGroup("prompts", { reply: e.target.value })
-                        }
-                      />
-                    </Field>
-                    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
-                      {responseFields.map(([name, label, info]) => (
-                        <SchemeNumber
-                          key={name}
-                          group="rhythm"
-                          name={name}
-                          label={label}
-                          info={info}
-                        />
-                      ))}
-                    </div>
-                    <PromptEditor slot="review" titleKey="connections.reviewTask" />
-                  </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("connections.taskLimitsTitle")}
-                    description="schemes.studio.taskLimitsHint"
-                  >
-                    <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
-                      <SchemeNumber
-                        group="taskLimits"
-                        name="mention_task_limit"
-                        label="connections.mentionTaskLimit"
-                        info="connections.mentionTaskLimitHint"
-                      />
-                      <SchemeNumber
-                        group="taskLimits"
-                        name="ordinary_task_limit"
-                        label="connections.ordinaryTaskLimit"
-                        info="connections.ordinaryTaskLimitHint"
-                      />
-                    </div>
-                  </SchemeFieldCard>
-                </TabsContent>
-              )}
-              {(effectiveTab === "context_reading" || visitedTasks.includes("context_reading")) && (
-                <TabsContent
-                  value="context_reading"
-                  forceMount
-                  className="m-0 space-y-6 data-[state=inactive]:hidden"
-                >
-                  {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下层数
-                    不参与运行（禁用但配置保留），切回按层数即恢复。 */}
-                  <SchemeFieldCard
-                    title={t("schemes.studio.messageRelations")}
-                    description="schemes.studio.messageRelationsHint"
-                  >
-                    <div className="grid gap-5 sm:grid-cols-2">
-                      <SchemeEnum
-                        group="messageSettings"
-                        name="reply_mode"
-                        label="connections.quoteReplyMode"
-                      />
-                      <SchemeNumber
-                        group="messageSettings"
-                        name="reply_depth"
-                        label="connections.quoteDepth"
-                        info="connections.quoteDepthHint"
-                        // one_then_on_demand 下层数不参与运行：禁用但配置保留，切回按层数即恢复。
-                        disabled={editor.messageSettings.reply_mode === "one_then_on_demand"}
-                      />
-                      <SchemeEnum
-                        group="messageSettings"
-                        name="time_display"
-                        label="connections.timeDisplayMode"
-                      />
-                      <SchemeTimezone label="connections.timezone" />
-                    </div>
-                    <QqMessagePreview
-                      settings={
-                        invalidSchemeTimezone(useSuperstringStore.getState()) === null
-                          ? editor.messageSettings
-                          : null
-                      }
-                    />
-                  </SchemeFieldCard>
-                  {(["judgement", "reply"] as const).map((part) => (
+                    </SchemeFieldCard>
                     <SchemeFieldCard
-                      key={part}
-                      title={
-                        part === "judgement"
-                          ? t("connections.judgementContext")
-                          : t("connections.replyContext")
-                      }
-                      description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
+                      title={t("connections.allowedHours")}
+                      description="connections.useLocalTimeEqualStartAndEndMeansAll"
                     >
+                      <Label className="selection-card p-3">
+                        <Checkbox
+                          tooltip={t("connections.useLocalTimeEqualStartAndEndMeansAll")}
+                          disabled={saving}
+                          checked={editor.rhythm.active_hours_enabled}
+                          onCheckedChange={(checked) =>
+                            state.patchQqSchemeGroup("rhythm", {
+                              active_hours_enabled: checked === true,
+                            })
+                          }
+                        />
+                        {t("connections.allowedHours")}
+                      </Label>
+                      {/* 窄屏单列：两个 time 输入并排会被压到内容裁切，sm 起恢复两列。 */}
                       <div className="grid gap-5 sm:grid-cols-2">
-                        <div className="col-span-full flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
-                          <div>
-                            <span className="text-muted-foreground">
-                              {part === "judgement"
-                                ? t("schemes.allocation.judgementMode")
-                                : t("schemes.allocation.replyMode")}
-                              ：
-                            </span>
-                            <span className="font-medium">
-                              {editor.allocation?.[part]?.mode === "auto"
-                                ? t("schemes.allocation.modeAuto")
-                                : t("schemes.allocation.modeFixed")}
-                            </span>
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 text-xs"
-                            onClick={() =>
-                              openContextAllocation({
-                                purpose: "qq",
-                                schemeId: editor.source.id,
-                                returnRoute: "qq-scheme-config",
-                                returnLabel: editor.name,
-                              })
-                            }
-                          >
-                            {t("schemes.allocation.goToCentralAllocation")}
-                          </Button>
-                        </div>
-                        {/* 回复档的条数跟随绑定助手的「保留最近轮数」，所以它是只读的。 */}
-                        {part === "reply" ? (
-                          <BoundRecentTurns />
-                        ) : (
-                          <SchemeNumber
-                            group="context"
-                            name={`${part}_message_limit`}
-                            label="connections.judgementRecentMessages"
-                          />
-                        )}
-                        <SchemeNumber
-                          group="context"
-                          name={`${part}_window_minutes`}
-                          label={
-                            part === "judgement"
-                              ? "connections.judgementTimeWindowMinutes"
-                              : "connections.replyTimeWindowMinutes"
+                        {(["start", "end"] as const).map((side) => {
+                          const key = `active_hours_${side}_minutes` as const;
+                          return (
+                            <Field
+                              key={key}
+                              label={
+                                side === "start"
+                                  ? "connections.allowedHoursStart"
+                                  : "connections.allowedHoursEnd"
+                              }
+                              tooltip={t(
+                                side === "start" ? "hints.qqTime.start" : "hints.qqTime.end",
+                              )}
+                            >
+                              <Input
+                                type="time"
+                                value={localClock(editor.rhythm[key])}
+                                disabled={saving || !editor.rhythm.active_hours_enabled}
+                                onChange={(e) => {
+                                  const minutes = utcMinutes(e.target.value);
+                                  if (minutes !== null)
+                                    state.patchQqSchemeGroup("rhythm", { [key]: minutes });
+                                }}
+                              />
+                            </Field>
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {t("schemes.studio.activeHoursHint")}
+                      </p>
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("connections.inputAntiSpam")}
+                      description="schemes.studio.inputAntiSpamHint"
+                    >
+                      <Label className="selection-card flex items-start gap-3 p-4">
+                        <Checkbox
+                          tooltip={t("connections.inputAntiSpamDesc")}
+                          disabled={saving}
+                          checked={editor.inputAntiSpam.enabled}
+                          onCheckedChange={(checked) =>
+                            state.patchQqSchemeGroup("inputAntiSpam", {
+                              enabled: checked === true,
+                            })
                           }
                         />
+                        <span className="space-y-1">
+                          <span className="block">{t("connections.enableInputAntiSpam")}</span>
+                          <span className="block text-xs font-normal leading-5 text-muted-foreground">
+                            {t("connections.inputAntiSpamDesc")}
+                          </span>
+                        </span>
+                      </Label>
+                      <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
                         <SchemeNumber
-                          group="context"
-                          name={`${part}_token_budget`}
-                          label={
-                            part === "judgement"
-                              ? "connections.judgementBudgetEstimatedBytes"
-                              : "connections.replyBudgetEstimatedBytes"
-                          }
+                          group="inputAntiSpam"
+                          name="burst_min_messages"
+                          label={t("connections.inputAntiSpamBurstMinMessages")}
+                          info="connections.inputAntiSpamBurstMinMessagesHint"
+                          disabled={!editor.inputAntiSpam.enabled}
                         />
                         <SchemeNumber
-                          group="outputReserve"
-                          name={`${part}_output_reserved`}
-                          label={
-                            part === "judgement"
-                              ? "connections.judgementOutputReserveEstimatedBytes"
-                              : "connections.replyOutputReserveEstimatedBytes"
-                          }
+                          group="inputAntiSpam"
+                          name="burst_window_seconds"
+                          label={t("connections.inputAntiSpamBurstWindowSeconds")}
+                          info="connections.inputAntiSpamBurstWindowSecondsHint"
+                          disabled={!editor.inputAntiSpam.enabled}
                         />
                       </div>
                     </SchemeFieldCard>
-                  ))}
-                  <div className="rounded-lg bg-muted p-5 text-sm leading-6">
-                    <h3 className="font-medium">
-                      {t("connections.bindingsDetermineTheMaterialScope")}
-                    </h3>
-                    <p className="mt-2 text-muted-foreground">
-                      {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
-                    </p>
-                    <Button
-                      className="mt-3"
-                      variant="outline"
-                      onClick={() => state.openSettingsRoute("knowledge-config")}
+                    <SchemeFieldCard
+                      title={t("schemes.studio.judgePrompt")}
+                      description="connections.decideWhetherToSpeak"
                     >
-                      {t("connections.manageKnowledge")}
+                      <PromptEditor slot="judge" titleKey="connections.judgementTask" />
+                    </SchemeFieldCard>
+                  </TabsContent>
+                )}
+                {(effectiveTab === "response" || visitedTasks.includes("response")) && (
+                  <TabsContent
+                    value="response"
+                    forceMount
+                    className="m-0 space-y-6 data-[state=inactive]:hidden"
+                  >
+                    <SchemeFieldCard
+                      title={t("schemes.studio.replyStructure")}
+                      description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
+                    >
+                      <Label className="selection-card p-3">
+                        <Checkbox
+                          tooltip={t("connections.whenEnabledGenerateAReplyPerSpeakerAndAdd")}
+                          checked={editor.reply.split_by_speaker}
+                          disabled={saving}
+                          onCheckedChange={(value) =>
+                            state.patchQqSchemeGroup("reply", { split_by_speaker: value === true })
+                          }
+                        />
+                        {t("connections.answerEachSpeakerSeparately")}
+                      </Label>
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("schemes.studio.replyTasks")}
+                      description="schemes.studio.replyTasksHint"
+                    >
+                      <PromptEditor
+                        slot="scene"
+                        titleKey="connections.sceneAndBehaviour"
+                        hint="schemes.studio.sceneGlobalNote"
+                      />
+                      {/* 这一栏可配置。没改过时按上面的开关派生（显示即派生结果），
+                      一改就写进方案的 prompt_reply，服务端取的是同一个函数的结果。 */}
+                      <Field
+                        label="connections.effectiveReplyTask"
+                        info="connections.editTheReplyTaskItWinsOverTheSwitch"
+                        tooltip={t("connections.editTheReplyTaskItWinsOverTheSwitch")}
+                      >
+                        <div className="mb-1.5 flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">
+                            {editor.prompts.reply === QQ_REPLY_DEFAULT_PROMPT
+                              ? t("schemes.studio.replyPromptDerived")
+                              : t("schemes.studio.replyPromptCustom")}
+                          </span>
+                        </div>
+                        <Textarea
+                          className="min-h-36 font-mono text-xs leading-6"
+                          disabled={saving}
+                          value={qqEffectiveReplyPrompt(
+                            editor.prompts.reply,
+                            editor.reply.split_by_speaker,
+                          )}
+                          onChange={(e) =>
+                            state.patchQqSchemeGroup("prompts", { reply: e.target.value })
+                          }
+                        />
+                      </Field>
+                      <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                        {responseFields.map(([name, label, info]) => (
+                          <SchemeNumber
+                            key={name}
+                            group="rhythm"
+                            name={name}
+                            label={label}
+                            info={info}
+                          />
+                        ))}
+                      </div>
+                      <PromptEditor slot="review" titleKey="connections.reviewTask" />
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("connections.taskLimitsTitle")}
+                      description="schemes.studio.taskLimitsHint"
+                    >
+                      <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                        <SchemeNumber
+                          group="taskLimits"
+                          name="mention_task_limit"
+                          label="connections.mentionTaskLimit"
+                          info="connections.mentionTaskLimitHint"
+                        />
+                        <SchemeNumber
+                          group="taskLimits"
+                          name="ordinary_task_limit"
+                          label="connections.ordinaryTaskLimit"
+                          info="connections.ordinaryTaskLimitHint"
+                        />
+                      </div>
+                    </SchemeFieldCard>
+                  </TabsContent>
+                )}
+                {(effectiveTab === "context_reading" ||
+                  visitedTasks.includes("context_reading")) && (
+                  <TabsContent
+                    value="context_reading"
+                    forceMount
+                    className="m-0 space-y-6 data-[state=inactive]:hidden"
+                  >
+                    {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下层数
+                    不参与运行（禁用但配置保留），切回按层数即恢复。 */}
+                    <SchemeFieldCard
+                      title={t("schemes.studio.messageRelations")}
+                      description="schemes.studio.messageRelationsHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <SchemeEnum
+                          group="messageSettings"
+                          name="reply_mode"
+                          label="connections.quoteReplyMode"
+                        />
+                        <SchemeNumber
+                          group="messageSettings"
+                          name="reply_depth"
+                          label="connections.quoteDepth"
+                          info="connections.quoteDepthHint"
+                          // one_then_on_demand 下层数不参与运行：禁用但配置保留，切回按层数即恢复。
+                          disabled={editor.messageSettings.reply_mode === "one_then_on_demand"}
+                        />
+                        <SchemeEnum
+                          group="messageSettings"
+                          name="time_display"
+                          label="connections.timeDisplayMode"
+                        />
+                        <SchemeTimezone label="connections.timezone" />
+                      </div>
+                      <QqMessagePreview
+                        settings={
+                          invalidSchemeTimezone(useSuperstringStore.getState()) === null
+                            ? editor.messageSettings
+                            : null
+                        }
+                      />
+                    </SchemeFieldCard>
+                    {(["judgement", "reply"] as const).map((part) => (
+                      <SchemeFieldCard
+                        key={part}
+                        title={
+                          part === "judgement"
+                            ? t("connections.judgementContext")
+                            : t("connections.replyContext")
+                        }
+                        description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
+                      >
+                        <div className="grid gap-5 sm:grid-cols-2">
+                          <Field
+                            label={
+                              part === "judgement"
+                                ? "schemes.allocation.judgementMode"
+                                : "schemes.allocation.replyMode"
+                            }
+                            tooltip={t(
+                              part === "judgement"
+                                ? "hints.qqAllocation.judgement"
+                                : "hints.qqAllocation.reply",
+                            )}
+                          >
+                            <NativeSelect
+                              data-testid={`qq-${part}-mode`}
+                              value={editor.allocation?.[part]?.mode ?? "fixed"}
+                              disabled={saving}
+                              onChange={(e) =>
+                                state.patchQqScheme({
+                                  allocation: {
+                                    ...editor.allocation,
+                                    [part]: { mode: e.target.value as AllocationMode },
+                                  },
+                                })
+                              }
+                            >
+                              <option value="fixed">{t("schemes.allocation.modeFixed")}</option>
+                              <option value="auto">{t("schemes.allocation.modeAuto")}</option>
+                            </NativeSelect>
+                          </Field>
+
+                          {/* 回复档的条数跟随绑定助手的「保留最近轮数」，所以它是只读的。 */}
+                          {part === "reply" ? (
+                            <BoundRecentTurns />
+                          ) : (
+                            <SchemeNumber
+                              group="context"
+                              name="judgement_message_limit"
+                              label="connections.judgementRecentMessages"
+                            />
+                          )}
+                          <SchemeNumber
+                            group="context"
+                            name={
+                              part === "judgement"
+                                ? "judgement_window_minutes"
+                                : "reply_window_minutes"
+                            }
+                            label={
+                              part === "judgement"
+                                ? "connections.judgementTimeWindowMinutes"
+                                : "connections.replyTimeWindowMinutes"
+                            }
+                          />
+                          <SchemeNumber
+                            group="context"
+                            name={
+                              part === "judgement" ? "judgement_token_budget" : "reply_token_budget"
+                            }
+                            label={
+                              part === "judgement"
+                                ? "connections.judgementBudgetEstimatedBytes"
+                                : "connections.replyBudgetEstimatedBytes"
+                            }
+                            info="schemes.allocation.budgetBytesHint"
+                          />
+                          <SchemeNumber
+                            group="outputReserve"
+                            name={
+                              part === "judgement"
+                                ? "judgement_output_reserved"
+                                : "reply_output_reserved"
+                            }
+                            label={
+                              part === "judgement"
+                                ? "connections.judgementOutputReserveEstimatedBytes"
+                                : "connections.replyOutputReserveEstimatedBytes"
+                            }
+                          />
+                        </div>
+                      </SchemeFieldCard>
+                    ))}
+                    <div className="rounded-lg bg-muted p-5 text-sm leading-6">
+                      <h3 className="font-medium">
+                        {t("connections.bindingsDetermineTheMaterialScope")}
+                      </h3>
+                      <p className="mt-2 text-muted-foreground">
+                        {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
+                      </p>
+                      <Button
+                        className="mt-3"
+                        variant="outline"
+                        tooltip={t("hints.qq.studioManageKnowledge")}
+                        onClick={() => state.openSettingsRoute("knowledge-config")}
+                      >
+                        {t("connections.manageKnowledge")}
+                      </Button>
+                    </div>
+                  </TabsContent>
+                )}
+                {(effectiveTab === "history_compression" ||
+                  visitedTasks.includes("history_compression")) && (
+                  <TabsContent
+                    value="history_compression"
+                    forceMount
+                    className="m-0 space-y-6 data-[state=inactive]:hidden"
+                  >
+                    <SchemeFieldCard
+                      title={t("connections.compressionAndAssembly")}
+                      description="schemes.studio.compressionHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <SchemeNumber
+                          group="compression"
+                          name="watermark_trigger"
+                          label="connections.watermarkTriggerMessages"
+                          info="connections.oldMessagesOutsideTheReplyWindowAccumulateUntilThisMany"
+                        />
+                        <SchemeNumber
+                          group="compression"
+                          name="package_limit"
+                          label="connections.watermarkPackageLimit"
+                          info="connections.packagesBeyondThisManyAreDroppedOldestFirst"
+                        />
+                        <SchemePercent
+                          name="headroom_ratio"
+                          label="connections.assemblyHeadroomPercent"
+                          info="connections.reserveThisShareOfTheCapacityBeforeAssembling"
+                        />
+                      </div>
+                      <PromptEditor
+                        slot="compress"
+                        titleKey="connections.watermarkCompressionTask"
+                        hint="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
+                      />
+                    </SchemeFieldCard>
+                  </TabsContent>
+                )}
+                {(effectiveTab === "image_understanding" ||
+                  visitedTasks.includes("image_understanding")) && (
+                  <TabsContent
+                    value="image_understanding"
+                    forceMount
+                    className="m-0 space-y-6 data-[state=inactive]:hidden"
+                  >
+                    {/* 图片输入基本区：输入方式单选（自动/按需/自定义派生）、图数、统一静图规格 */}
+                    <SchemeFieldCard
+                      title={t("schemes.studio.imageInput")}
+                      description="schemes.studio.imageInputHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <ImageInputMethodRadio />
+                        <SchemeNumber
+                          group="mediaInput"
+                          name="max_images"
+                          label="connections.maxAutoImages"
+                        />
+                        <OrdinaryStillSpec />
+                      </div>
+                    </SchemeFieldCard>
+
+                    {/* 高级区：本地折叠（ephemeral Disclosure），含动图规格、mode、逐阶段独立开关、媒体提示词 */}
+                    <Collapsible
+                      open={advancedImageOpen}
+                      onOpenChange={setAdvancedImageOpen}
+                      className="space-y-6"
+                    >
+                      <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-4">
+                        <div className="space-y-0.5">
+                          <div className="text-sm font-medium">
+                            {t("schemes.studio.advancedImageSettings")}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {t("schemes.studio.advancedImageSettingsHint")}
+                          </div>
+                        </div>
+                        <CollapsibleTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            tooltip={t("hints.qq.advancedImage")}
+                            className="gap-2"
+                          >
+                            <ChevronDown
+                              className={`size-4 transition-transform ${advancedImageOpen ? "rotate-180" : ""}`}
+                            />
+                            <span>
+                              {advancedImageOpen
+                                ? t("schemes.studio.collapseAdvanced")
+                                : t("schemes.studio.expandAdvanced")}
+                            </span>
+                          </Button>
+                        </CollapsibleTrigger>
+                      </div>
+
+                      <CollapsibleContent
+                        forceMount
+                        className="space-y-6 data-[state=closed]:hidden"
+                      >
+                        <SchemeFieldCard
+                          title={t("schemes.studio.imageParams")}
+                          description="schemes.studio.imageParamsHint"
+                        >
+                          <div className="grid gap-5 sm:grid-cols-2">
+                            {imageFields.map(([group, name, label]) => (
+                              <SchemeNumber key={name} group={group} name={name} label={label} />
+                            ))}
+                          </div>
+                        </SchemeFieldCard>
+
+                        <SchemeFieldCard
+                          title={t("schemes.studio.imageModeAndStages")}
+                          description="schemes.studio.imageModeAndStagesHint"
+                        >
+                          <div className="grid gap-5 sm:grid-cols-2">
+                            <SchemeEnum
+                              group="mediaInput"
+                              name="mode"
+                              label="connections.imageInputMode"
+                              info={
+                                editor.mediaInput.mode === "description"
+                                  ? "connections.imageMode.descriptionHint"
+                                  : "connections.imageMode.nativeHint"
+                              }
+                            />
+                          </div>
+                          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                            <StageSwitch phase="decision" />
+                            <StageSwitch phase="evaluation" />
+                            <StageSwitch phase="generation" />
+                          </div>
+                        </SchemeFieldCard>
+
+                        <SchemeFieldCard
+                          title={t("connections.mediaNoteTask")}
+                          description="connections.describeWhatThePictureOrVoiceActuallyContains"
+                        >
+                          <PromptEditor
+                            slot="media"
+                            titleKey="connections.mediaNoteTask"
+                            hint="connections.describeWhatThePictureOrVoiceActuallyContains"
+                          />
+                        </SchemeFieldCard>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  </TabsContent>
+                )}
+                {(effectiveTab === "sticker_sending" ||
+                  visitedTasks.includes("sticker_sending")) && (
+                  <TabsContent
+                    value="sticker_sending"
+                    forceMount
+                    className="m-0 space-y-6 data-[state=inactive]:hidden"
+                  >
+                    <SchemeFieldCard
+                      title={t("schemes.studio.stickerParams")}
+                      description="schemes.studio.stickerParamsHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <StickerFrequencyRadio />
+                        {stickerFields.map(([group, name, label]) => (
+                          <SchemeNumber key={name} group={group} name={name} label={label} />
+                        ))}
+                      </div>
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("connections.authorizedCollections")}
+                      description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
+                    >
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {state.qqStickerCollections.map((collection) => (
+                          <Label key={collection.id} className="selection-card p-3">
+                            <Checkbox
+                              tooltip={t(
+                                "connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected",
+                              )}
+                              checked={editor.stickerCollectionIds.includes(collection.id)}
+                              disabled={saving}
+                              onCheckedChange={(value) =>
+                                state.patchQqScheme({
+                                  stickerCollectionIds:
+                                    value === true
+                                      ? [...editor.stickerCollectionIds, collection.id]
+                                      : editor.stickerCollectionIds.filter(
+                                          (id) => id !== collection.id,
+                                        ),
+                                })
+                              }
+                            />
+                            {collection.name}
+                            <span className="ml-auto text-xs text-muted-foreground">
+                              {collection.asset_count}
+                            </span>
+                          </Label>
+                        ))}
+                      </div>
+                      <Button
+                        variant="outline"
+                        tooltip={t("hints.qq.studioManageStickers")}
+                        onClick={() => state.openSettingsRoute("qq-stickers")}
+                      >
+                        {t("connections.manageStickers")}
+                      </Button>
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("connections.stickerTask")}
+                      description="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
+                    >
+                      <PromptEditor
+                        slot="sticker"
+                        titleKey="connections.stickerTask"
+                        hint="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
+                      />
+                    </SchemeFieldCard>
+                  </TabsContent>
+                )}
+                <div className="flex shrink-0 flex-wrap items-center gap-[8px] pb-[20px]">
+                  <NativeSelect
+                    className="w-full max-w-[340px]"
+                    aria-label={t("connections.chooseAChatScheme")}
+                    tooltip={t("hints.custom.qqStudioSchemePicker")}
+                    value={editor?.source.id ?? ""}
+                    disabled={busy}
+                    onChange={(e) => state.requestQqSchemeNavigation(e.target.value)}
+                  >
+                    {!state.qqSchemes.length && (
+                      <option value="">{t("connections.noSchemesYet")}</option>
+                    )}
+                    {state.qqSchemes.map((scheme) => (
+                      <option key={scheme.id} value={scheme.id}>
+                        {scheme.name}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                  <div className="ml-auto flex flex-wrap items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={!editor || busy}
+                      tooltip={t("hints.qq.schemeReload")}
+                      onClick={() => void state.refreshQqScheme()}
+                    >
+                      <RefreshCw />
+                      {t("schemes.studio.refresh")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy}
+                      tooltip={t("hints.qq.schemeNew")}
+                      onClick={() => setNaming({ kind: "new", step: "name" })}
+                    >
+                      <Plus />
+                      {t("connections.create")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={!editor || busy || invalid}
+                      tooltip={t("hints.qq.schemeCopyAs")}
+                      onClick={() => setNaming({ kind: "copy", step: "name" })}
+                    >
+                      <Copy />
+                      {t("connections.saveAs")}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={t("connections.deleteScheme")}
+                      disabled={!editor || busy || selectedUsage !== 0}
+                      tooltip={t("hints.qq.schemeDelete")}
+                      onClick={() => setConfirmDelete(true)}
+                    >
+                      <Trash2 />
                     </Button>
                   </div>
-                </TabsContent>
-              )}
-              {(effectiveTab === "history_compression" ||
-                visitedTasks.includes("history_compression")) && (
-                <TabsContent
-                  value="history_compression"
-                  forceMount
-                  className="m-0 space-y-6 data-[state=inactive]:hidden"
-                >
-                  <SchemeFieldCard
-                    title={t("connections.compressionAndAssembly")}
-                    description="schemes.studio.compressionHint"
-                  >
-                    <div className="grid gap-5 sm:grid-cols-2">
-                      <SchemeNumber
-                        group="compression"
-                        name="watermark_trigger"
-                        label="connections.watermarkTriggerMessages"
-                        info="connections.oldMessagesOutsideTheReplyWindowAccumulateUntilThisMany"
-                      />
-                      <SchemeNumber
-                        group="compression"
-                        name="package_limit"
-                        label="connections.watermarkPackageLimit"
-                        info="connections.packagesBeyondThisManyAreDroppedOldestFirst"
-                      />
-                      <SchemePercent
-                        name="headroom_ratio"
-                        label="connections.assemblyHeadroomPercent"
-                        info="connections.reserveThisShareOfTheCapacityBeforeAssembling"
-                      />
-                    </div>
-                    <PromptEditor
-                      slot="compress"
-                      titleKey="connections.watermarkCompressionTask"
-                      hint="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
-                    />
-                  </SchemeFieldCard>
-                </TabsContent>
-              )}
-              {(effectiveTab === "image_understanding" ||
-                visitedTasks.includes("image_understanding")) && (
-                <TabsContent
-                  value="image_understanding"
-                  forceMount
-                  className="m-0 space-y-6 data-[state=inactive]:hidden"
-                >
-                  {/* 图片输入基本区：输入方式单选（自动/按需/自定义派生）、图数、统一静图规格 */}
-                  <SchemeFieldCard
-                    title={t("schemes.studio.imageInput")}
-                    description="schemes.studio.imageInputHint"
-                  >
-                    <div className="grid gap-5 sm:grid-cols-2">
-                      <ImageInputMethodRadio />
-                      <SchemeNumber
-                        group="mediaInput"
-                        name="max_images"
-                        label="connections.maxAutoImages"
-                      />
-                      <OrdinaryStillSpec />
-                    </div>
-                  </SchemeFieldCard>
-
-                  {/* 高级区：本地折叠（ephemeral Disclosure），含动图规格、mode、逐阶段独立开关、媒体提示词 */}
-                  <Collapsible
-                    open={advancedImageOpen}
-                    onOpenChange={setAdvancedImageOpen}
-                    className="space-y-6"
-                  >
-                    <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-4">
-                      <div className="space-y-0.5">
-                        <div className="text-sm font-medium">
-                          {t("schemes.studio.advancedImageSettings")}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {t("schemes.studio.advancedImageSettingsHint")}
-                        </div>
-                      </div>
-                      <CollapsibleTrigger asChild>
-                        <Button variant="outline" size="sm" className="gap-2">
-                          <ChevronDown
-                            className={`size-4 transition-transform ${advancedImageOpen ? "rotate-180" : ""}`}
-                          />
-                          <span>
-                            {advancedImageOpen
-                              ? t("schemes.studio.collapseAdvanced")
-                              : t("schemes.studio.expandAdvanced")}
-                          </span>
-                        </Button>
-                      </CollapsibleTrigger>
-                    </div>
-
-                    <CollapsibleContent forceMount className="space-y-6 data-[state=closed]:hidden">
-                      <SchemeFieldCard
-                        title={t("schemes.studio.imageParams")}
-                        description="schemes.studio.imageParamsHint"
-                      >
-                        <div className="grid gap-5 sm:grid-cols-2">
-                          {imageFields.map(([group, name, label]) => (
-                            <SchemeNumber key={name} group={group} name={name} label={label} />
-                          ))}
-                        </div>
-                      </SchemeFieldCard>
-
-                      <SchemeFieldCard
-                        title={t("schemes.studio.imageModeAndStages")}
-                        description="schemes.studio.imageModeAndStagesHint"
-                      >
-                        <div className="grid gap-5 sm:grid-cols-2">
-                          <SchemeEnum
-                            group="mediaInput"
-                            name="mode"
-                            label="connections.imageInputMode"
-                            info={
-                              editor.mediaInput.mode === "description"
-                                ? "connections.imageMode.descriptionHint"
-                                : "connections.imageMode.nativeHint"
-                            }
-                          />
-                        </div>
-                        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                          <StageSwitch phase="decision" />
-                          <StageSwitch phase="evaluation" />
-                          <StageSwitch phase="generation" />
-                        </div>
-                      </SchemeFieldCard>
-
-                      <SchemeFieldCard
-                        title={t("connections.mediaNoteTask")}
-                        description="connections.describeWhatThePictureOrVoiceActuallyContains"
-                      >
-                        <PromptEditor
-                          slot="media"
-                          titleKey="connections.mediaNoteTask"
-                          hint="connections.describeWhatThePictureOrVoiceActuallyContains"
-                        />
-                      </SchemeFieldCard>
-                    </CollapsibleContent>
-                  </Collapsible>
-                </TabsContent>
-              )}
-              {(effectiveTab === "sticker_sending" || visitedTasks.includes("sticker_sending")) && (
-                <TabsContent
-                  value="sticker_sending"
-                  forceMount
-                  className="m-0 space-y-6 data-[state=inactive]:hidden"
-                >
-                  <SchemeFieldCard
-                    title={t("schemes.studio.stickerParams")}
-                    description="schemes.studio.stickerParamsHint"
-                  >
-                    <div className="grid gap-5 sm:grid-cols-2">
-                      <StickerFrequencyRadio />
-                      {stickerFields.map(([group, name, label]) => (
-                        <SchemeNumber key={name} group={group} name={name} label={label} />
-                      ))}
-                    </div>
-                  </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("connections.authorizedCollections")}
-                    description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
-                  >
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {state.qqStickerCollections.map((collection) => (
-                        <Label key={collection.id} className="rounded-lg border p-3">
-                          <Checkbox
-                            checked={editor.stickerCollectionIds.includes(collection.id)}
-                            disabled={saving}
-                            onCheckedChange={(value) =>
-                              state.patchQqScheme({
-                                stickerCollectionIds:
-                                  value === true
-                                    ? [...editor.stickerCollectionIds, collection.id]
-                                    : editor.stickerCollectionIds.filter(
-                                        (id) => id !== collection.id,
-                                      ),
-                              })
-                            }
-                          />
-                          {collection.name}
-                          <span className="ml-auto text-xs text-muted-foreground">
-                            {collection.asset_count}
-                          </span>
-                        </Label>
-                      ))}
-                    </div>
-                    <Button
-                      variant="outline"
-                      onClick={() => state.openSettingsRoute("qq-stickers")}
+                  {editor && selectedUsage !== 0 && (
+                    <p className="w-full text-xs text-muted-foreground">
+                      {selectedUsage === null
+                        ? t("schemes.studio.usageUnknownCannotDelete")
+                        : t("schemes.studio.inUseCannotDelete", { "0": selectedUsage })}
+                    </p>
+                  )}
+                </div>
+                <div className="rounded-[10px] border border-border bg-card px-[20px] py-[18px]">
+                  <p className="mb-[14px] text-[12.5px] leading-[1.5] text-muted-foreground">
+                    {t("connections.triggersMutualExclusionHint")}
+                  </p>
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <Field
+                      label="connections.schemeName"
+                      tooltip={t("hints.fieldExtra.schemeName")}
                     >
-                      {t("connections.manageStickers")}
-                    </Button>
-                  </SchemeFieldCard>
-                  <SchemeFieldCard
-                    title={t("connections.stickerTask")}
-                    description="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
-                  >
-                    <PromptEditor
-                      slot="sticker"
-                      titleKey="connections.stickerTask"
-                      hint="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
-                    />
-                  </SchemeFieldCard>
-                </TabsContent>
-              )}
-            </div>
-          </ScrollArea>
+                      <Input
+                        value={editor.name}
+                        disabled={saving}
+                        onChange={(e) => state.patchQqScheme({ name: e.target.value })}
+                      />
+                    </Field>
+                    <Field
+                      label="connections.description"
+                      tooltip={t("hints.qqScheme.description")}
+                    >
+                      <Input
+                        value={editor.description}
+                        disabled={saving}
+                        onChange={(e) => state.patchQqScheme({ description: e.target.value })}
+                      />
+                    </Field>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      {selectedUsage !== null && (
+                        <span>{t("schemes.usageCount", { "0": selectedUsage })}</span>
+                      )}
+                      {dirty && (
+                        <span className="font-medium text-muted-foreground">
+                          · {t("connections.valueUnsavedChanges", { "0": changes.length })}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </ScrollArea>
+          </div>
         </Tabs>
       )}
       {editor && (state.error || state.feedback) && (
@@ -1683,47 +1738,6 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
             </p>
           )}
         </div>
-      )}
-      {editor && (
-        <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t bg-background px-4 py-3">
-          <p className="mr-auto text-xs text-muted-foreground" role="status">
-            {invalid
-              ? t("connections.correctInvalidNumbersFirst")
-              : t("connections.valueUnsavedChanges", { "0": changes.length })}
-          </p>
-          {invalid && invalidFields[0] && (
-            <Button
-              variant="link"
-              size="sm"
-              onClick={() => {
-                const field = invalidFields[0];
-                setTask(schemeFieldTask(field));
-                setFocusField(field);
-              }}
-            >
-              <Crosshair />
-              {t("schemes.studio.locateInvalid")}
-            </Button>
-          )}
-          <Button variant="ghost" size="sm" onClick={() => setPreview(true)}>
-            <FileDiff />
-            {t("connections.reviewChanges")}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={busy || !dirty}
-            onClick={() => state.discardQqSchemeChanges()}
-          >
-            {t("connections.discardChanges")}
-          </Button>
-          <Button
-            disabled={busy || invalid || !changes.length || !editor.name.trim()}
-            onClick={() => void state.saveQqScheme()}
-          >
-            <Save />
-            {t("connections.saveScheme")}
-          </Button>
-        </footer>
       )}
       {confirmDelete && editor && (
         <ConfirmDialog
@@ -1767,6 +1781,7 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                 )}
                 <DialogFooter>
                   <Button
+                    tooltip={<Trans i18nKey="hints.complete.cancel" />}
                     variant="outline"
                     data-dialog-cancel
                     disabled={busy}
@@ -1777,18 +1792,23 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                   <Button
                     variant="destructive"
                     disabled={busy}
+                    tooltip={t("hints.qq.draftDiscardAndContinue")}
                     onClick={() => void runNaming(false)}
                   >
                     {t("workspace.discard_and_continue")}
                   </Button>
-                  <Button disabled={busy || invalid} onClick={() => void runNaming(true)}>
+                  <Button
+                    disabled={busy || invalid}
+                    tooltip={t("hints.qq.draftSaveAndContinue")}
+                    onClick={() => void runNaming(true)}
+                  >
                     {t("workspace.save_and_continue")}
                   </Button>
                 </DialogFooter>
               </>
             ) : (
               <>
-                <Field label="connections.schemeName">
+                <Field label="connections.schemeName" tooltip={t("hints.fieldExtra.schemeName")}>
                   <Input
                     value={namingName}
                     disabled={busy}
@@ -1808,10 +1828,16 @@ export function SchemeStudio({ active = true }: { active?: boolean } = {}) {
                   </p>
                 )}
                 <DialogFooter>
-                  <Button variant="outline" disabled={busy} onClick={() => setNaming(null)}>
+                  <Button
+                    tooltip={<Trans i18nKey="hints.complete.cancel" />}
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => setNaming(null)}
+                  >
                     {t("connections.cancel")}
                   </Button>
                   <Button
+                    tooltip={t("hints.qq.namingConfirm")}
                     disabled={busy || !namingName.trim()}
                     onClick={() => {
                       if (naming.kind === "new" && dirty) setNaming({ ...naming, step: "draft" });

@@ -3,6 +3,7 @@
 import { cn } from "cn";
 import { RadioGroup as RadioGroupPrimitive } from "radix-ui";
 import type * as React from "react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
 
 function RadioGroup({
   className,
@@ -19,9 +20,10 @@ function RadioGroup({
 
 function RadioGroupItem({
   className,
+  tooltip,
   ...props
-}: React.ComponentProps<typeof RadioGroupPrimitive.Item>) {
-  return (
+}: React.ComponentProps<typeof RadioGroupPrimitive.Item> & { tooltip?: React.ReactNode }) {
+  const control = (
     <RadioGroupPrimitive.Item
       data-slot="radio-group-item"
       className={cn(
@@ -37,6 +39,16 @@ function RadioGroupItem({
         <span className="absolute top-1/2 left-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary-foreground" />
       </RadioGroupPrimitive.Indicator>
     </RadioGroupPrimitive.Item>
+  );
+  return tooltip ? (
+    <Tooltip>
+      <TooltipTrigger asChild preserveTriggerState>
+        {control}
+      </TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
+  ) : (
+    control
   );
 }
 

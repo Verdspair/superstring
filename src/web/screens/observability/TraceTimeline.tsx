@@ -76,6 +76,11 @@ export function TraceTimeline({
                     "0": spanTitle(item, t),
                   },
                 )}
+                tooltip={t(
+                  hidden
+                    ? "hints.investigation.timeline.expandChildren"
+                    : "hints.investigation.timeline.collapseChildren",
+                )}
                 aria-expanded={!hidden}
                 aria-controls={childId}
                 onClick={() =>
@@ -102,6 +107,11 @@ export function TraceTimeline({
                   : "observability.viewStepDetails",
               )}
               aria-describedby={`${childId}-title`}
+              tooltip={t(
+                item.stage === "model"
+                  ? "hints.investigation.timeline.selectModel"
+                  : "hints.investigation.timeline.selectStep",
+              )}
               onClick={() => onSelect(item)}
             >
               <span id={`${childId}-title`} className="text-xs font-medium">
@@ -147,12 +157,18 @@ export function TraceTimeline({
       <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
         {!hideToggles && !alwaysExpanded && (
           <>
-            <Button variant="ghost" size="sm" onClick={() => setCollapsed(new Set())}>
+            <Button
+              variant="ghost"
+              size="sm"
+              tooltip={t("hints.investigation.timeline.expandAll")}
+              onClick={() => setCollapsed(new Set())}
+            >
               {t("observability.expandAllSteps")}
             </Button>
             <Button
               variant="ghost"
               size="sm"
+              tooltip={t("hints.investigation.timeline.collapseAll")}
               onClick={() => setCollapsed(new Set(data.items.map((item) => item.spanId)))}
             >
               {t("observability.collapseAllSteps")}

@@ -8,7 +8,8 @@ export interface HostedConversation {
   topology: "direct" | "shared";
   agentId: string;
 }
-export interface ConversationActivation extends Omit<ConversationInput, "conversationId"> {
+export interface ConversationActivation
+  extends Omit<ConversationInput, "conversationId" | "retryOrigin"> {
   conversation: HostedConversation;
   spec: AgentSpec;
 }
@@ -40,6 +41,11 @@ export class ConversationHost {
         const result = await this.options.runtime.run(spec, {
           ...activation,
           conversationId: conversation.id,
+          ...(conversation.channel === "onebot11"
+            ? { retryOrigin: "qq" as const }
+            : conversation.channel === "web"
+              ? { retryOrigin: "system" as const }
+              : {}),
           owner: { ...activation.owner, agentId: conversation.agentId },
         });
         scope?.update({ runId: result.runId, status: result.status });

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionPolicySchema } from "../../src/shared/contracts/permissions";
 import type { ToolDirectoryEntry } from "../../src/shared/contracts/tool-directory";
@@ -8,6 +8,7 @@ import { McpPanel } from "../../src/web/screens/connections/mcp-panel";
 import { SkillsPanel } from "../../src/web/screens/connections/skills-panel";
 import { ToolDirectoryPanel } from "../../src/web/screens/connections/tool-directory-panel";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const mcpStatus = () => ({
   revision: "mcp-r1",

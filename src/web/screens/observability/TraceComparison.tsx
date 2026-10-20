@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { RuntimeSpanFilters } from "../../../shared/contracts/runtime-observability";
@@ -26,7 +26,11 @@ export function TraceComparison({
             {t("observability.selectACallOnEachSideContentIsAuthorizedIndependently")}
           </p>
         </div>
-        <Button variant="outline" onClick={onBack}>
+        <Button
+          tooltip={<Trans i18nKey="hints.complete.executionBack" />}
+          variant="outline"
+          onClick={onBack}
+        >
           {t("observability.backToExecutions")}
         </Button>
       </header>

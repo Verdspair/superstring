@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskDetail, TaskSummary } from "../../src/shared/contracts/agent-task";
 import type {
@@ -20,6 +20,7 @@ import {
 import { useLiveResource } from "../../src/web/services/use-live-resource";
 import { useSuperstringStore } from "../../src/web/store";
 import { summaryFixture } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 let originalVisibilityDesc: PropertyDescriptor | undefined;
 
@@ -863,11 +864,12 @@ describe("conversation arrival instant update", () => {
     // Seed 300 loaded rows via loadMore clicks (6 pages x 50).
     const view = render(<TaskLedger conversationId="conv-300" />);
     await screen.findAllByRole("button", { name: i18n.t("connections.tasks.open") });
-    const loadMoreButton = () =>
-      screen.queryByRole("button", { name: i18n.t("connections.tasks.loadMore") });
-    while (loadMoreButton()) {
+    const loadMoreButton = screen.getByRole("button", {
+      name: i18n.t("connections.tasks.loadMore"),
+    });
+    while (loadMoreButton.isConnected) {
       await act(async () => {
-        fireEvent.click(loadMoreButton()!);
+        fireEvent.click(loadMoreButton);
       });
     }
     expect(

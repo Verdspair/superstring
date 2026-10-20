@@ -128,6 +128,22 @@ describe("fetchPage 正常路径", () => {
     } catch (error) {
       expect((error as { code?: string }).code).toBe("WEB_FETCH_FAILED");
       expect((error as Error).message).toContain("404");
+      expect((error as { status?: number }).status).toBe(404);
+    }
+  });
+
+  it("HTTP 状态以结构化 status 保留（429/401），不靠解析消息", async () => {
+    for (const status of [429, 401]) {
+      const { fetchImpl } = stubFetch(() => new Response("no", { status }));
+      let failure: unknown;
+      try {
+        await fetchPage("http://example.com/blocked", { fetchImpl, resolve: publicResolver });
+        throw new Error("should reject");
+      } catch (error) {
+        failure = error;
+      }
+      expect((failure as { code?: string }).code).toBe("WEB_FETCH_FAILED");
+      expect((failure as { status?: number }).status).toBe(status);
     }
   });
 });
@@ -136,6 +152,8 @@ describe("fetchPage 未读取响应体释放", () => {
   const cases: {
     name: string;
     status: number;
+    /** 期望落在错误上的结构化 HTTP status；缺席＝该失败点不带 status。 */
+    expectedStatus?: number;
     headers: Record<string, string>;
     code: string;
     message: string;
@@ -144,6 +162,7 @@ describe("fetchPage 未读取响应体释放", () => {
     {
       name: "HTTP 失败",
       status: 503,
+      expectedStatus: 503,
       headers: {},
       code: "WEB_FETCH_FAILED",
       message: "HTTP 503",
@@ -190,6 +209,7 @@ describe("fetchPage 未读取响应体释放", () => {
         expect(failure).toBeDefined();
         expect((failure as { code?: string }).code).toBe(scenario.code);
         expect((failure as Error).message).toContain(scenario.message);
+        expect((failure as { status?: number }).status).toBe(scenario.expectedStatus);
         expect(calls).toHaveLength(scenario.requests);
         expect(cancellations).toEqual(Array.from({ length: scenario.requests }, () => 1));
       });

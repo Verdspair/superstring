@@ -2,22 +2,30 @@
 // 草稿/保存只走 long-memory 白名单、QQ 分区仍只对应绑定控制、三预设默认展开。
 // 读取额度拆到独立的 memory-tools 草稿：维护保存与工具保存互不夹带，也移除误导的共享范围提示。
 // 断言只使用 i18n 文案；所有写入走替身，不触网、不建业务数据。
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dirtyPages, newPageEditor } from "../../src/web/features/agents/page-drafts";
 import {
-  resetContextAllocationTarget,
-  setContextAllocationTarget,
-} from "../../src/web/features/context-allocation";
+  act,
+  cleanup,
+  fireEvent,
+  render as renderView,
+  screen,
+  within,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
+import { dirtyPages, newPageEditor } from "../../src/web/features/agents/page-drafts";
+import { resetContextAllocationTarget } from "../../src/web/features/context-allocation";
 import { knowledgeReadDirty } from "../../src/web/features/knowledge/types";
 import {
   KnowledgeToolSettings,
-  MemoryToolSettings,
+  MemoryReadingRules,
 } from "../../src/web/screens/assistants/ResourceRules";
-import { ContextAllocationWorkspace } from "../../src/web/screens/connections/ContextAllocationWorkspace";
 import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { A, agent, B, persona, policy, setupLibrary } from "./helpers/library-fixture";
+
+/** 显式 tooltip（保存按钮/字段帮助）必须挂在真实 DesignSystemProvider 下渲染。 */
+const render = (...[ui, options]: Parameters<typeof renderView>) =>
+  renderView(ui, { wrapper: DesignSystemProvider, ...options });
 
 /** long-memory 的 Agent 载荷白名单：顺序按字母序校验，防止多写字段。 */
 const LONG_MEMORY_PAYLOAD_KEYS = [
@@ -109,14 +117,14 @@ describe("library web memory maintenance", () => {
     // 只是切换查看：不隐式保存绑定，也不触发整理任务。
     expect(client.updateQqBinding).not.toHaveBeenCalled();
     expect(client.organiseQqMemory).not.toHaveBeenCalled();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: /网页对话记忆/ })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^网页对话记忆/ })));
     expect(screen.getByLabelText("记忆整理提示词")).toBeTruthy();
     expect(screen.queryByLabelText("自动整理批次（留空关闭）")).toBeNull();
   });
 
   it("shows the new agent's maintenance values after switching agents", async () => {
     await act(async () => render(<MemoryLibrary />));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: /网页对话记忆/ })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^网页对话记忆/ })));
     expect((screen.getByLabelText("每隔多少轮整理") as HTMLInputElement).value).toBe("20");
     await act(async () => {
       store.setState({
@@ -161,8 +169,8 @@ describe("library web memory maintenance", () => {
   it("keeps the allowance draft independent from maintenance discard and drops the shared-scope hint", async () => {
     const mocks = saveMocks();
     setupLibrary(mocks);
-    // 记忆工具设置留下额度草稿：只改广泛档扫描上限，草稿标记 memory-tools。
-    await act(async () => render(<MemoryToolSettings />));
+    // 记忆读取规则（参数编辑已迁出旧摘要页）留下额度草稿：只改广泛档扫描上限，草稿标记 memory-tools。
+    await act(async () => render(<MemoryReadingRules />));
     fireEvent.change(screen.getAllByLabelText("每次查询扫描候选上限")[2], {
       target: { value: "150" },
     });
@@ -190,8 +198,8 @@ describe("library web memory maintenance", () => {
   it("saving memory tools never submits maintenance, policy or other page drafts", async () => {
     const mocks = saveMocks();
     const client = setupLibrary({ ...mocks, saveAgentKnowledgeRead: vi.fn() });
-    // 记忆工具设置：额度草稿属于 memory-tools。
-    await act(async () => render(<MemoryToolSettings />));
+    // 记忆读取规则：额度草稿属于 memory-tools。
+    await act(async () => render(<MemoryReadingRules />));
     fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
     fireEvent.change(screen.getAllByLabelText("每次查询扫描候选上限")[2], {
       target: { value: "150" },
@@ -205,7 +213,7 @@ describe("library web memory maintenance", () => {
     // 另留维护与模型页草稿：memory-tools 显式保存不夹带它们。
     store.getState().patchPageAgent("long-memory", { memory_consolidation_prompt: "保留事实" });
     store.getState().patchPageAgent("models", { model_name: "draft-model" });
-    await act(async () => render(<MemoryToolSettings />));
+    await act(async () => render(<MemoryReadingRules />));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存记忆规则" })));
     // 只提交 memory-tools 白名单：不发送维护提示词、不碰 policy，也不触发知识读取保存。
     expect(mocks.updateAgent).toHaveBeenCalledTimes(1);
@@ -238,16 +246,16 @@ describe("agent retrieval presets", () => {
   it("expands all three presets by default and saves edits only through the whitelist", async () => {
     const mocks = saveMocks();
     setupLibrary(mocks);
-    await act(async () => render(<MemoryToolSettings />));
+    await act(async () => render(<MemoryReadingRules />));
     // 三项默认展开：三个额度字段直接可见，标题只剩档名，不再内嵌裸数字。
     expect(screen.getAllByLabelText("每次查询扫描候选上限")).toHaveLength(3);
-    expect(screen.getByRole("button", { name: "保守" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "标准" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^保守/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^标准/ })).toBeTruthy();
     const broadItem = screen
-      .getByRole("button", { name: "广泛" })
+      .getByRole("button", { name: /^广泛/ })
       .closest("[data-slot=accordion-item]");
     expect(broadItem).not.toBeNull();
-    expect(screen.queryByRole("button", { name: /·/ })).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^保守档|^标准档|^广泛档/ })).toHaveLength(3);
     const scan = screen.getAllByLabelText("每次查询扫描候选上限") as HTMLInputElement[];
     const entries = screen.getAllByLabelText("每页最大返回项") as HTMLInputElement[];
     expect(scan.map((el) => el.value)).toEqual(["30", "60", "120"]);
@@ -295,7 +303,7 @@ describe("agent retrieval presets", () => {
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
   });
 
-  it("moves the per-turn budget edit to the unified workspace and saves through the context whitelist", async () => {
+  it("edits the per-turn budget in the reading rules host and saves through the context whitelist", async () => {
     const mocks = saveMocks();
     const client = setupLibrary({
       ...mocks,
@@ -303,8 +311,7 @@ describe("agent retrieval presets", () => {
         .fn()
         .mockResolvedValue({ model: "model-a", status: "loaded", context_length: 128000 }),
     });
-    setContextAllocationTarget({ purpose: "reading", agentId: A });
-    await act(async () => render(<ContextAllocationWorkspace active={true} />));
+    await act(async () => render(<MemoryReadingRules />));
     const budget = screen.getByTestId("reading-preset-max-tokens-broad") as HTMLInputElement;
     expect(budget.value).toBe("8192");
     fireEvent.change(budget, { target: { value: "9000" } });
@@ -315,7 +322,21 @@ describe("agent retrieval presets", () => {
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
     expect(mocks.updateAgent).not.toHaveBeenCalled();
     expect(client.updatePolicy).not.toHaveBeenCalled();
-    // 保存走 context 白名单：只携带 max_tokens 差异，不再提交扫描/条目草稿。
+    // 同一 context 保存 = P5 数字 + 读取预算 + aux 一份白名单（不人为隔离）：
+    // 经真实页面补丁留下 aux 与一个 P5 数字草稿，一次保存断言三者同 payload 提交。
+    const before = store.getState().pageEditor;
+    if (!before) throw new Error("Missing editor");
+    store.getState().patchPageAgent("context", {
+      p5_config: {
+        ...before.draft.p5_config,
+        recent_turns: 12,
+        auxiliary_allocation: {
+          ...before.draft.p5_config.auxiliary_allocation,
+          research: { mode: "fixed", input_limit: 1500, output_reserved: 600 },
+        },
+      },
+    });
+    // 保存走 context 白名单：单个 payload 同时携带 recent_turns、auxiliary_allocation.research 与 broad max_tokens。
     await act(async () => {
       expect(await store.getState().saveSettingsPage("context")).toBe(true);
     });
@@ -325,6 +346,14 @@ describe("agent retrieval presets", () => {
     expect(savedBody).toEqual({
       expected_version: 1,
       p5_config: expect.objectContaining({
+        recent_turns: 12,
+        auxiliary_allocation: expect.objectContaining({
+          research: expect.objectContaining({
+            mode: "fixed",
+            input_limit: 1500,
+            output_reserved: 600,
+          }),
+        }),
         retrieval_presets: {
           conservative: expect.objectContaining({ max_tokens: 2048 }),
           standard: expect.objectContaining({ max_tokens: 4096 }),
@@ -338,7 +367,7 @@ describe("agent retrieval presets", () => {
   it("jumps to the memory library through the shared draft-safe navigation", async () => {
     const mocks = saveMocks();
     setupLibrary(mocks);
-    await act(async () => render(<MemoryToolSettings />));
+    await act(async () => render(<MemoryReadingRules />));
     fireEvent.change(screen.getAllByLabelText("每次查询扫描候选上限")[2], {
       target: { value: "150" },
     });

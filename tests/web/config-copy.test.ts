@@ -43,8 +43,11 @@ const EXECUTION_DEFAULTS: ReadonlyArray<[string, string, string, string, string]
   ["loopModelConcurrencyHint", "1–256", "1–256", "default 4;", "默认 4；"],
   ["loopProviderConcurrencyHint", "1–256", "1–256", "default 2;", "默认 2；"],
   ["qqRetryDelayMsHint", "1000–300000", "1000–300000", "default 15000", "默认 15000"],
+  ["qqRetryDelaySecondsHint", "1–300", "1–300", "default 15", "默认 15"],
   ["qqMaxAttemptsHint", "1–10", "1–10", "default 3;", "默认 3；"],
   ["qqDeliveryTtlSecondsHint", "10–3600", "10–3600", "default 600", "默认 600"],
+  ["systemRetryDelaySecondsHint", "1–300", "1–300", "default 2", "默认 2"],
+  ["systemMaxAttemptsHint", "1–10", "1–10", "default 3", "默认 3"],
   ["memoryTimeoutSecondsHint", "60–86400", "60–86400", "Default 3600", "默认 3600"],
   ["knowledgeTimeoutSecondsHint", "60–86400", "60–86400", "Default 3600", "默认 3600"],
 ];

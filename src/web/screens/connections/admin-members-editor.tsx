@@ -38,17 +38,17 @@ export function AdminMembersEditor({ value, onChange, disabled = false }: AdminM
   const hasAnyBadge = parsed.validCanonicalMembers.length > 0 || parsed.invalidTokens.length > 0;
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2.5">
       {hasAnyBadge && (
         <div
-          className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-2.5"
+          className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 p-2.5"
           data-testid="admin-badges-container"
         >
           {parsed.validCanonicalMembers.map((member) => (
             <Badge
               key={member}
               variant="secondary"
-              className="h-auto py-1 pl-2.5 pr-1 text-xs gap-1.5"
+              className="h-auto py-1 pl-2.5 pr-1 text-xs gap-1.5 transition-colors"
               data-testid={`admin-badge-${member}`}
             >
               <span className="font-mono">{member}</span>
@@ -56,7 +56,8 @@ export function AdminMembersEditor({ value, onChange, disabled = false }: AdminM
                 type="button"
                 variant="ghost"
                 size="icon-xs"
-                className="min-h-8 min-w-8 p-0 rounded-full hover:bg-muted"
+                tooltip={t("hints.extensions.members.remove")}
+                className="min-h-8 min-w-8 p-0 rounded-full hover:bg-muted/80 focus-visible:ring-1 focus-visible:ring-ring"
                 disabled={disabled}
                 aria-label={t("connections.deleteMember", { "0": member })}
                 onClick={() => handleRemoveCanonical(member)}
@@ -70,7 +71,7 @@ export function AdminMembersEditor({ value, onChange, disabled = false }: AdminM
             <Badge
               key={`invalid-${token}`}
               variant="destructive"
-              className="h-auto py-1 pl-2.5 pr-1 text-xs gap-1.5"
+              className="h-auto py-1 pl-2.5 pr-1 text-xs gap-1.5 border border-destructive/20"
               data-testid={`admin-badge-${token}`}
             >
               <span className="font-mono">{token}</span>
@@ -79,7 +80,8 @@ export function AdminMembersEditor({ value, onChange, disabled = false }: AdminM
                 type="button"
                 variant="ghost"
                 size="icon-xs"
-                className="min-h-8 min-w-8 p-0 rounded-full hover:bg-muted"
+                tooltip={t("hints.extensions.members.remove")}
+                className="min-h-8 min-w-8 p-0 rounded-full hover:bg-destructive/20 focus-visible:ring-1 focus-visible:ring-ring"
                 disabled={disabled}
                 aria-label={t("connections.deleteMember", { "0": token })}
                 onClick={() => handleRemoveInvalidToken(token)}
@@ -95,6 +97,7 @@ export function AdminMembersEditor({ value, onChange, disabled = false }: AdminM
                 type="button"
                 variant="ghost"
                 size="sm"
+                tooltip={t("hints.extensions.members.clear")}
                 className="ml-auto min-h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
                 onClick={handleClear}
               >

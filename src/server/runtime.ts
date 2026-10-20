@@ -343,6 +343,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         );
         return provider ? `provider:${provider.id}` : "local";
       },
+      // System 重试策略 getter：Runtime 在 owning run 起点复制一次快照；ActionExecutor
+      // 只消费 context.retryPolicy 快照，不在这里重复读配置。
+      systemRetryPolicy: () => execution().system,
       // 执行配置保存成功后的 drain：订阅权限保存通知，唤醒准入队列重判；CAS 失败不触发。
       onPolicyChange: (listener) => permissions.subscribe(listener),
     });

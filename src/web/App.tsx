@@ -1,5 +1,12 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "./components/ui/sheet";
 import { BrandLogo } from "./design-system/BrandLogo";
 import { DesignSystemProvider } from "./design-system/Providers";
 
@@ -7,9 +14,11 @@ import { useLocale } from "./i18n";
 import { startConversationChanges } from "./services/conversation-changes";
 import { startChunkPreload } from "./state/preload-orchestrator";
 import { PRELOAD_REGISTRY, WORKSPACE_LOADERS } from "./state/preload-registry";
+import type { Page, SettingsView } from "./state/types";
 import { hasUnsavedDrafts } from "./state/unsaved-changes";
 import { useSuperstringStore } from "./store";
 import { activeSpace, type SpaceId } from "./workspace/navigation";
+import type { SettingsRoute } from "./workspace/settings-routes";
 import { WorkspaceShell } from "./workspace/WorkspaceShell";
 
 const ConversationWorkspace = lazy(WORKSPACE_LOADERS.conversations);
@@ -37,6 +46,7 @@ function Waiting({ bootstrap = false }: { bootstrap?: boolean }) {
   );
 }
 function Application() {
+  const { t } = useTranslation();
   // Keep persisted language changes in sync across windows in every workspace.
   useLocale();
   const status = useSuperstringStore((s) => s.status);
@@ -46,8 +56,19 @@ function Application() {
   const apiClient = useSuperstringStore((s) => s.apiClient);
   const bootstrap = useSuperstringStore((s) => s.bootstrap);
   const unsaved = useSuperstringStore(hasUnsavedDrafts);
+  const page = useSuperstringStore((s) => s.page);
+  const settingsView = useSuperstringStore((s) => s.settingsView);
+  const settingsRoute = useSuperstringStore((s) => s.settingsRoute);
   const space = useSuperstringStore(activeSpace);
   const [visitedSpaces, setVisitedSpaces] = useState<Set<SpaceId>>(() => new Set([space]));
+  const lastNonPrefsRef = useRef<{
+    page: Page;
+    settingsView: SettingsView;
+    settingsRoute: SettingsRoute;
+  } | null>(null);
+  const lastFocusRef = useRef<HTMLElement | null>(null);
+  const prevSpaceRef = useRef<SpaceId>(space);
+
   const isConversations = space === "conversations";
   const isAssistants = space === "assistants";
   const isCapabilities = space === "capabilities";
@@ -56,6 +77,35 @@ function Application() {
   const isConnections = space === "connections";
   const isModels = space === "models";
   const isPreferences = space === "preferences";
+
+  useEffect(() => {
+    if (space !== "preferences") {
+      lastNonPrefsRef.current = { page, settingsView, settingsRoute };
+    } else if (prevSpaceRef.current !== "preferences") {
+      lastFocusRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    prevSpaceRef.current = space;
+  }, [space, page, settingsView, settingsRoute]);
+
+  const closePreferences = () => {
+    const prev = lastNonPrefsRef.current;
+    const state = useSuperstringStore.getState();
+    if (
+      !prev ||
+      (prev.page === "settings" && ["general", "appearance", "hub"].includes(prev.settingsView))
+    ) {
+      state.openChat();
+      return;
+    }
+    if (prev.page === "chat") {
+      state.requestPageNavigation("chat", prev.settingsView);
+    } else if (prev.settingsView === "workspace") {
+      state.openSettingsRoute(prev.settingsRoute);
+    } else {
+      state.requestPageNavigation("settings", prev.settingsView);
+    }
+  };
 
   useEffect(() => {
     void bootstrap();
@@ -171,11 +221,41 @@ function Application() {
         </div>
       )}
       {(visitedSpaces.has("preferences") || isPreferences) && (
-        <div hidden={!isPreferences} className={isPreferences ? "h-full" : "hidden"}>
-          <Suspense fallback={<Waiting />}>
-            <Preferences active={isPreferences} />
-          </Suspense>
-        </div>
+        <Sheet
+          open={isPreferences}
+          onOpenChange={(next) => {
+            if (!next) closePreferences();
+          }}
+        >
+          <SheetContent
+            side="right"
+            showCloseButton
+            className="flex h-full w-full flex-col gap-0 p-0 sm:max-w-xl md:max-w-2xl"
+            onCloseAutoFocus={(e) => {
+              const target = [
+                lastFocusRef.current,
+                document.getElementById("workspace-navigation-trigger"),
+                document.getElementById("workspace-search-trigger"),
+              ].find((el): el is HTMLElement => Boolean(el?.isConnected));
+              if (target) {
+                e.preventDefault();
+                target.focus();
+              }
+            }}
+          >
+            <SheetHeader className="sr-only">
+              <SheetTitle>{t("library.preferences")}</SheetTitle>
+              <SheetDescription>
+                {t("library.language.color.and.desktop.behavior.changes.apply.immediately")}
+              </SheetDescription>
+            </SheetHeader>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <Suspense fallback={<Waiting />}>
+                <Preferences active={isPreferences} />
+              </Suspense>
+            </div>
+          </SheetContent>
+        </Sheet>
       )}
     </WorkspaceShell>
   );

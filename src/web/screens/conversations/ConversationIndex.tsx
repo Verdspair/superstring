@@ -10,7 +10,8 @@ import {
   X,
 } from "lucide-react";
 import { useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ConversationSummary } from "../../../shared/contracts/conversation";
 import { AlertDialog } from "../../components/confirmation";
 import { Badge } from "../../components/ui/badge";
@@ -107,14 +108,10 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
       <header className="space-y-4 border-b px-4 pb-4 pt-6">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-primary">
-              {t("brand.wordmark")}
+            <p className="workspace-page-location">
+              {t("brand.workspace", { "0": t("workspace.conversations") })}
             </p>
-            <h2
-              ref={header}
-              tabIndex={-1}
-              className="mt-1 text-xl font-semibold tracking-tight outline-none"
-            >
+            <h2 ref={header} tabIndex={-1} className="workspace-page-title outline-none">
               {t("workspace.conversations")}
             </h2>
           </div>
@@ -135,6 +132,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
               <Button
                 variant="ghost"
                 size="icon-xs"
+                tooltip={t("hints.conversation.clearSearch")}
                 aria-label={t("workspace.clear_search")}
                 onClick={() => setQuery("")}
               >
@@ -145,13 +143,25 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
         </InputGroup>
         <Tabs value={channel} onValueChange={setChannel}>
           <TabsList className="w-full" aria-label={t("workspace.conversation_channels")}>
-            <TabsTrigger value="all" className="flex-1">
+            <TabsTrigger
+              value="all"
+              tooltip={t("hints.custom.conversationFilter.all")}
+              className="flex-1"
+            >
               {t("workspace.all")}
             </TabsTrigger>
-            <TabsTrigger value="web" className="flex-1">
+            <TabsTrigger
+              value="web"
+              tooltip={t("hints.custom.conversationFilter.web")}
+              className="flex-1"
+            >
               {t("channel.web")}
             </TabsTrigger>
-            <TabsTrigger value="onebot11" className="flex-1">
+            <TabsTrigger
+              value="onebot11"
+              tooltip={t("hints.custom.conversationFilter.onebot11")}
+              className="flex-1"
+            >
               {t("channel.onebot")}
             </TabsTrigger>
           </TabsList>
@@ -173,6 +183,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
             </p>
             {!!ids.length && (
               <Button
+                tooltip={<Trans i18nKey="hints.complete.clearFilters" />}
                 variant="link"
                 onClick={() => {
                   setQuery("");
@@ -217,6 +228,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
           <Button
             size="icon-sm"
             variant="ghost"
+            tooltip={t("hints.conversation.refreshDirectory")}
             aria-label={t("workspace.refresh_conversations")}
             disabled={loading}
             onClick={() => void load()}
@@ -226,6 +238,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
         </div>
         {cursor && (
           <Button
+            tooltip={<Trans i18nKey="hints.complete.loadMore" />}
             variant="outline"
             className="w-full"
             size="sm"
@@ -277,10 +290,16 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
             </p>
           )}
           <DialogFooter>
-            <Button variant="outline" disabled={busy} onClick={management.cancel}>
+            <Button
+              tooltip={<Trans i18nKey="hints.complete.cancel" />}
+              variant="outline"
+              disabled={busy}
+              onClick={management.cancel}
+            >
               {t("workspace.cancel")}
             </Button>
             <Button
+              tooltip={<Trans i18nKey="hints.complete.nameSave" />}
               disabled={
                 busy ||
                 (groupEditing
@@ -322,6 +341,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
           )}
           <div className="flex justify-end gap-2">
             <Button
+              tooltip={<Trans i18nKey="hints.complete.cancel" />}
               variant="outline"
               data-dialog-cancel
               disabled={management.busy}
@@ -330,6 +350,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
               {t("workspace.cancel")}
             </Button>
             <Button
+              tooltip={<Trans i18nKey="hints.complete.delete" />}
               variant="destructive"
               disabled={management.busy || deleteBusy}
               onClick={() =>
@@ -378,18 +399,30 @@ function IndexRecord({
       label={t("workspace.conversation_actions", { "0": item.title })}
       disabled={disabled}
       actions={[
-        { label: t("avatar.edit"), icon: Camera, run: onAvatar },
+        {
+          label: t("avatar.edit"),
+          tooltip: t("hints.complete.avatarEdit"),
+          icon: Camera,
+          run: onAvatar,
+        },
         ...(item.channel === "web"
           ? [
-              { label: t("workspace.rename"), icon: Edit3, run: onRename },
+              {
+                label: t("workspace.rename"),
+                tooltip: t("hints.recordMenu.rename"),
+                icon: Edit3,
+                run: onRename,
+              },
               {
                 label: t("workspace.refresh_chat"),
+                tooltip: t("hints.recordMenu.refresh"),
                 icon: RefreshCw,
                 disabled: busy,
                 run: onRefresh,
               },
               {
                 label: t("workspace.delete_chat"),
+                tooltip: t("hints.recordMenu.deleteConversation"),
                 icon: Trash2,
                 disabled: busy,
                 destructive: true,
@@ -397,76 +430,92 @@ function IndexRecord({
               },
             ]
           : item.channel === "onebot11" && item.topology === "shared" && item.qqGroup
-            ? [{ label: t("workspace.rename"), icon: Edit3, run: onRename }]
+            ? [
+                {
+                  label: t("workspace.rename"),
+                  tooltip: t("hints.recordMenu.rename"),
+                  icon: Edit3,
+                  run: onRename,
+                },
+              ]
             : []),
       ]}
     >
       {(trigger) => (
         <div
           className={cn(
-            "group mb-1 rounded-xl border border-transparent p-1 transition-colors",
-            selected ? "border-border bg-background shadow-xs" : "hover:bg-muted/60",
+            "group mb-3 rounded-xl border border-transparent p-2 transition-colors",
+            selected ? "border-border bg-background" : "hover:bg-muted/60",
           )}
         >
           {/* QQ 群卡片常显启停与「本群配置」：独立一行放在标题/选择按钮上方，点控件不选中会话。 */}
           {item.channel === "onebot11" && item.topology === "shared" && (
-            <div className="px-2 pb-0.5 pt-1.5">
+            <div className="px-2 pb-2 pt-2">
               <QqGroupControls bindingId={item.sourceId} expectedAgentId={item.agentId} />
             </div>
           )}
           <div className="flex items-start">
-            <button
-              type="button"
-              className="min-w-0 flex-1 rounded-lg p-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              data-source-id={item.sourceId}
-              aria-current={selected ? "page" : undefined}
-              aria-label={item.title}
-              disabled={disabled}
-              onClick={onSelect}
-            >
-              <div className="flex items-center gap-2">
-                <ConversationAvatar conversation={item} value={item.avatar} className="size-9" />
-                <strong className="truncate text-sm font-medium">{item.title}</strong>
-              </div>
-              <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <Badge variant="outline" className="px-1 py-0 text-[9px]">
-                  {item.channel === "web"
-                    ? "Web"
-                    : item.topology === "shared"
-                      ? t("workspace.onebot_group")
-                      : t("workspace.onebot_direct")}
-                </Badge>
-                <Bot className="size-3 shrink-0" />
-                <span className="truncate">{agentName ?? "Agent"}</span>
-                {item.qqGroup && (
-                  <span className="font-mono" title={t("workspace.group_number")}>
-                    {item.qqGroup.number}
-                  </span>
-                )}
-              </div>
-              <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                <time dateTime={item.updatedAt}>
-                  {new Date(item.updatedAt).toLocaleDateString(i18n.resolvedLanguage)}
-                </time>
-                {phase && phase !== "idle" && (
-                  <span
-                    role="status"
-                    className={phase === "failed" ? "text-destructive" : "text-primary"}
-                  >
-                    {t(
-                      phase === "failed"
-                        ? "workspace.run_failed"
-                        : phase === "reconciling"
-                          ? "workspace.result_unconfirmed"
-                          : "workspace.processing",
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 rounded-lg p-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-source-id={item.sourceId}
+                  aria-current={selected ? "page" : undefined}
+                  aria-label={item.title}
+                  disabled={disabled}
+                  onClick={onSelect}
+                >
+                  <div className="flex items-center gap-2">
+                    <ConversationAvatar
+                      conversation={item}
+                      value={item.avatar}
+                      className="size-9"
+                    />
+                    <strong className="truncate text-sm font-medium">{item.title}</strong>
+                  </div>
+                  <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <Badge variant="outline" className="px-1 py-0 text-[9px]">
+                      {item.channel === "web"
+                        ? "Web"
+                        : item.topology === "shared"
+                          ? t("workspace.onebot_group")
+                          : t("workspace.onebot_direct")}
+                    </Badge>
+                    <Bot className="size-3 shrink-0" />
+                    <span className="truncate">{agentName ?? "Agent"}</span>
+                    {item.qqGroup && (
+                      <span className="font-mono" title={t("workspace.group_number")}>
+                        {item.qqGroup.number}
+                      </span>
                     )}
-                  </span>
-                )}
-                {selected && (!phase || phase === "idle") && (
-                  <Check className="size-3 text-primary" />
-                )}
-              </div>
-            </button>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                    <time dateTime={item.updatedAt}>
+                      {new Date(item.updatedAt).toLocaleDateString(i18n.resolvedLanguage)}
+                    </time>
+                    {phase && phase !== "idle" && (
+                      <span
+                        role="status"
+                        className={phase === "failed" ? "text-destructive" : "text-primary"}
+                      >
+                        {t(
+                          phase === "failed"
+                            ? "workspace.run_failed"
+                            : phase === "reconciling"
+                              ? "workspace.result_unconfirmed"
+                              : "workspace.processing",
+                        )}
+                      </span>
+                    )}
+                    {selected && (!phase || phase === "idle") && (
+                      <Check className="size-3 text-primary" />
+                    )}
+                  </div>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{t("strict.hints.conversationSelect")}</TooltipContent>
+            </Tooltip>
             {trigger}
           </div>
         </div>

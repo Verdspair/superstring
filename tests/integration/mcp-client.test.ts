@@ -359,6 +359,26 @@ describe("MCP HTTP 与 SSE 传输（0.4.0 P6）", () => {
     expect(cancelled).toBe(2);
   });
 
+  it("HTTP 错误保留结构化 status（5xx/429/401），不解析消息文本", async () => {
+    for (const status of [500, 429, 401]) {
+      const base = serve(async () => new Response("no", { status }));
+      let failure: unknown;
+      try {
+        await connectMcpServer({
+          ...stdioServer,
+          id: `status-${status}`,
+          transport: "http",
+          url: `${base}/mcp`,
+        });
+        throw new Error("should reject");
+      } catch (error) {
+        failure = error;
+      }
+      expect((failure as { code?: string }).code).toBe("MCP_HTTP_ERROR");
+      expect((failure as { status?: number }).status).toBe(status);
+    }
+  });
+
   it("非 2xx 与 JSON-RPC error 都带码失败", async () => {
     const base = serve(async () => new Response("nope", { status: 500 }));
     await expect(

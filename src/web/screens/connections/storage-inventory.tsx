@@ -5,7 +5,7 @@
 
 import { RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import type {
   QqConversationKind,
@@ -72,17 +72,18 @@ function StorageRetentionCard() {
   return (
     <section>
       <Card size="sm">
-        <CardHeader>
+        <CardHeader className="border-b bg-muted/50">
           <CardTitle>{t("connections.storage.manage.retentionTitle")}</CardTitle>
           <CardDescription>{t("connections.storage.manage.retentionNote")}</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="space-y-4 pt-(--card-spacing)">
           <p className="text-xs text-muted-foreground">
             {t("connections.storage.manage.manualNote")}
           </p>
           <Field
             label="connections.storage.manage.retentionDays"
             info="connections.storage.manage.retentionDaysInfo"
+            tooltip={t("connections.storage.manage.retentionDaysInfo")}
           >
             <Input
               className="w-32"
@@ -98,16 +99,19 @@ function StorageRetentionCard() {
               {t("connections.storage.manage.retentionInvalid")}
             </p>
           )}
-          <Button
-            disabled={saving || !dirty}
-            onClick={() =>
-              void save().then((ok) => {
-                if (ok) setDraft(null);
-              })
-            }
-          >
-            {t("connections.storage.manage.saveRetention")}
-          </Button>
+          <div className="flex justify-end pt-1">
+            <Button
+              tooltip={t("hints.qq.saveRetention")}
+              disabled={saving || !dirty}
+              onClick={() =>
+                void save().then((ok) => {
+                  if (ok) setDraft(null);
+                })
+              }
+            >
+              {t("connections.storage.manage.saveRetention")}
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </section>
@@ -279,26 +283,33 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
     <div className="space-y-8 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="font-semibold">{t("connections.storage.title")}</h2>
+          <h2 className="text-lg font-semibold tracking-tight">{t("connections.storage.title")}</h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {data
               ? t("connections.storage.retention", { "0": data.retention.days })
               : t("connections.common.loading")}
           </p>
         </div>
-        <Button variant="outline" disabled={loading || saving} onClick={() => void refresh()}>
+        <Button
+          variant="outline"
+          disabled={loading || saving}
+          tooltip={t("hints.qq.storageRefresh")}
+          onClick={() => void refresh()}
+        >
           <RefreshCw />
           {t("connections.common.refresh")}
         </Button>
       </div>
+
       <StorageRetentionCard />
+
       <section>
         <Card size="sm">
-          <CardHeader>
+          <CardHeader className="border-b bg-muted/50">
             <CardTitle>{t("connections.storage.manage.cleanupTitle")}</CardTitle>
             <CardDescription>{t("connections.storage.manage.metaNote")}</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-5 pt-(--card-spacing)">
             <Tabs
               value={category}
               onValueChange={(next) => switchCategory(next as QqStorageCategory)}
@@ -315,8 +326,12 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                 ))}
               </TabsList>
             </Tabs>
-            <div className="flex flex-wrap items-end gap-3">
-              <Field label="connections.storage.manage.statusLabel">
+
+            <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-muted/20 p-3">
+              <Field
+                label="connections.storage.manage.statusLabel"
+                tooltip={t("hints.fieldExtra.storageStatus")}
+              >
                 <NativeSelect
                   className="w-32"
                   value={status}
@@ -330,7 +345,10 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                   ))}
                 </NativeSelect>
               </Field>
-              <Field label="connections.storage.manage.kindLabel">
+              <Field
+                label="connections.storage.manage.kindLabel"
+                tooltip={t("hints.fieldExtra.storageKind")}
+              >
                 <NativeSelect
                   className="w-32"
                   value={kind}
@@ -342,7 +360,10 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                   <option value="private">{t("connections.kind.private")}</option>
                 </NativeSelect>
               </Field>
-              <Field label="connections.storage.manage.peerFilter">
+              <Field
+                label="connections.storage.manage.peerFilter"
+                tooltip={t("hints.fieldExtra.storagePeer")}
+              >
                 <Input
                   className="w-48"
                   value={peerInput}
@@ -356,27 +377,42 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                   }}
                 />
               </Field>
-              <Button variant="outline" disabled={saving} onClick={applyPeer}>
+              <Button
+                variant="outline"
+                disabled={saving}
+                tooltip={t("hints.qq.applyPeerFilter")}
+                onClick={applyPeer}
+              >
                 {t("connections.storage.manage.apply")}
               </Button>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                disabled={saving || selected.length === 0}
-                onClick={openSelectionPreview}
-              >
-                <Trash2 />
-                {t("connections.storage.manage.cleanSelected")}
-              </Button>
-              <Button variant="outline" disabled={saving} onClick={openCategoryPreview}>
-                <Trash2 />
-                {t("connections.storage.manage.cleanCategory")}
-              </Button>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-y py-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  disabled={saving || selected.length === 0}
+                  tooltip={t("hints.qq.cleanSelected")}
+                  onClick={openSelectionPreview}
+                >
+                  <Trash2 />
+                  {t("connections.storage.manage.cleanSelected")}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={saving}
+                  tooltip={t("hints.qq.cleanCategory")}
+                  onClick={openCategoryPreview}
+                >
+                  <Trash2 />
+                  {t("connections.storage.manage.cleanCategory")}
+                </Button>
+              </div>
               <span className="text-xs text-muted-foreground">
                 {t("connections.storage.manage.selectedCount", { "0": selected.length })}
               </span>
             </div>
+
             {itemsError && (
               <div
                 className="flex flex-wrap items-center gap-2 text-sm text-destructive"
@@ -386,6 +422,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                 <Button
                   variant="outline"
                   disabled={itemsLoading}
+                  tooltip={t("hints.qq.storageItemsRetry")}
                   onClick={() => setReloadTick((value) => value + 1)}
                 >
                   {t("capabilities.retry")}
@@ -469,6 +506,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                   <span>{t("connections.storage.manage.total", { "0": total })}</span>
                   <div className="flex items-center gap-2">
                     <Button
+                      tooltip={<Trans i18nKey="hints.complete.previous" />}
                       variant="outline"
                       disabled={position === 0 || itemsLoading || saving}
                       onClick={goPrev}
@@ -476,6 +514,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                       {t("connections.storage.manage.previousPage")}
                     </Button>
                     <Button
+                      tooltip={<Trans i18nKey="hints.complete.next" />}
                       variant="outline"
                       disabled={!nextCursor || itemsLoading || saving}
                       onClick={goNext}
@@ -489,13 +528,14 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
           </CardContent>
         </Card>
       </section>
+
       {data && (
         <section>
           <Card size="sm">
             <CardContent className="space-y-6 pt-(--card-spacing)">
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {groups.map((group) => (
-                  <section key={group.key} className="space-y-3 rounded-lg border p-4">
+                  <section key={group.key} className="space-y-3 rounded-lg border bg-muted/20 p-4">
                     <h3 className="font-medium">{t(`connections.storage.${group.key}`)}</h3>
                     <dl className="space-y-2">
                       {Object.entries(group.values).map(([key, value]) => (
@@ -510,13 +550,14 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                   </section>
                 ))}
               </div>
-              <section className="space-y-3">
+
+              <section className="space-y-3 border-t pt-4">
                 <h3 className="font-semibold">{t("connections.storage.runtime")}</h3>
-                <div className="grid gap-3 sm:grid-cols-3">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {data.agent_runtime &&
                     Object.entries(data.agent_runtime).map(([key, value]) => (
                       <div
-                        className="flex items-center justify-between rounded-md bg-muted px-4 py-3 text-sm"
+                        className="flex items-center justify-between rounded-md border bg-muted/30 px-4 py-3 text-sm"
                         key={key}
                       >
                         <span>{t(`connections.storage.runtime.${key}`)}</span>
@@ -536,7 +577,8 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                   })}
                 </p>
               </section>
-              <section className="space-y-4">
+
+              <section className="space-y-4 border-t pt-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h3 className="font-semibold">{t("connections.storage.sweep")}</h3>
@@ -551,6 +593,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                   <Button
                     variant="outline"
                     size="sm"
+                    tooltip={t("hints.qq.viewSweepTraces")}
                     onClick={() =>
                       useSuperstringStore.getState().requestConversationView("activity", "global")
                     }
@@ -601,6 +644,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
           </Card>
         </section>
       )}
+
       {cleanupOpen && (
         <AlertDialog
           title={t(
@@ -652,12 +696,19 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
           </div>
           <AlertDialogFooter>
             {result ? (
-              <Button type="button" variant="outline" data-dialog-cancel onClick={closeCleanup}>
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.close" />}
+                type="button"
+                variant="outline"
+                data-dialog-cancel
+                onClick={closeCleanup}
+              >
                 {t("connections.close")}
               </Button>
             ) : (
               <>
                 <Button
+                  tooltip={<Trans i18nKey="hints.complete.cancel" />}
                   type="button"
                   variant="outline"
                   data-dialog-cancel
@@ -671,6 +722,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                     type="button"
                     variant="destructive"
                     disabled={saving || !cleanupRequest}
+                    tooltip={t("hints.qq.cleanupRetry")}
                     onClick={retryCleanup}
                   >
                     {t("capabilities.retry")}
@@ -680,6 +732,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                     type="button"
                     variant="destructive"
                     disabled={saving || !preview}
+                    tooltip={t("hints.qq.runCleanup")}
                     onClick={() => void runCleanup()}
                   >
                     {t("connections.storage.manage.runCleanup")}

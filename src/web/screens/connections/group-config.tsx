@@ -3,7 +3,7 @@
 
 import { ChevronLeft, MessageSquare, Shield } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import type { AgentKnowledgeReadSettings } from "../../../shared/contracts/knowledge";
 import {
@@ -41,7 +41,6 @@ import { NativeSelect } from "../../components/ui/native-select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { Textarea } from "../../components/ui/textarea";
 import { permissionResources } from "../../features/access/permission-state";
-import { openContextAllocation } from "../../features/context-allocation";
 import {
   type QqGroupConfigChange,
   type QqGroupConfigEditor,
@@ -68,75 +67,34 @@ import { useSuperstringStore } from "../../store";
 import { BindingEditor } from "./binding-editor";
 import { QqMessagePreview } from "./qq-message-preview";
 import {
+  bagOf,
+  FieldState,
+  NUMERIC_GROUP,
+  NumberField,
+  numberSchemaOf,
+  overrideOf,
+  percentText,
+} from "./qq-number-fields";
+import {
   DerivedRhythmIntervals,
   SchemeFieldCard,
   StickerFrequencyOptions,
 } from "./scheme-field-shared";
 import {
   fieldBounds,
-  headroomPercentBounds,
   isValidTimezone,
   localClock,
-  type NumberEditorGroup,
-  numberEditorGroups,
   TIMEZONE_SUGGESTIONS,
   utcMinutes,
 } from "./scheme-fields";
 
-/** 契约差异是稀疏的：进出都当可索引 bag 用（组名/字段名仍由契约与渲染表格约束）。 */
-type OverridesBag = Record<string, Record<string, unknown>>;
-const bagOf = (editor: QqGroupConfigEditor): OverridesBag =>
-  editor.overrides as unknown as OverridesBag;
+export { FieldState, NumberField };
+
 const baseGroupOf = (scheme: QqSchemeResponse, group: string): Record<string, unknown> =>
   ((scheme as unknown as Record<string, unknown>)[group] ?? {}) as Record<string, unknown>;
 
-/**
- * 显式自定义＝该字段在稀疏差异里（值可能是 false/0/null/空集合，仍是实打实的钉住）。
- * 0052 嵌套 stages：字段名是 `stages.<phase>` 点路径时，真实位置在 `media_input.stages.<phase>`。
- */
-function overrideOf(editor: QqGroupConfigEditor, group: string, name: string) {
-  if (group === "media_input" && name.startsWith("stages.")) {
-    const phase = name.slice("stages.".length);
-    const stages = bagOf(editor).media_input?.stages as Record<string, unknown> | undefined;
-    if (!stages || !(phase in stages) || stages[phase] === undefined)
-      return { custom: false, value: undefined as unknown };
-    return { custom: true, value: stages[phase] };
-  }
-  const fields = bagOf(editor)[group];
-  if (!fields || !(name in fields) || fields[name] === undefined)
-    return { custom: false, value: undefined as unknown };
-  return { custom: true, value: fields[name] };
-}
-
 const isCustomField = (editor: QqGroupConfigEditor, group: string, name: string) =>
   overrideOf(editor, group, name).custom || editor.rawTexts[`${group}.${name}`] !== undefined;
-
-const NUMERIC_GROUP: Record<
-  | "rhythm"
-  | "context"
-  | "compression"
-  | "output_reserve"
-  | "stickers"
-  | "message_settings"
-  | "media_input",
-  NumberEditorGroup
-> = {
-  rhythm: "rhythm",
-  context: "context",
-  compression: "compression",
-  output_reserve: "outputReserve",
-  stickers: "stickers",
-  message_settings: "messageSettings",
-  media_input: "mediaInput",
-};
-
-const numberSchemaOf = (group: NumberEditorGroup, name: string) =>
-  (
-    numberEditorGroups[group].shape as Record<
-      string,
-      { safeParse: (value: unknown) => { success: boolean } } | undefined
-    >
-  )[name];
 
 /** 契约级数字原文判定（0052 两组共用）：非空且过共享 schema；0 不是 null 原图的编码。 */
 const schemaSafeParse = (group: string, name: string, raw: string): boolean => {
@@ -163,10 +121,6 @@ function hasOutOfRangeOverride(editor: QqGroupConfigEditor): boolean {
   }
   return false;
 }
-
-/** 装配冗余在界面上是整数百分比（存储是 0–0.5 的比例，与方案页同一换算）。 */
-const percentText = (ratio: number) => `${Number((ratio * 100).toFixed(2))}%`;
-const percentInputText = (ratio: number) => String(Number((ratio * 100).toFixed(2)));
 
 /** 预览用的中性文本：百分比换算，数组顿号连接，枚举与布尔/原图读人话，其余 String()。 */
 const valueTextOf = (
@@ -256,55 +210,6 @@ interface KnowledgeReadProjection {
   refresh: () => void;
 }
 
-/**
- * 字段状态行：显式跟随 / 显式钉住（与基线同值也是钉住）；钉住从当前基线值初始化，
- * 基线还没读到时不提供钉住入口。
- */
-function FieldState({
-  label,
-  custom,
-  baseText,
-  currentText,
-  disabled,
-  canCustom,
-  onFollow,
-  onCustom,
-}: {
-  label: string;
-  custom: boolean;
-  baseText: string;
-  currentText: string;
-  disabled: boolean;
-  canCustom: boolean;
-  onFollow: () => void;
-  onCustom: () => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="mt-1.5 space-y-1">
-      <NativeSelect
-        size="sm"
-        className="min-w-36"
-        aria-label={`${label}: ${t("schemes.qq.groupConfig.fieldState")}`}
-        disabled={disabled}
-        data-field-state
-        value={custom ? "custom" : "follow"}
-        onChange={(e) => (e.target.value === "custom" ? onCustom() : onFollow())}
-      >
-        <option value="follow">{t("schemes.qq.groupConfig.followBadge")}</option>
-        <option value="custom" disabled={!canCustom}>
-          {t("schemes.qq.groupConfig.customBadge")}
-        </option>
-      </NativeSelect>
-      <p className="text-xs text-muted-foreground">
-        {custom
-          ? t("schemes.qq.groupConfig.customValue", { "0": baseText, "1": currentText })
-          : t("schemes.qq.groupConfig.followsBase", { "0": baseText })}
-      </p>
-    </div>
-  );
-}
-
 /** 表情发送倾向（低/中/高）：紧凑 RadioGroup，支持稀疏覆盖与恢复跟随。 */
 function StickerFrequencyField({
   editor,
@@ -361,107 +266,6 @@ function StickerFrequencyField({
   );
 }
 
-/** 数字字段：原文先进 store（契约拒绝的留在 rawTexts），显示以原文优先，blur 后才提示错误。 */
-export function NumberField({
-  editor,
-  base,
-  group,
-  name,
-  labelKey,
-  infoKey,
-  percent = false,
-  disabled = false,
-}: {
-  editor: QqGroupConfigEditor;
-  /** 生效基线的组包；null＝待切换目标还没读到，不显示半截数值。 */
-  base: Record<string, unknown> | null;
-  group:
-    | "rhythm"
-    | "context"
-    | "compression"
-    | "output_reserve"
-    | "stickers"
-    | "message_settings"
-    | "media_input";
-  name: string;
-  labelKey: string;
-  infoKey?: string;
-  percent?: boolean;
-  /** one_then_on_demand 的层数不参与运行：禁用输入，但钉住的配置值原样保稿。 */
-  disabled?: boolean;
-}) {
-  const { t } = useTranslation();
-  const saving = useSuperstringStore((s) => s.qqGroupConfigSaving);
-  const patch = useSuperstringStore((s) => s.patchQqGroupOverride);
-  const [showError, setShowError] = useState(false);
-  const numeric = NUMERIC_GROUP[group];
-  const { custom, value } = overrideOf(editor, group, name);
-  const baseKnown = base !== null && base[name] !== undefined;
-  const baseValue = baseKnown ? Number(base[name]) : null;
-  const raw = editor.rawTexts[`${group}.${name}`];
-  const schema = numberSchemaOf(numeric, name);
-  const bounds = percent ? headroomPercentBounds() : fieldBounds(numeric, name);
-  const pinned = custom && value !== null ? Number(value) : null;
-  const percentOk = pinned === null || Math.abs(pinned * 100 - Math.round(pinned * 100)) <= 1e-6;
-  const outOfRange =
-    custom &&
-    value !== null &&
-    (schema?.safeParse(value).success === false || (percent && !percentOk));
-  const pinInput = pinned === null ? null : percent ? percentInputText(pinned) : String(pinned);
-  const pinNote = pinned === null ? null : percent ? percentText(pinned) : String(pinned);
-  const baseInput =
-    baseValue === null ? null : percent ? percentInputText(baseValue) : String(baseValue);
-  const baseNote =
-    baseValue === null
-      ? t("capabilities.state.unread")
-      : percent
-        ? percentText(baseValue)
-        : String(baseValue);
-  const display = raw ?? pinInput ?? baseInput ?? "";
-  const showInvalid = showError && (raw !== undefined || outOfRange);
-  const numberErrorId = useId();
-  return (
-    <Field label={labelKey} info={infoKey}>
-      <Input
-        type="number"
-        inputMode="numeric"
-        min={bounds.min}
-        max={bounds.max}
-        step={bounds.step}
-        data-field={`${group}.${name}`}
-        disabled={saving || disabled}
-        value={display}
-        aria-invalid={showInvalid || undefined}
-        aria-describedby={showInvalid ? numberErrorId : undefined}
-        onFocus={() => setShowError(false)}
-        onBlur={() => setShowError(true)}
-        onChange={(e) => {
-          setShowError(false);
-          patch(group, name, e.target.value);
-        }}
-      />
-      <FieldState
-        label={t(labelKey)}
-        custom={custom}
-        baseText={baseNote}
-        currentText={raw ?? pinNote ?? baseNote}
-        disabled={saving}
-        canCustom={baseKnown}
-        onFollow={() => patch(group, name, undefined)}
-        onCustom={() => {
-          if (baseValue !== null)
-            patch(group, name, percent ? percentInputText(baseValue) : String(baseValue));
-        }}
-      />
-      {showInvalid && (
-        <p id={numberErrorId} role="alert" className="mt-1 text-xs text-destructive">
-          {t("schemes.studio.integerRange", { "0": String(bounds.min), "1": String(bounds.max) })}
-        </p>
-      )}
-    </Field>
-  );
-}
-
 /** 允许时段的钟点：与方案页同一换算（本地显示、UTC 存储），只在生效基线启用时可编辑。 */
 function TimeField({
   editor,
@@ -485,7 +289,10 @@ function TimeField({
   const current = custom ? Number(value) : (baseValue ?? 0);
   const known = custom || baseKnown;
   return (
-    <Field label={labelKey}>
+    <Field
+      label={labelKey}
+      tooltip={t(name === "active_hours_start_minutes" ? "hints.qqTime.start" : "hints.qqTime.end")}
+    >
       <Input
         type="time"
         data-field={`rhythm.${name}`}
@@ -533,7 +340,11 @@ function EnumField({
   const baseValue = typeof base?.[name] === "string" ? (base[name] as string) : null;
   const labels = ENUM_OPTION_LABELS[`${group}.${name}`] ?? {};
   return (
-    <Field label={labelKey} info={infoKey}>
+    <Field
+      label={labelKey}
+      info={infoKey}
+      tooltip={infoKey ? t(infoKey) : t(`hints.qqEnum.${group}.${name}`)}
+    >
       <NativeSelect
         data-field={`${group}.${name}`}
         disabled={saving}
@@ -589,7 +400,11 @@ function TimezoneField({
   const showInvalid = showError && invalid;
   const errorId = "group-config-timezone-error";
   return (
-    <Field label="connections.timezone" info="connections.timezoneHint">
+    <Field
+      label="connections.timezone"
+      info="connections.timezoneHint"
+      tooltip={t("connections.timezoneHint")}
+    >
       <div>
         <Input
           type="text"
@@ -655,7 +470,11 @@ function StageField({
   const baseValue = baseStages[phase] === true;
   const boolText = (flag: boolean) => t(flag ? "connections.on" : "connections.off");
   return (
-    <Field label={labelKey} info="schemes.studio.stageOffHint">
+    <Field
+      label={labelKey}
+      info="schemes.studio.stageOffHint"
+      tooltip={t("schemes.studio.stageOffHint")}
+    >
       <NativeSelect
         data-field={`media_input.${name}`}
         disabled={saving}
@@ -720,7 +539,11 @@ function OrdinaryStillField({
   };
   return (
     // 与方案页同一结构：选择框是 Field 首个控件（标题 htmlFor 关联），数值框各自显式命名。
-    <Field label="connections.ordinaryStillChoice" info="connections.ordinaryStillOriginal">
+    <Field
+      label="connections.ordinaryStillChoice"
+      info="connections.ordinaryStillOriginal"
+      tooltip={t("connections.ordinaryStillOriginal")}
+    >
       <NativeSelect
         data-field={`${group}.${name}.choice`}
         disabled={saving}
@@ -835,7 +658,11 @@ function ThreeStateField({
     (custom ? value === true : baseValue === true);
 
   return (
-    <Field label={labelKey} info={infoKey}>
+    <Field
+      label={labelKey}
+      info={infoKey}
+      tooltip={infoKey ? t(infoKey) : t(`hints.qqSwitch.${group}.${name}`)}
+    >
       <NativeSelect
         data-field={`${group}.${name}`}
         disabled={saving}
@@ -896,7 +723,11 @@ function PromptField({
   // 自定义字段保留原始输入：只有跟随显示才用派生文本。
   const display = raw ?? (custom ? String(value ?? "") : followText);
   return (
-    <Field label={labelKey} info={hintKey}>
+    <Field
+      label={labelKey}
+      info={hintKey}
+      tooltip={hintKey ? t(hintKey) : t(`hints.qqPrompt.${slot}`)}
+    >
       <Textarea
         className="min-h-36 font-mono text-xs leading-6"
         data-prompt={`prompts.${slot}`}
@@ -950,6 +781,7 @@ function CollectionsField({
     <Field
       label="connections.authorizedCollections"
       info="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
+      tooltip={t("connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected")}
     >
       <div className="space-y-3">
         {!baseKnown && (
@@ -962,8 +794,9 @@ function CollectionsField({
         )}
         <div className="grid gap-3 sm:grid-cols-2">
           {baseIds.map((id) => (
-            <Label key={id} className="rounded-lg border p-3">
+            <Label key={id} className="selection-card p-3">
               <Checkbox
+                tooltip={t("connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected")}
                 checked={current.includes(id)}
                 disabled={saving}
                 aria-label={id}
@@ -973,8 +806,12 @@ function CollectionsField({
             </Label>
           ))}
           {unavailableIds.map((id) => (
-            <Label key={id} className="rounded-lg border border-dashed p-3">
+            <Label
+              key={id}
+              className="selection-card selection-card--unavailable border-dashed p-3"
+            >
               <Checkbox
+                tooltip={t("hints.custom.removeUnavailableCollection")}
                 checked
                 disabled={saving}
                 aria-label={id}
@@ -1016,6 +853,7 @@ function ReadonlyReplyCount({ editor }: { editor: QqGroupConfigEditor }) {
     <Field
       label="connections.replyRecentMessages"
       info="connections.followsTheBoundAssistantRecentTurns"
+      tooltip={t("connections.followsTheBoundAssistantRecentTurns")}
     >
       <p className="rounded-md bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
         {agent ? String(agent.p5_config.recent_turns) : t("connections.followsTheBoundAssistant")}
@@ -1136,6 +974,7 @@ function CapabilityList({
             variant="outline"
             size="sm"
             disabled={permissionLoading}
+            tooltip={t("hints.qq.groupPermissionRetry")}
             onClick={() => void loadPermission(true)}
           >
             {t("capabilities.retry")}
@@ -1169,6 +1008,7 @@ function CapabilityList({
                       size="sm"
                       className="h-auto min-h-8 whitespace-normal"
                       data-capability-retry
+                      tooltip={t("hints.qq.groupKnowledgeRetry")}
                       onClick={() => knowledge.refresh()}
                     >
                       {t("capabilities.retry")}
@@ -1439,7 +1279,7 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
       title={t("schemes.qq.groupConfig.scheme.title")}
       description="schemes.qq.groupConfig.scheme.description"
     >
-      <Field label="schemes.qq.groupConfig.scheme.switch">
+      <Field label="schemes.qq.groupConfig.scheme.switch" tooltip={t("hints.qqGroup.baseScheme")}>
         <NativeSelect
           data-field="scheme.switch"
           disabled={saving}
@@ -1476,7 +1316,13 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
                 : "schemes.qq.groupConfig.scheme.keepLabel",
             ),
           })}
-          <Button variant="link" size="sm" disabled={saving} onClick={() => patch(undefined)}>
+          <Button
+            variant="link"
+            size="sm"
+            tooltip={t("hints.qq.cancelPendingSwitch")}
+            disabled={saving}
+            onClick={() => patch(undefined)}
+          >
             {t("schemes.qq.groupConfig.scheme.cancelPending")}
           </Button>
         </p>
@@ -1499,11 +1345,16 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
             </DialogHeader>
             <SchemeSwitchPreview editor={editor} target={choiceTarget} />
             <DialogFooter>
-              <Button variant="outline" onClick={() => setChoice(null)}>
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.cancel" />}
+                variant="outline"
+                onClick={() => setChoice(null)}
+              >
                 {t("connections.cancel")}
               </Button>
               <Button
                 variant="outline"
+                tooltip={t("hints.qq.schemeSwitchReset")}
                 data-switch-action="reset"
                 onClick={() => {
                   patch(choice, "reset");
@@ -1513,6 +1364,7 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
                 {t("schemes.qq.groupConfig.scheme.resetLabel")}
               </Button>
               <Button
+                tooltip={t("hints.qq.schemeSwitchKeep")}
                 data-switch-action="keep"
                 onClick={() => {
                   patch(choice, "keep");
@@ -1552,6 +1404,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
       openChat: s.openChat,
       openQqGroupConfig: s.openQqGroupConfig,
       patchQqGroupConfigScheme: s.patchQqGroupConfigScheme,
+      patchQqGroupOverride: s.patchQqGroupOverride,
       refreshQqGroupConfig: s.refreshQqGroupConfig,
       openSettingsRoute: s.openSettingsRoute,
       requestConversationNavigation: s.requestConversationNavigation,
@@ -1648,16 +1501,17 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
 
   return (
     <section className="flex h-full min-h-0 flex-col" aria-label={t("schemes.qq.groupConfigTitle")}>
-      <header className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
+      <header className="mb-[24px] flex shrink-0 flex-wrap items-start gap-[14px] border-b border-border pb-[20px]">
         <Button
           variant="ghost"
           size="icon-sm"
+          tooltip={t("hints.qq.backToDirectory")}
           aria-label={t("schemes.qq.groups.backToDirectory")}
           onClick={back}
         >
           <ChevronLeft />
         </Button>
-        <h1 className="text-base font-semibold">{t("schemes.qq.groupConfigTitle")}</h1>
+        <h1 className="text-[22px] font-bold leading-[1.25]">{t("schemes.qq.groupConfigTitle")}</h1>
         {visibleEditor && (
           <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <Badge variant="outline">
@@ -1678,10 +1532,17 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             <span>
               · {t("schemes.qq.groupConfig.baseScheme")} {baseName}
             </span>
+            {dirty && (
+              <Badge variant="secondary" className="gap-1 text-xs">
+                <span className="size-1.5 rounded-full bg-primary" />
+                {t("connections.valueUnsavedChanges", { "0": changes.length })}
+              </Badge>
+            )}
             {otherGroups.length > 1 && (
               <NativeSelect
                 className="h-auto min-h-8 text-xs"
                 value={visibleEditor.source.binding.id}
+                tooltip={t("hints.custom.qqGroupSwitcher")}
                 aria-label={t("schemes.qq.groups.switchGroup")}
                 disabled={saving || state.qqGroupConfigLoading}
                 onChange={(event) => state.openQqGroupConfig(event.target.value)}
@@ -1702,6 +1563,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
               size="sm"
               className="h-auto min-h-8 max-w-full whitespace-normal break-words"
               disabled={saving || state.qqGroupConfigLoading}
+              tooltip={t("hints.qq.groupAdministrators")}
               onClick={() => setAdminEditorOpen(true)}
             >
               <Shield className="size-3.5" />
@@ -1713,6 +1575,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
               variant="outline"
               size="sm"
               className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+              tooltip={t("hints.qq.groupOpenConversation")}
               onClick={() => void state.requestConversationNavigation(summary.id)}
             >
               <MessageSquare className="size-3.5" />
@@ -1724,6 +1587,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             size="sm"
             className="h-auto min-h-8 max-w-full whitespace-normal break-words"
             disabled={saving || state.qqGroupConfigLoading}
+            tooltip={t("hints.qq.groupRefresh")}
             onClick={() => {
               void state.refreshQqGroupConfig();
               // 显式刷新同时推进知识查询的已保存状态，不留在旧读取上。
@@ -1745,6 +1609,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             className="h-auto min-h-8 whitespace-normal"
             data-reopen-config
             disabled={saving}
+            tooltip={t("hints.qq.groupReopenConfig")}
             onClick={() => state.openQqGroupConfig(visibleEditor.source.binding.id)}
           >
             {t("schemes.qq.groupConfig.controls.configure")}
@@ -1779,6 +1644,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                 <Button
                   variant="outline"
                   size="sm"
+                  tooltip={t("hints.qq.groupConfigRetry")}
                   onClick={() => void state.refreshQqGroupConfig()}
                 >
                   {t("capabilities.retry")}
@@ -1799,650 +1665,642 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             <div className="flex flex-wrap items-center justify-between gap-3">
               <Label>
                 <Checkbox
+                  tooltip={t("hints.custom.onlyCustom")}
                   checked={onlyCustom}
                   onCheckedChange={(checked) => setOnlyCustom(checked === true)}
                 />
                 {t("schemes.qq.groupConfig.onlyCustom")}
               </Label>
             </div>
-            <Tabs value={tab} onValueChange={setTab}>
-              <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal">
-                {QQ_SCHEME_SECTIONS.map((section) => (
-                  <TabsTrigger key={section.id} value={section.id}>
-                    {t(section.labelKey)}
-                  </TabsTrigger>
-                ))}
-                <TabsTrigger value="capabilities">
-                  {t("schemes.qq.groupConfig.capabilities")}
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="participation" className="m-0 space-y-6">
-                <SchemeFieldCard
-                  title={t("connections.speechTriggers")}
-                  description="schemes.studio.triggersHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {Object.entries(TRIGGER_LABELS)
-                      .filter(([key]) => visible("triggers", key))
-                      .map(([key, label]) => (
-                        <ThreeStateField
-                          key={key}
-                          editor={visibleEditor}
-                          base={baseBag("triggers")}
-                          group="triggers"
-                          name={key}
-                          labelKey={label}
-                        />
-                      ))}
-                  </div>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("schemes.studio.rhythmTitle")}
-                  description="schemes.studio.rhythmHint"
-                >
-                  <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
-                    {visible("rhythm", "participation_timing") && (
-                      <div className="sm:col-span-2">
-                        <EnumField
-                          editor={visibleEditor}
-                          base={baseBag("rhythm")}
-                          group="rhythm"
-                          name="participation_timing"
-                          labelKey="connections.participationTiming"
-                          infoKey="connections.participationTimingHint"
-                        />
-                      </div>
-                    )}
-                    {effective && (
-                      <DerivedRhythmIntervals
-                        timingMode={effective.rhythm.participation_timing ?? "resource_window"}
-                        mergeWindowSeconds={effective.rhythm.merge_window_seconds}
-                        batchTarget={effective.rhythm.initiative_batch_target_count}
-                        batchJitter={effective.rhythm.initiative_batch_jitter_count}
-                        timeWindowEnabled={effective.rhythm.initiative_time_window_enabled}
-                        timeTarget={effective.rhythm.initiative_time_target_seconds}
-                        timeJitter={effective.rhythm.initiative_time_jitter_seconds}
-                        testId="group-rhythm-derived-intervals"
-                      />
-                    )}
-                    {visible("rhythm", "initiative_time_window_enabled") && (
-                      <div className="sm:col-span-2">
-                        <ThreeStateField
-                          editor={visibleEditor}
-                          base={baseBag("rhythm")}
-                          group="rhythm"
-                          name="initiative_time_window_enabled"
-                          labelKey="connections.initiativeTimeWindowEnabled"
-                          infoKey="connections.initiativeTimeWindowEnabledHint"
-                          disabledNoticeKey="connections.initiativeTimeWindowDisabledNotice"
-                        />
-                      </div>
-                    )}
-                    {participationFields
-                      .filter(([name]) => visible("rhythm", name))
-                      .map(([name, label, info]) => (
-                        <NumberField
-                          key={name}
-                          editor={visibleEditor}
-                          base={baseBag("rhythm")}
-                          group="rhythm"
-                          name={name}
-                          labelKey={label}
-                          infoKey={info}
-                        />
-                      ))}
-                    {visible("rhythm", "initiative_queue_on_busy") && (
-                      <div className="sm:col-span-2">
-                        <ThreeStateField
-                          editor={visibleEditor}
-                          base={baseBag("rhythm")}
-                          group="rhythm"
-                          name="initiative_queue_on_busy"
-                          labelKey="connections.initiativeQueueOnBusy"
-                          infoKey="connections.initiativeQueueOnBusyHint"
-                        />
-                      </div>
-                    )}
-                  </div>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("connections.allowedHours")}
-                  description="connections.useLocalTimeEqualStartAndEndMeansAll"
-                >
-                  {visible("rhythm", "active_hours_enabled") && (
-                    <ThreeStateField
-                      editor={visibleEditor}
-                      base={baseBag("rhythm")}
-                      group="rhythm"
-                      name="active_hours_enabled"
-                      labelKey="connections.allowedHours"
-                    />
-                  )}
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {visible("rhythm", "active_hours_start_minutes") && (
-                      <TimeField
-                        editor={visibleEditor}
-                        base={baseBag("rhythm")}
-                        enabled={effective?.rhythm.active_hours_enabled === true}
-                        name="active_hours_start_minutes"
-                        labelKey="connections.allowedHoursStart"
-                      />
-                    )}
-                    {visible("rhythm", "active_hours_end_minutes") && (
-                      <TimeField
-                        editor={visibleEditor}
-                        base={baseBag("rhythm")}
-                        enabled={effective?.rhythm.active_hours_enabled === true}
-                        name="active_hours_end_minutes"
-                        labelKey="connections.allowedHoursEnd"
-                      />
-                    )}
-                  </div>
-                </SchemeFieldCard>
-                {visible("prompts", "judge") && (
-                  <SchemeFieldCard
-                    title={t("schemes.studio.judgePrompt")}
-                    description="connections.decideWhetherToSpeak"
-                  >
-                    <PromptField
-                      editor={visibleEditor}
-                      base={baseScheme}
-                      effective={effective}
-                      slot="judge"
-                      labelKey="connections.judgementTask"
-                    />
-                  </SchemeFieldCard>
-                )}
-              </TabsContent>
-              <TabsContent value="response" className="m-0 space-y-6">
-                {visible("reply", "split_by_speaker") && (
-                  <SchemeFieldCard
-                    title={t("schemes.studio.replyStructure")}
-                    description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
-                  >
-                    <ThreeStateField
-                      editor={visibleEditor}
-                      base={baseBag("reply")}
-                      group="reply"
-                      name="split_by_speaker"
-                      labelKey="connections.answerEachSpeakerSeparately"
-                    />
-                  </SchemeFieldCard>
-                )}
-                <SchemeFieldCard
-                  title={t("schemes.studio.replyTasks")}
-                  description="schemes.studio.replyTasksHint"
-                >
-                  {visible("prompts", "reply") && (
-                    <PromptField
-                      editor={visibleEditor}
-                      base={baseScheme}
-                      effective={effective}
-                      slot="reply"
-                      labelKey="connections.effectiveReplyTask"
-                      hintKey="connections.editTheReplyTaskItWinsOverTheSwitch"
-                    />
-                  )}
-                  {visible("prompts", "scene") && (
-                    <PromptField
-                      editor={visibleEditor}
-                      base={baseScheme}
-                      effective={effective}
-                      slot="scene"
-                      labelKey="connections.sceneAndBehaviour"
-                    />
-                  )}
-                  {visible("prompts", "review") && (
-                    <PromptField
-                      editor={visibleEditor}
-                      base={baseScheme}
-                      effective={effective}
-                      slot="review"
-                      labelKey="connections.reviewTask"
-                    />
-                  )}
-                  <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
-                    {responseFields
-                      .filter(([name]) => visible("rhythm", name))
-                      .map(([name, label, info]) => (
-                        <NumberField
-                          key={name}
-                          editor={visibleEditor}
-                          base={baseBag("rhythm")}
-                          group="rhythm"
-                          name={name}
-                          labelKey={label}
-                          infoKey={info}
-                        />
-                      ))}
-                  </div>
-                </SchemeFieldCard>
-              </TabsContent>
-              <TabsContent value="context_reading" className="m-0 space-y-6">
-                {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下
-                    层数不参与运行（禁用但配置保留），切回按层数即恢复可编辑。 */}
-                <SchemeFieldCard
-                  title={t("schemes.studio.messageRelations")}
-                  description="schemes.studio.messageRelationsHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {visible("message_settings", "reply_mode") && (
-                      <EnumField
-                        editor={visibleEditor}
-                        base={baseBag("message_settings")}
-                        group="message_settings"
-                        name="reply_mode"
-                        labelKey="connections.quoteReplyMode"
-                      />
-                    )}
-                    {visible("message_settings", "reply_depth") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("message_settings")}
-                        group="message_settings"
-                        name="reply_depth"
-                        labelKey="connections.quoteDepth"
-                        infoKey="connections.quoteDepthHint"
-                        disabled={effective?.message_settings.reply_mode === "one_then_on_demand"}
-                      />
-                    )}
-                    {visible("message_settings", "time_display") && (
-                      <EnumField
-                        editor={visibleEditor}
-                        base={baseBag("message_settings")}
-                        group="message_settings"
-                        name="time_display"
-                        labelKey="connections.timeDisplayMode"
-                      />
-                    )}
-                    {visible("message_settings", "timezone") && (
-                      <TimezoneField editor={visibleEditor} base={baseBag("message_settings")} />
-                    )}
-                  </div>
-                  {effective !== null && <QqMessagePreview settings={effective.message_settings} />}
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("connections.judgementContext")}
-                  description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <div className="col-span-full flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="text-muted-foreground">
-                          {t("schemes.allocation.judgementMode")}：
-                        </span>
-                        <NativeSelect
-                          className="h-7 text-xs"
-                          value={
-                            (visibleEditor.overrides.allocation as any)?.judgement?.mode ??
-                            "inherit"
-                          }
-                          onChange={(e) => {
-                            const val = e.target.value === "inherit" ? undefined : e.target.value;
-                            useSuperstringStore
-                              .getState()
-                              .patchQqGroupOverride("allocation", "judgement.mode", val as any);
-                          }}
-                        >
-                          <option value="inherit">
-                            {t("schemes.allocation.inheritScheme", {
-                              "0":
-                                (visibleEditor.source.base_scheme.allocation as any)?.judgement
-                                  ?.mode === "auto"
-                                  ? "自动"
-                                  : "固定",
-                            })}
-                          </option>
-                          <option value="fixed">{t("schemes.allocation.modeFixed")}</option>
-                          <option value="auto">{t("schemes.allocation.modeAuto")}</option>
-                        </NativeSelect>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 text-xs"
-                        onClick={() =>
-                          openContextAllocation({
-                            purpose: "qq",
-                            bindingId: visibleEditor.source.binding.id,
-                            returnRoute: "qq-group-config",
-                            returnLabel: t("schemes.qq.groupConfigTitle"),
-                          })
-                        }
+            <Tabs
+              orientation="horizontal"
+              value={tab}
+              onValueChange={setTab}
+              className="flex min-h-0 flex-col gap-0"
+            >
+              <div className="flex min-w-0 flex-col items-stretch gap-[24px]">
+                <div className="min-w-0 w-full">
+                  <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:rounded-[6px] [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">
+                    {QQ_SCHEME_SECTIONS.map((section) => (
+                      <TabsTrigger
+                        key={section.id}
+                        value={section.id}
+                        tooltip={t(`hints.custom.qqTab.${section.id}`)}
+                        className="whitespace-nowrap"
                       >
-                        {t("schemes.allocation.goToCentralAllocation")}
-                      </Button>
-                    </div>
-                    {visible("context", "judgement_message_limit") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("context")}
-                        group="context"
-                        name="judgement_message_limit"
-                        labelKey="connections.judgementRecentMessages"
-                      />
-                    )}
-                    {visible("context", "judgement_window_minutes") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("context")}
-                        group="context"
-                        name="judgement_window_minutes"
-                        labelKey="connections.judgementTimeWindowMinutes"
-                      />
-                    )}
-                    {visible("context", "judgement_token_budget") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("context")}
-                        group="context"
-                        name="judgement_token_budget"
-                        labelKey="connections.judgementBudgetEstimatedBytes"
-                      />
-                    )}
-                    {visible("output_reserve", "judgement_output_reserved") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("output_reserve")}
-                        group="output_reserve"
-                        name="judgement_output_reserved"
-                        labelKey="connections.judgementOutputReserveEstimatedBytes"
-                      />
-                    )}
-                  </div>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("connections.replyContext")}
-                  description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <div className="col-span-full flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="text-muted-foreground">
-                          {t("schemes.allocation.replyMode")}：
-                        </span>
-                        <NativeSelect
-                          className="h-7 text-xs"
-                          value={
-                            (visibleEditor.overrides.allocation as any)?.reply?.mode ?? "inherit"
-                          }
-                          onChange={(e) => {
-                            const val = e.target.value === "inherit" ? undefined : e.target.value;
-                            useSuperstringStore
-                              .getState()
-                              .patchQqGroupOverride("allocation", "reply.mode", val as any);
-                          }}
-                        >
-                          <option value="inherit">
-                            {t("schemes.allocation.inheritScheme", {
-                              "0":
-                                (visibleEditor.source.base_scheme.allocation as any)?.reply
-                                  ?.mode === "auto"
-                                  ? "自动"
-                                  : "固定",
-                            })}
-                          </option>
-                          <option value="fixed">{t("schemes.allocation.modeFixed")}</option>
-                          <option value="auto">{t("schemes.allocation.modeAuto")}</option>
-                        </NativeSelect>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 text-xs"
-                        onClick={() =>
-                          openContextAllocation({
-                            purpose: "qq",
-                            bindingId: visibleEditor.source.binding.id,
-                            returnRoute: "qq-group-config",
-                            returnLabel: t("schemes.qq.groupConfigTitle"),
-                          })
-                        }
-                      >
-                        {t("schemes.allocation.goToCentralAllocation")}
-                      </Button>
-                    </div>
-                    {/* 回复档条数跟随绑定助手（只读）；其他三项是本群可覆盖项。 */}
-                    <ReadonlyReplyCount editor={visibleEditor} />
-                    {visible("context", "reply_window_minutes") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("context")}
-                        group="context"
-                        name="reply_window_minutes"
-                        labelKey="connections.replyTimeWindowMinutes"
-                      />
-                    )}
-                    {visible("context", "reply_token_budget") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("context")}
-                        group="context"
-                        name="reply_token_budget"
-                        labelKey="connections.replyBudgetEstimatedBytes"
-                      />
-                    )}
-                    {visible("output_reserve", "reply_output_reserved") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("output_reserve")}
-                        group="output_reserve"
-                        name="reply_output_reserved"
-                        labelKey="connections.replyOutputReserveEstimatedBytes"
-                      />
-                    )}
-                  </div>
-                </SchemeFieldCard>
-                {/* 知识/记忆资料范围说明与跳转留在消息读取组（父验收决定 1）。 */}
-                <div className="rounded-lg bg-muted p-5 text-sm leading-6">
-                  <h3 className="font-medium">
-                    {t("connections.bindingsDetermineTheMaterialScope")}
-                  </h3>
-                  <p className="mt-2 text-muted-foreground">
-                    {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
-                  </p>
-                  <Button
-                    className="mt-3"
-                    variant="outline"
-                    onClick={() => state.openSettingsRoute("knowledge-config")}
-                  >
-                    {t("connections.manageKnowledge")}
-                  </Button>
+                        {t(section.labelKey)}
+                      </TabsTrigger>
+                    ))}
+                    <TabsTrigger
+                      value="capabilities"
+                      tooltip={t("hints.custom.qqTab.capabilities")}
+                      className="whitespace-nowrap"
+                    >
+                      {t("schemes.qq.groupConfig.capabilities")}
+                    </TabsTrigger>
+                  </TabsList>
                 </div>
-              </TabsContent>
-              <TabsContent value="history_compression" className="m-0 space-y-6">
-                <SchemeFieldCard
-                  title={t("connections.compressionAndAssembly")}
-                  description="schemes.studio.compressionHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {visible("compression", "watermark_trigger") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("compression")}
-                        group="compression"
-                        name="watermark_trigger"
-                        labelKey="connections.watermarkTriggerMessages"
-                        infoKey="connections.oldMessagesOutsideTheReplyWindowAccumulateUntilThisMany"
-                      />
+                <div className="min-w-0 flex-1 w-full space-y-6">
+                  <TabsContent value="participation" className="m-0 space-y-6">
+                    <SchemeFieldCard
+                      title={t("connections.speechTriggers")}
+                      description="schemes.studio.triggersHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        {Object.entries(TRIGGER_LABELS)
+                          .filter(([key]) => visible("triggers", key))
+                          .map(([key, label]) => (
+                            <ThreeStateField
+                              key={key}
+                              editor={visibleEditor}
+                              base={baseBag("triggers")}
+                              group="triggers"
+                              name={key}
+                              labelKey={label}
+                            />
+                          ))}
+                      </div>
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("schemes.studio.rhythmTitle")}
+                      description="schemes.studio.rhythmHint"
+                    >
+                      <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                        {visible("rhythm", "participation_timing") && (
+                          <div className="sm:col-span-2">
+                            <EnumField
+                              editor={visibleEditor}
+                              base={baseBag("rhythm")}
+                              group="rhythm"
+                              name="participation_timing"
+                              labelKey="connections.participationTiming"
+                              infoKey="connections.participationTimingHint"
+                            />
+                          </div>
+                        )}
+                        {effective && (
+                          <DerivedRhythmIntervals
+                            timingMode={effective.rhythm.participation_timing ?? "resource_window"}
+                            mergeWindowSeconds={effective.rhythm.merge_window_seconds}
+                            batchTarget={effective.rhythm.initiative_batch_target_count}
+                            batchJitter={effective.rhythm.initiative_batch_jitter_count}
+                            timeWindowEnabled={effective.rhythm.initiative_time_window_enabled}
+                            timeTarget={effective.rhythm.initiative_time_target_seconds}
+                            timeJitter={effective.rhythm.initiative_time_jitter_seconds}
+                            testId="group-rhythm-derived-intervals"
+                          />
+                        )}
+                        {visible("rhythm", "initiative_time_window_enabled") && (
+                          <div className="sm:col-span-2">
+                            <ThreeStateField
+                              editor={visibleEditor}
+                              base={baseBag("rhythm")}
+                              group="rhythm"
+                              name="initiative_time_window_enabled"
+                              labelKey="connections.initiativeTimeWindowEnabled"
+                              infoKey="connections.initiativeTimeWindowEnabledHint"
+                              disabledNoticeKey="connections.initiativeTimeWindowDisabledNotice"
+                            />
+                          </div>
+                        )}
+                        {participationFields
+                          .filter(([name]) => visible("rhythm", name))
+                          .map(([name, label, info]) => (
+                            <NumberField
+                              key={name}
+                              editor={visibleEditor}
+                              base={baseBag("rhythm")}
+                              group="rhythm"
+                              name={name}
+                              labelKey={label}
+                              infoKey={info}
+                            />
+                          ))}
+                        {visible("rhythm", "initiative_queue_on_busy") && (
+                          <div className="sm:col-span-2">
+                            <ThreeStateField
+                              editor={visibleEditor}
+                              base={baseBag("rhythm")}
+                              group="rhythm"
+                              name="initiative_queue_on_busy"
+                              labelKey="connections.initiativeQueueOnBusy"
+                              infoKey="connections.initiativeQueueOnBusyHint"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("connections.allowedHours")}
+                      description="connections.useLocalTimeEqualStartAndEndMeansAll"
+                    >
+                      {visible("rhythm", "active_hours_enabled") && (
+                        <ThreeStateField
+                          editor={visibleEditor}
+                          base={baseBag("rhythm")}
+                          group="rhythm"
+                          name="active_hours_enabled"
+                          labelKey="connections.allowedHours"
+                        />
+                      )}
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        {visible("rhythm", "active_hours_start_minutes") && (
+                          <TimeField
+                            editor={visibleEditor}
+                            base={baseBag("rhythm")}
+                            enabled={effective?.rhythm.active_hours_enabled === true}
+                            name="active_hours_start_minutes"
+                            labelKey="connections.allowedHoursStart"
+                          />
+                        )}
+                        {visible("rhythm", "active_hours_end_minutes") && (
+                          <TimeField
+                            editor={visibleEditor}
+                            base={baseBag("rhythm")}
+                            enabled={effective?.rhythm.active_hours_enabled === true}
+                            name="active_hours_end_minutes"
+                            labelKey="connections.allowedHoursEnd"
+                          />
+                        )}
+                      </div>
+                    </SchemeFieldCard>
+                    {visible("prompts", "judge") && (
+                      <SchemeFieldCard
+                        title={t("schemes.studio.judgePrompt")}
+                        description="connections.decideWhetherToSpeak"
+                      >
+                        <PromptField
+                          editor={visibleEditor}
+                          base={baseScheme}
+                          effective={effective}
+                          slot="judge"
+                          labelKey="connections.judgementTask"
+                        />
+                      </SchemeFieldCard>
                     )}
-                    {visible("compression", "package_limit") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("compression")}
-                        group="compression"
-                        name="package_limit"
-                        labelKey="connections.watermarkPackageLimit"
-                        infoKey="connections.packagesBeyondThisManyAreDroppedOldestFirst"
-                      />
+                  </TabsContent>
+                  <TabsContent value="response" className="m-0 space-y-6">
+                    {visible("reply", "split_by_speaker") && (
+                      <SchemeFieldCard
+                        title={t("schemes.studio.replyStructure")}
+                        description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
+                      >
+                        <ThreeStateField
+                          editor={visibleEditor}
+                          base={baseBag("reply")}
+                          group="reply"
+                          name="split_by_speaker"
+                          labelKey="connections.answerEachSpeakerSeparately"
+                        />
+                      </SchemeFieldCard>
                     )}
-                    {visible("compression", "headroom_ratio") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("compression")}
-                        group="compression"
-                        name="headroom_ratio"
-                        labelKey="connections.assemblyHeadroomPercent"
-                        infoKey="connections.reserveThisShareOfTheCapacityBeforeAssembling"
-                        percent
-                      />
-                    )}
-                  </div>
-                  {visible("prompts", "compress") && (
-                    <PromptField
-                      editor={visibleEditor}
-                      base={baseScheme}
-                      effective={effective}
-                      slot="compress"
-                      labelKey="connections.watermarkCompressionTask"
-                      hintKey="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
-                    />
-                  )}
-                </SchemeFieldCard>
-              </TabsContent>
-              <TabsContent value="image_understanding" className="m-0 space-y-6">
-                {/* 0052 图片输入：模式/逐阶段开关/图数/普通静图规格；普通动图沿用既有
+                    <SchemeFieldCard
+                      title={t("schemes.studio.replyTasks")}
+                      description="schemes.studio.replyTasksHint"
+                    >
+                      {visible("prompts", "reply") && (
+                        <PromptField
+                          editor={visibleEditor}
+                          base={baseScheme}
+                          effective={effective}
+                          slot="reply"
+                          labelKey="connections.effectiveReplyTask"
+                          hintKey="connections.editTheReplyTaskItWinsOverTheSwitch"
+                        />
+                      )}
+                      {visible("prompts", "scene") && (
+                        <PromptField
+                          editor={visibleEditor}
+                          base={baseScheme}
+                          effective={effective}
+                          slot="scene"
+                          labelKey="connections.sceneAndBehaviour"
+                        />
+                      )}
+                      {visible("prompts", "review") && (
+                        <PromptField
+                          editor={visibleEditor}
+                          base={baseScheme}
+                          effective={effective}
+                          slot="review"
+                          labelKey="connections.reviewTask"
+                        />
+                      )}
+                      <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                        {responseFields
+                          .filter(([name]) => visible("rhythm", name))
+                          .map(([name, label, info]) => (
+                            <NumberField
+                              key={name}
+                              editor={visibleEditor}
+                              base={baseBag("rhythm")}
+                              group="rhythm"
+                              name={name}
+                              labelKey={label}
+                              infoKey={info}
+                            />
+                          ))}
+                      </div>
+                    </SchemeFieldCard>
+                  </TabsContent>
+                  <TabsContent value="context_reading" className="m-0 space-y-6">
+                    {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下
+                    层数不参与运行（禁用但配置保留），切回按层数即恢复可编辑。 */}
+                    <SchemeFieldCard
+                      title={t("schemes.studio.messageRelations")}
+                      description="schemes.studio.messageRelationsHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        {visible("message_settings", "reply_mode") && (
+                          <EnumField
+                            editor={visibleEditor}
+                            base={baseBag("message_settings")}
+                            group="message_settings"
+                            name="reply_mode"
+                            labelKey="connections.quoteReplyMode"
+                          />
+                        )}
+                        {visible("message_settings", "reply_depth") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("message_settings")}
+                            group="message_settings"
+                            name="reply_depth"
+                            labelKey="connections.quoteDepth"
+                            infoKey="connections.quoteDepthHint"
+                            disabled={
+                              effective?.message_settings.reply_mode === "one_then_on_demand"
+                            }
+                          />
+                        )}
+                        {visible("message_settings", "time_display") && (
+                          <EnumField
+                            editor={visibleEditor}
+                            base={baseBag("message_settings")}
+                            group="message_settings"
+                            name="time_display"
+                            labelKey="connections.timeDisplayMode"
+                          />
+                        )}
+                        {visible("message_settings", "timezone") && (
+                          <TimezoneField
+                            editor={visibleEditor}
+                            base={baseBag("message_settings")}
+                          />
+                        )}
+                      </div>
+                      {effective !== null && (
+                        <QqMessagePreview settings={effective.message_settings} />
+                      )}
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("connections.judgementContext")}
+                      description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <Field
+                          label="schemes.allocation.judgementMode"
+                          tooltip={t("hints.qqAllocation.judgement")}
+                        >
+                          <NativeSelect
+                            data-testid="qq-judgement-mode"
+                            value={visibleEditor.overrides.allocation?.judgement?.mode ?? ""}
+                            disabled={state.qqGroupConfigSaving}
+                            onChange={(e) =>
+                              state.patchQqGroupOverride(
+                                "allocation",
+                                "judgement.mode",
+                                e.target.value || undefined,
+                              )
+                            }
+                          >
+                            <option value="">
+                              {t("schemes.allocation.inheritScheme", { "0": baseName })}
+                            </option>
+                            <option value="fixed">{t("schemes.allocation.modeFixed")}</option>
+                            <option value="auto">{t("schemes.allocation.modeAuto")}</option>
+                          </NativeSelect>
+                        </Field>
+
+                        {visible("context", "judgement_message_limit") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("context")}
+                            group="context"
+                            name="judgement_message_limit"
+                            labelKey="connections.judgementRecentMessages"
+                          />
+                        )}
+                        {visible("context", "judgement_window_minutes") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("context")}
+                            group="context"
+                            name="judgement_window_minutes"
+                            labelKey="connections.judgementTimeWindowMinutes"
+                          />
+                        )}
+                        {visible("context", "judgement_token_budget") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("context")}
+                            group="context"
+                            name="judgement_token_budget"
+                            labelKey="connections.judgementBudgetEstimatedBytes"
+                            infoKey="schemes.allocation.budgetBytesHint"
+                          />
+                        )}
+                        {visible("output_reserve", "judgement_output_reserved") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("output_reserve")}
+                            group="output_reserve"
+                            name="judgement_output_reserved"
+                            labelKey="connections.judgementOutputReserveEstimatedBytes"
+                          />
+                        )}
+                      </div>
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("connections.replyContext")}
+                      description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <Field
+                          label="schemes.allocation.replyMode"
+                          tooltip={t("hints.qqAllocation.reply")}
+                        >
+                          <NativeSelect
+                            data-testid="qq-reply-mode"
+                            value={visibleEditor.overrides.allocation?.reply?.mode ?? ""}
+                            disabled={state.qqGroupConfigSaving}
+                            onChange={(e) =>
+                              state.patchQqGroupOverride(
+                                "allocation",
+                                "reply.mode",
+                                e.target.value || undefined,
+                              )
+                            }
+                          >
+                            <option value="">
+                              {t("schemes.allocation.inheritScheme", { "0": baseName })}
+                            </option>
+                            <option value="fixed">{t("schemes.allocation.modeFixed")}</option>
+                            <option value="auto">{t("schemes.allocation.modeAuto")}</option>
+                          </NativeSelect>
+                        </Field>
+
+                        {/* 回复档条数跟随绑定助手（只读）；其他三项是本群可覆盖项。 */}
+                        <ReadonlyReplyCount editor={visibleEditor} />
+                        {visible("context", "reply_window_minutes") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("context")}
+                            group="context"
+                            name="reply_window_minutes"
+                            labelKey="connections.replyTimeWindowMinutes"
+                          />
+                        )}
+                        {visible("context", "reply_token_budget") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("context")}
+                            group="context"
+                            name="reply_token_budget"
+                            labelKey="connections.replyBudgetEstimatedBytes"
+                            infoKey="schemes.allocation.budgetBytesHint"
+                          />
+                        )}
+                        {visible("output_reserve", "reply_output_reserved") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("output_reserve")}
+                            group="output_reserve"
+                            name="reply_output_reserved"
+                            labelKey="connections.replyOutputReserveEstimatedBytes"
+                          />
+                        )}
+                      </div>
+                    </SchemeFieldCard>
+                    {/* 知识/记忆资料范围说明与跳转留在消息读取组（父验收决定 1）。 */}
+                    <div className="rounded-lg bg-muted p-5 text-sm leading-6">
+                      <h3 className="font-medium">
+                        {t("connections.bindingsDetermineTheMaterialScope")}
+                      </h3>
+                      <p className="mt-2 text-muted-foreground">
+                        {t("connections.judgementUsesAuthorizedMemoryAndKnowledgeRepliesRetainThe")}
+                      </p>
+                      <Button
+                        className="mt-3"
+                        variant="outline"
+                        tooltip={t("hints.qq.groupManageKnowledge")}
+                        onClick={() => state.openSettingsRoute("knowledge-config")}
+                      >
+                        {t("connections.manageKnowledge")}
+                      </Button>
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="history_compression" className="m-0 space-y-6">
+                    <SchemeFieldCard
+                      title={t("connections.compressionAndAssembly")}
+                      description="schemes.studio.compressionHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        {visible("compression", "watermark_trigger") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("compression")}
+                            group="compression"
+                            name="watermark_trigger"
+                            labelKey="connections.watermarkTriggerMessages"
+                            infoKey="connections.oldMessagesOutsideTheReplyWindowAccumulateUntilThisMany"
+                          />
+                        )}
+                        {visible("compression", "package_limit") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("compression")}
+                            group="compression"
+                            name="package_limit"
+                            labelKey="connections.watermarkPackageLimit"
+                            infoKey="connections.packagesBeyondThisManyAreDroppedOldestFirst"
+                          />
+                        )}
+                        {visible("compression", "headroom_ratio") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("compression")}
+                            group="compression"
+                            name="headroom_ratio"
+                            labelKey="connections.assemblyHeadroomPercent"
+                            infoKey="connections.reserveThisShareOfTheCapacityBeforeAssembling"
+                            percent={true}
+                          />
+                        )}
+                      </div>
+                      {visible("prompts", "compress") && (
+                        <PromptField
+                          editor={visibleEditor}
+                          base={baseScheme}
+                          effective={effective}
+                          slot="compress"
+                          labelKey="connections.watermarkCompressionTask"
+                          hintKey="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
+                        />
+                      )}
+                    </SchemeFieldCard>
+                  </TabsContent>
+                  <TabsContent value="image_understanding" className="m-0 space-y-6">
+                    {/* 0052 图片输入：模式/逐阶段开关/图数/普通静图规格；普通动图沿用既有
                     rhythm 帧数与尺寸（下方的 imageFields），不重复存储。 */}
-                <SchemeFieldCard
-                  title={t("schemes.studio.imageInput")}
-                  description="schemes.studio.imageInputHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {visible("media_input", "mode") && (
-                      <EnumField
-                        editor={visibleEditor}
-                        base={baseBag("media_input")}
-                        group="media_input"
-                        name="mode"
-                        labelKey="connections.imageInputMode"
-                      />
-                    )}
-                    {visible("media_input", "max_images") && (
-                      <NumberField
-                        editor={visibleEditor}
-                        base={baseBag("media_input")}
-                        group="media_input"
-                        name="max_images"
-                        labelKey="connections.maxAutoImages"
-                      />
-                    )}
-                    {visible("media_input", "ordinary_still_max_dimension") && (
-                      <OrdinaryStillField editor={visibleEditor} base={baseBag("media_input")} />
-                    )}
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    {(
-                      [
-                        ["decision", "schemes.studio.stageDecision"],
-                        ["evaluation", "schemes.studio.stageEvaluation"],
-                        ["generation", "schemes.studio.stageGeneration"],
-                      ] as const
-                    )
-                      .filter(([phase]) => visible("media_input", `stages.${phase}`))
-                      .map(([phase, labelKey]) => (
-                        <StageField
-                          key={phase}
+                    <SchemeFieldCard
+                      title={t("schemes.studio.imageInput")}
+                      description="schemes.studio.imageInputHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        {visible("media_input", "mode") && (
+                          <EnumField
+                            editor={visibleEditor}
+                            base={baseBag("media_input")}
+                            group="media_input"
+                            name="mode"
+                            labelKey="connections.imageInputMode"
+                          />
+                        )}
+                        {visible("media_input", "max_images") && (
+                          <NumberField
+                            editor={visibleEditor}
+                            base={baseBag("media_input")}
+                            group="media_input"
+                            name="max_images"
+                            labelKey="connections.maxAutoImages"
+                          />
+                        )}
+                        {visible("media_input", "ordinary_still_max_dimension") && (
+                          <OrdinaryStillField
+                            editor={visibleEditor}
+                            base={baseBag("media_input")}
+                          />
+                        )}
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        {(
+                          [
+                            ["decision", "schemes.studio.stageDecision"],
+                            ["evaluation", "schemes.studio.stageEvaluation"],
+                            ["generation", "schemes.studio.stageGeneration"],
+                          ] as const
+                        )
+                          .filter(([phase]) => visible("media_input", `stages.${phase}`))
+                          .map(([phase, labelKey]) => (
+                            <StageField
+                              key={phase}
+                              editor={visibleEditor}
+                              base={baseBag("media_input")}
+                              phase={phase}
+                              labelKey={labelKey}
+                            />
+                          ))}
+                      </div>
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("schemes.studio.imageParams")}
+                      description="schemes.studio.imageParamsHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        {imageFields
+                          .filter(([group, name]) => visible(group, name))
+                          .map(([group, name, label]) => (
+                            <NumberField
+                              key={name}
+                              editor={visibleEditor}
+                              base={baseBag(group)}
+                              group={group === "rhythm" ? "rhythm" : "stickers"}
+                              name={name}
+                              labelKey={label}
+                            />
+                          ))}
+                      </div>
+                    </SchemeFieldCard>
+                    <SchemeFieldCard
+                      title={t("connections.mediaNoteTask")}
+                      description="connections.describeWhatThePictureOrVoiceActuallyContains"
+                    >
+                      {visible("prompts", "media") && (
+                        <PromptField
                           editor={visibleEditor}
-                          base={baseBag("media_input")}
-                          phase={phase}
-                          labelKey={labelKey}
+                          base={baseScheme}
+                          effective={effective}
+                          slot="media"
+                          labelKey="connections.mediaNoteTask"
+                          hintKey="connections.describeWhatThePictureOrVoiceActuallyContains"
                         />
-                      ))}
-                  </div>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("schemes.studio.imageParams")}
-                  description="schemes.studio.imageParamsHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {imageFields
-                      .filter(([group, name]) => visible(group, name))
-                      .map(([group, name, label]) => (
-                        <NumberField
-                          key={name}
+                      )}
+                    </SchemeFieldCard>
+                  </TabsContent>
+                  <TabsContent value="sticker_sending" className="m-0 space-y-6">
+                    <SchemeFieldCard
+                      title={t("schemes.studio.stickerParams")}
+                      description="schemes.studio.stickerParamsHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        {visible("stickers", "frequency") && (
+                          <StickerFrequencyField
+                            editor={visibleEditor}
+                            base={baseBag("stickers")}
+                          />
+                        )}
+                        {stickerFields
+                          .filter(([group, name]) => visible(group, name))
+                          .map(([group, name, label]) => (
+                            <NumberField
+                              key={name}
+                              editor={visibleEditor}
+                              base={baseBag(group)}
+                              group="stickers"
+                              name={name}
+                              labelKey={label}
+                            />
+                          ))}
+                      </div>
+                    </SchemeFieldCard>
+                    {visible("sticker_collections", "collection_ids") && (
+                      <SchemeFieldCard
+                        title={t("connections.authorizedCollections")}
+                        description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
+                      >
+                        <CollectionsField
                           editor={visibleEditor}
-                          base={baseBag(group)}
-                          group={group === "rhythm" ? "rhythm" : "stickers"}
-                          name={name}
-                          labelKey={label}
+                          base={baseBag("sticker_collections")}
                         />
-                      ))}
-                  </div>
-                </SchemeFieldCard>
-                <SchemeFieldCard
-                  title={t("connections.mediaNoteTask")}
-                  description="connections.describeWhatThePictureOrVoiceActuallyContains"
-                >
-                  {visible("prompts", "media") && (
-                    <PromptField
-                      editor={visibleEditor}
-                      base={baseScheme}
-                      effective={effective}
-                      slot="media"
-                      labelKey="connections.mediaNoteTask"
-                      hintKey="connections.describeWhatThePictureOrVoiceActuallyContains"
-                    />
-                  )}
-                </SchemeFieldCard>
-              </TabsContent>
-              <TabsContent value="sticker_sending" className="m-0 space-y-6">
-                <SchemeFieldCard
-                  title={t("schemes.studio.stickerParams")}
-                  description="schemes.studio.stickerParamsHint"
-                >
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    {visible("stickers", "frequency") && (
-                      <StickerFrequencyField editor={visibleEditor} base={baseBag("stickers")} />
+                      </SchemeFieldCard>
                     )}
-                    {stickerFields
-                      .filter(([group, name]) => visible(group, name))
-                      .map(([group, name, label]) => (
-                        <NumberField
-                          key={name}
+                    <SchemeFieldCard
+                      title={t("connections.stickerTask")}
+                      description="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
+                    >
+                      {visible("prompts", "sticker") && (
+                        <PromptField
                           editor={visibleEditor}
-                          base={baseBag(group)}
-                          group="stickers"
-                          name={name}
-                          labelKey={label}
+                          base={baseScheme}
+                          effective={effective}
+                          slot="sticker"
+                          labelKey="connections.stickerTask"
+                          hintKey="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
                         />
-                      ))}
-                  </div>
-                </SchemeFieldCard>
-                {visible("sticker_collections", "collection_ids") && (
-                  <SchemeFieldCard
-                    title={t("connections.authorizedCollections")}
-                    description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
-                  >
-                    <CollectionsField
-                      editor={visibleEditor}
-                      base={baseBag("sticker_collections")}
-                    />
-                  </SchemeFieldCard>
-                )}
-                <SchemeFieldCard
-                  title={t("connections.stickerTask")}
-                  description="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
-                >
-                  {visible("prompts", "sticker") && (
-                    <PromptField
-                      editor={visibleEditor}
-                      base={baseScheme}
-                      effective={effective}
-                      slot="sticker"
-                      labelKey="connections.stickerTask"
-                      hintKey="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
-                    />
-                  )}
-                </SchemeFieldCard>
-              </TabsContent>
-              <TabsContent value="capabilities" className="m-0 space-y-6">
-                <SchemeFieldCard
-                  title={t("schemes.qq.groupConfig.capabilities")}
-                  description="schemes.qq.groupConfig.capability.description"
-                >
-                  <CapabilityList editor={visibleEditor} knowledge={knowledgeRead} />
-                </SchemeFieldCard>
-              </TabsContent>
+                      )}
+                    </SchemeFieldCard>
+                  </TabsContent>
+                  <TabsContent value="capabilities" className="m-0 space-y-6">
+                    <SchemeFieldCard
+                      title={t("schemes.qq.groupConfig.capabilities")}
+                      description="schemes.qq.groupConfig.capability.description"
+                    >
+                      <CapabilityList editor={visibleEditor} knowledge={knowledgeRead} />
+                    </SchemeFieldCard>
+                  </TabsContent>
+                </div>
+              </div>
             </Tabs>
           </div>
         )}
@@ -2463,6 +2321,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             variant="outline"
             className="h-auto min-h-8 max-w-full whitespace-normal break-words"
             disabled={saving || !dirty}
+            tooltip={t("hints.qq.groupDiscard")}
             onClick={() => state.discardQqGroupConfigChanges()}
           >
             {t("schemes.qq.groupConfig.discard")}
@@ -2471,6 +2330,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             variant="outline"
             className="h-auto min-h-8 max-w-full whitespace-normal break-words"
             disabled={saving || !dirty}
+            tooltip={t("hints.qq.groupPreview")}
             onClick={() => setPreview(true)}
           >
             {t("schemes.qq.groupConfig.preview")}
@@ -2479,6 +2339,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             variant="outline"
             className="h-auto min-h-8 max-w-full whitespace-normal break-words"
             disabled={saving || !dirty}
+            tooltip={t("hints.qq.groupResetAll")}
             onClick={() => setResetAll(true)}
           >
             {t("schemes.qq.groupConfig.resetAll")}
@@ -2486,6 +2347,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           <Button
             className="ml-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
             disabled={saving || invalid || !dirty || conflicted}
+            tooltip={t("hints.qq.groupSave")}
             onClick={() => void state.saveQqGroupConfig()}
           >
             {saving ? t("workspace.saving") : t("schemes.qq.groupConfig.save")}
@@ -2506,11 +2368,16 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             </DialogHeader>
             <ChangeList changes={changes} schemeNameOf={schemeNameOf} editor={visibleEditor} />
             <DialogFooter>
-              <Button variant="outline" onClick={() => setPreview(false)}>
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.cancel" />}
+                variant="outline"
+                onClick={() => setPreview(false)}
+              >
                 {t("connections.cancel")}
               </Button>
               <Button
                 disabled={saving || invalid || !dirty || conflicted}
+                tooltip={t("hints.qq.previewSaveNow")}
                 onClick={() => {
                   setPreview(false);
                   void state.saveQqGroupConfig();
@@ -2531,6 +2398,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           <p className="text-sm">{t("schemes.qq.groupConfig.resetAllBody")}</p>
           <div className="flex justify-end gap-2">
             <Button
+              tooltip={<Trans i18nKey="hints.complete.cancel" />}
               variant="outline"
               data-dialog-cancel
               disabled={saving}
@@ -2540,6 +2408,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             </Button>
             <Button
               disabled={saving}
+              tooltip={t("hints.qq.resetAllConfirm")}
               onClick={() => {
                 state.patchQqGroupConfigScheme(undefined, "reset");
                 setResetAll(false);

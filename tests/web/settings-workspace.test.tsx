@@ -53,7 +53,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("task-based workspace navigation", () => {
-  it("product spaces are distinct from environment settings and conversation index", () => {
+  it("primary product spaces group daily tasks, applications and system settings without losing destinations", () => {
     render(
       <DesignSystemProvider>
         <WorkspaceShell>
@@ -62,10 +62,21 @@ describe("task-based workspace navigation", () => {
       </DesignSystemProvider>,
     );
     const primary = within(screen.getByRole("navigation", { name: "工作区" }));
+    const groupedIds = [
+      "conversations",
+      "assistants",
+      "library",
+      "schemes",
+      "models",
+      "capabilities",
+      "connections",
+    ];
     expect(primary.getAllByRole("button").map((button) => button.textContent)).toEqual(
-      SPACES.map((space) => i18n.t(space.label)),
+      groupedIds.map((id) => i18n.t(SPACES.find((space) => space.id === id)!.label)),
     );
     expect(screen.queryByRole("navigation", { name: "历史会话" })).toBeNull();
+    // 日常、应用、系统分组改变展示顺序，但保留全部真实目的地。
+    expect(primary.getAllByRole("button")).toHaveLength(SPACES.length);
     // 运行一级栏目已取消：台账与任务归对话的消息/观测/任务，侧栏不再有运行入口。
     expect(primary.queryByRole("button", { name: "运行" })).toBeNull();
     expect(SPACES.some((space) => (space.id as string) === "runs")).toBe(false);
@@ -174,7 +185,7 @@ describe("task-based workspace navigation", () => {
         </WorkspaceShell>
       </DesignSystemProvider>,
     );
-    expect(container.textContent).not.toMatch(/[\u4e00-\u9fff]/);
+    expect(container.textContent?.replace("中文", "")).not.toMatch(/[\u4e00-\u9fff]/);
   });
   it("旧页未保存导航被拦截，取消保持原页和目标路由", () => {
     store.setState({

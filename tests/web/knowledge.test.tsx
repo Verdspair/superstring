@@ -1,12 +1,12 @@
 // Presentation-specific cases moved to fresh-product-workspaces.test.tsx.
-import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KnowledgeDocumentDetail } from "../../src/shared/contracts/knowledge";
 import { ApiError, api } from "../../src/web/api";
-
 import { selectLocale } from "../../src/web/i18n";
 import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const id = "22222222-2222-4222-8222-222222222222";
 const agent = "11111111-1111-4111-8111-111111111111";

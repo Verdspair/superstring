@@ -1,6 +1,6 @@
 // 运行数据与保留：统计/保护范围展示、列表筛选与分页、行内可清理范围、
 // 预览 → 确认的清理流程（取消 0 写、快照锁定、防双写）以及迟到响应与读失败处理。
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ExecutionPolicySchema,
@@ -20,6 +20,7 @@ import { channelLabels, statusLabels } from "../../src/web/screens/observability
 import { ExecutionSettings } from "../../src/web/screens/runs/execution-settings";
 import { RuntimeStoragePanel } from "../../src/web/screens/runs/runtime-storage";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const P = "connections.execution.runtimeStorage";
 const NOW = "2026-09-30T12:00:00.000Z";

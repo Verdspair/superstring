@@ -22,7 +22,7 @@ export function ChatComposer() {
   const error = useSuperstringStore((s) => chat.error ?? s.error);
   const feedback = useSuperstringStore((s) => chat.feedback || s.feedback);
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-5 pt-3 md:px-7">
+    <div className="mx-auto w-full max-w-[880px] px-4 pb-6 pt-4 md:px-7">
       {(error || feedback) && (
         <div
           role={error ? "alert" : "status"}
@@ -32,12 +32,17 @@ export function ChatComposer() {
         </div>
       )}
       {chat.phase === "reconciling" && (
-        <Button className="mb-3" variant="outline" onClick={() => void reconcile()}>
+        <Button
+          className="mb-3"
+          variant="outline"
+          tooltip={t("hints.conversation.reconcile")}
+          onClick={() => void reconcile()}
+        >
           <RotateCcw />
           {t("workspace.check_server_result")}
         </Button>
       )}
-      <InputGroup className="overflow-hidden rounded-2xl border-border bg-background shadow-sm focus-within:ring-2 focus-within:ring-primary/15">
+      <InputGroup className="overflow-hidden rounded-2xl border-border bg-background focus-within:ring-2 focus-within:ring-primary/15">
         <InputGroupTextarea
           aria-label={t("workspace.enter_a_message")}
           placeholder={
@@ -56,7 +61,7 @@ export function ChatComposer() {
             }
           }}
         />
-        <InputGroupAddon align="block-end" className="flex flex-wrap items-center gap-2 px-3 pb-3">
+        <InputGroupAddon align="block-end" className="flex flex-wrap items-center gap-3 px-4 pb-4">
           <span className="mr-auto inline-flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
             <Bot className="size-3.5" />
             <span className="max-w-40 truncate">
@@ -68,6 +73,7 @@ export function ChatComposer() {
             <Button
               variant="outline"
               size="sm"
+              tooltip={t("hints.conversation.retry")}
               disabled={sending || resolving}
               onClick={() => void retry()}
             >
@@ -79,6 +85,7 @@ export function ChatComposer() {
             type="button"
             size="icon"
             className="rounded-xl"
+            tooltip={t("hints.conversation.send")}
             aria-label={sending ? t("workspace.generating") : t("workspace.send")}
             disabled={sending || resolving}
             onClick={() => void send()}

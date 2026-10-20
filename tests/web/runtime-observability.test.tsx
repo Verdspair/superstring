@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Delivery } from "../../src/shared/contracts/conversation";
@@ -14,6 +14,7 @@ import { ConversationRuntimeSummary } from "../../src/web/screens/observability/
 import { ExecutionWorkspace } from "../../src/web/screens/observability/ObservabilityWorkspace";
 import { DeliveryDetails } from "../../src/web/screens/runs/DeliveryEvidence";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-09-26T00:00:00Z";
 const conversationId = "11111111-1111-4111-8111-111111111111";

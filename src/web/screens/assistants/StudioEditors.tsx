@@ -1,28 +1,32 @@
+import { Layers, Save, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
-import { ConfirmDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
+import { agentPageDirty } from "@/features/agents/page-drafts";
 import { translateNotice } from "@/i18n";
 import { startRead } from "@/services/read-task";
-import type { AgentDraft } from "@/state/types";
 import { useSuperstringStore } from "@/store";
+import { P5ConfigSchema } from "../../../shared/contracts/models";
 import { executionPolicy, toolExecutionEnabled } from "../../../shared/contracts/permissions";
 import { compilePersona } from "../../../shared/contracts/persona-compile";
-import { openContextAllocation } from "../../features/context-allocation";
+import { AllocationModelCapacity } from "../connections/AllocationModelCapacity";
+import { ContextAllocationAuxiliary } from "../connections/ContextAllocationAuxiliary";
+import { AgentModelPurpose } from "../environment/AgentModelPurpose";
 
 export function IdentityEditor() {
   const s = useSuperstringStore(
@@ -47,7 +51,7 @@ export function IdentityEditor() {
   if (!editor) return null;
   const { draft, personaDraft: persona } = editor;
   return (
-    <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(260px,.6fr)]">
+    <div className="grid items-start gap-[28px] xl:grid-cols-[minmax(0,1fr)_minmax(260px,.6fr)] [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:shadow-none [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-content]]:px-0 [&_[data-slot=card-title]]:text-[15px] [&_[data-slot=card-title]]:font-bold">
       <div className="space-y-6">
         <Card>
           <CardHeader>
@@ -57,19 +61,19 @@ export function IdentityEditor() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            <Field label="library.name">
+            <Field label="library.name" tooltip={t("hints.agent.fieldName")}>
               <Input
                 value={draft.name}
                 onChange={(e) => s.patchPageAgent("basic", { name: e.target.value })}
               />
             </Field>
-            <Field label="library.description">
+            <Field label="library.description" tooltip={t("hints.agent.fieldDescription")}>
               <Textarea
                 value={draft.description}
                 onChange={(e) => s.patchPageAgent("basic", { description: e.target.value })}
               />
             </Field>
-            <Field label="library.enable.agent">
+            <Field label="library.enable.agent" tooltip={t("hints.agent.fieldActive")}>
               <Checkbox
                 checked={draft.is_active}
                 onCheckedChange={(v) => s.patchPageAgent("basic", { is_active: v === true })}
@@ -94,7 +98,7 @@ export function IdentityEditor() {
                 ["advanced_instructions", "library.advanced.instructions", "identity"],
               ] as const
             ).map(([key, label, page]) => (
-              <Field key={key} label={label}>
+              <Field key={key} label={label} tooltip={t(`strict.persona.${key}`)}>
                 <Textarea
                   rows={key === "example_dialogues" ? 5 : 3}
                   value={persona[key]}
@@ -105,6 +109,7 @@ export function IdentityEditor() {
             <Field
               label="library.personality.strength"
               info="library.only.changes.how.much.communication.style.and.example.dialogue"
+              tooltip={t("hints.agent.fieldPersonalityStrength")}
             >
               <Slider
                 disabled={s.settingsSaving}
@@ -120,7 +125,10 @@ export function IdentityEditor() {
               />
               <output className="text-sm tabular-nums">{draft.persona_intensity}%</output>
             </Field>
-            <Field label="library.additional.instructions">
+            <Field
+              label="library.additional.instructions"
+              tooltip={t("hints.agent.fieldAdditionalInstructions")}
+            >
               <Textarea
                 rows={4}
                 value={draft.additional_instructions}
@@ -150,7 +158,7 @@ export function IdentityEditor() {
 }
 
 // 此处只投影工具范围，编辑仍归系统能力与扩展授权。
-function AgentToolScope({ agentId, active }: { agentId: string; active: boolean }) {
+export function AgentToolScope({ agentId, active }: { agentId: string; active: boolean }) {
   const t = useTranslation().t;
   const s = useSuperstringStore(
     useShallow((state) => ({
@@ -233,8 +241,17 @@ function AgentToolScope({ agentId, active }: { agentId: string; active: boolean 
           </p>
         )}
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => open("system-capabilities")}>{t("workspace.capabilities")}</Button>
-          <Button variant="outline" onClick={() => open("tool-grants")}>
+          <Button
+            tooltip={t("hints.agent.goToCapabilities")}
+            onClick={() => open("system-capabilities")}
+          >
+            {t("workspace.capabilities")}
+          </Button>
+          <Button
+            variant="outline"
+            tooltip={t("hints.agent.goToToolGrants")}
+            onClick={() => open("tool-grants")}
+          >
             {t("library.tools.manage")}
           </Button>
         </div>
@@ -243,249 +260,383 @@ function AgentToolScope({ agentId, active }: { agentId: string; active: boolean 
   );
 }
 
+type AllocationNumberKey =
+  | "context_window"
+  | "max_output_tokens"
+  | "safety_margin_ratio"
+  | "recent_turns"
+  | "compression_trigger_ratio"
+  | "summary_target_tokens"
+  | "summary_max_tokens"
+  | "summary_read_max_tokens"
+  | "auxiliary_timeout_seconds";
+
+function AllocationAgentNumber({
+  name,
+  label,
+  info,
+}: {
+  name: AllocationNumberKey;
+  label: string;
+  info?: string;
+}) {
+  const { t } = useTranslation();
+  const editor = useSuperstringStore((s) => s.pageEditor);
+  const rawInputs = useSuperstringStore((s) => s.allocationInvalidInputs);
+  const busy = useSuperstringStore((s) => s.settingsSaving || s.editorLoading);
+  if (!editor) return null;
+  const key = `agent:${editor.agent.id}:context:${name}`;
+  const raw = rawInputs[key];
+  const schema = P5ConfigSchema.shape[name];
+  const nullable = name === "context_window" || name === "summary_read_max_tokens";
+  const step = name.includes("ratio") ? "0.01" : name === "auxiliary_timeout_seconds" ? "0.1" : "1";
+
+  const getErrorMessage = () => {
+    if (name === "safety_margin_ratio")
+      return t("schemes.allocation.reading.invalidRatioSafety", {
+        defaultValue: "必须在 0 <= x < 1 范围内",
+      });
+    if (name === "compression_trigger_ratio")
+      return t("schemes.allocation.reading.invalidRatioCompression", {
+        defaultValue: "必须在 0 < x <= 1 范围内",
+      });
+    if (name === "auxiliary_timeout_seconds")
+      return t("schemes.allocation.reading.invalidTimeout", {
+        defaultValue: "必须为 0 到 3600 秒之间的正数",
+      });
+    if (name === "context_window")
+      return t("schemes.allocation.reading.invalidContextWindow", {
+        defaultValue: "必须为 1024 到 1,048,576 之间的整数，或留空",
+      });
+    if (name === "recent_turns")
+      return t("schemes.allocation.reading.invalidRecentTurns", {
+        defaultValue: "必须为 1 到 10,000 之间的整数",
+      });
+    return t("schemes.allocation.reading.invalidPositiveByte", {
+      defaultValue: "必须为 1 到 1,048,576 之间的正整数",
+    });
+  };
+
+  return (
+    <Field label={label} info={info} tooltip={info ? t(info) : t(`hints.contextNumber.${name}`)}>
+      <Input
+        type="number"
+        disabled={busy}
+        step={step}
+        value={raw ?? editor.draft.p5_config[name] ?? ""}
+        aria-invalid={raw !== undefined || undefined}
+        onChange={(e) => {
+          const text = e.target.value;
+          const value = text.trim() === "" && nullable ? null : Number(text);
+          const valid = (text.trim() !== "" || nullable) && schema.safeParse(value).success;
+          useSuperstringStore.setState((s) => {
+            const next = { ...s.allocationInvalidInputs };
+            if (valid) delete next[key];
+            else next[key] = text;
+            return { allocationInvalidInputs: next };
+          });
+          if (valid)
+            useSuperstringStore.getState().patchPageAgent("context", {
+              p5_config: { ...editor.draft.p5_config, [name]: value },
+            });
+        }}
+      />
+      {raw !== undefined && (
+        <p role="alert" className="text-xs text-destructive">
+          {getErrorMessage()}
+        </p>
+      )}
+    </Field>
+  );
+}
+
 export function CapabilityEditor({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       pageEditor: state.pageEditor,
       editorAgentId: state.editorAgentId,
-      loadOrganization: state.loadOrganization,
       refreshCapacityPreview: state.refreshCapacityPreview,
-      organizationEditor: state.organizationEditor,
-      modelNames: state.modelNames,
-      loadedModelNames: state.loadedModelNames,
-      externalModelNames: state.externalModelNames,
-      modelStatus: state.modelStatus,
       capacityPreview: state.capacityPreview,
       settingsSaving: state.settingsSaving,
+      editorLoading: state.editorLoading,
       patchPageAgent: state.patchPageAgent,
-      refreshModels: state.refreshModels,
-      applyDefaultModelToAgent: state.applyDefaultModelToAgent,
+      saveSettingsPage: state.saveSettingsPage,
+      discardSettingsPages: state.discardSettingsPages,
+      allocationInvalidInputs: state.allocationInvalidInputs,
+      chatContextCapacity: state.chatContextCapacity,
+      apiClient: state.apiClient,
     })),
   );
   const t = useTranslation().t;
   const editor = s.pageEditor;
-  const [confirmDefault, setConfirmDefault] = useState(false);
-  useEffect(() => {
-    if (active) void s.loadOrganization();
-  }, [active, s.loadOrganization]);
+
   const modelName = editor?.draft.model_name;
   const compressionModel = editor?.draft.context_compression_model_name;
+  const editorToken = editor?.token;
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A new API client or edit-session token must revalidate capacity even when the model name is unchanged.
   useEffect(() => {
     if (active && s.editorAgentId !== "__new__" && modelName)
       void s.refreshCapacityPreview([modelName, modelName, compressionModel ?? null]);
-  }, [active, s.editorAgentId, modelName, compressionModel, s.refreshCapacityPreview]);
+  }, [
+    active,
+    s.editorAgentId,
+    modelName,
+    compressionModel,
+    s.apiClient,
+    editorToken,
+    s.refreshCapacityPreview,
+  ]);
+
+  const [auxiliaryValidity, setAuxiliaryValidity] = useState({
+    agentValid: true,
+    globalValid: true,
+  });
+
   if (!editor) return null;
-  const defaultModel = s.organizationEditor?.modelName;
-  const alreadyDefault =
-    !!defaultModel &&
-    [
-      editor.draft.model_name,
-      editor.draft.memory_consolidation_model_name,
-      editor.draft.context_compression_model_name,
-    ].every((name) => name === defaultModel);
-  const d = editor.draft;
-  const p5 = d.p5_config;
-  const patch = (value: Partial<typeof p5>) =>
-    s.patchPageAgent("context", { p5_config: { ...p5, ...value } });
-  const modelFields = [
-    ["model_name", "library.chat.model"],
-    ["memory_consolidation_model_name", "library.memory.organization.model"],
-    ["memory_retrieval_model_name", "library.memory.reading.model"],
-    ["context_compression_model_name", "library.context.compression.model"],
-  ] as const;
-  const numberField = (key: keyof typeof p5, label: string, min: number, max: number, step = 1) => (
-    <Field key={key} label={label}>
-      <Input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={typeof p5[key] === "number" ? (p5[key] as number) : ""}
-        onChange={(e) => patch({ [key]: e.target.value === "" ? null : Number(e.target.value) })}
-      />
-    </Field>
+
+  const p5 = editor.draft.p5_config;
+  const agentAllocation = p5.allocation ?? { mode: "fixed" };
+
+  const agentInputPrefix = `agent:${editor.agent.id}:`;
+  const invalidInputsFor = (prefix: string) =>
+    Object.fromEntries(
+      Object.entries(s.allocationInvalidInputs)
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([key, value]) => [key.slice(prefix.length), value]),
+    );
+  const patchInvalidInput = (prefix: string, key: string, raw: string | undefined) => {
+    useSuperstringStore.setState((state) => {
+      const next = { ...state.allocationInvalidInputs };
+      if (raw === undefined) delete next[prefix + key];
+      else next[prefix + key] = raw;
+      return { allocationInvalidInputs: next };
+    });
+  };
+
+  const agentInputsValid = !Object.keys(s.allocationInvalidInputs).some((key) =>
+    key.startsWith(agentInputPrefix),
   );
+  const isContextDirty = agentPageDirty(editor, "context");
+  const hasContextInvalid = Object.keys(s.allocationInvalidInputs).some((key) =>
+    key.startsWith(`${agentInputPrefix}context:`),
+  );
+  const canDiscard = (isContextDirty || hasContextInvalid) && !s.settingsSaving;
+
   return (
-    <div className="grid items-start gap-6 lg:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("library.model.roles")}</CardTitle>
-          <CardDescription>
-            {t("library.choose.a.model.for.each.task.manage.connections.in")}
-          </CardDescription>
+    <div className="space-y-[28px] [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:shadow-none [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-content]]:px-0 [&_[data-slot=card-title]]:text-[15px] [&_[data-slot=card-title]]:font-bold">
+      {/* 1. 助手模型配置 (唯一 Canonical Host，内联复用 AgentModelPurpose) */}
+      <AgentModelPurpose active={active} />
+
+      {/* 2. 助手短期上下文预算与模式 */}
+      <Card data-testid="agent-context-card">
+        <CardHeader className="pb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <CardTitle className="text-base font-semibold text-foreground">
+                {editor.agent.name} - {t("workspace.short_term_context")}
+              </CardTitle>
+              <CardDescription className="text-xs text-muted-foreground mt-1 whitespace-pre-line">
+                {s.capacityPreview
+                  ? s.capacityPreview.split("\n").map(translateNotice).join("\n")
+                  : agentAllocation.mode === "auto"
+                    ? t("schemes.allocation.modeAutoDesc")
+                    : t("schemes.allocation.modeFixedDesc")}
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant={agentAllocation.mode === "auto" ? "default" : "secondary"}>
+                {agentAllocation.mode === "auto"
+                  ? t("schemes.allocation.modeAuto")
+                  : t("schemes.allocation.modeFixed")}
+              </Badge>
+              <AllocationModelCapacity
+                model={modelName}
+                capacity={s.chatContextCapacity}
+                active={active}
+              />
+            </div>
+          </div>
         </CardHeader>
         <CardContent className="space-y-5">
-          {modelFields.map(([key, label]) => (
-            <Field key={key} label={label}>
-              <Input
-                list={`agent-model-${key}`}
-                value={d[key] ?? ""}
-                placeholder={key === "model_name" ? undefined : t("library.unset")}
-                onChange={(e) =>
-                  s.patchPageAgent("models", {
-                    [key]: key === "model_name" ? e.target.value : e.target.value || null,
-                  } as Partial<AgentDraft>)
-                }
-              />
-              <datalist id={`agent-model-${key}`}>
-                {[...new Set([d[key], ...s.modelNames])]
-                  .filter((name): name is string => !!name)
-                  .map((name) => (
-                    <option key={name} value={name}>
-                      {s.loadedModelNames.includes(name)
-                        ? t("library.loaded")
-                        : s.externalModelNames.includes(name)
-                          ? t("library.external")
-                          : name}
-                    </option>
-                  ))}
-              </datalist>
-            </Field>
-          ))}
-          <Field label="library.temperature">
-            <Input
-              type="number"
-              min={0}
-              max={2}
-              step={0.05}
-              value={d.temperature}
-              onChange={(e) => s.patchPageAgent("models", { temperature: Number(e.target.value) })}
-            />
+          {/* Mode Selector */}
+          <Field label="schemes.allocation.aux.mode" tooltip={t("hints.agent.fieldAllocMode")}>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                <input
+                  type="radio"
+                  name="agent-alloc-mode"
+                  value="fixed"
+                  checked={agentAllocation.mode !== "auto"}
+                  onChange={() => {
+                    s.patchPageAgent("context", {
+                      p5_config: {
+                        ...editor.draft.p5_config,
+                        allocation: { mode: "fixed" },
+                      },
+                    });
+                  }}
+                />
+                {t("schemes.allocation.modeFixed")}
+              </label>
+              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                <input
+                  type="radio"
+                  name="agent-alloc-mode"
+                  value="auto"
+                  checked={agentAllocation.mode === "auto"}
+                  onChange={() => {
+                    s.patchPageAgent("context", {
+                      p5_config: {
+                        ...editor.draft.p5_config,
+                        allocation: { mode: "auto" },
+                      },
+                    });
+                  }}
+                />
+                {t("schemes.allocation.modeAuto")}
+              </label>
+            </div>
           </Field>
+
+          {/* Core Parameters */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <AllocationAgentNumber
+              name="context_window"
+              label={t("schemes.allocation.requestLimit")}
+              info={t("schemes.allocation.requestLimitHint")}
+            />
+            <AllocationAgentNumber
+              name="max_output_tokens"
+              label={t("library.maximum.output.tokens")}
+            />
+            <AllocationAgentNumber
+              name="safety_margin_ratio"
+              label={t("library.safety.margin.ratio")}
+            />
+            <AllocationAgentNumber
+              name="recent_turns"
+              label={t("library.recent.turns.to.retain")}
+            />
+          </div>
+
+          <div className="space-y-4 rounded-lg border bg-muted/20 p-4">
+            <div className="flex items-center gap-2">
+              <Layers className="size-4 text-muted-foreground" />
+              <h4 className="text-sm font-medium">{t("library.long.conversation.management")}</h4>
+            </div>
+
+            <Field
+              label="library.enable.context.compression"
+              tooltip={t("hints.fieldExtra.compression")}
+            >
+              <Checkbox
+                checked={p5.compression_enabled ?? true}
+                onCheckedChange={(v) => {
+                  s.patchPageAgent("context", {
+                    p5_config: {
+                      ...editor.draft.p5_config,
+                      compression_enabled: v === true,
+                    },
+                  });
+                }}
+              />
+            </Field>
+
+            <div className="ml-2 border-l-2 border-border/60 pl-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <AllocationAgentNumber
+                  name="compression_trigger_ratio"
+                  label={t("library.compression.threshold.ratio")}
+                />
+                <AllocationAgentNumber
+                  name="summary_target_tokens"
+                  label={t("library.target.summary.tokens")}
+                />
+                <AllocationAgentNumber
+                  name="summary_max_tokens"
+                  label={t("library.maximum.summary.tokens")}
+                />
+                <AllocationAgentNumber
+                  name="summary_read_max_tokens"
+                  label={t("library.summary.reading.limit.blank.to.inherit")}
+                />
+                <AllocationAgentNumber
+                  name="auxiliary_timeout_seconds"
+                  label={t("library.auxiliary.task.timeout.seconds")}
+                />
+              </div>
+            </div>
+          </div>
+        </CardContent>
+        <CardFooter className="flex justify-end gap-2 border-t pt-4">
           <Button
             variant="outline"
-            className="h-auto min-h-9 max-w-full whitespace-normal break-words"
-            disabled={!defaultModel || alreadyDefault || s.settingsSaving}
-            onClick={() => setConfirmDefault(true)}
+            disabled={!canDiscard}
+            tooltip={t("hints.agent.discard")}
+            disabledReason={t("hints.agent.noContextDirty")}
+            onClick={() => s.discardSettingsPages("context")}
           >
-            {t("library.models.apply.default", { "0": defaultModel ?? t("library.unset") })}
+            <Undo2 className="mr-1.5 size-4" />
+            {t("workspace.discard")}
           </Button>
-          <Button variant="outline" onClick={() => void s.refreshModels()}>
-            {t("library.refresh.models")}
+          <Button
+            data-testid="agent-context-save-btn"
+            disabled={
+              !isContextDirty ||
+              !agentInputsValid ||
+              s.settingsSaving ||
+              !auxiliaryValidity.agentValid
+            }
+            tooltip={t("hints.agent.contextSave")}
+            disabledReason={t("hints.agent.contextSaveDisabled")}
+            onClick={() => void s.saveSettingsPage("context")}
+          >
+            <Save className="mr-1.5 size-4" />
+            {t("workspace.save")}
           </Button>
-          <p className="text-xs text-muted-foreground">{translateNotice(s.modelStatus)}</p>
-        </CardContent>
+        </CardFooter>
       </Card>
-      <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>{t("library.context.capacity")}</CardTitle>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  openContextAllocation({
-                    purpose: "assistant",
-                    agentId: editor.agent.id,
-                    returnRoute: "context",
-                    returnLabel: t("workspace.assistant"),
-                  })
-                }
-              >
-                {t("schemes.allocation.goToCentralAllocation")}
-              </Button>
-            </div>
-            <CardDescription>
-              {s.capacityPreview.split("\n").map(translateNotice).join("\n") ||
-                t("library.reading.capacity")}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid gap-3 rounded-lg border bg-muted/30 p-3 text-xs sm:grid-cols-2">
-              <div>
-                <span className="text-muted-foreground">
-                  {t("schemes.allocation.requestLimit")}：
-                </span>
-                <span className="font-medium">
-                  {p5.context_window ? `${p5.context_window} Tokens` : "跟随模型总容量"}
-                </span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">
-                  {t("schemes.allocation.judgementMode")}：
-                </span>
-                <span className="font-medium">
-                  {(p5 as any).allocation?.mode === "auto"
-                    ? t("schemes.allocation.modeAuto")
-                    : t("schemes.allocation.modeFixed")}
-                </span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">
-                  {t("library.maximum.output.tokens")}：
-                </span>
-                <span className="font-medium">{p5.max_output_tokens} Tokens</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">{t("library.safety.margin.ratio")}：</span>
-                <span className="font-medium">{(p5.safety_margin_ratio * 100).toFixed(0)}%</span>
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {t("schemes.allocation.purposeAssistantDesc")}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("library.long.conversation.management")}</CardTitle>
-            <CardDescription>
-              {t("library.keep.recent.turns.and.compress.earlier.content.into.a")}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            <Field label="library.enable.context.compression">
-              <Checkbox
-                checked={p5.compression_enabled}
-                onCheckedChange={(v) => patch({ compression_enabled: v === true })}
-              />
-            </Field>
-            <div className="grid gap-5 sm:grid-cols-2">
-              {numberField(
-                "compression_trigger_ratio",
-                "library.compression.threshold.ratio",
-                0.01,
-                1,
-                0.01,
-              )}
-              {numberField("recent_turns", "library.recent.turns.to.retain", 1, 10000)}
-            </div>
-            <Accordion type="single" collapsible>
-              <AccordionItem value="budgets">
-                <AccordionTrigger>{t("library.summary.budgets")}</AccordionTrigger>
-                <AccordionContent className="grid gap-5 pt-3 sm:grid-cols-2">
-                  {numberField(
-                    "summary_target_tokens",
-                    "library.target.summary.tokens",
-                    1,
-                    1048576,
-                  )}
-                  {numberField("summary_max_tokens", "library.maximum.summary.tokens", 1, 1048576)}
-                  {numberField(
-                    "summary_read_max_tokens",
-                    "library.summary.reading.limit.blank.to.inherit",
-                    1,
-                    1048576,
-                  )}
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
-          </CardContent>
-        </Card>
-        <AgentToolScope agentId={editor.agent.id} active={active} />
-      </div>
-      {confirmDefault && defaultModel && (
-        <ConfirmDialog
-          message={t("library.models.apply.confirm", { "0": editor.agent.name, "1": defaultModel })}
-          onCancel={() => setConfirmDefault(false)}
-          onConfirm={() => {
-            return s.applyDefaultModelToAgent(defaultModel).then((ok) => {
-              if (ok) setConfirmDefault(false);
-            });
-          }}
-        />
-      )}
+
+      {/* 3. 助手专有辅助任务分配 (AGENT_ROLES) */}
+      <ContextAllocationAuxiliary
+        scope="agent"
+        agentName={editor.agent.name}
+        agentProfiles={p5.auxiliary_allocation}
+        invalidInputs={invalidInputsFor(`${agentInputPrefix}aux:`)}
+        onInvalidInput={(key, raw) => patchInvalidInput(`${agentInputPrefix}aux:`, key, raw)}
+        onAgentChange={(next) => {
+          s.patchPageAgent("context", {
+            p5_config: { ...editor.draft.p5_config, auxiliary_allocation: next },
+          });
+        }}
+        onSaveAgent={async () => {
+          if (agentInputsValid) await s.saveSettingsPage("context");
+        }}
+        canSaveAgent={isContextDirty && agentInputsValid && auxiliaryValidity.agentValid}
+        savingAgent={s.settingsSaving}
+        onValidityChange={setAuxiliaryValidity}
+        labels={Object.fromEntries(
+          [
+            ...[
+              "agentSectionTitle",
+              "agentSectionDesc",
+              "agentScopeNotice",
+              "saveAgent",
+              "inputLimit",
+              "outputReserved",
+              "modeAuto",
+              "modeFixed",
+              "saving",
+              "customToggle",
+              "mode",
+            ],
+            ...["memory_consolidate", "memory_retrieval_select", "research"].flatMap((role) =>
+              ["name", "desc", "inputDesc", "outputDesc"].map((field) => `role.${role}.${field}`),
+            ),
+          ].map((k) => [k, t(`schemes.allocation.aux.${k}`)]),
+        )}
+      />
     </div>
   );
 }

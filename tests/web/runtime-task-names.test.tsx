@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RunSnapshot } from "../../src/shared/contracts/agent-run";
 import type { RuntimeSpan, RuntimeTrace } from "../../src/shared/contracts/runtime-observability";
@@ -8,6 +8,7 @@ import { ModelCallsTable } from "../../src/web/screens/observability/ModelCallsT
 import { taskName, traceCause, traceTask } from "../../src/web/screens/observability/presentation";
 import { TraceTimeline } from "../../src/web/screens/observability/TraceTimeline";
 import { RunWorkspace } from "../../src/web/screens/runs/RunEntry";
+import { render } from "./helpers/render-with-providers";
 
 const t = (key: string) => i18n.t(key);
 

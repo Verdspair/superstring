@@ -4,7 +4,7 @@
 // 顺序推进」的用例覆盖，这里补的是两个独立入口交互场景。全部走真实 UI click 与既有保存通路；
 // 409 呈现为真实错误，不添静默重试或回退，恢复走显式「刷新保存基线」。
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -20,6 +20,7 @@ import { QqGroupConfigPage } from "../../src/web/screens/connections/group-confi
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { NavigationGuard } from "../../src/web/workspace/NavigationGuard";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-30T00:00:00.000Z";
 const AGENT_ID = "44444444-4444-4444-8444-444444444444";
@@ -329,7 +330,7 @@ describe("QQ admin save lifecycle", () => {
     });
 
     render(<SchemesWorkspace active />);
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
     const sheet = screen.getByRole("dialog");
 
     // 第一步：先编辑名单。此时名单草稿的 source 冻结为打开时的 b1（revision 1）。
@@ -382,9 +383,11 @@ describe("QQ admin save lifecycle", () => {
     expect(draft?.source.revision).toBe(2);
     expect(draft?.source.agent_id).toBe(OTHER_AGENT_ID);
 
+    // 目录刷新期间看板会进入读取态；重新取得当前抽屉，不操作已卸载的旧节点。
+    const refreshedSheet = await screen.findByRole("dialog");
     // 第五步：重试按新基线 R2 通过，服务端推进 R3。
     await act(async () => {
-      fireEvent.click(within(sheet).getByRole("button", { name: "保存名单" }));
+      fireEvent.click(within(refreshedSheet).getByRole("button", { name: "保存名单" }));
     });
     expect(fake.updateQqBinding).toHaveBeenNthCalledWith(3, BINDING_ID, {
       attention: { mode: "soft", members: ["10001", "10003"] },
@@ -398,7 +401,7 @@ describe("QQ admin save lifecycle", () => {
     setupStore();
     render(<SchemesWorkspace active />);
 
-    await userEvent.click(screen.getByRole("button", { name: "管理员" }));
+    await userEvent.click(await screen.findByRole("button", { name: "管理员" }));
     const sheet = screen.getByRole("dialog");
     fireEvent.change(within(sheet).getByLabelText("管理员名单"), {
       target: { value: "10001 10003" },
@@ -435,7 +438,7 @@ describe("QQ admin save lifecycle", () => {
     setupStore();
     await selectLocale("en");
     render(<SchemesWorkspace active />);
-    await userEvent.click(screen.getByRole("button", { name: "Administrators" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Administrators" }));
     const sheet = screen.getByRole("dialog");
     expect(within(sheet).getByLabelText("Administrator mode")).toBeTruthy();
     expect(within(sheet).getByLabelText("Administrator list")).toBeTruthy();

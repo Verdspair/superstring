@@ -1,5 +1,5 @@
 // 联网面板：CAS 保存、冲突保稿、自检与 HTTP 载荷；扩展工作区不提供联网 Tab。
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import {
@@ -14,6 +14,7 @@ import { ConnectionWorkspace } from "../../src/web/screens/connections/Connectio
 import { WebAccessPanel } from "../../src/web/screens/connections/web-access-panel";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { activeSpace } from "../../src/web/workspace/navigation";
+import { render } from "./helpers/render-with-providers";
 
 const permissions: PermissionsResponse = {
   revision: "pr-1",

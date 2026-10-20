@@ -58,6 +58,12 @@ export const ExecutionLoopLimitsSchema = z.strictObject({
    */
   providerConcurrency: z.number().int().min(1).max(256).default(2),
 });
+export const ExecutionSystemLimitsSchema = z.strictObject({
+  /** 系统侧可安全重试叶子调用的最大尝试次数（含首次）：N = 1 次首发 + 至多 N-1 次自动重试。 */
+  maxAttempts: z.number().int().min(1).max(10).default(3),
+  /** 两次尝试之间的固定等待毫秒数；须落在任务既有 deadline 内，不做退避/抖动。 */
+  retryDelayMs: z.number().int().min(1_000).max(300_000).default(2_000),
+});
 export const ExecutionQqLimitsSchema = z.strictObject({
   retryDelayMs: z.number().int().min(1_000).max(300_000).default(15_000),
   maxAttempts: z.number().int().min(1).max(10).default(3),
@@ -111,6 +117,7 @@ export const ExecutionPolicySchema = z.strictObject({
   codeLimits: ExecutionCodeLimitsSchema.prefault({}),
   loop: ExecutionLoopLimitsSchema.prefault({}),
   qq: ExecutionQqLimitsSchema.prefault({}),
+  system: ExecutionSystemLimitsSchema.prefault({}),
 });
 export type ExecutionPolicy = z.infer<typeof ExecutionPolicySchema>;
 

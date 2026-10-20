@@ -1,5 +1,6 @@
 import { Ellipsis, type LucideIcon } from "lucide-react";
 import { type ReactElement, type ReactNode, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/button";
 import {
   ContextMenu,
@@ -13,9 +14,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../../components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
 
 export type RecordAction = {
   label: string;
+  tooltip: string;
   icon: LucideIcon;
   run: () => void;
   disabled?: boolean;
@@ -33,6 +36,7 @@ export function RecordActions({
   children: (trigger: ReactNode) => ReactElement;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const invoked = useRef(false);
   const origin = useRef<HTMLElement | null>(null);
   const choose = (action: RecordAction) => {
@@ -43,15 +47,30 @@ export function RecordActions({
   const items = (kind: "context" | "dropdown") => {
     const Item = kind === "context" ? ContextMenuItem : DropdownMenuItem;
     return actions.map((action) => (
-      <Item
-        key={action.label}
-        disabled={action.disabled}
-        variant={action.destructive ? "destructive" : "default"}
-        onSelect={() => choose(action)}
-      >
-        <action.icon />
-        {action.label}
-      </Item>
+      <Tooltip key={action.label}>
+        <TooltipTrigger
+          asChild
+          preserveTriggerState
+          onFocus={(event) => {
+            const menu = event.currentTarget.closest('[role="menu"]');
+            if (
+              menu &&
+              !(event.relatedTarget instanceof Node && menu.contains(event.relatedTarget))
+            )
+              event.preventDefault();
+          }}
+        >
+          <Item
+            disabled={action.disabled}
+            variant={action.destructive ? "destructive" : "default"}
+            onSelect={() => choose(action)}
+          >
+            <action.icon />
+            {action.label}
+          </Item>
+        </TooltipTrigger>
+        <TooltipContent>{action.tooltip}</TooltipContent>
+      </Tooltip>
     ));
   };
   const trigger = disabled ? null : (
@@ -65,6 +84,7 @@ export function RecordActions({
           variant="ghost"
           size="icon-sm"
           className="shrink-0 text-muted-foreground"
+          tooltip={t("hints.conversation.recordMenu")}
           aria-label={label}
           onPointerDown={(e) => {
             origin.current = e.currentTarget;

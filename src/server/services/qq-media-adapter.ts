@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import type { LeafAgentRuntime } from "../agent/agent-runtime";
+import type { RetryOrigin } from "../agent/built-in-actions";
 import { estimateMessages } from "../modules/memory-query";
 import { prepareQqImage } from "./qq-image-codec";
 import type { QqMediaReadAdapter } from "./qq-media-reader";
@@ -63,6 +64,8 @@ export interface QqMediaAdapterOptions {
    * （CONTEXT_CAPACITY_UNKNOWN），绝不把 auto 假装成无门。
    */
   readonly loadedContextCapacity?: (model: string) => Promise<number | null>;
+  /** 可信来源声明（可选）：工厂在装配点传入（QQ 媒体输入服务＝qq）；缺省由调用点父 ALS 继承。 */
+  readonly retryOrigin?: RetryOrigin;
 }
 
 /** The frames to show for an animation, or the picture itself for a still (§7.4). */
@@ -207,6 +210,10 @@ export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaRea
           prompt: sampledPrompt,
           images,
           signal,
+          // 本层没有可复验的来源存储（字节已取、归属登记在运行时解析器），每次额外
+          // 物理发送只复核既有取消信号；来源存在性复验须具名缺口上报，不造假守卫。
+          assertSources: () => signalForPrepare.throwIfAborted(),
+          ...(options.retryOrigin === undefined ? {} : { retryOrigin: options.retryOrigin }),
           owner: owner ?? { kind: "qq_media", id: sourceId },
           sources: reference ? [reference] : [],
         },

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SkillCatalogResponse } from "../../src/shared/contracts/skill";
 import type { ToolDirectoryResponse } from "../../src/shared/contracts/tool-directory";
@@ -10,6 +10,7 @@ import {
   CAPABILITY_CATALOG,
   capabilityComponents,
 } from "../../src/web/workspace/capability-catalog";
+import { render } from "./helpers/render-with-providers";
 
 const toolFixture: ToolDirectoryResponse = {
   tools: [

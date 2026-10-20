@@ -17,6 +17,7 @@ export {
   parseAppearanceMessage,
   resolveMode,
   resolveTheme,
+  SELECTABLE_THEMES,
   THEME_IDS,
   THEME_STORAGE_KEY,
   THEMES,
@@ -61,8 +62,23 @@ export function applyTheme(id: ThemeId) {
   const primary = `light-dark(${theme.color}, ${theme.dark})`;
   for (const property of ["--primary", "--ring", "--sidebar-primary", "--sidebar-ring"])
     root.style.setProperty(property, primary);
+  // Tonal palettes use their matching dark canvas as the action foreground.
+  const darkFg =
+    theme.id === "lavender"
+      ? "#110e18"
+      : theme.id === "fjord"
+        ? "#0c1017"
+        : theme.id === "birch"
+          ? "#14100c"
+          : theme.id === "sage"
+            ? "#0e1511"
+            : theme.id === "hearth"
+              ? "#181012"
+              : theme.id === "blossom"
+                ? "#1e141d"
+                : "#171717";
   for (const property of ["--primary-foreground", "--sidebar-primary-foreground"])
-    root.style.setProperty(property, "light-dark(#ffffff, #171717)");
+    root.style.setProperty(property, `light-dark(#ffffff, ${darkFg})`);
 }
 
 export function selectTheme(id: ThemeId): boolean {

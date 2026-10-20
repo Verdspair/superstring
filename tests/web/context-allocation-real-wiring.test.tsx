@@ -18,17 +18,23 @@ import {
   type UpdateQqGroupConfigRequest,
 } from "../../src/shared/contracts/qq-group-config";
 import { ApiError, type api } from "../../src/web/api";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import {
   resetContextAllocationTarget,
   setContextAllocationTarget,
 } from "../../src/web/features/context-allocation";
 import { qqGroupConfigEditorFrom } from "../../src/web/features/qq/group-config-state";
 import { selectLocale } from "../../src/web/i18n";
-import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
-import { ContextAllocationWorkspace } from "../../src/web/screens/connections/ContextAllocationWorkspace";
+import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
+import { QqGroupConfigPage } from "../../src/web/screens/connections/group-config";
+import { ModelPurposes } from "../../src/web/screens/environment/ModelPurposes";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { NavigationGuard } from "../../src/web/workspace/NavigationGuard";
 
-const zhText = zh as unknown as Record<string, string>;
+/** 显式 tooltip（保存按钮/字段帮助）必须挂在真实 DesignSystemProvider 下渲染。 */
+const renderView = (...[ui, options]: Parameters<typeof render>) =>
+  render(ui, { wrapper: DesignSystemProvider, ...options });
+
 const NOW = "2026-10-16T15:00:00.000Z";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const AGENT_B_ID = "22222222-2222-4222-8222-222222222222";
@@ -236,8 +242,19 @@ function setupHarness(overrides: HarnessOverrides = {}) {
     settingsView: "workspace",
     settingsRoute: "context-allocation",
     agents: [persisted, agentFixture(AGENT_B_ID)],
+    modelNames: ["gpt-4o"],
   });
   return client;
+}
+
+async function renderAssistantWorkspace(route: "memory-tools" | "knowledge-tools" | "context") {
+  store.setState({ settingsRoute: route });
+  await act(async () => {
+    await store.getState().editAgent(AGENT_ID);
+  });
+  await act(async () => {
+    renderView(<AssistantWorkspace active={true} />);
+  });
 }
 
 async function renderWorkspace(purpose: "assistant" | "qq" | "reading" | "aux") {
@@ -245,8 +262,24 @@ async function renderWorkspace(purpose: "assistant" | "qq" | "reading" | "aux") 
     await store.getState().editAgent(AGENT_ID);
   });
   setContextAllocationTarget({ purpose });
+  // 助手目的的真实宿主是助手工作区；全局读取/辅助仍归统一上下文分配页。
+  if (purpose === "assistant") {
+    store.setState({ settingsRoute: "context" });
+    await act(async () => {
+      renderView(
+        <>
+          <AssistantWorkspace active={true} />
+          <NavigationGuard />
+        </>,
+      );
+    });
+    await act(async () => {
+      await waitFor(() => expect(store.getState().organizationLoading).toBe(false));
+    });
+    return;
+  }
   await act(async () => {
-    render(<ContextAllocationWorkspace active={true} />);
+    renderView(<ModelPurposes active={true} />);
   });
   await act(async () => {
     await waitFor(() => expect(store.getState().organizationLoading).toBe(false));
@@ -341,7 +374,7 @@ describe("统一上下文分配真实接线", () => {
       return { ...agentFixture(AGENT_ID), ...patch, config_version: 2 } as AgentResponse;
     }) as unknown as typeof api.updateAgent;
     const client = setupHarness({ updateAgent });
-    await renderWorkspace("reading");
+    await renderAssistantWorkspace("memory-tools");
 
     fireEvent.change(screen.getByTestId("reading-preset-max-tokens-broad"), {
       target: { value: "10000" },
@@ -407,9 +440,14 @@ describe("统一上下文分配真实接线", () => {
       });
     });
     setContextAllocationTarget({ purpose: "qq", bindingId: BINDING_ID });
+    // QQ 本群预算的真实宿主是本群配置页：渲染真实页面并切到历史压缩任务。
     await act(async () => {
-      render(<ContextAllocationWorkspace active={true} />);
+      renderView(<QqGroupConfigPage active={true} />);
     });
+    // Radix Tabs 由 mousedown 激活；jsdom 的 click 不派发 mousedown（与 QQREV2 62pass 同口径）。
+    const compressionTab = screen.getByRole("tab", { name: "历史压缩" });
+    fireEvent.mouseDown(compressionTab, { button: 0 });
+    fireEvent.click(compressionTab);
 
     const headroom = () =>
       document.querySelector<HTMLInputElement>('input[data-field="compression.headroom_ratio"]')!;
@@ -422,7 +460,7 @@ describe("统一上下文分配真实接线", () => {
     });
 
     const saveBtn = screen.getByRole<HTMLButtonElement>("button", {
-      name: zhText["workspace.save"],
+      name: "保存本群配置",
     });
     expect(saveBtn.disabled).toBe(false);
     await act(async () => {
@@ -442,7 +480,7 @@ describe("统一上下文分配真实接线", () => {
     expect(store.getState().qqGroupConfigEditor?.rawTexts["compression.headroom_ratio"]).toBe("");
     expect(store.getState().qqGroupConfigEditor?.overrides.compression).toBeUndefined();
     const blockedBtn = screen.getByRole("button", {
-      name: zhText["workspace.save"],
+      name: "保存本群配置",
     }) as HTMLButtonElement;
     expect(blockedBtn.disabled).toBe(true);
     fireEvent.click(blockedBtn);
@@ -459,12 +497,12 @@ describe("统一上下文分配真实接线", () => {
     // 本群保存被拦时不发请求：放弃改动后基线差异清空。
     expect(saveQqGroupConfig).toHaveBeenCalledTimes(1);
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: zhText["workspace.discard"] }));
+      fireEvent.click(screen.getByRole("button", { name: "放弃改动" }));
     });
     expect(store.getState().qqGroupConfigEditor?.rawTexts).toEqual({});
   });
 
-  it("脏稿换对象：确认弹窗取消留在统一页，放弃后再选真实落到目标助手", async () => {
+  it("脏稿换对象：确认弹窗取消留在助手目录页，放弃后通过真实目录选择落到目标助手", async () => {
     setupHarness();
     await renderWorkspace("assistant");
 
@@ -473,34 +511,34 @@ describe("统一上下文分配真实接线", () => {
         p5_config: { ...store.getState().pageEditor!.draft.p5_config, recent_turns: 12 },
       });
     });
-    const select = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
-    expect(select.value).toBe(AGENT_ID);
-
-    fireEvent.change(select, { target: { value: AGENT_B_ID } });
+    // 进入真实 Agent 目录，再选择目标助手；脏稿触发统一确认弹窗。
+    fireEvent.click(screen.getByRole("button", { name: "所有 Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "助手乙" }));
     await waitFor(() => expect(store.getState().navigationConfirmOpen).toBe(true));
-    expect(store.getState().settingsRoute).toBe("context-allocation");
+    expect(store.getState().settingsRoute).toBe("context");
     expect(store.getState().editorAgentId).toBe(AGENT_ID);
-    store.getState().cancelPendingNavigation();
-    expect(store.getState().navigationConfirmOpen).toBe(false);
-    expect(store.getState().settingsRoute).toBe("context-allocation");
-    expect(select.value).toBe(AGENT_ID);
+    fireEvent.click(screen.getByRole("button", { name: "取消离开" }));
+    await waitFor(() => expect(store.getState().navigationConfirmOpen).toBe(false));
+    expect(store.getState().settingsRoute).toBe("context");
+    expect(store.getState().editorAgentId).toBe(AGENT_ID);
 
-    await act(async () => {
-      store.getState().discardSettingsPages("context");
-    });
-    const selectAfterDiscard = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
-    fireEvent.change(selectAfterDiscard, { target: { value: AGENT_B_ID } });
+    // 取消后回到目录再次选择目标：走真实 NavigationGuard 弹窗的放弃分支（workspace.discard_and_continue）。
+    fireEvent.click(screen.getByRole("button", { name: "所有 Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "助手乙" }));
+    await waitFor(() => expect(store.getState().navigationConfirmOpen).toBe(true));
+    fireEvent.click(await screen.findByRole("button", { name: "放弃修改并继续" }));
     await waitFor(() => expect(store.getState().editorAgentId).toBe(AGENT_B_ID));
     await waitFor(() => {
-      expect((screen.getAllByRole("combobox")[0] as HTMLSelectElement).value).toBe(AGENT_B_ID);
+      expect(screen.getByRole("heading", { level: 1, name: "模型配置" })).toBeTruthy();
+      expect(screen.getAllByText(/助手乙/).length).toBeGreaterThan(0);
     });
-    expect(screen.getByRole("option", { name: "助手乙" }).getAttribute("value")).toBe(AGENT_B_ID);
   });
 
-  it("非法原文跨卸载持久： AUX 与读取原文由主 store 受控保存，其他保存入口被拦、完整映射可见", async () => {
+  it("非法原文跨卸载持久： 助手辅助与读取原文由主 store 受控保存，其他保存入口被拦、完整映射可见", async () => {
     const updateAgent = vi.fn() as unknown as typeof api.updateAgent;
     const client = setupHarness({ updateAgent });
-    await renderWorkspace("aux");
+    // 助手专有辅助任务分配的真实宿主：助手工作区能力标签页（CapabilityEditor）。
+    await renderAssistantWorkspace("context");
 
     fireEvent.click(screen.getByTestId("aux-custom-toggle-memory_consolidate"));
     fireEvent.change(screen.getByTestId("aux-input-limit-memory_consolidate"), {
@@ -513,9 +551,8 @@ describe("统一上下文分配真实接线", () => {
     ).toBe("-50");
 
     cleanup();
-    setContextAllocationTarget({ purpose: "aux" });
     await act(async () => {
-      render(<ContextAllocationWorkspace active={true} />);
+      renderView(<AssistantWorkspace active={true} />);
     });
     expect(
       (screen.getByTestId("aux-input-limit-memory_consolidate") as HTMLInputElement).value,
@@ -532,9 +569,10 @@ describe("统一上下文分配真实接线", () => {
       });
     });
     cleanup();
-    setContextAllocationTarget({ purpose: "reading" });
+    // 读取原文的真实宿主导航到助手 access 标签：路由真实切换，不靠直接改组件内部 tab。
+    store.setState({ settingsRoute: "memory-tools" });
     await act(async () => {
-      render(<ContextAllocationWorkspace active={true} />);
+      renderView(<AssistantWorkspace active={true} />);
     });
     expect(
       (screen.getByTestId("reading-preset-max-tokens-standard") as HTMLInputElement).value,

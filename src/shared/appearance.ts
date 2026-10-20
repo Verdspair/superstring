@@ -3,7 +3,7 @@
 // (localStorage, document, window) — otherwise the server would pull DOM side
 // effects into the process. The native desktop launcher reads the persisted
 // JSON (see src/server/desktop-appearance.ts); the THEMES / MODES data here is
-// the single source of truth for the 16 theme ids and 3 mode ids.
+// the single source of truth for saved theme ids and the three appearance modes.
 
 export const THEME_STORAGE_KEY = "superstring-appearance";
 export const MODE_STORAGE_KEY = "superstring-appearance-mode";
@@ -25,7 +25,18 @@ export const THEMES = [
   { id: "ocean", name: "湖蓝", color: "#306485", dark: "#aad3f1" },
   { id: "coffee", name: "咖啡", color: "#735744", dark: "#dec5af" },
   { id: "graphite", name: "石墨", color: "#4d535c", dark: "#cbd1db" },
+  { id: "lavender", name: "淡紫", color: "#5e4e84", dark: "#9e8cc6" },
+  { id: "fjord", name: "峡湾", color: "#34587c", dark: "#6b94be" },
+  { id: "birch", name: "白桦", color: "#764f28", dark: "#b88b58" },
+  { id: "sage", name: "鼠尾草", color: "#426451", dark: "#90b29b" },
+  { id: "hearth", name: "暖玫", color: "#80535e", dark: "#c59aa5" },
+  { id: "blossom", name: "樱粉", color: "#a34375", dark: "#e4a1c5" },
 ] as const;
+
+// Retired palettes remain readable for saved preferences, but are not offered anew.
+export const SELECTABLE_THEMES = THEMES.filter((theme) =>
+  ["lavender", "fjord", "birch", "sage", "hearth", "blossom"].includes(theme.id),
+);
 
 export type ThemeId = (typeof THEMES)[number]["id"];
 export const THEME_IDS: readonly ThemeId[] = THEMES.map((theme) => theme.id);

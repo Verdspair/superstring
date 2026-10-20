@@ -1,6 +1,6 @@
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import type { ContextUsage } from "../../../shared/contracts/context-usage";
 import { ContextRing } from "../../components/context-ring";
 import { Button } from "../../components/ui/button";
@@ -120,6 +120,11 @@ export function ContextMeter() {
     >
       <PopoverTrigger asChild>
         <Button
+          tooltip={
+            <>
+              {triggerLabel} · <Trans i18nKey="hints.complete.context" />
+            </>
+          }
           variant="ghost"
           size="sm"
           aria-label={triggerLabel}
@@ -149,6 +154,7 @@ export function ContextMeter() {
             ref={close}
             variant="ghost"
             size="icon-sm"
+            tooltip={t("hints.conversation.closeContextUsage")}
             aria-label={t("workspace.close_context_usage")}
             onClick={() => setOpen(false)}
           >

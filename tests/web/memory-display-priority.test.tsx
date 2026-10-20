@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MemoryScopeView } from "../../src/shared/contracts";
 import type { SuperstringApi } from "../../src/web/api";
 import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { A, B, binding, setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const groupScope = (agentId: string, peerId: string): MemoryScopeView => ({
   scope_key: JSON.stringify(["qq", "10001", "group", peerId, agentId]),

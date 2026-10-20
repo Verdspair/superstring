@@ -414,13 +414,19 @@ export function TaskLedger({
             </p>
           )}
         </div>
-        <Button variant="outline" disabled={loading} onClick={() => load()}>
+        <Button
+          variant="outline"
+          disabled={loading}
+          disabledReason={t("hints.investigation.tasks.refreshLoading")}
+          tooltip={t("hints.investigation.tasks.refresh")}
+          onClick={() => load()}
+        >
           <RefreshCw />
           {t("connections.common.refresh")}
         </Button>
       </div>
       <form
-        className="flex flex-wrap items-end gap-3"
+        className="flex flex-wrap items-end gap-4 rounded-xl border border-border/80 bg-card/60 p-4"
         onSubmit={(event) => {
           event.preventDefault();
           applyFilters();
@@ -504,8 +510,15 @@ export function TaskLedger({
           />
         </label>
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="submit">{t("connections.tasks.applyFilters")}</Button>
-          <Button type="button" variant="outline" onClick={clearFilters}>
+          <Button type="submit" tooltip={t("hints.investigation.tasks.applyFilters")}>
+            {t("connections.tasks.applyFilters")}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            tooltip={t("hints.investigation.tasks.clearFilters")}
+            onClick={clearFilters}
+          >
             {t("connections.tasks.clearFilters")}
           </Button>
         </div>
@@ -520,7 +533,7 @@ export function TaskLedger({
           {notice}
         </p>
       )}
-      <div className="overflow-hidden rounded-lg border">
+      <div className="overflow-hidden rounded-xl border border-border/80 bg-card">
         <Table>
           <TableHeader>
             <TableRow>
@@ -566,6 +579,8 @@ export function TaskLedger({
         <Button
           variant="outline"
           disabled={loading}
+          disabledReason={t("hints.investigation.tasks.loadingMore")}
+          tooltip={t("hints.investigation.tasks.loadMore")}
           onClick={() => load(list.nextCursor ?? undefined)}
         >
           {t("connections.tasks.loadMore")}
@@ -615,7 +630,11 @@ export function TaskLedger({
                   detail.status !== "failed" &&
                   detail.status !== "cancelled" &&
                   detail.status !== "unknown" && (
-                    <Button variant="ghost" onClick={() => setCancelling(true)}>
+                    <Button
+                      variant="ghost"
+                      tooltip={t("hints.investigation.tasks.cancel")}
+                      onClick={() => setCancelling(true)}
+                    >
                       <XCircle />
                       {t("connections.tasks.cancel")}
                     </Button>
@@ -630,6 +649,12 @@ export function TaskLedger({
                     <Button
                       className="ml-auto"
                       disabled={!waiting.approvalRevision || saving}
+                      disabledReason={
+                        !waiting.approvalRevision
+                          ? t("connections.tasks.approvalUnavailable")
+                          : t("hints.investigation.tasks.saving")
+                      }
+                      tooltip={t("hints.investigation.tasks.reviewApproval")}
                       onClick={() => setApproving(true)}
                     >
                       {t("connections.tasks.reviewApproval")}
@@ -672,12 +697,19 @@ export function TaskLedger({
             <Button
               variant="outline"
               disabled={saving}
+              disabledReason={t("hints.investigation.tasks.saving")}
               data-dialog-cancel
+              tooltip={t("hints.investigation.tasks.reject")}
               onClick={() => void decide(false)}
             >
               {t("connections.tasks.reject")}
             </Button>
-            <Button disabled={saving} onClick={() => void decide(true)}>
+            <Button
+              disabled={saving}
+              disabledReason={t("hints.investigation.tasks.saving")}
+              tooltip={t("hints.investigation.tasks.approve")}
+              onClick={() => void decide(true)}
+            >
               {t("connections.tasks.approveOnce")}
             </Button>
           </div>
@@ -724,7 +756,12 @@ function TaskRow({
       <TableCell className="text-xs text-muted-foreground">{date(task.createdAt)}</TableCell>
       <TableCell className="text-xs text-muted-foreground">{date(task.expiresAt)}</TableCell>
       <TableCell className="text-right">
-        <Button variant="ghost" size="sm" onClick={onOpen}>
+        <Button
+          variant="ghost"
+          size="sm"
+          tooltip={t("hints.investigation.tasks.open")}
+          onClick={onOpen}
+        >
           {t("connections.tasks.open")}
         </Button>
       </TableCell>
@@ -757,7 +794,7 @@ function CallRow({ taskId, call }: { taskId: string; call: TaskDetail["calls"][n
     );
   };
   return (
-    <section className="space-y-2 rounded-lg border p-3 text-sm">
+    <section className="space-y-2.5 rounded-xl border border-border/80 bg-card/50 p-4 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-xs text-muted-foreground">#{call.ordinal}</span>
         <span className="font-mono">{call.name}</span>
@@ -776,6 +813,7 @@ function CallRow({ taskId, call }: { taskId: string; call: TaskDetail["calls"][n
           <Button
             variant="ghost"
             size="sm"
+            tooltip={t("hints.investigation.tasks.arguments")}
             onClick={() => (page?.field === "arguments" ? clear() : read("arguments"))}
           >
             {t("connections.tasks.arguments")}
@@ -784,6 +822,7 @@ function CallRow({ taskId, call }: { taskId: string; call: TaskDetail["calls"][n
             <Button
               variant="ghost"
               size="sm"
+              tooltip={t("hints.investigation.tasks.result")}
               onClick={() => (page?.field === "result" ? clear() : read("result"))}
             >
               {t("connections.tasks.result")}
@@ -818,6 +857,7 @@ function CallRow({ taskId, call }: { taskId: string; call: TaskDetail["calls"][n
               <Button
                 variant="outline"
                 size="sm"
+                tooltip={t("hints.investigation.tasks.nextPage")}
                 onClick={() => read(page.field, page.value.nextOffset ?? 0)}
               >
                 {t("connections.tasks.nextPage")}

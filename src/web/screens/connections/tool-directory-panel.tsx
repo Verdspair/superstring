@@ -90,6 +90,7 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
         </div>
         <Button
           variant="outline"
+          tooltip={t("hints.extensions.tools.refresh")}
           disabled={loading || saving}
           onClick={() => {
             refresh();
@@ -177,11 +178,21 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
                 </TableCell>
                 <TableCell className="align-top text-right">
                   <div className="flex flex-col items-end gap-1">
-                    <Button variant="ghost" size="sm" onClick={() => setDetail(tool)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      tooltip={t("hints.extensions.tools.details")}
+                      onClick={() => setDetail(tool)}
+                    >
                       {t("connections.tools.details")}
                     </Button>
                     {tool.functionId && (
-                      <Button variant="ghost" size="sm" onClick={() => configure(tool)}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        tooltip={t("hints.extensions.tools.configureFunction")}
+                        onClick={() => configure(tool)}
+                      >
                         {t("connections.tools.configureFunction")}
                       </Button>
                     )}
@@ -189,6 +200,7 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
                       <Button
                         variant="ghost"
                         size="sm"
+                        tooltip={t("hints.extensions.tools.manageGrant")}
                         onClick={() => setGrantResource(tool.resource)}
                       >
                         {t("connections.tools.manageGrant")}
@@ -212,7 +224,12 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
         <section className="space-y-3 rounded-lg border p-4">
           <div className="flex items-center justify-between gap-3">
             <h3 className="font-mono text-sm">{grantResource}</h3>
-            <Button variant="ghost" size="sm" onClick={() => setGrantResource(null)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              tooltip={t("hints.extensions.tools.collapse")}
+              onClick={() => setGrantResource(null)}
+            >
               {t("connections.grants.collapse")}
             </Button>
           </div>
@@ -258,7 +275,11 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
                 {JSON.stringify(detail.parameters, null, 2)}
               </pre>
               {detail.functionId && (
-                <Button variant="outline" onClick={() => configure(detail)}>
+                <Button
+                  variant="outline"
+                  tooltip={t("hints.extensions.tools.configureFunction")}
+                  onClick={() => configure(detail)}
+                >
                   {t("connections.tools.configureFunction")}
                 </Button>
               )}

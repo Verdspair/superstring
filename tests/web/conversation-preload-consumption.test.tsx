@@ -215,6 +215,10 @@ describe("conversation-preload and consumption lifecycle", () => {
       expect(result.current.items[0]?.traceId).toBe("tr-fresh");
       expect(result.current.summary?.totalTraces).toBe(2);
     });
+    // Let this test's asynchronous encrypted write finish before the next test clears storage.
+    await vi.waitFor(async () => {
+      expect((await loadTracesCache(storage, filterKey({})))?.items[0]?.traceId).toBe("tr-fresh");
+    });
   });
 
   it("4. prewarm ignores late save if API client is changed before network returns", async () => {

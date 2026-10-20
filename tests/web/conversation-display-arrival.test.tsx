@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
@@ -13,6 +13,7 @@ import {
   resetConversationChangesForTests,
 } from "../../src/web/services/conversation-changes";
 import { useSuperstringStore } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 // Same-owner QQ rebind family: the closed epoch keeps its own seq space (local rows),
 // while every display read and frame is projected onto one shared history root whose

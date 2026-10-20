@@ -18,12 +18,40 @@ import { estimateTokens } from "../services/token-estimate";
 import type { ActionDescription } from "./agent-specs";
 import { type ActionObservation, inputUnits, textMessage, uniqueSources } from "./context-engine";
 
+export type RetryOrigin = "system" | "qq";
+
+export interface ReadRetryOptions {
+  maxAttempts: number;
+  retryDelayMs: number;
+}
+
+export class ReadRetryDeadlineError extends Error {
+  constructor() {
+    super("Read operation exceeded its total deadline");
+    this.name = "ReadRetryDeadlineError";
+  }
+}
+
 export interface ActionContext {
   owner: RunOwner;
   signal: AbortSignal;
   runId?: string;
   requestId?: string;
   sources?: readonly SourceRef[];
+  /** Trusted channel/task provenance; never inferred from arbitrary owner.kind. */
+  retryOrigin?: RetryOrigin;
+  /**
+   * Owning-run policy snapshot: copied once at run start (never a live config read).
+   * Present only for System-origin eligible runs; absent = no automatic retry.
+   */
+  retryPolicy?: ReadRetryOptions;
+  /** Run the one eligible read's actual HTTP attempt under its owning retry budget. */
+  runReadWithRetry?<T>(input: {
+    readonly timeoutMs: number;
+    readonly operation: (signal: AbortSignal, remainingMs: number) => Promise<T>;
+    readonly isRetryableRejection: (error: unknown) => boolean;
+  }): Promise<T>;
+  assertSources?: (sources: readonly SourceRef[]) => void;
   assertAuthority?: () => void;
   /** Executing subtask admission; channel wrappers must not charge the parent window. */
   fitReadResult?(

@@ -1,5 +1,5 @@
 // 对话枢纽：全渠道统一三页签、消息正文状态保持、观测与任务的范围/隔离、QQ 只读说明在观测页不残留。
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
@@ -13,6 +13,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
 import { ConversationWorkspace } from "../../src/web/screens/conversations/ConversationWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-09-30T00:00:00Z";
 const key = (name: string) => i18n.t(name);

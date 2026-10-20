@@ -1,9 +1,11 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it } from "vitest";
 import { ContextUsageSchema } from "../../src/shared/contracts/context-usage";
 import { selectLocale } from "../../src/web/i18n";
 import { ContextMeter as ContextUsagePanel } from "../../src/web/screens/conversations/ContextMeter";
 import { fixtureStore as store } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(() => {
   cleanup();
@@ -110,7 +112,7 @@ it("renders token estimate and percentage with byte detail in English (en)", () 
   expect(container.textContent).not.toMatch(/[\u3400-\u9fff]/);
 });
 
-it("renders unknown media state with text-only label, token estimate, and vision note", () => {
+it("renders unknown media state with text-only label, token estimate, and vision note", async () => {
   selectLocale("zh-CN");
   const unknownMediaUsage = {
     ...baseUsage,
@@ -128,7 +130,13 @@ it("renders unknown media state with text-only label, token estimate, and vision
 
   const trigger = screen.getByRole("button", { name: "上下文用量（仅文本估算，视觉成本未计入）" });
   expect(trigger).toBeTruthy();
-  expect(trigger.getAttribute("title")).toBe("上下文用量（仅文本估算，视觉成本未计入）");
+  await userEvent.hover(trigger);
+  await waitFor(() =>
+    expect(screen.getByRole("tooltip").textContent).toContain(
+      "上下文用量（仅文本估算，视觉成本未计入）",
+    ),
+  );
+  await userEvent.unhover(trigger);
 
   fireEvent.click(trigger);
   expect(container.textContent).toContain("最近请求的文本输入估算");

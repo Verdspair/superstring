@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { P5ConfigSchema } from "../../src/shared/contracts";
@@ -6,6 +6,7 @@ import type { SuperstringApi } from "../../src/web/api";
 import { ConversationIndex as Sidebar } from "../../src/web/screens/conversations/ConversationIndex";
 import { DirectConversation as ChatPage } from "../../src/web/screens/conversations/DirectConversation";
 import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-12T03:00:00.000Z";
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";

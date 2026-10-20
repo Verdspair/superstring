@@ -1,8 +1,9 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { SuperstringApi } from "../../src/web/api";
 import { LocalModelEncodings } from "../../src/web/features/models/LocalModelEncodings";
 import { selectLocale } from "../../src/web/i18n";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(cleanup);
 it("loads without writes, saves only its model encoding and clears with CAS", async () => {

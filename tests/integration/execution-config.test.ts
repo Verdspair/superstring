@@ -5,7 +5,11 @@ import path from "node:path";
 import { Hono } from "hono";
 import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
-import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
+import type {
+  ActionContext,
+  BuiltInAction,
+  RetryOrigin,
+} from "../../src/server/agent/built-in-actions";
 import { createCodeMode } from "../../src/server/agent/code-mode";
 import {
   createModelAdmission,
@@ -19,9 +23,18 @@ import { permissionRoutes } from "../../src/server/api/permissions";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { AgentTaskRepository } from "../../src/server/db/agent-task-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
-import { createSession, DEFAULT_USER_ID, ensureDefaults } from "../../src/server/db/repositories";
+import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
+import {
+  createSession,
+  DEFAULT_AGENT_ID,
+  DEFAULT_USER_ID,
+  ensureDefaults,
+} from "../../src/server/db/repositories";
+import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { FilePermissionStore, PermissionService } from "../../src/server/permissions/service";
+import { QQ_PROMPT_DEFAULTS } from "../../src/server/services/qq-prompt-contract";
 import {
   ExecutionPolicySchema,
   PermissionPolicySchema,
@@ -103,6 +116,41 @@ describe("execution configuration", () => {
       code: true,
       loop: { readBatch: 1, maxSteps: 16 },
       tasks: { concurrency: 2 },
+    });
+  });
+
+  it("defaults system retry limits, keeps the frozen bounds, and parses legacy policies without system", () => {
+    const defaults = ExecutionPolicySchema.parse({});
+    expect(defaults.system).toEqual({ maxAttempts: 3, retryDelayMs: 2_000 });
+    // 旧策略没有 system 组：解析时补齐缺省值，QQ 已存显式值原样保留，不需要迁移。
+    const legacy = PermissionPolicySchema.parse({
+      version: 1,
+      grants: [],
+      execution: { qq: { maxAttempts: 4, retryDelayMs: 20_000 } },
+    }).execution;
+    expect(legacy?.system).toEqual({ maxAttempts: 3, retryDelayMs: 2_000 });
+    expect(legacy?.qq).toEqual({ maxAttempts: 4, retryDelayMs: 20_000, deliveryTtlSeconds: 600 });
+    // 与 QQ 同形的冻结边界：1..10 次（含首次）、1000..300000ms，超界与非整数拒绝。
+    const systemOf = (system: Record<string, unknown>) =>
+      ExecutionPolicySchema.parse({ system }).system;
+    for (const value of [1, 10]) {
+      expect(systemOf({ maxAttempts: value }).maxAttempts).toBe(value);
+      expect(systemOf({ retryDelayMs: value * 1_000 }).retryDelayMs).toBe(value * 1_000);
+    }
+    for (const invalid of [
+      { system: { maxAttempts: 0 } },
+      { system: { maxAttempts: 11 } },
+      { system: { maxAttempts: 2.5 } },
+      { system: { retryDelayMs: 999 } },
+      { system: { retryDelayMs: 300_001 } },
+      { system: { jitter: true } },
+    ])
+      expect(ExecutionPolicySchema.safeParse(invalid).success).toBe(false);
+    // system 组不借给 QQ：QQ 的次数上限仍是 10，缺省仍是 3 次/15 秒。
+    expect(ExecutionPolicySchema.safeParse({ qq: { maxAttempts: 11 } }).success).toBe(false);
+    expect(ExecutionPolicySchema.parse({ system: { maxAttempts: 10 } }).qq).toMatchObject({
+      maxAttempts: 3,
+      retryDelayMs: 15_000,
     });
   });
 
@@ -205,6 +253,68 @@ describe("execution configuration", () => {
       expect(reread.revision).toBe(saved.revision);
     },
   );
+
+  it("preserves legacy explicit QQ retry values and saves explicit system values through GET/PUT with CAS", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "exec-config-retry-"));
+    dirs.push(dir);
+    const file = path.join(dir, "permissions.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        grants: [],
+        execution: { qq: { maxAttempts: 4, retryDelayMs: 20_000 } },
+      }),
+    );
+    const service = new PermissionService(new FilePermissionStore(file));
+    const app = new Hono();
+    app.onError(handleError);
+    app.route(
+      "/v2/permissions",
+      permissionRoutes(service, () => []),
+    );
+    const initial = await (await app.request("/v2/permissions")).json();
+    expect(initial.policy.execution.qq).toEqual({
+      maxAttempts: 4,
+      retryDelayMs: 20_000,
+      deliveryTtlSeconds: 600,
+    });
+    expect(initial.policy.execution.system).toEqual({ maxAttempts: 3, retryDelayMs: 2_000 });
+    const policy = {
+      ...initial.policy,
+      execution: {
+        ...initial.policy.execution,
+        system: { maxAttempts: 5, retryDelayMs: 8_000 },
+      },
+    };
+    const response = await app.request("/v2/permissions", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedRevision: initial.revision, policy }),
+    });
+    expect(response.status).toBe(200);
+    const saved = await response.json();
+    expect(saved.policy).toEqual(policy);
+    expect(saved.revision).not.toBe(initial.revision);
+    // 同一 revision 重放被 CAS 拒绝。
+    expect(
+      (
+        await app.request("/v2/permissions", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expectedRevision: initial.revision, policy }),
+        })
+      ).status,
+    ).toBe(409);
+    // 已存显式 system/QQ 值再读原样保留。
+    const reread = await (await app.request("/v2/permissions")).json();
+    expect(reread.policy.execution.system).toEqual({ maxAttempts: 5, retryDelayMs: 8_000 });
+    expect(reread.policy.execution.qq).toEqual({
+      maxAttempts: 4,
+      retryDelayMs: 20_000,
+      deliveryTtlSeconds: 600,
+    });
+  });
 
   it("reads task retention, concurrency and lease from the live configuration", async () => {
     const handle = openBusinessDb();
@@ -588,5 +698,202 @@ describe("execution configuration", () => {
     const reread = await (await app.request("/v2/permissions")).json();
     expect(reread.policy.execution.loop.modelConcurrency).toBe(256);
     expect(reread.policy.execution.loop.providerConcurrency).toBe(256);
+  });
+});
+describe("queued task claim origin and policy snapshot", () => {
+  interface ClaimCapture {
+    origin?: RetryOrigin;
+    /** 实际 context.retryPolicy 引用：证明领取时复制一次、跨调用共享且不随原对象变化。 */
+    policyRef?: { maxAttempts: number; retryDelayMs: number };
+    executionReads: number;
+  }
+
+  const grantedPermissions = (resource: string) =>
+    new PermissionService({
+      read: () => ({
+        revision: "1",
+        policy: PermissionPolicySchema.parse({
+          version: 1,
+          grants: [{ resource, approved: true, directories: [] }],
+        }),
+      }),
+      replace: () => {
+        throw new Error("permissions are not replaced in this fixture");
+      },
+    });
+
+  const claimProbe = (
+    captured: ClaimCapture[],
+    reads: () => number,
+    onCall?: (index: number) => void,
+  ): BuiltInAction => ({
+    ...readAction("fixture.read"),
+    async execute(_arguments_: Record<string, unknown>, context: ActionContext) {
+      captured.push({
+        origin: context.retryOrigin,
+        policyRef: context.retryPolicy,
+        executionReads: reads(),
+      });
+      onCall?.(captured.length - 1);
+      return { value: { status: "ok" }, sources: [] };
+    },
+  });
+
+  it("claims a web conversation as system with one claim-time policy snapshot shared by both calls", async () => {
+    const handle = openBusinessDb();
+    handles.push(handle);
+    ensureDefaults(handle.orm, "model");
+    const conversation = new ConversationEventRepository(handle.db).ensureWeb(
+      createSession(handle.orm, "queue-web", { modelName: "model" }).id,
+      DEFAULT_USER_ID,
+    );
+    if (!conversation) throw new Error("missing conversation");
+    const policy = ExecutionPolicySchema.parse({
+      system: { maxAttempts: 5, retryDelayMs: 1_234 },
+    });
+    let executionReads = 0;
+    const captured: ClaimCapture[] = [];
+    const probe = claimProbe(
+      captured,
+      () => executionReads,
+      (index) => {
+        // 第一次调用后改写 getter 返回的原对象：快照不得跟随变化，也不得重新读 getter。
+        if (index === 0) policy.system.maxAttempts = 9;
+      },
+    );
+    const service = new AgentTaskService({
+      repository: new AgentTaskRepository(handle.db),
+      orm: handle.orm,
+      executor: new ActionExecutor(grantedPermissions("fixture.read")),
+      actions: () => [probe],
+      execution: () => {
+        executionReads += 1;
+        return policy;
+      },
+      now: () => "2026-09-28T00:00:00.000Z",
+    });
+    const owner = {
+      kind: "conversation",
+      id: conversation.id,
+      agentId: conversation.agentId,
+      userId: DEFAULT_USER_ID,
+    };
+    service.enqueue(
+      conversation.id,
+      {
+        calls: [
+          { name: "fixture.read", arguments: {} },
+          { name: "fixture.read", arguments: {} },
+        ],
+      },
+      { owner, requestId: "queue-web" },
+    );
+    expect(await service.runOnce()).toBe(true);
+    expect(captured.length).toBe(2);
+    expect(captured[0]?.origin).toBe("system");
+    expect(captured[1]?.origin).toBe("system");
+    expect(captured[0]?.policyRef).toEqual({ maxAttempts: 5, retryDelayMs: 1_234 });
+    expect(captured[1]?.policyRef).toEqual({ maxAttempts: 5, retryDelayMs: 1_234 });
+    // 领取时复制：context 持有的是副本，不是 getter 返回的原对象。
+    expect(captured[0]?.policyRef).not.toBe(policy.system);
+    expect(captured[1]?.policyRef).toBe(captured[0]?.policyRef);
+    // 两次调用之间不重新读 execution getter（策略在领取时读一次快照）。
+    expect(captured[1]?.executionReads).toBe(captured[0]?.executionReads);
+  });
+
+  it("claims a QQ conversation as qq with no System policy even when an execution getter exists", async () => {
+    const handle = openBusinessDb();
+    handles.push(handle);
+    ensureDefaults(handle.orm, "model");
+    updateQqSettings(handle.orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
+    const scheme = createQqScheme(handle.orm, {
+      name: "queue-qq-scheme",
+      triggers: { direct_reply: false, follow_up: false, chiming_in: false, idle_topic: true },
+      prompts: { ...QQ_PROMPT_DEFAULTS, judge: "synthetic" },
+    });
+    const bindingId = "22222222-2222-4222-8222-222222222222";
+    handle.orm
+      .insert(schema.qqBindings)
+      .values({
+        id: bindingId,
+        accountId: "10001",
+        conversationKind: "group",
+        peerId: "30003",
+        agentId: DEFAULT_AGENT_ID,
+        schemeId: scheme.id,
+        paused: 0,
+        shareWebMemory: 0,
+        memoryBatchSize: null,
+        ownerIdentityRevision: null,
+        revision: 1,
+        authorityRevision: 1,
+        createdAt: "2026-09-28T00:00:00.000Z",
+        updatedAt: "2026-09-28T00:00:00.000Z",
+      })
+      .run();
+    const conversation = new ConversationEventRepository(handle.db).ensureOneBot(bindingId);
+    if (!conversation) throw new Error("missing conversation");
+    const captured: ClaimCapture[] = [];
+    const probe = claimProbe(captured, () => 0);
+    const service = new AgentTaskService({
+      repository: new AgentTaskRepository(handle.db),
+      orm: handle.orm,
+      executor: new ActionExecutor(grantedPermissions("fixture.read")),
+      actions: () => [probe],
+      execution: () =>
+        ExecutionPolicySchema.parse({ system: { maxAttempts: 5, retryDelayMs: 1_234 } }),
+      now: () => "2026-09-28T00:00:00.000Z",
+    });
+    const owner = {
+      kind: "conversation",
+      id: conversation.id,
+      agentId: conversation.agentId,
+      userId: DEFAULT_USER_ID,
+    };
+    service.enqueue(
+      conversation.id,
+      { calls: [{ name: "fixture.read", arguments: {} }] },
+      { owner, requestId: "queue-qq" },
+    );
+    expect(await service.runOnce()).toBe(true);
+    // QQ 领取＝qq 来源、无 System 策略（执行配置 getter 存在也不带）。
+    expect(captured.length).toBe(1);
+    expect(captured[0]?.origin).toBe("qq");
+    expect(captured[0]?.policyRef).toBeUndefined();
+  });
+
+  it("claims a web conversation as system without a policy when no execution getter is configured", async () => {
+    const handle = openBusinessDb();
+    handles.push(handle);
+    ensureDefaults(handle.orm, "model");
+    const conversation = new ConversationEventRepository(handle.db).ensureWeb(
+      createSession(handle.orm, "queue-web-no-getter", { modelName: "model" }).id,
+      DEFAULT_USER_ID,
+    );
+    if (!conversation) throw new Error("missing conversation");
+    const captured: ClaimCapture[] = [];
+    const probe = claimProbe(captured, () => 0);
+    const service = new AgentTaskService({
+      repository: new AgentTaskRepository(handle.db),
+      orm: handle.orm,
+      executor: new ActionExecutor(grantedPermissions("fixture.read")),
+      actions: () => [probe],
+      now: () => "2026-09-28T00:00:00.000Z",
+    });
+    const owner = {
+      kind: "conversation",
+      id: conversation.id,
+      agentId: conversation.agentId,
+      userId: DEFAULT_USER_ID,
+    };
+    service.enqueue(
+      conversation.id,
+      { calls: [{ name: "fixture.read", arguments: {} }] },
+      { owner, requestId: "queue-plain" },
+    );
+    expect(await service.runOnce()).toBe(true);
+    expect(captured.length).toBe(1);
+    expect(captured[0]?.origin).toBe("system");
+    expect(captured[0]?.policyRef).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 import { Activity, Pause, Play, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatDate } from "../../i18n/runtime";
@@ -48,6 +48,7 @@ export function ConversationActivity({
         <h1 className="text-sm font-medium">{t("workspace.conversationHub.activityTitle")}</h1>
         <div className="flex flex-wrap items-center gap-2">
           <Button
+            tooltip={<Trans i18nKey="hints.complete.autoRefresh" />}
             variant="outline"
             size="sm"
             aria-pressed={paused}
@@ -57,6 +58,7 @@ export function ConversationActivity({
             {t(paused ? "observability.resumeAutoRefresh" : "observability.pauseAutoRefresh")}
           </Button>
           <Button
+            tooltip={<Trans i18nKey="hints.complete.refreshActivity" />}
             variant="outline"
             size="sm"
             disabled={summaryLoading || tracesLoading}

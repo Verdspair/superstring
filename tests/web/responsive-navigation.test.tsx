@@ -106,3 +106,52 @@ it("conversation directory is a separate modal with keyboard-reachable record ac
   await userEvent.keyboard("{Enter}");
   expect(screen.getByRole("textbox", { name: "会话名称" })).toBeTruthy();
 });
+
+it("desktop conversation list exposes a keyboard resize separator without replacing the canvas", () => {
+  vi.stubGlobal("innerWidth", 1440);
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+  );
+  setup(true);
+  const separator = screen.getByRole("separator", { name: "调整会话列表宽度" });
+  expect(separator.getAttribute("aria-orientation")).toBe("vertical");
+  expect(separator.tabIndex).toBe(0);
+  expect(separator.getAttribute("aria-controls")).toBe("conversation-index");
+  expect(separator.getAttribute("title")).toContain("方向键");
+  const canvas = document.getElementById("conversation-canvas");
+  expect(canvas).toBeTruthy();
+  expect(screen.getByRole("separator", { name: "调整主导航宽度" }).tabIndex).toBe(0);
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+it("keeps the workspace content node when the product navigation moves into its mobile drawer", () => {
+  vi.stubGlobal("innerWidth", 1440);
+  let resized: (() => void) | undefined;
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      matches: false,
+      addEventListener: (_: string, listener: () => void) => {
+        resized = listener;
+      },
+      removeEventListener: vi.fn(),
+    })),
+  );
+  setup();
+  const main = document.querySelector("main");
+  const content = screen.getByText("Workspace");
+  act(() => {
+    vi.stubGlobal("innerWidth", 390);
+    resized?.();
+  });
+  expect(screen.getByRole("button", { name: "会话与导航" })).toBeTruthy();
+  expect(document.querySelector("main")).toBe(main);
+  expect(screen.getByText("Workspace")).toBe(content);
+  act(() => {
+    vi.stubGlobal("innerWidth", 1440);
+    resized?.();
+  });
+  expect(document.querySelector("main")).toBe(main);
+  expect(screen.getByText("Workspace")).toBe(content);
+});

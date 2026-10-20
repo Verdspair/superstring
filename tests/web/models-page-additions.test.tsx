@@ -1,15 +1,16 @@
 // 模型用途边界：聊天、记忆整理、压缩可一起采用默认模型；旧独立检索值保留。
 // 图片理解、语音转写与 QQ 判断模型不属于当前助手的覆盖范围。
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponse, PersonaResponse } from "../../src/shared/contracts";
 import type { QqSettingsResponse } from "../../src/shared/contracts/qq";
 import type { SuperstringApi } from "../../src/web/api";
 import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { selectLocale, translateNotice } from "../../src/web/i18n";
-import { ModelDefaults } from "../../src/web/screens/environment/model-defaults";
+import { QqJudgementModel } from "../../src/web/screens/environment/model-defaults";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const agent = (overrides: Partial<AgentResponse> = {}) =>
   ({
@@ -69,7 +70,7 @@ function client(overrides: Partial<SuperstringApi> = {}) {
   } as unknown as SuperstringApi;
 }
 
-function renderOrganization(fake: SuperstringApi) {
+function prepareAgentStore(fake: SuperstringApi) {
   store.getState().resetForTests(fake);
   store.setState({
     page: "settings",
@@ -79,7 +80,12 @@ function renderOrganization(fake: SuperstringApi) {
     editorAgentId: agent().id,
     pageEditor: newPageEditor(agent(), persona),
   });
-  render(<ModelDefaults />);
+  return fake;
+}
+
+function renderQqPurpose(fake: SuperstringApi) {
+  prepareAgentStore(fake);
+  render(<QqJudgementModel />);
   return fake;
 }
 
@@ -95,7 +101,7 @@ describe("Model purpose boundaries", () => {
     "applies three text purposes with CAS while preserving the old retrieval value %s",
     async (retrieval) => {
       const current = agent({ memory_retrieval_model_name: retrieval });
-      const fake = renderOrganization(
+      const fake = prepareAgentStore(
         client({
           updateAgent: vi.fn(async (_id, body) => ({ ...current, ...body, config_version: 8 })),
         }),
@@ -138,7 +144,7 @@ describe("Model purpose boundaries", () => {
     expect(fake.updateAgent).not.toHaveBeenCalled();
   });
   it("saves QQ judgement selection independently and clears it with null", async () => {
-    const fake = renderOrganization(client());
+    const fake = renderQqPurpose(client());
     store.setState({ modelNames: ["judge-model"] });
     await act(async () => {});
     fireEvent.change(screen.getByLabelText("判断模型"), { target: { value: "judge-model" } });
@@ -155,12 +161,12 @@ describe("Model purpose boundaries", () => {
     });
   });
   it("explains that a configured QQ model does not run while the connection is disabled", async () => {
-    renderOrganization(client({ getQqSettings: vi.fn(async () => settings({ enabled: false })) }));
+    renderQqPurpose(client({ getQqSettings: vi.fn(async () => settings({ enabled: false })) }));
     await act(async () => {});
     expect(screen.getByText(/第三方聊天总开关已关闭/)).toBeTruthy();
   });
   it("provides a retry when QQ settings fail to load", async () => {
-    const fake = renderOrganization(
+    const fake = renderQqPurpose(
       client({
         getQqSettings: vi
           .fn()

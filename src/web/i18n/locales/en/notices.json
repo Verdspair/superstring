@@ -1551,5 +1551,15 @@
   "管理员": "Administrators",
   "请填写管理员名单，或关闭此模式。": "Please enter the administrator list, or turn this mode off.",
   "请更正格式无效的管理员账号后再保存。": "Please correct invalid administrator account IDs before saving.",
-  "管理员数量超过上限（最多 50 人）。": "Administrator count exceeds the maximum limit (maximum 50)."
+  "管理员数量超过上限（最多 50 人）。": "Administrator count exceeds the maximum limit (maximum 50).",
+  "保存检索额度 (Bytes)": "Save Memory Budgets",
+  "前往助手记忆配置": "Go to Assistant Memory",
+  "前往助手资料配置": "Go to Assistant Knowledge",
+  "放弃额度更改": "Discard Budget Changes",
+  "跟随全局默认额度 (继承)": "Follow global default quota (inherit global)",
+  "必须为 1 到 1,048,576 之间的整数": "Must be an integer between 1 and 1,048,576",
+  "必须在 0 <= x < 1 范围内": "Must be within 0 <= x < 1",
+  "必须在 0 < x <= 1 范围内": "Must be within 0 < x <= 1",
+  "必须为 0 到 3600 秒之间的正数": "Must be a positive number between 0 and 3600 seconds",
+  "必须为 1024 到 1,048,576 之间的整数，或留空": "Must be an integer between 1024 and 1,048,576, or empty"
 }

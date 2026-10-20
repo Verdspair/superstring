@@ -11,11 +11,15 @@ import {
   webToolSchemas,
 } from "../../shared/contracts/agent-action-descriptions";
 import type { PermissionRequirement } from "../../shared/contracts/permissions";
-import type { ActionContext, BuiltInAction } from "../agent/built-in-actions";
+import {
+  type ActionContext,
+  type BuiltInAction,
+  ReadRetryDeadlineError,
+} from "../agent/built-in-actions";
 import type { WebAccessConfig } from "./config";
-import { WebAccessError } from "./errors";
-import { fetchPage } from "./fetch-page";
-import { SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, searchWeb } from "./search";
+import { WebAccessError, webError } from "./errors";
+import { FETCH_TIMEOUT_MS, fetchPage } from "./fetch-page";
+import { SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SEARCH_TIMEOUT_MS, searchWeb } from "./search";
 import type { HostResolver } from "./ssrf";
 
 export const WEB_PERMISSION_RESOURCE = "web";
@@ -77,6 +81,19 @@ function unavailable(
   };
 }
 
+/** 只有真实 HTTP 429/503 拒收可重试；超时、无 status 的网络失败与 403/404 等确定性失败都不重试。 */
+const WEB_HTTP_FAILED_CODES: ReadonlySet<string> = new Set([
+  "WEB_SEARCH_FAILED",
+  "WEB_FETCH_FAILED",
+]);
+function isRetryableWebRejection(error: unknown): boolean {
+  return (
+    error instanceof WebAccessError &&
+    WEB_HTTP_FAILED_CODES.has(error.code) &&
+    (error.status === 429 || error.status === 503)
+  );
+}
+
 /** 执行核心库调用：取消原样抛出；WebAccessError 映射为信封；其它错误照旧失败。 */
 async function settle<T>(
   context: ActionContext,
@@ -87,6 +104,9 @@ async function settle<T>(
   } catch (error) {
     // 取消不是故障：原样抛出调用方的中止原因（核心库同样优先原样抛出）。
     context.signal.throwIfAborted();
+    // 重试总时限（含等待）用尽＝原 WEB_TIMEOUT 语义；权限/来源守卫失败照旧原样硬传播。
+    if (error instanceof ReadRetryDeadlineError)
+      return unavailable(webError("WEB_TIMEOUT", "联网读取总时限（含重试等待）已用尽"));
     if (error instanceof WebAccessError) return unavailable(error);
     throw error;
   }
@@ -103,15 +123,22 @@ export function createWebActions(options: WebAccessActionOptions = {}): BuiltInA
     async execute(arguments_, context) {
       context.signal.throwIfAborted();
       const input = SearchSchema.parse(arguments_);
-      return settle(context, async () => {
-        const result = await searchWeb(input.query, {
+      const run = (signal: AbortSignal) =>
+        searchWeb(input.query, {
           limit: input.limit ?? SEARCH_DEFAULT_LIMIT,
           ...(options.config !== undefined
             ? { searxngEndpoint: options.config().searxngEndpoint }
             : {}),
-          signal: context.signal,
+          signal,
           ...network,
         });
+      return settle(context, async () => {
+        // 实际搜索读放进属主重试回调：timeoutMs 用搜索自己的总时限常量（含等待与重试）。
+        const result = await (context.runReadWithRetry?.({
+          timeoutMs: SEARCH_TIMEOUT_MS,
+          operation: run,
+          isRetryableRejection: isRetryableWebRejection,
+        }) ?? run(context.signal));
         const items: { title: string; url: string; snippet: string }[] = [];
         for (const item of result.items) {
           const candidate = {
@@ -133,8 +160,16 @@ export function createWebActions(options: WebAccessActionOptions = {}): BuiltInA
     async execute(arguments_, context) {
       context.signal.throwIfAborted();
       const input = FetchSchema.parse(arguments_);
+      const run = (signal: AbortSignal, remainingMs: number) =>
+        fetchPage(input.url, { signal, timeoutMs: remainingMs, ...network });
       return settle(context, async () => {
-        const page = await fetchPage(input.url, { signal: context.signal, ...network });
+        // 实际抓取读放进属主重试回调：总时限用抓取自己的 20s 常量（含等待与重试），
+        // 每次尝试只拿剩余预算，不重置整调用 deadline。
+        const page = await (context.runReadWithRetry?.({
+          timeoutMs: FETCH_TIMEOUT_MS,
+          operation: run,
+          isRetryableRejection: isRetryableWebRejection,
+        }) ?? run(context.signal, FETCH_TIMEOUT_MS));
         const offset = input.offset ?? 0;
         const limit = input.limit ?? WEB_FETCH_DEFAULT_LIMIT;
         // offset/limit 按 Unicode 字符（码点）计；越界返回空文本与 nextOffset:null。

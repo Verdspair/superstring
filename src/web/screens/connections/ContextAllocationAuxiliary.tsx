@@ -1,4 +1,5 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { Trans } from "react-i18next";
 import type {
   AgentAuxiliaryAllocation,
   AuxiliaryAllocationProfile,
@@ -18,12 +19,16 @@ import { Input } from "../../components/ui/input";
 import { NativeSelect, NativeSelectOption } from "../../components/ui/native-select";
 
 export interface ContextAllocationAuxiliaryProps {
+  scope?: "agent" | "global" | "all";
   agentProfiles?: AgentAuxiliaryAllocation;
   globalProfiles?: GlobalAuxiliaryAllocation;
   onAgentChange?: (next: AgentAuxiliaryAllocation) => void;
   onGlobalChange?: (next: GlobalAuxiliaryAllocation) => void;
   onSaveAgent?: () => Promise<void> | void;
   onSaveGlobal?: () => Promise<void> | void;
+  /** 主机提供时在全局分配卡片内提供放弃入口；范围由主机自己决定（如仅 QQ 两个角色）。 */
+  onDiscardGlobal?: () => void;
+  canDiscardGlobal?: boolean;
   onValidityChange?: (validity: { agentValid: boolean; globalValid: boolean }) => void;
   invalidInputs?: Record<string, string>;
   onInvalidInput?: (key: string, raw: string | undefined) => void;
@@ -35,6 +40,8 @@ export interface ContextAllocationAuxiliaryProps {
   agentName?: string;
   readOnly?: boolean;
   labels?: Partial<Record<string, string>>;
+  /** 只渲染/校验所选的全局辅助角色；缺省渲染全部三个（Agent3 不受影响）。 */
+  globalRoles?: readonly (keyof GlobalAuxiliaryAllocation)[];
 }
 
 type AgentRoleKey = keyof AgentAuxiliaryAllocation;
@@ -128,12 +135,15 @@ const renderFallback = (val: number | null | undefined): string => {
 };
 
 export function ContextAllocationAuxiliary({
+  scope = "all",
   agentProfiles = {},
   globalProfiles = {},
   onAgentChange,
   onGlobalChange,
   onSaveAgent,
   onSaveGlobal,
+  onDiscardGlobal,
+  canDiscardGlobal = false,
   onValidityChange,
   invalidInputs,
   onInvalidInput,
@@ -145,6 +155,7 @@ export function ContextAllocationAuxiliary({
   agentName,
   readOnly = false,
   labels = {},
+  globalRoles,
 }: ContextAllocationAuxiliaryProps) {
   // Track raw drafts for inputs to allow temporary invalid/typing states without clobbering
   const [rawDrafts, setRawDrafts] = useState<RawDraftState>({});
@@ -183,14 +194,24 @@ export function ContextAllocationAuxiliary({
     return isValid;
   };
 
-  const agentValid = validateRoleDrafts(
+  const rawAgentValid = validateRoleDrafts(
     AGENT_ROLES,
     agentProfiles as Record<string, AuxiliaryAllocationProfile | undefined>,
   );
-  const globalValid = validateRoleDrafts(
-    GLOBAL_ROLES,
+  const visibleGlobalRoles = useMemo(
+    () =>
+      globalRoles
+        ? GLOBAL_ROLES.filter((r) => globalRoles.includes(r.key as GlobalRoleKey))
+        : GLOBAL_ROLES,
+    [globalRoles],
+  );
+  const rawGlobalValid = validateRoleDrafts(
+    visibleGlobalRoles,
     globalProfiles as Record<string, AuxiliaryAllocationProfile | undefined>,
   );
+
+  const agentValid = scope === "global" ? true : rawAgentValid;
+  const globalValid = scope === "agent" ? true : rawGlobalValid;
 
   useEffect(() => {
     onValidityChange?.({ agentValid, globalValid });
@@ -318,50 +339,54 @@ export function ContextAllocationAuxiliary({
     const rawOutput = getRawValue(meta.key, "output_reserved", profile);
     const parsedOutput = parsePositiveIntOrNull(rawOutput);
 
+    const rawName = labels[`role.${meta.key}.name`] ?? meta.name;
+    const cleanPrimaryName = rawName.replace(/\s*\([^)]*\)\s*$/, "").trim();
+
     return (
       <div
         key={meta.key}
         data-testid={`aux-card-${meta.key}`}
-        className="rounded-lg border p-4 transition-colors space-y-3"
+        className="rounded-lg border bg-card/60 p-4 transition-colors space-y-3"
       >
-        <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:gap-4">
-          <div className="space-y-1">
-            <span className="text-sm font-semibold text-foreground">
-              {labels[`role.${meta.key}.name`] ?? meta.name}
-            </span>
-            <p className="text-xs text-muted-foreground">
-              {labels[`role.${meta.key}.desc`] ?? meta.description}
-            </p>
+        <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-semibold text-foreground">{cleanPrimaryName}</span>
+            <code className="rounded bg-muted/70 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground border border-border/40">
+              {meta.key}
+            </code>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <label
-              htmlFor={`aux-custom-${meta.key}`}
-              className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none"
+          <label
+            htmlFor={`aux-custom-${meta.key}`}
+            className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none shrink-0"
+          >
+            <Checkbox
+              id={`aux-custom-${meta.key}`}
+              data-testid={`aux-custom-toggle-${meta.key}`}
+              checked={isConfigured}
+              disabled={readOnly}
+              onCheckedChange={(checked) => handleInheritToggle(scope, meta.key, Boolean(checked))}
+            />
+            <span
+              className={isConfigured ? "font-medium text-foreground" : "text-muted-foreground"}
             >
-              <Checkbox
-                id={`aux-custom-${meta.key}`}
-                data-testid={`aux-custom-toggle-${meta.key}`}
-                checked={isConfigured}
-                disabled={readOnly}
-                onCheckedChange={(checked) =>
-                  handleInheritToggle(scope, meta.key, Boolean(checked))
-                }
-              />
-              <span>
-                {isConfigured
-                  ? labels["customized"] || "Customized"
-                  : labels["inherit"] || "Follow Default"}
-              </span>
-            </label>
-          </div>
+              {isConfigured
+                ? labels["customized"] || "Customized"
+                : labels["inherit"] || "Follow Default"}
+            </span>
+          </label>
         </div>
 
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {labels[`role.${meta.key}.desc`] ?? meta.description}
+        </p>
+
         {roleDetails?.[meta.key]}
+
         {isConfigured ? (
-          <div className="pt-2 border-t space-y-3">
-            <div className="grid gap-3 sm:grid-cols-3">
+          <div className="ml-1 pl-3.5 sm:pl-4 border-l-2 border-primary/25 pt-2 space-y-3">
+            <div className="grid gap-4 sm:grid-cols-3">
               {/* Mode Select */}
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <label
                   htmlFor={`aux-mode-${meta.key}`}
                   className="text-xs font-medium text-muted-foreground"
@@ -389,13 +414,15 @@ export function ContextAllocationAuxiliary({
               </div>
 
               {/* Input Limit */}
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <label
                   htmlFor={`aux-input-${meta.key}`}
                   className="text-xs font-medium text-muted-foreground flex justify-between"
                 >
                   <span>{labels["inputLimit"] || "Input Limit"}</span>
-                  <span className="text-[10px] opacity-75">{labels["unit"] || "Blank / null"}</span>
+                  <span className="text-[10px] text-muted-foreground/75 font-mono">
+                    {labels["unit"] || "Blank / null"}
+                  </span>
                 </label>
                 <Input
                   id={`aux-input-${meta.key}`}
@@ -407,7 +434,7 @@ export function ContextAllocationAuxiliary({
                   onChange={(e) =>
                     handleFieldChange(scope, meta.key, "input_limit", e.target.value)
                   }
-                  className={`h-8 text-xs ${!parsedInput.valid ? "border-destructive ring-destructive" : ""}`}
+                  className={`h-8 text-xs font-mono ${!parsedInput.valid ? "border-destructive ring-destructive" : ""}`}
                 />
                 {!parsedInput.valid && (
                   <p className="text-[10px] text-destructive">
@@ -417,13 +444,13 @@ export function ContextAllocationAuxiliary({
               </div>
 
               {/* Output Reserved */}
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <label
                   htmlFor={`aux-output-${meta.key}`}
                   className="text-xs font-medium text-muted-foreground flex justify-between"
                 >
                   <span>{labels["outputReserved"] || "Output Reserve (max_tokens)"}</span>
-                  <span className="text-[10px] opacity-75">
+                  <span className="text-[10px] text-muted-foreground/75 font-mono">
                     {labels["hardContract"] || "Hard contract"}
                   </span>
                 </label>
@@ -437,7 +464,7 @@ export function ContextAllocationAuxiliary({
                   onChange={(e) =>
                     handleFieldChange(scope, meta.key, "output_reserved", e.target.value)
                   }
-                  className={`h-8 text-xs ${!parsedOutput.valid ? "border-destructive ring-destructive" : ""}`}
+                  className={`h-8 text-xs font-mono ${!parsedOutput.valid ? "border-destructive ring-destructive" : ""}`}
                 />
                 {!parsedOutput.valid && (
                   <p className="text-[10px] text-destructive">
@@ -447,19 +474,25 @@ export function ContextAllocationAuxiliary({
               </div>
             </div>
 
-            <div className="text-[11px] text-muted-foreground/80 space-y-0.5 bg-muted/40 p-2 rounded">
-              <p>
-                • {labels["inputLimitDesc"] || "Input limit:"}{" "}
+            <div className="text-[11px] text-muted-foreground/80 space-y-1 bg-muted/30 border border-border/40 p-2.5 rounded">
+              <p className="leading-relaxed">
+                •{" "}
+                <span className="font-medium text-foreground/80">
+                  {labels["inputLimitDesc"] || "Input limit:"}
+                </span>{" "}
                 {labels[`role.${meta.key}.inputDesc`] ?? meta.inputUnitDesc}
               </p>
-              <p>
-                • {labels["outputReservedDesc"] || "Output reserve:"}{" "}
+              <p className="leading-relaxed">
+                •{" "}
+                <span className="font-medium text-foreground/80">
+                  {labels["outputReservedDesc"] || "Output reserve:"}
+                </span>{" "}
                 {labels[`role.${meta.key}.outputDesc`] ?? meta.outputDesc}
               </p>
             </div>
           </div>
         ) : (
-          <div className="text-xs text-muted-foreground bg-muted/30 p-2 rounded">
+          <div className="ml-1 pl-3.5 sm:pl-4 border-l-2 border-border/40 py-1 text-xs text-muted-foreground">
             {labels["unconfiguredNote"] ||
               "No separate allocation configured; caller defaults stay in effect. Use the toggle above to set a custom cap or mode."}
           </div>
@@ -468,82 +501,120 @@ export function ContextAllocationAuxiliary({
     );
   };
 
+  const showAgent = scope !== "global";
+  const showGlobal = scope !== "agent";
+
   return (
     <div data-testid="context-allocation-auxiliary-root" className="space-y-6">
       {/* SCOPE 1: AGENT AUXILIARY TASKS */}
-      <Card data-testid="aux-section-agent">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center justify-between">
-            <span>
-              {labels["agentSectionTitle"] || "Assistant Auxiliary Tasks (P5)"}
-              {agentName ? ` - ${agentName}` : ""}
+      {showAgent && (
+        <Card data-testid="aux-section-agent" className="border">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div className="space-y-1">
+                <CardTitle className="text-base font-semibold text-foreground flex items-center justify-between">
+                  <span>
+                    {labels["agentSectionTitle"] || "Assistant Auxiliary Tasks (P5)"}
+                    {agentName ? ` - ${agentName}` : ""}
+                  </span>
+                </CardTitle>
+                <CardDescription className="text-xs text-muted-foreground">
+                  {labels["agentSectionDesc"] ||
+                    "Per-request budgets for this assistant's background memory consolidation, selection, and research tasks. The main chat window is unaffected."}
+                </CardDescription>
+              </div>
+              <span className="inline-flex items-center rounded border border-border/60 bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground self-start sm:self-auto shrink-0">
+                {labels?.scopeAgent || "Agent Scope"}
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3">
+              {AGENT_ROLES.map((role) =>
+                renderRoleCard(role, "agent", agentProfiles[role.key as AgentRoleKey]),
+              )}
+            </div>
+          </CardContent>
+          <CardFooter className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-t pt-4">
+            <span className="text-xs text-muted-foreground leading-relaxed">
+              {labels["agentScopeNotice"] ||
+                "Saving updates only this assistant's P5 configuration, not other assistants or global settings."}
             </span>
-          </CardTitle>
-          <CardDescription>
-            {labels["agentSectionDesc"] ||
-              "Per-request budgets for this assistant's background memory consolidation, selection, and research tasks. The main chat window is unaffected."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3">
-            {AGENT_ROLES.map((role) =>
-              renderRoleCard(role, "agent", agentProfiles[role.key as AgentRoleKey]),
-            )}
-          </div>
-        </CardContent>
-        <CardFooter className="flex items-center justify-between border-t pt-4">
-          <span className="text-xs text-muted-foreground">
-            {labels["agentScopeNotice"] ||
-              "Saving updates only this assistant's P5 configuration, not other assistants or global settings."}
-          </span>
-          <Button
-            data-testid="aux-save-agent-btn"
-            size="sm"
-            disabled={readOnly || !canSaveAgent || !agentValid || savingAgent}
-            onClick={() => onSaveAgent?.()}
-          >
-            {savingAgent
-              ? labels["saving"] || "Saving..."
-              : labels["saveAgent"] || "Save Assistant Aux Allocation"}
-          </Button>
-        </CardFooter>
-      </Card>
+            <Button
+              tooltip={<Trans i18nKey="hints.complete.auxAgentSave" />}
+              data-testid="aux-save-agent-btn"
+              size="sm"
+              disabled={readOnly || !canSaveAgent || !agentValid || savingAgent}
+              onClick={() => onSaveAgent?.()}
+              className="shrink-0"
+            >
+              {savingAgent
+                ? labels["saving"] || "Saving..."
+                : labels["saveAgent"] || "Save Assistant Aux Allocation"}
+            </Button>
+          </CardFooter>
+        </Card>
+      )}
 
       {/* SCOPE 2: GLOBAL AUXILIARY TASKS */}
-      <Card data-testid="aux-section-global">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">
-            {labels["globalSectionTitle"] || "Global Auxiliary Tasks (Organization)"}
-          </CardTitle>
-          <CardDescription>
-            {labels["globalSectionDesc"] ||
-              "Per-request limits for global knowledge organization and QQ visual annotation/description tasks. Shared by all conversations."}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3">
-            {GLOBAL_ROLES.map((role) =>
-              renderRoleCard(role, "global", globalProfiles[role.key as GlobalRoleKey]),
-            )}
-          </div>
-        </CardContent>
-        <CardFooter className="flex items-center justify-between border-t pt-4">
-          <span className="text-xs text-muted-foreground">
-            {labels["globalScopeNotice"] ||
-              "Saving updates organization settings for every feature using global vision/knowledge organization."}
-          </span>
-          <Button
-            data-testid="aux-save-global-btn"
-            size="sm"
-            disabled={readOnly || !canSaveGlobal || !globalValid || savingGlobal}
-            onClick={() => onSaveGlobal?.()}
-          >
-            {savingGlobal
-              ? labels["saving"] || "Saving..."
-              : labels["saveGlobal"] || "Save Global Aux Allocation"}
-          </Button>
-        </CardFooter>
-      </Card>
+      {showGlobal && (
+        <Card data-testid="aux-section-global" className="border">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div className="space-y-1">
+                <CardTitle className="text-base font-semibold text-foreground">
+                  {labels["globalSectionTitle"] || "Global Auxiliary Tasks (Organization)"}
+                </CardTitle>
+                <CardDescription className="text-xs text-muted-foreground">
+                  {labels["globalSectionDesc"] ||
+                    "Per-request limits for global knowledge organization and QQ visual annotation/description tasks. Shared by all conversations."}
+                </CardDescription>
+              </div>
+              <span className="inline-flex items-center rounded border border-border/60 bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground self-start sm:self-auto shrink-0">
+                {labels?.scopeGlobal || "Global Scope"}
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3">
+              {visibleGlobalRoles.map((role) =>
+                renderRoleCard(role, "global", globalProfiles[role.key as GlobalRoleKey]),
+              )}
+            </div>
+          </CardContent>
+          <CardFooter className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-t pt-4">
+            <span className="text-xs text-muted-foreground leading-relaxed">
+              {labels["globalScopeNotice"] ||
+                "Saving updates organization settings for every feature using global vision/knowledge organization."}
+            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              {onDiscardGlobal && (
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.auxDiscard" />}
+                  data-testid="aux-discard-global-btn"
+                  variant="outline"
+                  size="sm"
+                  disabled={readOnly || !canDiscardGlobal}
+                  onClick={() => onDiscardGlobal()}
+                >
+                  {labels["discardGlobal"] || "Discard"}
+                </Button>
+              )}
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.auxGlobalSave" />}
+                data-testid="aux-save-global-btn"
+                size="sm"
+                disabled={readOnly || !canSaveGlobal || !globalValid || savingGlobal}
+                onClick={() => onSaveGlobal?.()}
+              >
+                {savingGlobal
+                  ? labels["saving"] || "Saving..."
+                  : labels["saveGlobal"] || "Save Global Aux Allocation"}
+              </Button>
+            </div>
+          </CardFooter>
+        </Card>
+      )}
     </div>
   );
 }

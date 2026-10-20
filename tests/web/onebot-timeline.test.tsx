@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
@@ -11,6 +11,7 @@ import { i18n } from "../../src/web/i18n/runtime";
 import { ExternalConversation as ConversationTimeline } from "../../src/web/screens/conversations/ExternalConversation";
 import { timelineRows } from "../../src/web/screens/conversations/timeline-projection";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-09-26T00:00:00Z";
 const summary = (): ConversationSummary => ({

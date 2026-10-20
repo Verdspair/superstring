@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectedContext } from "../../src/shared/contracts/agent-run";
@@ -17,6 +17,7 @@ import {
   resetConversationChangesForTests,
 } from "../../src/web/services/conversation-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const origin = Date.parse("2026-09-26T00:00:00Z");
 const at = (ms: number) => new Date(origin + ms).toISOString();

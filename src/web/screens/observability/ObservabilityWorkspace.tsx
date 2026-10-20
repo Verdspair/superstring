@@ -1,7 +1,7 @@
 import { Download, GitCompareArrows, Pause, Play, RefreshCw } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import type { RuntimeSpanFilters } from "../../../shared/contracts/runtime-observability";
 import { readFilterUrl, writeFilterUrl } from "../../features/observability/trace-filters";
@@ -178,6 +178,7 @@ export function ExecutionWorkspace({
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button
+                  tooltip={<Trans i18nKey="hints.complete.autoRefresh" />}
                   variant="outline"
                   size="sm"
                   onClick={() =>
@@ -188,7 +189,13 @@ export function ExecutionWorkspace({
                   {paused ? <Play /> : <Pause />}
                   {t(paused ? "observability.resumeAutoRefresh" : "observability.pauseAutoRefresh")}
                 </Button>
-                <Button variant="outline" size="sm" disabled={loading} onClick={refresh}>
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.refreshActivity" />}
+                  variant="outline"
+                  size="sm"
+                  disabled={loading}
+                  onClick={refresh}
+                >
                   <RefreshCw />
                   {t("observability.refreshRuns")}
                 </Button>
@@ -239,11 +246,18 @@ export function ExecutionWorkspace({
               )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" size="sm" disabled={!items.length} onClick={exportMetadata}>
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.exportMetadata" />}
+                variant="outline"
+                size="sm"
+                disabled={!items.length}
+                onClick={exportMetadata}
+              >
                 <Download />
                 {t("observability.exportLoadedMetadata")}
               </Button>
               <Button
+                tooltip={<Trans i18nKey="hints.complete.compare" />}
                 variant="secondary"
                 size="sm"
                 disabled={selected.length !== 2}
@@ -281,7 +295,12 @@ export function ExecutionWorkspace({
           <footer className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
             <span>{t("observability.loadedScope", { "0": items.length })}</span>
             {hasMore && (
-              <Button variant="outline" disabled={loading} onClick={loadMore}>
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.loadMore" />}
+                variant="outline"
+                disabled={loading}
+                onClick={loadMore}
+              >
                 {t("observability.loadEarlierRuntimeRecords")}
               </Button>
             )}

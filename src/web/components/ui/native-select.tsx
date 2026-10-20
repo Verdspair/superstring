@@ -1,12 +1,32 @@
 import { cn } from "cn";
 import { ChevronDownIcon } from "lucide-react";
 import type * as React from "react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
 
 type NativeSelectProps = Omit<React.ComponentProps<"select">, "size"> & {
   size?: "sm" | "default";
+  selectClassName?: string;
+  tooltip?: React.ReactNode;
 };
 
-function NativeSelect({ className, size = "default", ...props }: NativeSelectProps) {
+function NativeSelect({
+  className,
+  selectClassName,
+  tooltip,
+  size = "default",
+  ...props
+}: NativeSelectProps) {
+  const control = (
+    <select
+      data-slot="native-select"
+      data-size={size}
+      className={cn(
+        "h-[38px] w-full min-w-0 appearance-none rounded-[6px] border border-border bg-card pr-[32px] pl-[12px] text-[13.5px] leading-normal text-foreground transition-colors outline-none select-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-1 focus-visible:ring-primary disabled:pointer-events-none disabled:cursor-not-allowed aria-invalid:border-destructive aria-invalid:bg-destructive/10 aria-invalid:ring-1 aria-invalid:ring-destructive data-[size=sm]:h-[32px] data-[size=sm]:rounded-[6px] data-[size=sm]:px-2.5 data-[size=sm]:text-[12.5px]",
+        selectClassName,
+      )}
+      {...props}
+    />
+  );
   return (
     <div
       className={cn(
@@ -16,12 +36,16 @@ function NativeSelect({ className, size = "default", ...props }: NativeSelectPro
       data-slot="native-select-wrapper"
       data-size={size}
     >
-      <select
-        data-slot="native-select"
-        data-size={size}
-        className="h-8 w-full min-w-0 appearance-none rounded-lg border border-input bg-transparent py-1 pr-8 pl-2.5 text-sm transition-colors outline-none select-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-[size=sm]:h-7 data-[size=sm]:rounded-[min(var(--radius-md),10px)] data-[size=sm]:py-0.5 dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40"
-        {...props}
-      />
+      {tooltip ? (
+        <Tooltip>
+          <TooltipTrigger asChild preserveTriggerState>
+            {control}
+          </TooltipTrigger>
+          <TooltipContent>{tooltip}</TooltipContent>
+        </Tooltip>
+      ) : (
+        control
+      )}
       <ChevronDownIcon
         className="pointer-events-none absolute top-1/2 right-2.5 size-4 -translate-y-1/2 text-muted-foreground select-none"
         aria-hidden="true"
@@ -35,7 +59,7 @@ function NativeSelectOption({ className, ...props }: React.ComponentProps<"optio
   return (
     <option
       data-slot="native-select-option"
-      className={cn("bg-[Canvas] text-[CanvasText]", className)}
+      className={cn("bg-card text-foreground", className)}
       {...props}
     />
   );
@@ -45,7 +69,7 @@ function NativeSelectOptGroup({ className, ...props }: React.ComponentProps<"opt
   return (
     <optgroup
       data-slot="native-select-optgroup"
-      className={cn("bg-[Canvas] text-[CanvasText]", className)}
+      className={cn("bg-card text-foreground", className)}
       {...props}
     />
   );

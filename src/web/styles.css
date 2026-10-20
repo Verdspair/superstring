@@ -6,8 +6,16 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  --text-xs: 12px;
+  --text-sm: 13.5px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 20px;
+  --text-3xl: 22px;
   --font-heading: var(--font-sans);
-  --font-sans: "Geist Variable", sans-serif;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -39,16 +47,23 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  --color-header-background: var(--header-background);
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 24px;
+  --radius-4xl: 28px;
 }
 
 :root {
+  --motion-fast: 120ms;
+  --motion-base: 160ms;
+  --motion-slow: 240ms;
+  --ease-standard: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -81,6 +96,48 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Reference semantic roles (derived defaults for legacy 16 palettes) */
+  --canvas-bg: var(--background);
+  --canvas-ambient: none;
+  --header-bg: rgba(255, 255, 255, 0.94);
+  --header-background: var(--header-bg);
+  --sidebar-bg: var(--sidebar);
+  --surface: var(--card);
+  --surface-subtle: var(--muted);
+  --surface-elevated: var(--popover);
+  --border-subtle: var(--border);
+  --border-strong: var(--input);
+  --border-hover: color-mix(in oklch, var(--border), var(--foreground) 20%);
+  --text-main: var(--foreground);
+  --text-muted: var(--muted-foreground);
+  --text-tertiary: color-mix(in oklch, var(--muted-foreground), var(--foreground) 25%);
+  --text-inverse: oklch(0.985 0 0);
+  --primary-solid: var(--primary);
+  --primary-hover: color-mix(in oklch, var(--primary), black 10%);
+  --primary-fg: var(--primary-foreground);
+  --primary-tint: color-mix(in oklch, var(--primary), transparent 92%);
+  --accent-solid: var(--accent);
+  --accent-hover: color-mix(in oklch, var(--accent), var(--foreground) 5%);
+  --accent-fg: var(--accent-foreground);
+  --accent-tint: color-mix(in oklch, var(--accent), transparent 92%);
+  --scheme-solid: var(--primary);
+  --scheme-hover: color-mix(in oklch, var(--primary), black 10%);
+  --nav-active-bg: var(--sidebar-accent);
+  --nav-active-text: var(--sidebar-accent-foreground);
+  --nav-active-bar: var(--sidebar-primary);
+  --danger: var(--destructive);
+  --danger-bg: color-mix(in oklch, var(--destructive), white 90%);
+  --danger-border: color-mix(in oklch, var(--destructive), white 70%);
+  --success: oklch(0.5 0.15 145);
+  --success-bg: oklch(0.97 0.04 145);
+  --success-border: oklch(0.9 0.08 145);
+  --warning: oklch(0.6 0.16 80);
+  --warning-bg: oklch(0.98 0.04 80);
+  --warning-border: oklch(0.92 0.08 80);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
 }
 
 .dark {
@@ -115,6 +172,48 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* Reference semantic roles (derived defaults for legacy 16 palettes) */
+  --canvas-bg: var(--background);
+  --canvas-ambient: none;
+  --header-bg: rgba(24, 24, 27, 0.94);
+  --header-background: var(--header-bg);
+  --sidebar-bg: var(--sidebar);
+  --surface: var(--card);
+  --surface-subtle: var(--muted);
+  --surface-elevated: var(--popover);
+  --border-subtle: var(--border);
+  --border-strong: var(--input);
+  --border-hover: color-mix(in oklch, var(--border), var(--foreground) 30%);
+  --text-main: var(--foreground);
+  --text-muted: var(--muted-foreground);
+  --text-tertiary: color-mix(in oklch, var(--muted-foreground), var(--foreground) 30%);
+  --text-inverse: oklch(0.145 0 0);
+  --primary-solid: var(--primary);
+  --primary-hover: color-mix(in oklch, var(--primary), white 12%);
+  --primary-fg: var(--primary-foreground);
+  --primary-tint: color-mix(in oklch, var(--primary), transparent 88%);
+  --accent-solid: var(--accent);
+  --accent-hover: color-mix(in oklch, var(--accent), var(--foreground) 10%);
+  --accent-fg: var(--accent-foreground);
+  --accent-tint: color-mix(in oklch, var(--accent), transparent 88%);
+  --scheme-solid: var(--primary);
+  --scheme-hover: color-mix(in oklch, var(--primary), white 12%);
+  --nav-active-bg: var(--sidebar-accent);
+  --nav-active-text: var(--sidebar-accent-foreground);
+  --nav-active-bar: var(--sidebar-primary);
+  --danger: var(--destructive);
+  --danger-bg: color-mix(in oklch, var(--destructive), black 75%);
+  --danger-border: color-mix(in oklch, var(--destructive), black 50%);
+  --success: oklch(0.65 0.16 145);
+  --success-bg: oklch(0.2 0.08 145);
+  --success-border: oklch(0.3 0.12 145);
+  --warning: oklch(0.75 0.15 80);
+  --warning-bg: oklch(0.22 0.08 80);
+  --warning-border: oklch(0.35 0.12 80);
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
 }
 
 @layer base {
@@ -122,9 +221,1015 @@
     @apply border-border outline-ring/50 motion-reduce:animate-none motion-reduce:transition-none;
   }
   body {
-    @apply bg-background text-foreground text-sm;
+    @apply bg-background text-foreground;
+    font-family:
+      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
   }
   html {
-    @apply font-sans;
+    font-family:
+      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after,
+  ::backdrop {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Shared page hierarchy follows the library workspace without owning page state. */
+.workspace-page-header {
+  flex-shrink: 0;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.workspace-page-location {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 20px;
+  letter-spacing: normal;
+  color: var(--text-tertiary);
+}
+.workspace-page-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  color: var(--foreground);
+}
+.workspace-page-description {
+  margin-top: 6px;
+  font-size: 13.5px;
+  font-weight: 400;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}
+
+/* =========================================================================
+   Nordic Tonal Themes: Lavender, Fjord, Birch
+   Complete 39 Reference Literal Tokens -> Product Semantic Role Aliases
+   ========================================================================= */
+
+/* Lavender (雾紫 / 雾紫烟岚) - Light */
+html[data-theme="lavender"] {
+  /* Reference 39 Literal Tokens */
+  --canvas-bg: #f3f1f6;
+  --canvas-ambient: none;
+  --header-bg: rgba(243, 241, 246, 0.94);
+  --sidebar-bg: #eae5f0;
+  --surface: #faf9fc;
+  --surface-subtle: #f1edf6;
+  --surface-elevated: #ffffff;
+  --border-subtle: #dcd5e4;
+  --border-strong: #c7bed2;
+  --border-hover: #9e93ac;
+  --text-main: #1d1828;
+  --text-muted: #534a62;
+  --text-tertiary: #746b84;
+  --text-inverse: #ffffff;
+  --primary-solid: #5e4e84;
+  --primary-hover: #4f4070;
+  --primary-fg: #ffffff;
+  --primary-tint: rgba(94, 78, 132, 0.08);
+  --accent-solid: #463864;
+  --accent-hover: #372a52;
+  --accent-fg: #ffffff;
+  --accent-tint: rgba(70, 56, 100, 0.08);
+  --scheme-solid: #5e4e84;
+  --scheme-hover: #4f4070;
+  --nav-active-bg: #e3dceb;
+  --nav-active-text: #372c50;
+  --nav-active-bar: #5e4e84;
+  --danger: #9b2c2c;
+  --danger-bg: #fdf2f2;
+  --danger-border: #f8d7d7;
+  --success: #22543d;
+  --success-bg: #f0fdf4;
+  --success-border: #c6f6d5;
+  --warning: #8a5314;
+  --warning-bg: #fffdf0;
+  --warning-border: #feebc8;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+/* Lavender (雾紫 / 雾紫烟岚) - Dark */
+html[data-theme="lavender"].dark {
+  /* Reference 39 Literal Tokens */
+  --canvas-bg: #110e18;
+  --canvas-ambient: none;
+  --header-bg: rgba(17, 14, 24, 0.94);
+  --sidebar-bg: #171321;
+  --surface: #1e192b;
+  --surface-subtle: #241e34;
+  --surface-elevated: #2b233d;
+  --border-subtle: #2c253e;
+  --border-strong: #40365a;
+  --border-hover: #5a4d7e;
+  --text-main: #f3eff9;
+  --text-muted: #a399b6;
+  --text-tertiary: #756b88;
+  --text-inverse: #110e18;
+  --primary-solid: #9e8cc6;
+  --primary-hover: #b2a2d6;
+  --primary-fg: #110e18;
+  --primary-tint: rgba(158, 140, 198, 0.12);
+  --accent-solid: #b9a8db;
+  --accent-hover: #cbbde6;
+  --accent-fg: #110e18;
+  --accent-tint: rgba(185, 168, 219, 0.12);
+  --scheme-solid: #9e8cc6;
+  --scheme-hover: #b2a2d6;
+  --nav-active-bg: #261f38;
+  --nav-active-text: #eeeaf7;
+  --nav-active-bar: #9e8cc6;
+  --danger: #f56565;
+  --danger-bg: #3b1414;
+  --danger-border: #5c1d1d;
+  --success: #48bb78;
+  --success-bg: #0c2e1a;
+  --success-border: #174c2e;
+  --warning: #d69e2e;
+  --warning-bg: #332408;
+  --warning-border: #543b0d;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+/* Fjord (峡湾) - Light */
+html[data-theme="fjord"] {
+  /* Reference 39 Literal Tokens */
+  --canvas-bg: #eef2f6;
+  --canvas-ambient: none;
+  --header-bg: rgba(238, 242, 246, 0.94);
+  --sidebar-bg: #e1e8f0;
+  --surface: #f7fafc;
+  --surface-subtle: #edf3f8;
+  --surface-elevated: #ffffff;
+  --border-subtle: #ccd9e5;
+  --border-strong: #b5c6d6;
+  --border-hover: #8ea4b8;
+  --text-main: #121a24;
+  --text-muted: #485666;
+  --text-tertiary: #6e7e90;
+  --text-inverse: #ffffff;
+  --primary-solid: #34587c;
+  --primary-hover: #294664;
+  --primary-fg: #ffffff;
+  --primary-tint: rgba(52, 88, 124, 0.08);
+  --accent-solid: #263f59;
+  --accent-hover: #1d3044;
+  --accent-fg: #ffffff;
+  --accent-tint: rgba(38, 63, 89, 0.08);
+  --scheme-solid: #34587c;
+  --scheme-hover: #294664;
+  --nav-active-bg: #dce5ee;
+  --nav-active-text: #1e3750;
+  --nav-active-bar: #34587c;
+  --danger: #9b2c2c;
+  --danger-bg: #fdf2f2;
+  --danger-border: #f8d7d7;
+  --success: #22543d;
+  --success-bg: #f0fdf4;
+  --success-border: #c6f6d5;
+  --warning: #8a5314;
+  --warning-bg: #fffdf0;
+  --warning-border: #feebc8;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+/* Fjord (峡湾) - Dark */
+html[data-theme="fjord"].dark {
+  /* Reference 39 Literal Tokens */
+  --canvas-bg: #0c1017;
+  --canvas-ambient: none;
+  --header-bg: rgba(12, 16, 23, 0.94);
+  --sidebar-bg: #101620;
+  --surface: #161d2a;
+  --surface-subtle: #1c2535;
+  --surface-elevated: #222c40;
+  --border-subtle: #243144;
+  --border-strong: #364864;
+  --border-hover: #4b6388;
+  --text-main: #eaf0f6;
+  --text-muted: #8e9cae;
+  --text-tertiary: #677586;
+  --text-inverse: #0c1017;
+  --primary-solid: #6b94be;
+  --primary-hover: #80a5cb;
+  --primary-fg: #0c1017;
+  --primary-tint: rgba(107, 148, 190, 0.12);
+  --accent-solid: #8ab0d5;
+  --accent-hover: #9fbfde;
+  --accent-fg: #0c1017;
+  --accent-tint: rgba(138, 176, 213, 0.12);
+  --scheme-solid: #6b94be;
+  --scheme-hover: #80a5cb;
+  --nav-active-bg: #1e283a;
+  --nav-active-text: #e5eef7;
+  --nav-active-bar: #6b94be;
+  --danger: #f56565;
+  --danger-bg: #3b1414;
+  --danger-border: #5c1d1d;
+  --success: #48bb78;
+  --success-bg: #0c2e1a;
+  --success-border: #174c2e;
+  --warning: #d69e2e;
+  --warning-bg: #332408;
+  --warning-border: #543b0d;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+/* Birch (白桦) - Light */
+html[data-theme="birch"] {
+  /* Reference 39 Literal Tokens */
+  --canvas-bg: #f5f2ed;
+  --canvas-ambient: none;
+  --header-bg: rgba(245, 242, 237, 0.94);
+  --sidebar-bg: #eae4dc;
+  --surface: #faf8f5;
+  --surface-subtle: #efe9e0;
+  --surface-elevated: #ffffff;
+  --border-subtle: #dcd4c7;
+  --border-strong: #c7bdb0;
+  --border-hover: #9e9283;
+  --text-main: #221c16;
+  --text-muted: #5c5248;
+  --text-tertiary: #7c7165;
+  --text-inverse: #ffffff;
+  --primary-solid: #764f28;
+  --primary-hover: #603f1e;
+  --primary-fg: #ffffff;
+  --primary-tint: rgba(118, 79, 40, 0.08);
+  --accent-solid: #56381b;
+  --accent-hover: #432b13;
+  --accent-fg: #ffffff;
+  --accent-tint: rgba(86, 56, 27, 0.08);
+  --scheme-solid: #764f28;
+  --scheme-hover: #603f1e;
+  --nav-active-bg: #e5dcce;
+  --nav-active-text: #442d15;
+  --nav-active-bar: #764f28;
+  --danger: #9b2c2c;
+  --danger-bg: #fdf2f2;
+  --danger-border: #f8d7d7;
+  --success: #22543d;
+  --success-bg: #f0fdf4;
+  --success-border: #c6f6d5;
+  --warning: #8a5314;
+  --warning-bg: #fffdf0;
+  --warning-border: #feebc8;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+/* Birch (白桦) - Dark */
+html[data-theme="birch"].dark {
+  /* Reference 39 Literal Tokens */
+  --canvas-bg: #14100c;
+  --canvas-ambient: none;
+  --header-bg: rgba(20, 16, 12, 0.94);
+  --sidebar-bg: #1a1510;
+  --surface: #221c16;
+  --surface-subtle: #29221b;
+  --surface-elevated: #322a22;
+  --border-subtle: #362d24;
+  --border-strong: #4d4034;
+  --border-hover: #695948;
+  --text-main: #f6f1ea;
+  --text-muted: #a89d91;
+  --text-tertiary: #786e63;
+  --text-inverse: #14100c;
+  --primary-solid: #b88b58;
+  --primary-hover: #c89c6a;
+  --primary-fg: #14100c;
+  --primary-tint: rgba(184, 139, 88, 0.12);
+  --accent-solid: #cfa473;
+  --accent-hover: #dcb486;
+  --accent-fg: #14100c;
+  --accent-tint: rgba(207, 164, 115, 0.12);
+  --scheme-solid: #b88b58;
+  --scheme-hover: #c89c6a;
+  --nav-active-bg: #2c231b;
+  --nav-active-text: #f8f3ec;
+  --nav-active-bar: #b88b58;
+  --danger: #f56565;
+  --danger-bg: #3b1414;
+  --danger-border: #5c1d1d;
+  --success: #48bb78;
+  --success-bg: #0c2e1a;
+  --success-border: #174c2e;
+  --warning: #d69e2e;
+  --warning-bg: #332408;
+  --warning-border: #543b0d;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+html[data-theme="sage"] {
+  /* Tonal surfaces and controls share one restrained hue family. */
+  --canvas-bg: #f0f4f0;
+  --canvas-ambient: none;
+  --header-bg: rgba(240, 244, 240, 0.94);
+  --sidebar-bg: #e3ebe4;
+  --surface: #f8faf7;
+  --surface-subtle: #eaf1e9;
+  --surface-elevated: #ffffff;
+  --border-subtle: #cfdccf;
+  --border-strong: #b4c6b7;
+  --border-hover: #8fa592;
+  --text-main: #19251c;
+  --text-muted: #4c6051;
+  --text-tertiary: #687f6d;
+  --text-inverse: #ffffff;
+  --primary-solid: #426451;
+  --primary-hover: #34523f;
+  --primary-fg: #ffffff;
+  --primary-tint: rgba(66, 100, 81, 0.08);
+  --accent-solid: #304b39;
+  --accent-hover: #263d2e;
+  --accent-fg: #ffffff;
+  --accent-tint: rgba(48, 75, 57, 0.08);
+  --scheme-solid: #426451;
+  --scheme-hover: #34523f;
+  --nav-active-bg: #dce7dd;
+  --nav-active-text: #2a4733;
+  --nav-active-bar: #426451;
+  --danger: #9b2c2c;
+  --danger-bg: #fdf2f2;
+  --danger-border: #f8d7d7;
+  --success: #22543d;
+  --success-bg: #f0fdf4;
+  --success-border: #c6f6d5;
+  --warning: #8a5314;
+  --warning-bg: #fffdf0;
+  --warning-border: #feebc8;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+html[data-theme="sage"].dark {
+  /* Tonal surfaces and controls share one restrained hue family. */
+  --canvas-bg: #0e1511;
+  --canvas-ambient: none;
+  --header-bg: rgba(14, 21, 17, 0.94);
+  --sidebar-bg: #141d17;
+  --surface: #1b261e;
+  --surface-subtle: #223026;
+  --surface-elevated: #2a3a2e;
+  --border-subtle: #2c3e31;
+  --border-strong: #3f5645;
+  --border-hover: #57745f;
+  --text-main: #edf5ee;
+  --text-muted: #9dad9e;
+  --text-tertiary: #7a8e7d;
+  --text-inverse: #0e1511;
+  --primary-solid: #90b29b;
+  --primary-hover: #a4c3ae;
+  --primary-fg: #0e1511;
+  --primary-tint: rgba(144, 178, 155, 0.12);
+  --accent-solid: #afceba;
+  --accent-hover: #c0dbc8;
+  --accent-fg: #0e1511;
+  --accent-tint: rgba(175, 206, 186, 0.12);
+  --scheme-solid: #90b29b;
+  --scheme-hover: #a4c3ae;
+  --nav-active-bg: #25382b;
+  --nav-active-text: #e7f3e9;
+  --nav-active-bar: #90b29b;
+  --danger: #f56565;
+  --danger-bg: #3b1414;
+  --danger-border: #5c1d1d;
+  --success: #48bb78;
+  --success-bg: #0c2e1a;
+  --success-border: #174c2e;
+  --warning: #d69e2e;
+  --warning-bg: #332408;
+  --warning-border: #543b0d;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+html[data-theme="hearth"] {
+  /* Tonal surfaces and controls share one restrained hue family. */
+  --canvas-bg: #f6f0f1;
+  --canvas-ambient: none;
+  --header-bg: rgba(246, 240, 241, 0.94);
+  --sidebar-bg: #eee2e6;
+  --surface: #fcf8f9;
+  --surface-subtle: #f3e9ec;
+  --surface-elevated: #ffffff;
+  --border-subtle: #e1d0d6;
+  --border-strong: #cdb6be;
+  --border-hover: #ad8d98;
+  --text-main: #2b1c21;
+  --text-muted: #68505a;
+  --text-tertiary: #876e77;
+  --text-inverse: #ffffff;
+  --primary-solid: #80535e;
+  --primary-hover: #6c424e;
+  --primary-fg: #ffffff;
+  --primary-tint: rgba(128, 83, 94, 0.08);
+  --accent-solid: #633d48;
+  --accent-hover: #4f303b;
+  --accent-fg: #ffffff;
+  --accent-tint: rgba(99, 61, 72, 0.08);
+  --scheme-solid: #80535e;
+  --scheme-hover: #6c424e;
+  --nav-active-bg: #ead9df;
+  --nav-active-text: #563440;
+  --nav-active-bar: #80535e;
+  --danger: #9b2c2c;
+  --danger-bg: #fdf2f2;
+  --danger-border: #f8d7d7;
+  --success: #22543d;
+  --success-bg: #f0fdf4;
+  --success-border: #c6f6d5;
+  --warning: #8a5314;
+  --warning-bg: #fffdf0;
+  --warning-border: #feebc8;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+html[data-theme="hearth"].dark {
+  /* Tonal surfaces and controls share one restrained hue family. */
+  --canvas-bg: #181012;
+  --canvas-ambient: none;
+  --header-bg: rgba(24, 16, 18, 0.94);
+  --sidebar-bg: #21171b;
+  --surface: #2b1f24;
+  --surface-subtle: #34262c;
+  --surface-elevated: #402e36;
+  --border-subtle: #44303a;
+  --border-strong: #60434f;
+  --border-hover: #805a69;
+  --text-main: #f9eff2;
+  --text-muted: #b49ba5;
+  --text-tertiary: #927983;
+  --text-inverse: #181012;
+  --primary-solid: #c59aa5;
+  --primary-hover: #d4adb7;
+  --primary-fg: #181012;
+  --primary-tint: rgba(197, 154, 165, 0.12);
+  --accent-solid: #ddb6c1;
+  --accent-hover: #e8c8d0;
+  --accent-fg: #181012;
+  --accent-tint: rgba(221, 182, 193, 0.12);
+  --scheme-solid: #c59aa5;
+  --scheme-hover: #d4adb7;
+  --nav-active-bg: #3c2932;
+  --nav-active-text: #faedf2;
+  --nav-active-bar: #c59aa5;
+  --danger: #f56565;
+  --danger-bg: #3b1414;
+  --danger-border: #5c1d1d;
+  --success: #48bb78;
+  --success-bg: #0c2e1a;
+  --success-border: #174c2e;
+  --warning: #d69e2e;
+  --warning-bg: #332408;
+  --warning-border: #543b0d;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+html[data-theme="blossom"] {
+  /* Tonal surfaces and controls share one restrained hue family. */
+  --canvas-bg: #fff0f5;
+  --canvas-ambient: linear-gradient(118deg, #ffdfef 0%, #fdeaf3 42%, #faf5eb 100%);
+  --header-bg: rgba(255, 234, 244, 0.88);
+  --sidebar-bg: #fce5ef;
+  --surface: #fff9fc;
+  --surface-subtle: #f8edf3;
+  --surface-elevated: #fffdfd;
+  --border-subtle: #e7cfdb;
+  --border-strong: #d4acbf;
+  --border-hover: #bd829e;
+  --text-main: #34232d;
+  --text-muted: #735566;
+  --text-tertiary: #826477;
+  --text-inverse: #ffffff;
+  --primary-solid: #a34375;
+  --primary-hover: #8c3563;
+  --primary-fg: #ffffff;
+  --primary-tint: rgba(163, 67, 117, 0.09);
+  --accent-solid: #783554;
+  --accent-hover: #63263f;
+  --accent-fg: #ffffff;
+  --accent-tint: rgba(120, 53, 84, 0.08);
+  --scheme-solid: #a34375;
+  --scheme-hover: #8c3563;
+  --nav-active-bg: #f2d5e4;
+  --nav-active-text: #71334f;
+  --nav-active-bar: #a34375;
+  --danger: #9b2c2c;
+  --danger-bg: #fdf2f2;
+  --danger-border: #f8d7d7;
+  --success: #22543d;
+  --success-bg: #f0fdf4;
+  --success-border: #c6f6d5;
+  --warning: #8a5314;
+  --warning-bg: #fffdf0;
+  --warning-border: #feebc8;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+html[data-theme="blossom"].dark {
+  /* Tonal surfaces and controls share one restrained hue family. */
+  --canvas-bg: #1e141d;
+  --canvas-ambient: linear-gradient(118deg, #352032 0%, #261b2b 46%, #24201c 100%);
+  --header-bg: rgba(48, 29, 44, 0.88);
+  --sidebar-bg: #2b1c29;
+  --surface: #30222d;
+  --surface-subtle: #392a35;
+  --surface-elevated: #42303e;
+  --border-subtle: #573a4c;
+  --border-strong: #765168;
+  --border-hover: #9c6b89;
+  --text-main: #fceef5;
+  --text-muted: #c5a4b8;
+  --text-tertiary: #b18da3;
+  --text-inverse: #1e141d;
+  --primary-solid: #e4a1c5;
+  --primary-hover: #efb6d5;
+  --primary-fg: #1e141d;
+  --primary-tint: rgba(228, 161, 197, 0.12);
+  --accent-solid: #efbfd7;
+  --accent-hover: #f6d3e4;
+  --accent-fg: #1e141d;
+  --accent-tint: rgba(239, 191, 215, 0.1);
+  --scheme-solid: #e4a1c5;
+  --scheme-hover: #efb6d5;
+  --nav-active-bg: #4a2e41;
+  --nav-active-text: #fce9f4;
+  --nav-active-bar: #e4a1c5;
+  --danger: #f56565;
+  --danger-bg: #3b1414;
+  --danger-border: #5c1d1d;
+  --success: #48bb78;
+  --success-bg: #0c2e1a;
+  --success-border: #174c2e;
+  --warning: #d69e2e;
+  --warning-bg: #332408;
+  --warning-border: #543b0d;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+
+  /* Product Semantic Token Aliases */
+  --background: var(--canvas-bg);
+  --foreground: var(--text-main);
+  --card: var(--surface);
+  --card-foreground: var(--text-main);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-main);
+  --primary: var(--primary-solid);
+  --primary-foreground: var(--primary-fg);
+  --secondary: var(--surface);
+  --secondary-foreground: var(--text-main);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-muted);
+  --accent: var(--accent-solid);
+  --accent-foreground: var(--accent-fg);
+  --destructive: var(--danger);
+  --destructive-foreground: var(--text-inverse);
+  --border: var(--border-subtle);
+  --input: var(--border-subtle);
+  --ring: var(--primary-solid);
+  --sidebar: var(--sidebar-bg);
+  --sidebar-foreground: var(--text-main);
+  --sidebar-primary: var(--primary-solid);
+  --sidebar-primary-foreground: var(--primary-fg);
+  --sidebar-accent: var(--nav-active-bg);
+  --sidebar-accent-foreground: var(--nav-active-text);
+  --sidebar-border: var(--border-subtle);
+  --sidebar-ring: var(--primary-solid);
+  --header-background: var(--header-bg);
+}
+
+/* A single shell wash stays visible through chat surfaces, without repainting forms. */
+html[data-theme="blossom"] #superstring-shell {
+  background-image: var(--canvas-ambient);
+}
+html[data-theme="blossom"] [data-slot="app-header"] {
+  background-image: linear-gradient(
+    110deg,
+    color-mix(in srgb, var(--primary) 9%, transparent),
+    transparent 85%
+  );
+}
+html[data-theme="blossom"] [data-slot="product-navigation"] {
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--sidebar) 86%, transparent),
+    color-mix(in srgb, var(--sidebar) 65%, transparent)
+  );
+}
+html[data-theme="blossom"] [data-slot="conversation-surface"] {
+  background-color: transparent;
+}
+
+/* Choice surfaces share paint; the Radix control remains the only state owner. */
+@scope (.selection-card) {
+  :scope {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background-color: var(--card);
+    background-image: none;
+    cursor: pointer;
+    line-height: 1.5;
+  }
+  :scope:not(:has(> :disabled, > [data-disabled])):hover {
+    border-color: var(--border-hover);
+    background-color: color-mix(in srgb, var(--card) 85%, var(--muted));
+  }
+  :scope:has(
+    > [data-slot="checkbox"][aria-checked="true"],
+    > [data-slot="checkbox"][aria-checked="mixed"],
+    > [data-slot="radio-group-item"][aria-checked="true"]
+  ),
+  :scope[aria-pressed="true"] {
+    border-color: color-mix(in srgb, var(--primary) 58%, var(--border));
+    background-color: color-mix(in srgb, var(--primary) 9%, var(--card));
+  }
+  :scope:has(> :focus-visible),
+  :scope:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 3px;
+  }
+  :scope:has(> :disabled, > [data-disabled]),
+  :scope:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  :scope > :is(span, div) {
+    min-width: 0;
+  }
+  :scope > :is(span, div) > :first-child {
+    line-height: 1.5;
+  }
+  :scope > :is(span, div) > :not(:first-child) {
+    line-height: 1.6;
+  }
+  :scope.selection-card--thumbnail {
+    box-shadow: none;
+  }
+  :scope.selection-card--unavailable {
+    border-style: dashed;
   }
 }

@@ -128,22 +128,42 @@ export interface OrganizationEditor {
   /** 辅助任务分配草稿（0068）：与模型草稿分开记脏；undefined＝尚未打开分配编辑。 */
   auxiliaryAllocation?: GlobalAuxiliaryAllocation;
 }
-/** 保存范围：models 仅模型三项（默认，旧调用方行为不变）；allocation 仅辅助分配组；all 两者。 */
-export type OrganizationSaveScope = "models" | "allocation" | "all";
+/** 辅助任务全局角色键 */
+export type GlobalAuxiliaryRole = keyof GlobalAuxiliaryAllocation;
+
+/** 保存范围：models 仅模型三项（默认，旧调用方行为不变）；allocation 仅辅助分配组；all 两者；organization-model 仅系统共享整理模型；qq-models 仅 QQ 媒体两项。 */
+export type OrganizationSaveScope =
+  | "models"
+  | "allocation"
+  | "all"
+  | "organization-model"
+  | "qq-models";
 export function organizationDirty(
   editor: OrganizationEditor | null,
   scope: OrganizationSaveScope = "models",
+  allocationRoles?: readonly GlobalAuxiliaryRole[],
 ): boolean {
   if (!editor) return false;
-  const models =
-    editor.modelName !== editor.source.model_name ||
+  const orgModel = editor.modelName !== editor.source.model_name;
+  const qqModels =
     editor.visionModelName !== editor.source.vision_model_name ||
     editor.transcriptionModelName !== editor.source.transcription_model_name;
+  const models = orgModel || qqModels;
   const allocation =
     editor.auxiliaryAllocation !== undefined &&
-    JSON.stringify(editor.auxiliaryAllocation) !==
-      JSON.stringify(editor.source.auxiliary_allocation ?? undefined);
-  return scope === "models" ? models : scope === "allocation" ? allocation : models || allocation;
+    (allocationRoles !== undefined
+      ? allocationRoles.some(
+          (role) =>
+            JSON.stringify(editor.auxiliaryAllocation?.[role]) !==
+            JSON.stringify(editor.source.auxiliary_allocation?.[role]),
+        )
+      : JSON.stringify(editor.auxiliaryAllocation) !==
+        JSON.stringify(editor.source.auxiliary_allocation ?? undefined));
+  if (scope === "organization-model") return orgModel;
+  if (scope === "qq-models") return qqModels;
+  if (scope === "models") return models;
+  if (scope === "allocation") return allocation;
+  return models || allocation;
 }
 
 export interface KnowledgeReadEditor {
@@ -181,9 +201,15 @@ export interface KnowledgeState {
   }) => void;
   /** 直接以整份角色映射替换分配草稿；{} 清空整组；undefined 语义走 discardOrganization("allocation")。 */
   patchOrganizationAllocation: (next: GlobalAuxiliaryAllocation) => void;
-  saveOrganization: (scope?: OrganizationSaveScope) => Promise<boolean>;
-  /** scope "allocation" 只还原分配基线，保留模型草稿与编辑器；缺省清空整份编辑器。 */
-  discardOrganization: (scope?: "allocation") => void;
+  saveOrganization: (
+    scope?: OrganizationSaveScope,
+    allocationRoles?: readonly GlobalAuxiliaryRole[],
+  ) => Promise<boolean>;
+  /** scope 指定时还原对应字段基线（allocation 可指定角色），保留其他草稿；缺省清空整份编辑器。 */
+  discardOrganization: (
+    scope?: OrganizationSaveScope,
+    allocationRoles?: readonly GlobalAuxiliaryRole[],
+  ) => void;
   knowledgeReadEditor: KnowledgeReadEditor | null;
   knowledgeReadLoading: boolean;
   loadKnowledgeRead: () => Promise<void>;

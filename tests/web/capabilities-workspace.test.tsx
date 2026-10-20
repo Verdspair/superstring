@@ -1,5 +1,6 @@
-// P8 系统能力目录：每个目录按钮打开登记路由的对应详情；失败态一次尝试与显式重试。
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+// P8 系统能力目录：每个目录按钮打开登记路由的对应详情；失败态一次尝试与显式重试；
+// 记忆/知识重复编辑器物理移除并转为规范链接，明确无真实 editor 输入框，不机械卸载其他详情。
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentResponse,
@@ -9,6 +10,7 @@ import {
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { api } from "../../src/web/api";
 import { toDraft } from "../../src/web/features/agents/draft";
+import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
 import { CapabilitiesWorkspace } from "../../src/web/screens/connections/CapabilitiesWorkspace";
@@ -16,6 +18,7 @@ import type { SuperstringState } from "../../src/web/state/types";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { activeSpace } from "../../src/web/workspace/navigation";
 import type { SettingsRoute } from "../../src/web/workspace/settings-routes";
+import { render } from "./helpers/render-with-providers";
 
 const agent = (id: string) =>
   ({
@@ -27,7 +30,6 @@ const agent = (id: string) =>
     p5_config: {},
   }) as AgentResponse;
 const persona = (id: string) => ({ id, agent_id: id }) as PersonaResponse;
-// 能力详情会渲染记忆/知识规则表单，需要完整的 p5 默认结构而不是空对象。
 const configuredAgent = (id: string) =>
   ({ ...agent(id), p5_config: P5ConfigSchema.parse({}) }) as AgentResponse;
 
@@ -72,6 +74,7 @@ const permissions: PermissionsResponse = {
         providerConcurrency: 1,
       },
       qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
+      system: { maxAttempts: 3, retryDelayMs: 2000 },
     },
   },
   resources: [],
@@ -108,6 +111,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("system capability directory", () => {
@@ -183,8 +187,6 @@ describe("system capability directory", () => {
     await waitFor(() => expect(store.getState().pageEditor).not.toBeNull());
     expect(store.getState().error).toBeNull();
     await waitFor(() => expect(jump.hasAttribute("disabled")).toBe(false));
-    expect(store.getState().error).toBeNull();
-    await waitFor(() => expect(jump.hasAttribute("disabled")).toBe(false));
     fireEvent.click(jump);
     expect(store.getState().settingsRoute).toBe("context");
     expect(activeSpace(store.getState())).toBe("assistants");
@@ -200,7 +202,6 @@ describe("system capability directory", () => {
 });
 
 describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情", () => {
-  // 保存成功后的状态：pageEditor 已清空，editorDraft 保留；当前助手 B 不在列表首位。
   const postSave = () => ({
     agents: [configuredAgent("A"), configuredAgent("B")],
     editorAgentId: "B",
@@ -209,52 +210,57 @@ describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情",
     dirty: false,
   });
 
-  it("memory-tools：重新读取当前（非首位）助手并渲染记忆读取，而不是永久加载", async () => {
-    const getAgent = vi.fn(async (id: string) => configuredAgent(id));
-    await openRoute(
-      { getAgent, getPersona: vi.fn(async (id: string) => persona(id)) },
-      "memory-tools",
-      { ...postSave(), reloadMemory: vi.fn().mockResolvedValue(undefined) },
-    );
-    await waitFor(() => expect(screen.getByText("记忆读取")).toBeTruthy());
-    expect(getAgent).toHaveBeenCalledTimes(1);
-    expect(getAgent).toHaveBeenCalledWith("B");
-    expect(store.getState().editorAgentId).toBe("B");
-    expect(store.getState().error).toBeNull();
-    expect(screen.queryByText("正在加载…")).toBeNull();
+  const readyFixture = () => ({
+    agents: [configuredAgent("A"), configuredAgent("B")],
+    editorAgentId: "B",
+    editorDraft: toDraft(configuredAgent("B")),
+    pageEditor: newPageEditor(configuredAgent("B"), persona("B")),
+    dirty: false,
   });
 
-  it("knowledge-tools：重新读取后渲染知识读取规则", async () => {
-    const getAgent = vi.fn(async (id: string) => configuredAgent(id));
+  it("memory-tools：渲染规范跳转链接，不挂载真实输入框，点击触发向助手 access 的导航", async () => {
+    const navSpy = vi.spyOn(store.getState(), "requestAgentNavigation");
     await openRoute(
       {
-        getAgent,
+        getAgent: vi.fn(async (id: string) => configuredAgent(id)),
         getPersona: vi.fn(async (id: string) => persona(id)),
-        getAgentKnowledgeRead: vi.fn().mockResolvedValue({
-          revision: 1,
-          config: {
-            enabled: true,
-            context_budget: 2048,
-            scope: "all" as const,
-            document_ids: [] as string[],
-          },
-        }),
-        listAgentKnowledge: vi.fn().mockResolvedValue([]),
-        getKnowledgeSettings: vi.fn().mockResolvedValue({
-          auto_enabled: false,
-          model_name: null,
-          context_budget: 16_384,
-          revision: 1,
-        }),
+      },
+      "memory-tools",
+      { ...readyFixture(), reloadMemory: vi.fn().mockResolvedValue(undefined) },
+    );
+    // 渲染规范跳转链接
+    expect(screen.getByTestId("capability-canonical-memory-link")).toBeTruthy();
+
+    // 严格负向断言：Capabilities 内部绝对无内联记忆编辑输入框
+    expect(screen.queryByLabelText(/检索模式/)).toBeNull();
+    expect(screen.queryByLabelText(/检索全局指引/)).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    // 点击规范跳转链接触发 requestAgentNavigation
+    fireEvent.click(screen.getByTestId("capability-canonical-memory-link"));
+    expect(navSpy).toHaveBeenCalledWith("B", "memory-tools");
+    navSpy.mockRestore();
+  });
+
+  it("knowledge-tools：渲染规范跳转链接，不挂载真实 checkbox/输入框，点击触发向助手 access 的导航", async () => {
+    const navSpy = vi.spyOn(store.getState(), "requestAgentNavigation");
+    await openRoute(
+      {
+        getAgent: vi.fn(async (id: string) => configuredAgent(id)),
+        getPersona: vi.fn(async (id: string) => persona(id)),
       },
       "knowledge-tools",
-      { ...postSave(), reloadMemory: vi.fn().mockResolvedValue(undefined) },
+      { ...readyFixture(), reloadMemory: vi.fn().mockResolvedValue(undefined) },
     );
-    await waitFor(() => expect(store.getState().knowledgeReadEditor?.agentId).toBe("B"));
-    expect(getAgent).toHaveBeenCalledWith("B");
-    expect(store.getState().editorAgentId).toBe("B");
-    expect(store.getState().error).toBeNull();
-    await waitFor(() => expect(screen.getByRole("checkbox")).toBeTruthy());
+    expect(screen.getByTestId("capability-canonical-knowledge-link")).toBeTruthy();
+
+    // 严格负向断言：Capabilities 内部绝无内联知识读取 checkbox
+    expect(screen.queryByRole("checkbox")).toBeNull();
+
+    // 点击规范跳转链接触发 requestAgentNavigation
+    fireEvent.click(screen.getByTestId("capability-canonical-knowledge-link"));
+    expect(navSpy).toHaveBeenCalledWith("B", "knowledge-tools");
+    navSpy.mockRestore();
   });
 
   it("session-history：沿同一守卫恢复并保持当前非首位选择", async () => {
@@ -318,10 +324,11 @@ describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情",
     expect(getAgent).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await act(async () => {});
-    await waitFor(() => expect(store.getState().pageEditor).not.toBeNull());
+    await waitFor(() => {
+      expect(screen.getByTestId("capability-canonical-memory-link")).toBeTruthy();
+    });
     expect(getAgent).toHaveBeenCalledTimes(2);
     expect(store.getState().error).toBeNull();
-    expect(screen.getByText("记忆读取")).toBeTruthy();
   });
 
   it("未就绪且无错误无脏稿时提供显式重试兜底（忙时禁用）", async () => {
@@ -331,7 +338,6 @@ describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情",
       "memory-tools",
       { ...postSave(), knowledgeBusy: true, reloadMemory: vi.fn().mockResolvedValue(undefined) },
     );
-    // 忙时的自动请求被守卫静默拦下：不能停在永久裸加载。
     expect(getAgent).not.toHaveBeenCalled();
     expect(store.getState().pageEditor).toBeNull();
     const retry = screen.getByRole("button", { name: "重试" });
@@ -345,8 +351,9 @@ describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情",
     fireEvent.click(retry);
     await act(async () => {});
     expect(getAgent).toHaveBeenCalledWith("B");
-    await waitFor(() => expect(store.getState().pageEditor).not.toBeNull());
-    expect(screen.getByText("记忆读取")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId("capability-canonical-memory-link")).toBeTruthy();
+    });
   });
 
   it("passes active prop to execution detail and pauses polling when active is false", async () => {
@@ -403,18 +410,15 @@ describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情",
     expect(summary).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledTimes(1);
 
-    // Switch space: active becomes false
     rerender(<CapabilitiesWorkspace active={false} />);
     await act(async () => {});
 
-    // Polling while active is false should not trigger new requests
     await act(async () => {
       await vi.advanceTimersByTimeAsync(15000);
     });
     expect(summary).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledTimes(1);
 
-    // Return to space revalidates once without waiting for the next polling interval.
     rerender(<CapabilitiesWorkspace active={true} />);
     await act(async () => {});
     expect(summary).toHaveBeenCalledTimes(2);

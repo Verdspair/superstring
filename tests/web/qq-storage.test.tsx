@@ -1,5 +1,5 @@
 // QQ 数据与保留：真实计数、调度裁决、保留设置草稿与手动清理工作区。
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import type { QqSettingsResponse, QqStorageUsageResponse } from "../../src/shared/contracts/qq";
@@ -12,6 +12,7 @@ import { api } from "../../src/web/api";
 import { selectLocale, translate } from "../../src/web/i18n";
 import { StorageInventory } from "../../src/web/screens/connections/storage-inventory";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const nowSeconds = Math.floor(Date.now() / 1000);
 

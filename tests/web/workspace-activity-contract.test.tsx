@@ -1,4 +1,4 @@
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SchemeDirectory } from "../../src/web/screens/connections/SchemesWorkspace";
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
@@ -6,6 +6,7 @@ import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary
 import { StickerLibrary } from "../../src/web/screens/library/StickerLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(() => {
   cleanup();

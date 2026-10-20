@@ -1,22 +1,28 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderView,
+  screen,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readMode, readTheme, THEMES } from "../../src/web/appearance";
+import { readMode, readTheme, SELECTABLE_THEMES } from "../../src/web/appearance";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { dirtyPages, newPageEditor } from "../../src/web/features/agents/page-drafts";
-import {
-  resetContextAllocationTarget,
-  setContextAllocationTarget,
-} from "../../src/web/features/context-allocation";
+import { resetContextAllocationTarget } from "../../src/web/features/context-allocation";
 import { msg, selectLocale } from "../../src/web/i18n";
 import en from "../../src/web/i18n/locales/en/translation.json";
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
 import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
 import {
   KnowledgeToolSettings,
+  MemoryReadingRules,
   MemoryToolSettings,
 } from "../../src/web/screens/assistants/ResourceRules";
 import { CapabilityEditor, IdentityEditor } from "../../src/web/screens/assistants/StudioEditors";
-import { ContextAllocationWorkspace } from "../../src/web/screens/connections/ContextAllocationWorkspace";
+import { AgentModelPurpose } from "../../src/web/screens/environment/AgentModelPurpose";
 import { Preferences } from "../../src/web/screens/environment/Preferences";
 import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
 import { MemoryDetail, MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
@@ -33,6 +39,10 @@ import {
   scopeKey,
   setupLibrary,
 } from "./helpers/library-fixture";
+
+/** 显式 tooltip（保存按钮/字段帮助）必须挂在真实 DesignSystemProvider 下渲染。 */
+const render = (...[ui, options]: Parameters<typeof renderView>) =>
+  renderView(ui, { wrapper: DesignSystemProvider, ...options });
 
 beforeEach(() => {
   localStorage.clear();
@@ -110,15 +120,8 @@ describe("fresh assistant studio", () => {
     expect(store.getState().pageEditor?.personaDraft.communication_style).toBe("");
     expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
   });
-  it("shows four tool allowance modes and independent bounded presets without retired controls", async () => {
-    await act(async () =>
-      render(
-        <>
-          <MemoryToolSettings />
-          <KnowledgeToolSettings />
-        </>,
-      ),
-    );
+  it("shows four tool allowance modes and independent bounded presets in the memory reading rules", async () => {
+    await act(async () => render(<MemoryReadingRules />));
     expect(
       within(screen.getByLabelText("记忆工具额度模式"))
         .getAllByRole("option")
@@ -128,11 +131,10 @@ describe("fresh assistant studio", () => {
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad,
     );
     // 三档预设默认展开：预设的候选/条目输入初始都可见，标题只剩档名。
-    // 每轮预算输入已按授权搬迁到统一上下文分配页（见下方资料读取用例），旧页不再渲染。
     for (const label of ["每次查询扫描候选上限", "每页最大返回项"]) {
       expect(screen.getAllByLabelText(label)).toHaveLength(3);
     }
-    const conservative = screen.getByRole("button", { name: "保守" });
+    const conservative = screen.getByRole("button", { name: /^保守/ });
     const panel = document.getElementById(conservative.getAttribute("aria-controls") ?? "");
     if (!panel) throw new Error("Missing conservative preset panel");
     const candidates = within(panel).getByLabelText("每次查询扫描候选上限") as HTMLInputElement;
@@ -150,36 +152,78 @@ describe("fresh assistant studio", () => {
     expect(screen.getByLabelText("记忆检索提示词")).toBeTruthy();
     expect(screen.queryByLabelText("最多目录批次")).toBeNull();
     expect(screen.queryByLabelText("每批目录条数")).toBeNull();
-    expect(screen.getAllByRole("textbox")).toHaveLength(4);
+    // 技术hint已从每档面板集中为单处 <details>（strict.reading.technical）：
+    // 真实点击 summary 展开后在全页断言 hint；candidate.max 联动断言保持不变。
+    fireEvent.click(screen.getByText("读取规则与生效说明"));
+    expect(screen.getByText(/最终返回条数不能超过候选上限/)).toBeTruthy();
+    // 每档 Bytes 额度输入（批准的 Bytes 同组功能）为 3 个 text 类型 Input（data-testid
+    // reading-preset-max-tokens-*），加上 3 个相关性要求 + 1 个检索提示词共 7 个 textbox。
+    const presetBytes = ["conservative", "standard", "broad"].map(
+      (mode) => screen.getByTestId(`reading-preset-max-tokens-${mode}`) as HTMLInputElement,
+    );
+    expect(presetBytes).toHaveLength(3);
+    for (const input of presetBytes) {
+      expect(input.isConnected).toBe(true);
+      expect(input.getAttribute("type")).toBe("text");
+      expect(input.getAttribute("inputmode")).toBe("numeric");
+    }
+    expect(screen.getAllByRole("textbox")).toHaveLength(7);
+    // 三个 Bytes 输入确实在 textbox 集合内（明确归属，不弱化未知裸输入防线）。
+    for (const input of presetBytes) {
+      expect(screen.getAllByRole("textbox")).toContain(input);
+    }
+    // 技能文本不能授予资料访问权限——on.demand 说明随完整规则迁入读取规则视图。
     expect(screen.getByText(/技能文本不能授予资料访问权限/)).toBeTruthy();
-    expect(within(panel).getByText(/最终返回条数不能超过候选上限/)).toBeTruthy();
-    // 旧页预算摘要：已存值只读显示，编辑入口统一指向上下文分配页。
-    expect(within(panel).getByText(/每轮记忆工具结果总预算/).parentElement?.textContent).toContain(
+    // Restoring the saved candidate limit leaves the editor clean; a real rule edit owns only memory-tools.
+    expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
+    fireEvent.change(screen.getByLabelText("记忆检索提示词"), {
+      target: { value: "Focused retrieval" },
+    });
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
+  });
+  it("hosts the full memory reading rules with the global knowledge budget read-only", async () => {
+    await act(async () =>
+      render(
+        <>
+          <MemoryToolSettings />
+          <KnowledgeToolSettings />
+        </>,
+      ),
+    );
+    // 记忆工具路由现内联完整读取规则（与每档 Bytes 同组，不再先跳统一页）：
+    // 三档已存预算随档名就近显示（presetSummary 用 toLocaleString 千分位：4,096/8,192 Bytes），编辑输入真实可操作。
+    expect(screen.getByText(/4,096 Bytes/)).toBeTruthy();
+    expect(screen.getByText(/8,192 Bytes/)).toBeTruthy();
+    expect(screen.getByLabelText("记忆工具额度模式")).toBeTruthy();
+    expect(screen.getAllByLabelText("每次查询扫描候选上限")).toHaveLength(3);
+    expect(screen.getByLabelText("记忆检索提示词")).toBeTruthy();
+    // 全局知识预算卡保持只读：远端 Save/Discard 已移除，真 scope 只在 reading。
+    expect(screen.getByText(/全局每轮知识工具结果预算/).parentElement?.textContent).toContain(
       "2048 Bytes",
     );
-    expect(
-      screen.getByText(/全局每轮知识工具结果预算（UTF-8 字节；含目录预览）/).parentElement
-        ?.textContent,
-    ).toContain("2048 Bytes");
-    expect(screen.getAllByRole("button", { name: "前往上下文分配" }).length).toBeGreaterThanOrEqual(
-      3,
-    );
+    expect(screen.queryByRole("button", { name: "保存全局预算" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "放弃预算修改" })).toBeNull();
+    // 精准入口按卡 scope 计数：全局知识预算卡 1 个前往上下文分配；
+    // 记忆规则宿主现为整节 section（h1 资料读取，不再包 card），Bytes 就地编辑，
+    // 读取规则节内不重复放置跳转入口（断言保留，仅按真实结构改 scope 入口）。
+    const memorySection = screen.getByTestId("reading-section-memory");
+    expect(within(memorySection).queryByRole("button", { name: "前往上下文分配" })).toBeNull();
+    const budgetCard = screen.getByText("全局知识读取预算").closest('[data-slot="card"]');
+    if (!(budgetCard instanceof HTMLElement)) throw new Error("Missing global budget card");
+    expect(within(budgetCard).getAllByRole("button", { name: "前往上下文分配" })).toHaveLength(1);
+    // 记忆工具页不承载记忆内容维护（维护仍归资料库记忆分区）。
+    expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
+    expect(screen.queryByLabelText("记忆整理提示词")).toBeNull();
   });
-  it("edits the per-turn memory budget only in the unified reading allocation", async () => {
-    const client = setupLibrary({
-      updateAgent: vi.fn(),
-      getModelCapacity: vi
-        .fn()
-        .mockResolvedValue({ model: "model-a", status: "loaded", context_length: 128000 }),
-    });
-    setContextAllocationTarget({ purpose: "reading", agentId: A });
-    await act(async () => render(<ContextAllocationWorkspace active={true} />));
-    // 三档已存预算值在统一页可见可编辑（搬迁不删能力，只换唯一编辑位置）。
+  it("edits the per-turn memory budget in the same-group reading rules through the context whitelist", async () => {
+    const client = setupLibrary({ updateAgent: vi.fn() });
+    await act(async () => render(<MemoryReadingRules />));
+    // 三档 Bytes 额度与规则同组可见可编辑（Bytescontext allscope：改动归 context 页）。
     const inputs = ["conservative", "standard", "broad"].map(
       (mode) => screen.getByTestId(`reading-preset-max-tokens-${mode}`) as HTMLInputElement,
     );
     expect(inputs.map((el) => el.value)).toEqual(["2048", "4096", "8192"]);
-    // 预算草稿写入 pageEditor 的 context 页：旧 memory-tools 页保持干净。
+    // 预算草稿写入 pageEditor 的 context 页：memory-tools 规则页保持干净。
     fireEvent.change(inputs[2], { target: { value: "10000" } });
     expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
       10000,
@@ -202,7 +246,7 @@ describe("fresh assistant studio", () => {
       };
       store.setState({ pageEditor: newPageEditor(legacy, editor.persona) });
       const before = store.getState().pageEditor;
-      await act(async () => render(<MemoryToolSettings />));
+      await act(async () => render(<MemoryReadingRules />));
       // 选择框按真实存量档显示（不再伪装成 broad），并有旧档提示说明保存语义。
       expect((screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement).value).toBe(mode);
       expect(screen.getByText(/全量读取设置.*广泛额度/).textContent).toContain(mode);
@@ -211,7 +255,7 @@ describe("fresh assistant studio", () => {
       cleanup();
       act(() => store.getState().openSettingsRoute("models"));
       act(() => store.getState().openSettingsRoute("long-memory"));
-      await act(async () => render(<MemoryToolSettings />));
+      await act(async () => render(<MemoryReadingRules />));
       expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(mode);
       expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
       fireEvent.click(screen.getByRole("button", { name: "改为广泛额度" }));
@@ -279,16 +323,13 @@ describe("fresh assistant studio", () => {
         ),
       });
       selectLocale(locale);
-      await act(async () => render(<CapabilityEditor />));
-      expect(screen.getByLabelText(/记忆读取模型|Memory reading model/)).toHaveProperty(
-        "value",
-        "legacy-retrieval",
-      );
-      expect(store.getState().refreshCapacityPreview).toHaveBeenCalledWith([
-        "model-a",
-        "model-a",
-        null,
-      ]);
+      await act(async () => render(<AgentModelPurpose />));
+      expect(
+        screen.getByRole("combobox", { name: /^(记忆读取模型|Memory reading model)$/ }),
+      ).toHaveProperty("value", "legacy-retrieval");
+      // 新模型分工宿主不做容量预览：零容量请求（真实动作未被调用）。
+      // 既有探测覆盖仍归 allocation-performance-isolation 与 ModelPurposes 既有断言，不假改为 none。
+      expect(store.getState().refreshCapacityPreview).not.toHaveBeenCalled();
       fireEvent.click(
         screen.getByRole("button", { name: /三项文本任务使用默认模型|all three text tasks/ }),
       );
@@ -381,7 +422,7 @@ describe("fresh library tasks", () => {
     await act(async () => render(<MemoryLibrary />));
     // 空 scope 也能管理：不选中任何分区时维护卡已在正文区。
     expect(screen.getByLabelText("自动整理网页对话记忆")).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: /网页对话记忆/ })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^网页对话记忆/ })));
     // 选中网页对话记忆分区后仍可用。
     expect(screen.getByLabelText("自动整理网页对话记忆")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("每隔多少轮整理"), { target: { value: "30" } });
@@ -401,12 +442,16 @@ describe("fresh library tasks", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /QQ · 私聊 20002/ })));
     expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
     expect(screen.queryByLabelText("记忆整理提示词")).toBeNull();
-    // 记忆工具设置（系统能力）只保留「前往长期记忆」跳转入口（不是第二个编辑器），没有重复维护控件。
+    // 记忆工具页内联完整读取规则（Bytes 与规则同组），仍不承载记忆内容维护。
     cleanup();
     await act(async () => render(<MemoryToolSettings />));
-    expect(screen.getByRole("button", { name: "前往长期记忆" })).toBeTruthy();
+    expect(screen.getByLabelText("记忆工具额度模式")).toBeTruthy();
     expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
     expect(screen.queryByLabelText("记忆整理提示词")).toBeNull();
+    // 完整读取规则编辑（含「前往长期记忆」入口）就是该宿主本体。
+    cleanup();
+    await act(async () => render(<MemoryReadingRules />));
+    expect(screen.getByRole("button", { name: "前往长期记忆" })).toBeTruthy();
   });
   it("a batch-size draft protects scope and global navigation", async () => {
     await act(async () => render(<MemoryLibrary />));
@@ -443,10 +488,15 @@ describe("fresh library tasks", () => {
 });
 
 describe("preferences and localized resources", () => {
-  it("retains all 16 palettes with immediate persisted selection", () => {
+  it("offers the curated palettes with immediate persisted selection", () => {
     render(<Preferences />);
-    for (const theme of THEMES) {
-      const button = screen.getByRole("button", { name: theme.name });
+    expect(screen.queryByRole("button", { name: "深蓝灰" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "海蓝" })).toBeNull();
+    for (const theme of SELECTABLE_THEMES) {
+      // Every offered theme must persist and expose its selected state.
+      const name = zh[`preferences.theme.${theme.id}` as keyof typeof zh];
+      if (!name) throw new Error(`Missing zh name for theme ${theme.id}`);
+      const button = screen.getByRole("button", { name });
       fireEvent.click(button);
       expect(readTheme()).toBe(theme.id);
       expect(button.getAttribute("aria-pressed")).toBe("true");
@@ -469,7 +519,7 @@ describe("preferences and localized resources", () => {
     fireEvent.change(screen.getByLabelText("语言"), { target: { value: "en" } });
     expect(screen.getByRole("heading", { name: "Make this workspace yours" })).toBeTruthy();
     expect(store.getState().pageEditor?.draft.name).toBe("Draft");
-    expect(screen.getByRole("button", { name: "Forest" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sage" })).toBeTruthy();
   });
   it("every owned stable key has both languages and matching interpolation", () => {
     for (const [key, english] of Object.entries(en)) {
@@ -488,11 +538,13 @@ describe("preferences and localized resources", () => {
     await act(async () =>
       render(
         <>
-          <MemoryToolSettings />
+          <MemoryReadingRules />
           <KnowledgeToolSettings />
         </>,
       ),
     );
+    // MemoryToolSettings 即 MemoryReadingRules 本体：重复挂载会产生两份相同文案，
+    // 不用 getAllBy 掩盖重复，直接以唯一宿主渲染。
     expect(screen.getByText("Knowledge access")).toBeTruthy();
     expect(screen.getByText(/Skill text cannot grant access/)).toBeTruthy();
     // 预算摘要按人工化文案搬迁：统一页用额度行（label + 值），不再渲染旧 hint 句。
@@ -531,7 +583,7 @@ describe("discard and re-enter object editors", () => {
     expect(store.getState().memoryCorrectionDraft?.body).toBe("New correction");
   });
   it("accepts model IDs absent from the currently loaded catalog", async () => {
-    await act(async () => render(<CapabilityEditor />));
+    await act(async () => render(<AgentModelPurpose />));
     fireEvent.change(screen.getByLabelText("对话模型"), {
       target: { value: "unloaded/local-model" },
     });

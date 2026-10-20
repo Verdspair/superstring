@@ -73,6 +73,8 @@ export interface ModelRequest {
   /** 原生工具声明（issue #10）：只有决策步骤带；叶子任务继续只用 responseSchema。 */
   tools?: readonly ModelTool[];
   signal?: AbortSignal;
+  retryPolicy?: { maxAttempts: number; retryDelayMs: number };
+  onRetry?: () => void;
   /** Reports the model sent by the adapter after routing or local fallback. */
   onModelResolved?: (model: string) => void;
   /** Retains returned text even when a completion terminates with a protocol error. */
@@ -118,6 +120,8 @@ export interface MultimodalRequest {
   images: readonly VisionImage[];
   responseSchema?: Record<string, unknown>;
   signal?: AbortSignal;
+  retryPolicy?: { maxAttempts: number; retryDelayMs: number };
+  onRetry?: () => void;
 }
 /** Protocol adapters are replaceable; inference ownership always stays in AgentRuntime. */
 export interface ModelPort {

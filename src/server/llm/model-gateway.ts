@@ -170,6 +170,18 @@ export interface ModelGateway {
     assertPreparedCurrent?: (input: { model: string }) => void;
     acquireSendPermit?: (model: string, signal?: AbortSignal) => Promise<() => void>;
     /**
+     * 用户配置的逻辑调用重试（可选；缺席＝旧行为，零自动重试）。`maxAttempts` 含首次逻辑
+     * 尝试，即整次调用内最多 N-1 次失败重发；预算按整次逻辑调用共享（schema/tools 兼容降级
+     * 子链不重置计数），每次重发沿用同一份最终 messages、不重新准备，发送前守卫与准入逐次
+     * 重跑，总传输时限从第一次真正发送起算、不因重试重置。
+     */
+    retryPolicy?: { maxAttempts: number; retryDelayMs: number };
+    /**
+     * 每次额外普通重发前的回调（可选）：宿主在此计账/复验预算，抛错＝该次重发不发出。
+     * 只对用户重试策略驱动的重发调用；schema/tools 兼容降级重发（既有语义）不调用。
+     */
+    onRetry?: () => void;
+    /**
      * 宿主已准备的上下文预算（可选；缺席＝旧行为）。带它时实际模型用 `contextBudget.model`，
      * 并在每次真正发送前复验它的路由当前性；计数器供宿主后续装配使用。
      */
@@ -199,6 +211,10 @@ export interface ModelGateway {
     /** 同 complete：每次真正发送前一次的可信宿主复验。 */
     assertPreparedCurrent?: (input: { model: string }) => void;
     acquireSendPermit?: (model: string, signal?: AbortSignal) => Promise<() => void>;
+    /** 同 complete 的 `retryPolicy`：流式只在响应体开始前的请求获取阶段重试，产出后不再重试。 */
+    retryPolicy?: { maxAttempts: number; retryDelayMs: number };
+    /** 同 complete 的 `onRetry`：每次额外重发前调用，抛错＝不再发送。 */
+    onRetry?: () => void;
     /** 同 complete：宿主已准备的上下文预算描述符。 */
     contextBudget?: ModelContextBudget;
     contextInputLimit?: number;
@@ -597,6 +613,35 @@ function requestLifetime(
       cleanup.abort();
     },
   };
+}
+
+/**
+ * 用户 retryPolicy 的唯一重试触发条件：映射后的模型失败，status 为 429 或 503。
+ * 其余失败（500/502/504、鉴权、网络、超时、取消、零输出、解析、schema/内容拒绝）一律不重试。
+ */
+export function isRetryableModelRefusal(error: unknown): boolean {
+  if (!(error instanceof ModelUnavailableError)) return false;
+  const status = (error as { status?: number }).status;
+  return status === 429 || status === 503;
+}
+
+/** 固定重试间隔的等待：不轮询；`signal`（总时限或调用方取消）到点立即按原 reason 抛出。 */
+export function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -1150,7 +1195,25 @@ export function createLmStudioClient(
         externalRoute?.toolCalling !== false &&
         toolDeclarations.length > 0 &&
         !toolsUnavailable(key);
-      const send = async (level: StructuredOutputLevel, withTools: boolean) => {
+      // retryPolicy 路径的整次逻辑调用共享状态：剩余次数与一个共享 lifetime（定时器在第一次
+      // 真正发送时启动，总时限横跨重试等待与后续发送、不因重试重置；收口 finally 关闭）。
+      let retriesLeft =
+        options.retryPolicy === undefined ? 0 : Math.max(0, options.retryPolicy.maxAttempts - 1);
+      const sharedLifetime: { current: ReturnType<typeof requestLifetime> | null } = {
+        current: null,
+      };
+      const imageClassifier = (status: number, reason: string): ModelUnavailableError | null => {
+        if (!explicitImageRejection(status, reason)) return null;
+        visionRejected.set(
+          imageFingerprint(used, externalRoute),
+          imageFingerprintRevision(externalRoute),
+        );
+        return new ModelUnavailableError(
+          "MODEL_IMAGE_UNSUPPORTED",
+          `当前模型 ${used} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
+        );
+      };
+      const sendOnce = async (level: StructuredOutputLevel, withTools: boolean) => {
         options.signal?.throwIfAborted();
         const body: Record<string, unknown> = {
           model: used,
@@ -1180,9 +1243,23 @@ export function createLmStudioClient(
                   json_schema: { name: "superstring_result", strict: true, schema: outboundSchema },
                 };
         }
-        const release = options.acquireSendPermit
-          ? await options.acquireSendPermit(used, options.signal)
-          : undefined;
+        // 首次发送尚无共享 lifetime，用调用方 signal（保持原起点）；重试/后续发送的准入等待
+        // 用共享 lifetime 的合并 signal——总时限到点/取消能终止准入，不挂起；过期经 rethrow
+        // 映射（MODEL_TIMEOUT/原 caller reason），其他准入错误原样传播。
+        let release: (() => void) | undefined;
+        try {
+          release = options.acquireSendPermit
+            ? await options.acquireSendPermit(
+                used,
+                sharedLifetime.current?.signal ?? options.signal,
+              )
+            : undefined;
+        } catch (acquireError) {
+          if (sharedLifetime.current?.signal.aborted) {
+            sharedLifetime.current.rethrow(acquireError);
+          }
+          throw acquireError;
+        }
         let lifetime: ReturnType<typeof requestLifetime> | null = null;
         let httpStatus: number | undefined;
         try {
@@ -1192,22 +1269,24 @@ export function createLmStudioClient(
           options.contextBudget?.assertCurrent();
           assertVisionAllowed(used, preparedMessages);
           assertContextInputFits(preparedMessages, options, body);
-          lifetime = imageRequestLifetime(
-            timeoutMs,
-            options.signal,
-            preparedMessages,
-            (status, reason) => {
-              if (!explicitImageRejection(status, reason)) return null;
-              visionRejected.set(
-                imageFingerprint(used, externalRoute),
-                imageFingerprintRevision(externalRoute),
+          if (options.retryPolicy === undefined) {
+            lifetime = imageRequestLifetime(
+              timeoutMs,
+              options.signal,
+              preparedMessages,
+              imageClassifier,
+            );
+          } else {
+            if (sharedLifetime.current === null) {
+              sharedLifetime.current = imageRequestLifetime(
+                timeoutMs,
+                options.signal,
+                preparedMessages,
+                imageClassifier,
               );
-              return new ModelUnavailableError(
-                "MODEL_IMAGE_UNSUPPORTED",
-                `当前模型 ${used} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
-              );
-            },
-          );
+            }
+            lifetime = sharedLifetime.current;
+          }
           const payload = (await requestJsonWithLifetime(
             cfg,
             "/chat/completions",
@@ -1239,8 +1318,31 @@ export function createLmStudioClient(
           }
           throw error;
         } finally {
-          lifetime?.close();
+          // 共享 lifetime 不在此关闭（要横跨重试与后续发送）；无策略路径保持逐发送关闭。
+          if (options.retryPolicy === undefined) lifetime?.close();
           release?.();
+        }
+      };
+      // 用户重试策略驱动的重发：只认 429/503；失败许可已释放后才等待；onRetry 在每次额外
+      // 重发前调用，抛错＝不再发送；sendOnce 逐次重跑守卫并重新准入。
+      const send = async (level: StructuredOutputLevel, withTools: boolean) => {
+        const policy = options.retryPolicy;
+        if (policy === undefined) return sendOnce(level, withTools);
+        for (;;) {
+          try {
+            return await sendOnce(level, withTools);
+          } catch (error) {
+            if (retriesLeft <= 0 || !isRetryableModelRefusal(error)) throw error;
+            retriesLeft -= 1;
+            const shared = sharedLifetime.current;
+            if (shared === null) throw error;
+            try {
+              await abortableDelay(policy.retryDelayMs, shared.signal);
+            } catch (delayError) {
+              shared.rethrow(delayError);
+            }
+            options.onRetry?.();
+          }
         }
       };
       // 带 tools 的请求被 4xx 拒绝（不是鉴权问题）→ 记忆并去掉 tools 重发一次。撞的是"服务不接受
@@ -1275,6 +1377,9 @@ export function createLmStudioClient(
       } catch (error) {
         if (!options.signal?.aborted) warnTextCallFailure(used, error, startedAt);
         throw error;
+      } finally {
+        // 收口共享 lifetime（仅 retryPolicy 路径创建）：成功、失败与重试中止都不留定时器。
+        sharedLifetime.current?.close();
       }
       const choice = payload.choices?.[0];
       if (typeof choice?.message?.content === "string") {
@@ -1380,125 +1485,200 @@ export function createLmStudioClient(
       }
 
       const streamRoute = routeOfExternal(used);
-      // 发送前同守卫（fix2 前移）：signal → 宿主 guard → 能力现值判定，全部在 lifetime
-      // （timer）创建之前——guard 抛错时不留任何待清理定时器；仍在 try/rethrow 之外，
-      // 宿主来源/配置当前性失败不进 MODEL_* 传输映射。
-      options.signal?.throwIfAborted();
-      const release = options.acquireSendPermit
-        ? await options.acquireSendPermit(used, options.signal)
-        : undefined;
-      try {
-        options.signal?.throwIfAborted();
-        options.assertPreparedCurrent?.({ model: used });
-        options.contextBudget?.assertCurrent();
-        assertVisionAllowed(used, preparedMessages);
-        assertContextInputFits(preparedMessages, options, body);
-        // 流式同边界：只有真实带图请求才传图片分类回调；纯文字不进该分类，不标能力。
-        const lifetime = imageRequestLifetime(
-          timeoutMs,
-          options.signal,
-          preparedMessages,
-          (status, reason) => {
-            if (!explicitImageRejection(status, reason)) return null;
-            visionRejected.set(
-              imageFingerprint(used, streamRoute),
-              imageFingerprintRevision(streamRoute),
-            );
-            return new ModelUnavailableError(
-              "MODEL_IMAGE_UNSUPPORTED",
-              `当前模型 ${used} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
-            );
-          },
+      // 发送前同守卫（fix2 前移）：guard 抛错发生在 lifetime 创建之前，不留待清理定时器。
+      // retryPolicy（可选）：只在响应体开始前的获取阶段、且只对 429/503 重试；产出后不重试。
+      // 策略路径整条流共用一个 lifetime，总时限从第一次真正发送起算、覆盖重试等待。
+      const streamPolicy = options.retryPolicy;
+      let streamRetriesLeft =
+        streamPolicy === undefined ? 0 : Math.max(0, streamPolicy.maxAttempts - 1);
+      const streamSharedLifetime: { current: ReturnType<typeof requestLifetime> | null } = {
+        current: null,
+      };
+      // 流式同边界：只有真实带图请求才传图片分类回调；纯文字不进该分类，不标能力。
+      const streamImageClassifier = (
+        status: number,
+        reason: string,
+      ): ModelUnavailableError | null => {
+        if (!explicitImageRejection(status, reason)) return null;
+        visionRejected.set(
+          imageFingerprint(used, streamRoute),
+          imageFingerprintRevision(streamRoute),
         );
-        const startedAt = Date.now();
-        // 尝试级观察面：httpStatus 在 4xx 抛错前捕获；finishReasons 按到达顺序收原样值
-        // （显式 null 保留，缺席 chunk 忽略）；doneMarker 只记真实观察到的 [DONE]。
-        let httpStatus: number | undefined;
-        const finishReasons: (string | null)[] = [];
-        let doneMarker: boolean | undefined;
-        try {
-          const response = await request(
-            cfg,
-            "/chat/completions",
-            { method: "POST", body: JSON.stringify(body) },
-            lifetime,
-            (status) => {
-              httpStatus = status;
-            },
-          );
-          if (!response.body) {
-            throw new ModelUnavailableError(
-              "MODEL_STREAM_INTERRUPTED",
-              "本地模型流式响应意外中断，请重试",
-            );
-          }
-
-          let finished = false;
-          let outputLimited = false;
-          let unsupportedFinish = false;
-
-          for await (const line of readLines(response.body)) {
-            const payload = line.startsWith("data:") ? line.slice(5).trim() : line;
-            if (payload === "[DONE]") {
-              finished = true;
-              doneMarker = true;
-              continue;
+        return new ModelUnavailableError(
+          "MODEL_IMAGE_UNSUPPORTED",
+          `当前模型 ${used} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
+        );
+      };
+      try {
+        for (;;) {
+          options.signal?.throwIfAborted();
+          // 同 complete：重试后的准入等待用共享 lifetime 的合并 signal，过期经 rethrow 映射
+          // （MODEL_TIMEOUT/原 caller reason）；其他准入错误原样传播。准入失败不算发送、
+          // 不产生尝试元数据。
+          let release: (() => void) | undefined;
+          try {
+            release = options.acquireSendPermit
+              ? await options.acquireSendPermit(
+                  used,
+                  streamSharedLifetime.current?.signal ?? options.signal,
+                )
+              : undefined;
+          } catch (acquireError) {
+            if (streamSharedLifetime.current?.signal.aborted) {
+              streamSharedLifetime.current.rethrow(acquireError);
             }
-            let chunk: {
-              choices?: Array<{
-                finish_reason?: string | null;
-                delta?: { content?: string | null };
-              }>;
-            };
+            throw acquireError;
+          }
+          try {
+            options.signal?.throwIfAborted();
+            options.assertPreparedCurrent?.({ model: used });
+            options.contextBudget?.assertCurrent();
+            assertVisionAllowed(used, preparedMessages);
+            assertContextInputFits(preparedMessages, options, body);
+            let lifetime: ReturnType<typeof requestLifetime>;
+            if (streamPolicy === undefined) {
+              lifetime = imageRequestLifetime(
+                timeoutMs,
+                options.signal,
+                preparedMessages,
+                streamImageClassifier,
+              );
+            } else {
+              if (streamSharedLifetime.current === null) {
+                streamSharedLifetime.current = imageRequestLifetime(
+                  timeoutMs,
+                  options.signal,
+                  preparedMessages,
+                  streamImageClassifier,
+                );
+              }
+              lifetime = streamSharedLifetime.current;
+            }
+            const startedAt = Date.now();
+            // 尝试级观察面：httpStatus 在 4xx 抛错前捕获；finishReasons 按到达顺序收原样值
+            // （显式 null 保留，缺席 chunk 忽略）；doneMarker 只记真实观察到的 [DONE]。
+            let httpStatus: number | undefined;
+            const finishReasons: (string | null)[] = [];
+            let doneMarker: boolean | undefined;
+            let response: Response;
             try {
-              chunk = JSON.parse(payload);
-            } catch {
+              response = await request(
+                cfg,
+                "/chat/completions",
+                { method: "POST", body: JSON.stringify(body) },
+                lifetime,
+                (status) => {
+                  httpStatus = status;
+                },
+              );
+            } catch (error) {
+              // 获取阶段失败：本次真实发送照报一次尝试元数据；429/503 且有预算才
+              // 释放许可→固定间隔等待→onRetry 后重发；否则按原路径抛出。
+              if (!options.signal?.aborted) warnTextCallFailure(used, error, startedAt);
+              reportModelResponse(
+                options.onModelResponse,
+                attemptMetadata("stream", httpStatus, []),
+              );
+              if (
+                streamPolicy === undefined ||
+                streamRetriesLeft <= 0 ||
+                !isRetryableModelRefusal(error)
+              ) {
+                // 无策略路径在此关闭本次发送的 lifetime（原 finally 语义）；共享 lifetime 由收口关闭。
+                if (streamPolicy === undefined) lifetime.close();
+                throw error;
+              }
+              streamRetriesLeft -= 1;
+              release?.();
+              release = undefined;
+              try {
+                await abortableDelay(streamPolicy.retryDelayMs, lifetime.signal);
+              } catch (delayError) {
+                lifetime.rethrow(delayError);
+              }
+              options.onRetry?.();
               continue;
             }
-            const choice = chunk.choices?.[0];
-            if (!choice) continue;
-            // 观察面：原样值按到达顺序去重收集，不影响下面的既有判定。
-            observeStreamFinishReason(finishReasons, choice.finish_reason);
-            if (choice.finish_reason != null) {
-              finished = true;
-              outputLimited = outputLimited || choice.finish_reason === "length";
-              unsupportedFinish =
-                unsupportedFinish || !["stop", "length"].includes(choice.finish_reason);
-            }
-            const delta = choice.delta?.content;
-            if (delta) yield delta;
-          }
+            try {
+              if (!response.body) {
+                throw new ModelUnavailableError(
+                  "MODEL_STREAM_INTERRUPTED",
+                  "本地模型流式响应意外中断，请重试",
+                );
+              }
 
-          if (outputLimited) {
-            throw new ModelUnavailableError(
-              "MODEL_OUTPUT_LIMIT",
-              "模型达到输出上限，已显示内容尚不完整；同请求重试沿用原预算，修改预算仅对新轮生效",
-            );
+              let finished = false;
+              let outputLimited = false;
+              let unsupportedFinish = false;
+
+              for await (const line of readLines(response.body)) {
+                const payload = line.startsWith("data:") ? line.slice(5).trim() : line;
+                if (payload === "[DONE]") {
+                  finished = true;
+                  doneMarker = true;
+                  continue;
+                }
+                let chunk: {
+                  choices?: Array<{
+                    finish_reason?: string | null;
+                    delta?: { content?: string | null };
+                  }>;
+                };
+                try {
+                  chunk = JSON.parse(payload);
+                } catch {
+                  continue;
+                }
+                const choice = chunk.choices?.[0];
+                if (!choice) continue;
+                // 观察面：原样值按到达顺序去重收集，不影响下面的既有判定。
+                observeStreamFinishReason(finishReasons, choice.finish_reason);
+                if (choice.finish_reason != null) {
+                  finished = true;
+                  outputLimited = outputLimited || choice.finish_reason === "length";
+                  unsupportedFinish =
+                    unsupportedFinish || !["stop", "length"].includes(choice.finish_reason);
+                }
+                const delta = choice.delta?.content;
+                if (delta) yield delta;
+              }
+
+              if (outputLimited) {
+                throw new ModelUnavailableError(
+                  "MODEL_OUTPUT_LIMIT",
+                  "模型达到输出上限，已显示内容尚不完整；同请求重试沿用原预算，修改预算仅对新轮生效",
+                );
+              }
+              if (unsupportedFinish) {
+                throw new ModelUnavailableError(
+                  "MODEL_FINISH_UNSUPPORTED",
+                  "模型未正常完成文本回复，不能确认保存为成功",
+                );
+              }
+              if (!finished) {
+                throw new ModelUnavailableError(
+                  "MODEL_STREAM_INTERRUPTED",
+                  "本地模型流式响应意外中断，请重试",
+                );
+              }
+            } catch (error) {
+              if (!options.signal?.aborted) warnTextCallFailure(used, error, startedAt);
+              lifetime.rethrow(error);
+            } finally {
+              reportModelResponse(
+                options.onModelResponse,
+                attemptMetadata("stream", httpStatus, finishReasons, doneMarker),
+              );
+              lifetime.close();
+            }
+            break;
+          } finally {
+            release?.();
           }
-          if (unsupportedFinish) {
-            throw new ModelUnavailableError(
-              "MODEL_FINISH_UNSUPPORTED",
-              "模型未正常完成文本回复，不能确认保存为成功",
-            );
-          }
-          if (!finished) {
-            throw new ModelUnavailableError(
-              "MODEL_STREAM_INTERRUPTED",
-              "本地模型流式响应意外中断，请重试",
-            );
-          }
-        } catch (error) {
-          if (!options.signal?.aborted) warnTextCallFailure(used, error, startedAt);
-          lifetime.rethrow(error);
-        } finally {
-          reportModelResponse(
-            options.onModelResponse,
-            attemptMetadata("stream", httpStatus, finishReasons, doneMarker),
-          );
-          lifetime.close();
         }
       } finally {
-        release?.();
+        // 收口共享 lifetime（成功路径上方已 close 过，幂等）；重试中止/失败不留定时器。
+        streamSharedLifetime.current?.close();
       }
     },
   };

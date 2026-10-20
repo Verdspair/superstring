@@ -19,7 +19,7 @@ test("Windows generator consumes the current shadcn CSS and preserves all shared
         /id: "([a-z]+)", name: "[^"]+", color: "(#[a-f\d]{6})", dark: "(#[a-f\d]{6})"/g,
       ),
     ];
-    assert.equal(themes.length, 16);
+    assert.equal(themes.length, 22);
     for (const [, id, light, dark] of themes) {
       assert.ok(
         generated.includes(`{ "${id}", "${light}", "${dark}" }`),

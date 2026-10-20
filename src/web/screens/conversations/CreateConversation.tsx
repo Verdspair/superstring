@@ -1,6 +1,6 @@
 import { ArrowRight, Plus } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/button";
 import {
   Dialog,
@@ -66,7 +66,7 @@ export function CreateConversation({ children }: { children?: ReactNode }) {
     >
       <DialogTrigger asChild>
         {children ?? (
-          <Button size="sm">
+          <Button tooltip={<Trans i18nKey="hints.complete.newConversation" />} size="sm">
             <Plus />
             {t("workspace.new_conversation")}
           </Button>
@@ -130,6 +130,7 @@ export function CreateConversation({ children }: { children?: ReactNode }) {
               )}
             </p>
             <Button
+              tooltip={<Trans i18nKey="hints.complete.assistants" />}
               variant="outline"
               className="mt-3"
               onClick={() => {
@@ -148,10 +149,16 @@ export function CreateConversation({ children }: { children?: ReactNode }) {
           </p>
         )}
         <DialogFooter>
-          <Button variant="outline" disabled={busy} onClick={() => setOpen(false)}>
+          <Button
+            tooltip={<Trans i18nKey="hints.complete.cancel" />}
+            variant="outline"
+            disabled={busy}
+            onClick={() => setOpen(false)}
+          >
             {t("workspace.cancel")}
           </Button>
           <Button
+            tooltip={<Trans i18nKey="hints.complete.startConversation" />}
             disabled={busy || !candidate || !active.some((a) => a.id === candidate)}
             onClick={() => void submit()}
           >

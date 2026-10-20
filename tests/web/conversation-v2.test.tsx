@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { MessageResponse, RuntimeConfig } from "../../src/shared/contracts";
 import type { RunSnapshot } from "../../src/shared/contracts/agent-run";
@@ -9,6 +9,7 @@ import { currentChat } from "../../src/web/features/chat/conversation-state";
 import { DirectConversation as ChatPage } from "../../src/web/screens/conversations/DirectConversation";
 import type { RuntimeEffects } from "../../src/web/state/types";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-09-26T00:00:00Z";
 const summary = (sourceId = "a"): ConversationSummary => ({

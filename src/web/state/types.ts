@@ -273,7 +273,7 @@ export interface SuperstringState
     patch: Partial<PersonaResponse> & { persona_intensity: number },
   ) => Promise<boolean>;
   deleteAgents: (ids: string[]) => Promise<void>;
-  refreshModels: () => Promise<void>;
+  refreshModels: (prefetchedProviders?: ModelProviderResponse[]) => Promise<void>;
   refreshCapacityPreview: (
     probeModels?: readonly [string, string | null, string | null],
   ) => Promise<void>;

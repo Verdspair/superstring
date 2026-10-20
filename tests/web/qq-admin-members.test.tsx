@@ -1,10 +1,11 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeOneBotAccountId } from "../../src/shared/contracts/onebot-identity";
 import { QQ_ATTENTION_MEMBER_LIMIT } from "../../src/shared/contracts/qq";
 import { selectLocale } from "../../src/web/i18n";
 import { AdminMembersEditor } from "../../src/web/screens/connections/admin-members-editor";
+import { render } from "./helpers/render-with-providers";
 
 describe("AdminMembersEditor pure UI component", () => {
   beforeEach(async () => {

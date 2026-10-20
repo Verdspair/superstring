@@ -5,8 +5,9 @@ import {
   ExecutionPolicySchema,
   type PermissionsResponse,
 } from "../../src/shared/contracts/permissions";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { selectLocale, translate } from "../../src/web/i18n";
-import { CapabilityEditor } from "../../src/web/screens/assistants/StudioEditors";
+import { AgentToolScope } from "../../src/web/screens/assistants/StudioEditors";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { A, setupLibrary } from "./helpers/library-fixture";
 
@@ -60,7 +61,13 @@ describe("agent tool scope management links", () => {
   it("keeps the built-in capability entry next to the external grant entry while web is in scope", async () => {
     const open = vi.fn();
     store.setState({ openSettingsRoute: open });
-    await act(async () => render(<CapabilityEditor />));
+    await act(async () =>
+      render(
+        <DesignSystemProvider>
+          <AgentToolScope agentId={A} active />
+        </DesignSystemProvider>,
+      ),
+    );
     // 卡片确实展示了内置 web 资源：这正是原先只有外部授权入口时的管理盲区。
     await screen.findByText("web");
     const builtIn = screen.getByRole("button", { name: translate("workspace.capabilities") });

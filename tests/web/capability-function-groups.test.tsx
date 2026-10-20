@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpStatusResponseSchema } from "../../src/shared/contracts/mcp";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
@@ -8,6 +8,7 @@ import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { CapabilitiesWorkspace } from "../../src/web/screens/connections/CapabilitiesWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const permissionsFixture: PermissionsResponse = {
   revision: "pr-1",
@@ -50,6 +51,7 @@ const permissionsFixture: PermissionsResponse = {
         providerConcurrency: 1,
       },
       qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
+      system: { maxAttempts: 3, retryDelayMs: 2000 },
     },
   },
   resources: [],

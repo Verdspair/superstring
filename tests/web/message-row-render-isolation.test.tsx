@@ -1,4 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
@@ -9,6 +9,7 @@ import {
   type ConversationTimelineRow,
   timelineRows,
 } from "../../src/web/screens/conversations/timeline-projection";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-10-16T19:00:00Z";
 

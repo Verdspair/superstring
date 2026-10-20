@@ -1,4 +1,4 @@
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentResponse,
@@ -12,6 +12,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { CapabilitiesWorkspace } from "../../src/web/screens/connections/CapabilitiesWorkspace";
 import { navigationBusy } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-10-07T00:00:00.000Z";
 const testAgent = (id: string): AgentResponse =>
@@ -78,6 +79,7 @@ const permissions: PermissionsResponse = {
         providerConcurrency: 1,
       },
       qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
+      system: { maxAttempts: 3, retryDelayMs: 2000 },
     },
   },
   resources: [],

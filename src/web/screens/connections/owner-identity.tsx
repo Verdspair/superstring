@@ -39,11 +39,11 @@ export function OwnerIdentity() {
   const value = peer ?? owner?.peer_id ?? "";
   return (
     <Card size="sm">
-      <CardHeader>
+      <CardHeader className="border-b bg-muted/50">
         <CardTitle>{t("connections.owner.title")}</CardTitle>
         <CardDescription id={hintId}>{t("connections.owner.hint")}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 pt-(--card-spacing)">
         <Input
           value={value}
           inputMode="numeric"
@@ -57,30 +57,37 @@ export function OwnerIdentity() {
             {t("connections.owner.accountRequired")}
           </p>
         )}
-        <Button
-          variant="outline"
-          disabled={
-            saving || !owner || !value.trim() || value === owner.peer_id || !qqSettings?.account_id
-          }
-          onClick={async () => {
-            setSaving(true);
-            setError("");
-            try {
-              const saved = await apiClient.updateQqOwner({
-                peer_id: value.trim(),
-                ...(owner?.revision ? { expected_revision: owner.revision } : {}),
-              });
-              setOwner(saved);
-              setPeer(null);
-            } catch (error) {
-              setError(error instanceof Error ? error.message : String(error));
-            } finally {
-              setSaving(false);
+        <div className="flex justify-end pt-1">
+          <Button
+            variant="outline"
+            tooltip={t("hints.extensions.owner.save")}
+            disabled={
+              saving ||
+              !owner ||
+              !value.trim() ||
+              value === owner.peer_id ||
+              !qqSettings?.account_id
             }
-          }}
-        >
-          {t("connections.owner.save")}
-        </Button>
+            onClick={async () => {
+              setSaving(true);
+              setError("");
+              try {
+                const saved = await apiClient.updateQqOwner({
+                  peer_id: value.trim(),
+                  ...(owner?.revision ? { expected_revision: owner.revision } : {}),
+                });
+                setOwner(saved);
+                setPeer(null);
+              } catch (error) {
+                setError(error instanceof Error ? error.message : String(error));
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            {t("connections.owner.save")}
+          </Button>
+        </div>
         {error && (
           <p role="alert" className="text-sm text-destructive">
             {error}

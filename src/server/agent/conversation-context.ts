@@ -498,6 +498,11 @@ export class ContextBuilder {
             },
             {
               messages,
+              // ContextBuilder 生产上只由网页通道装配（唯一构造点 web-channel.ts），
+              // 辅助叶子来源固定 system。
+              retryOrigin: "system",
+              assertSources: () =>
+                this.assertCurrent(args.state.turnId, args.state.runtime.agent_id),
               ...(budget === undefined || measured === undefined
                 ? {}
                 : {

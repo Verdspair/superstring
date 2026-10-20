@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfirmDialog } from "../../src/web/components/confirmation";
@@ -9,6 +9,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
 import { ContextMeter } from "../../src/web/screens/conversations/ContextMeter";
 import { fixtureStore as store } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 beforeEach(() => {
   selectLocale("zh-CN");

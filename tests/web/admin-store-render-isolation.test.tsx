@@ -2,13 +2,15 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { Profiler, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSettingsResponse } from "../../src/shared/contracts/qq";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { selectLocale, translate } from "../../src/web/i18n";
 import {
   KnowledgeToolSettings,
-  MemoryToolSettings,
+  MemoryReadingRules,
 } from "../../src/web/screens/assistants/ResourceRules";
 import { OwnerIdentity } from "../../src/web/screens/connections/owner-identity";
-import { QqAppManagement } from "../../src/web/screens/connections/qq-app-management";
+import { QqConnectionTab } from "../../src/web/screens/connections/qq-app-management";
+import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { StorageInventory } from "../../src/web/screens/connections/storage-inventory";
 import { TransportSettings } from "../../src/web/screens/connections/transport-settings";
 import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
@@ -45,7 +47,7 @@ async function isolated(view: ReactNode) {
         commits += 1;
       }}
     >
-      {view}
+      <DesignSystemProvider>{view}</DesignSystemProvider>
     </Profiler>,
   );
   await act(async () => {});
@@ -62,8 +64,10 @@ async function isolated(view: ReactNode) {
 
 describe("admin store render isolation", () => {
   it("keeps memory reading isolated but updates a relevant editable prompt", async () => {
-    await isolated(<MemoryToolSettings />);
-    const prompt = document.querySelector("textarea") as HTMLTextAreaElement;
+    await isolated(<MemoryReadingRules />);
+    const prompt = screen.getByRole("textbox", {
+      name: translate("library.memory.tools.retrieval.prompt"),
+    }) as HTMLTextAreaElement;
     fireEvent.change(prompt, { target: { value: "Focused retrieval" } });
     expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("Focused retrieval");
     expect(prompt.value).toBe("Focused retrieval");
@@ -91,18 +95,26 @@ describe("admin store render isolation", () => {
     expect(peer.value).toBe("30003");
   });
 
-  it("keeps the QQ application header isolated and tracks its save lock", async () => {
-    await isolated(<QqAppManagement view="schemes" />);
-    const back = screen.getAllByRole("button")[0] as HTMLButtonElement;
-    expect(back.disabled).toBe(false);
+  it("keeps the scheme workspace isolated and tracks its save lock", async () => {
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "scheme-library",
+    });
+    await isolated(<SchemesWorkspace />);
+    // setupLibrary 目录为空：工具条与空态各有一个真实「新建方案」入口；取文档顺序第一（工具条）。
+    const create = screen.getAllByRole("button", {
+      name: translate("connections.newScheme"),
+    })[0] as HTMLButtonElement;
+    expect(create.disabled).toBe(false);
     await act(async () => {
       store.setState({ qqSchemeSaving: true });
     });
-    expect(back.disabled).toBe(true);
+    expect(create.disabled).toBe(true);
   });
 
   it("keeps the QQ connection tab isolated and updates connection state", async () => {
-    await isolated(<QqAppManagement view="connection" active={false} />);
+    await isolated(<QqConnectionTab active={false} />);
     await act(async () => {
       store.setState({ qqConnection: { phase: "ready", reason: "Connected fixture" } });
     });
@@ -168,7 +180,9 @@ describe("admin store render isolation", () => {
           commits += 1;
         }}
       >
-        <MemoryLibrary />
+        <DesignSystemProvider>
+          <MemoryLibrary />
+        </DesignSystemProvider>
       </Profiler>,
     );
     await act(async () => {});

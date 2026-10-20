@@ -2,9 +2,14 @@ import { cn } from "cn";
 import { CheckIcon } from "lucide-react";
 import { Checkbox as CheckboxPrimitive } from "radix-ui";
 import type * as React from "react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
 
-function Checkbox({ className, ...props }: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
-  return (
+function Checkbox({
+  className,
+  tooltip,
+  ...props
+}: React.ComponentProps<typeof CheckboxPrimitive.Root> & { tooltip?: React.ReactNode }) {
+  const control = (
     <CheckboxPrimitive.Root
       data-slot="checkbox"
       className={cn(
@@ -20,6 +25,16 @@ function Checkbox({ className, ...props }: React.ComponentProps<typeof CheckboxP
         <CheckIcon />
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
+  );
+  return tooltip ? (
+    <Tooltip>
+      <TooltipTrigger asChild preserveTriggerState>
+        {control}
+      </TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
+  ) : (
+    control
   );
 }
 

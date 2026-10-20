@@ -19,6 +19,13 @@ import {
 } from "../../features/observability/trace-filters";
 import { channelLabels, stageLabels, statusLabels } from "./labels";
 import { ReadError } from "./presentation";
+
+const statusHintKeys = {
+  "": "hints.investigation.queryToolbar.statusAll",
+  started: "hints.investigation.queryToolbar.statusStarted",
+  failed: "hints.investigation.queryToolbar.statusFailed",
+  unknown: "hints.investigation.queryToolbar.statusUnknown",
+} as const;
 export function QueryToolbar({
   filters,
   onApply,
@@ -62,7 +69,7 @@ export function QueryToolbar({
     apply(next);
   };
   const text = (key: keyof FilterDraft, label: string, time = false) => (
-    <label className="grid gap-1.5 text-xs font-medium" htmlFor={`${id}-${key}`}>
+    <label className="grid gap-2 text-xs font-medium" htmlFor={`${id}-${key}`}>
       <span>{t(label)}</span>
       <Input
         id={`${id}-${key}`}
@@ -79,7 +86,7 @@ export function QueryToolbar({
     values: readonly string[],
     labels: Record<string, string>,
   ) => (
-    <label className="grid gap-1.5 text-xs font-medium" htmlFor={`${id}-${key}`}>
+    <label className="grid gap-2 text-xs font-medium" htmlFor={`${id}-${key}`}>
       <span>{t(label)}</span>
       <NativeSelect
         id={`${id}-${key}`}
@@ -121,7 +128,11 @@ export function QueryToolbar({
         </div>
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="outline" type="button">
+            <Button
+              variant="outline"
+              type="button"
+              tooltip={t("hints.investigation.queryToolbar.addFilter")}
+            >
               <Filter />
               {t("observability.addFilter")}
             </Button>
@@ -130,7 +141,7 @@ export function QueryToolbar({
             className="max-h-[75dvh] w-[min(38rem,90vw)] gap-4 overflow-y-auto p-4"
             align="end"
           >
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2">
               {select(
                 "channel",
                 "observability.channel",
@@ -159,15 +170,20 @@ export function QueryToolbar({
             </p>
             <div className="flex flex-wrap gap-2">
               {[
-                [15, "observability.last15Minutes"],
-                [60, "observability.lastHour"],
-                [1440, "observability.last24Hours"],
-              ].map(([minutes, label]) => (
+                [
+                  15,
+                  "observability.last15Minutes",
+                  "hints.investigation.queryToolbar.last15Minutes",
+                ],
+                [60, "observability.lastHour", "hints.investigation.queryToolbar.lastHour"],
+                [1440, "observability.last24Hours", "hints.investigation.queryToolbar.last24Hours"],
+              ].map(([minutes, label, hint]) => (
                 <Button
                   key={minutes}
                   type="button"
                   variant="outline"
                   size="sm"
+                  tooltip={t(String(hint))}
                   onClick={() => {
                     const now = new Date();
                     apply({
@@ -181,12 +197,18 @@ export function QueryToolbar({
                 </Button>
               ))}
             </div>
-            <Button type="button" onClick={() => apply()}>
+            <Button
+              type="button"
+              tooltip={t("hints.investigation.queryToolbar.applyFilters")}
+              onClick={() => apply()}
+            >
               {t("observability.applyFilters")}
             </Button>
           </PopoverContent>
         </Popover>
-        <Button type="submit">{t("observability.search")}</Button>
+        <Button type="submit" tooltip={t("hints.investigation.queryToolbar.search")}>
+          {t("observability.search")}
+        </Button>
       </div>
       <fieldset
         className="flex flex-wrap items-center gap-2"
@@ -199,6 +221,7 @@ export function QueryToolbar({
             variant={(filters.status ?? "") === status ? "secondary" : "ghost"}
             type="button"
             aria-pressed={(filters.status ?? "") === status}
+            tooltip={t(statusHintKeys[status])}
             onClick={() =>
               apply({
                 ...filterDraft(filters),
@@ -226,6 +249,7 @@ export function QueryToolbar({
                 aria-label={t("observability.removeFilterValue", {
                   "0": key,
                 })}
+                tooltip={t("hints.investigation.queryToolbar.removeFilter")}
                 onClick={() => remove(key as keyof FilterDraft)}
               >
                 <X />
@@ -238,6 +262,7 @@ export function QueryToolbar({
             variant="ghost"
             size="sm"
             type="button"
+            tooltip={t("hints.investigation.queryToolbar.clearFilters")}
             onClick={() =>
               apply(
                 filterDraft(

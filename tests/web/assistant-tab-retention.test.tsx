@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { setupLibrary } from "./helpers/library-fixture";
@@ -12,18 +13,20 @@ it("retains visited editor DOM and follows a later context route without hidden 
   setupLibrary();
   const organization = vi.fn().mockResolvedValue(undefined);
   store.setState({ loadOrganization: organization });
-  render(<AssistantWorkspace active />);
+  render(
+    <DesignSystemProvider>
+      <AssistantWorkspace active />
+    </DesignSystemProvider>,
+  );
   await act(async () => {});
   expect(organization).not.toHaveBeenCalled();
-  const identity = screen.getByRole("tab", { name: "身份与表达" });
+  const identity = screen.getByRole("tab", { name: "人设表达" });
   const panel = identity.closest('[data-slot="tabs"]')?.querySelector('[data-slot="tabs-content"]');
   expect(panel).toBeTruthy();
   act(() => store.getState().openSettingsRoute("context"));
   await act(async () => {});
   expect(store.getState().settingsRoute).toBe("context");
-  expect(screen.getByRole("tab", { name: "模型与上下文" }).getAttribute("aria-selected")).toBe(
-    "true",
-  );
+  expect(screen.getByRole("tab", { name: "模型配置" }).getAttribute("aria-selected")).toBe("true");
   expect(organization).toHaveBeenCalledTimes(1);
   fireEvent.mouseDown(identity);
   await act(async () => {});
@@ -36,7 +39,5 @@ it("retains visited editor DOM and follows a later context route without hidden 
   await act(async () => {});
   act(() => store.getState().openSettingsRoute("context"));
   await act(async () => {});
-  expect(screen.getByRole("tab", { name: "模型与上下文" }).getAttribute("aria-selected")).toBe(
-    "true",
-  );
+  expect(screen.getByRole("tab", { name: "模型配置" }).getAttribute("aria-selected")).toBe("true");
 });

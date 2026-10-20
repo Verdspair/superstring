@@ -1,9 +1,10 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, screen } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SuperstringApi } from "../../src/web/api";
 import { ConversationIndex as Sidebar } from "../../src/web/screens/conversations/ConversationIndex";
 import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-17T12:00:00.000Z";
 const client = (patch: Partial<SuperstringApi> = {}) => patch as SuperstringApi;

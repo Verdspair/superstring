@@ -3980,6 +3980,8 @@ export class OneBotHost {
           sources: parentBatch.source.commonSources,
           usage,
           budget,
+          // 评分叶子与回复子 run 都属本 QQ 唤醒批次：来源在批次根部定为 qq，子 run 经 ALS 继承。
+          retryOrigin: "qq",
           onRunId: (runId) => {
             runRef.current = runId;
             linkRun(runId, wake.throughSeq, true);

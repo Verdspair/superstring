@@ -15,6 +15,7 @@
 import { describe, expect, it } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { and, eq } from "drizzle-orm";
+import type { LeafAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
 import {
@@ -26,6 +27,7 @@ import {
   publish,
   updateJobRow,
 } from "../../src/server/db/memory-repository";
+import { writeQqGroupAgentConfigRow } from "../../src/server/db/qq-binding-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import {
   createSession,
@@ -145,6 +147,7 @@ function setup(
     heartbeatIntervalMs?: number;
     jobTimeoutMs?: number | (() => number);
     enabled?: () => boolean;
+    agentRuntime?: LeafAgentRuntime;
   } = {},
 ) {
   const business = openBusinessDb();
@@ -158,6 +161,7 @@ function setup(
     heartbeatIntervalMs: options.heartbeatIntervalMs ?? 5,
     jobTimeoutMs: options.jobTimeoutMs ?? 2_000,
     enabled: options.enabled,
+    ...(options.agentRuntime === undefined ? {} : { agentRuntime: options.agentRuntime }),
   });
   return {
     business,
@@ -1348,5 +1352,154 @@ describe("cycle bookkeeping", () => {
     await service.stop();
     await service.stop();
     expect(jobs(orm).every((j) => j.status !== "running")).toBe(true);
+  });
+});
+
+// Leaf retry-origin wiring (R42 follow-up): the worker decides the leaf origin from the real
+// job snapshot, and every leaf carries an assertSources closure that re-verifies real state
+// before each additional physical model send.
+
+interface CapturedLeafCall {
+  specId: string | undefined;
+  retryOrigin: string | undefined;
+  assertSources: (() => void) | undefined;
+}
+
+function leafCapturingRuntime(
+  handlers: { consolidate?: () => string | Promise<string>; suppression?: () => string } = {},
+) {
+  const captured: CapturedLeafCall[] = [];
+  const runtime = {
+    completeLeaf: async (
+      spec: { id?: string },
+      input: { retryOrigin?: string; assertSources?: () => void },
+    ) => {
+      captured.push({
+        specId: spec.id,
+        retryOrigin: input.retryOrigin,
+        assertSources: input.assertSources,
+      });
+      if (spec.id === "memory.suppression")
+        return handlers.suppression?.() ?? JSON.stringify({ blocked: false });
+      return handlers.consolidate?.() ?? '{"memory": null}';
+    },
+    completeVisionLeaf: async () => {
+      throw new Error("memory worker never calls the vision leaf");
+    },
+  };
+  return { captured, runtime: runtime as unknown as LeafAgentRuntime };
+}
+
+describe("memory worker leaf origin and per-send guard", () => {
+  it("derives qq origin for a QQ-scope observation job and re-verifies real state per send", async () => {
+    let release!: (value: string) => void;
+    const blocked = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const { captured, runtime } = leafCapturingRuntime({ consolidate: () => blocked });
+    const { orm, business, service, journal } = setup({ agentRuntime: runtime });
+    const scheme = createQqScheme(orm, {
+      name: "origin",
+      prompts: { ...QQ_PROMPT_DEFAULTS },
+    });
+    orm
+      .insert(schema.qqBindings)
+      .values({
+        id: "11111111-1111-4111-8111-111111111111",
+        accountId: "10001",
+        conversationKind: "group",
+        peerId: "20001",
+        agentId: AGENT_ID,
+        schemeId: scheme.id,
+        paused: 0,
+        shareWebMemory: 0,
+        memoryBatchSize: null,
+        ownerIdentityRevision: null,
+        revision: 1,
+        authorityRevision: 1,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      })
+      .run();
+    journal.ensureOneBot("11111111-1111-4111-8111-111111111111");
+    orm
+      .insert(schema.qqEvents)
+      .values({
+        eventKey: "evt_origin",
+        accountId: "10001",
+        conversationKind: "group",
+        peerId: "20001",
+        agentId: AGENT_ID,
+        messageId: "m_evt_origin",
+        occurredAtSeconds: 123456,
+        speakerKind: "member",
+        speakerId: "30001",
+        recordedAt: nowIso(),
+      })
+      .run();
+    orm
+      .insert(schema.qqObservationText)
+      .values({
+        eventKey: "evt_origin",
+        body: "30001 说过的话",
+        occurredAtSeconds: 123456,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        recordedAt: nowIso(),
+      })
+      .run();
+    journal.ingestOneBotEvent("evt_origin", "11111111-1111-4111-8111-111111111111");
+    policy(orm, AGENT_ID);
+    const job = immediate(business.db, () =>
+      enqueue(orm, AGENT_ID, "req_origin", {
+        kind: "manual",
+        eventIds: ["evt_origin"],
+        scope: {
+          scope: "reality_user",
+          scopeKey: qqMemoryScopeKey({
+            kind: "qq",
+            accountId: "10001",
+            conversationKind: "group",
+            peerId: "20001",
+            agentId: AGENT_ID,
+          }),
+        },
+      }),
+    );
+    const running = service.runJob(job.id);
+    for (let i = 0; i < 400 && captured.length === 0; i++) await delay(5);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.specId).toBe("memory.consolidate");
+    expect(captured[0]?.retryOrigin).toBe("qq");
+    // 冻结未变：组合守卫放行。
+    expect(() => captured[0]?.assertSources?.()).not.toThrow();
+    // 真实变更（本群停用记忆整理）：同一条闭包必须立刻拒绝。
+    writeQqGroupAgentConfigRow(orm, {
+      bindingId: "11111111-1111-4111-8111-111111111111",
+      agentId: AGENT_ID,
+      overrides: {},
+      disabledCapabilities: ["memory_organize"],
+      expectedRevision: 0,
+    });
+    expect(() => captured[0]?.assertSources?.()).toThrow();
+    release('{"memory": null}');
+    await running;
+    const settled = jobById(orm, job.id);
+    expect(settled.status).toBe("failed");
+    expect(settled.errorCode).toBe("QQ_GROUP_CAPABILITY_DISABLED");
+  });
+
+  it("derives system origin for a web auto job", async () => {
+    const { captured, runtime } = leafCapturingRuntime();
+    const { orm, service } = setup({ agentRuntime: runtime });
+    const sessionId = newSession(orm);
+    configureAuto(orm, AGENT_ID, 1);
+    completedTurn(orm, sessionId, "t1");
+    service.scheduleAuto();
+    await service.runCycle();
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.specId).toBe("memory.consolidate");
+    expect(captured[0]?.retryOrigin).toBe("system");
+    expect(() => captured[0]?.assertSources?.()).not.toThrow();
+    expect(jobById(orm, jobs(orm)[0].id).status).toBe("succeeded");
   });
 });

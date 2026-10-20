@@ -5,7 +5,7 @@
 // 经真实 conversationRoutes 验收，本文件只验组件行为：双名/当前映射分组、legacy 显式
 // 未知、@/reply/平台 ID 可见、中英转义与长名、强负泄漏断言）。
 
-import { cleanup, render, within } from "@testing-library/react";
+import { cleanup, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
@@ -14,6 +14,7 @@ import type {
 import type { QqMessageFact } from "../../src/shared/contracts/qq-message";
 import { i18n } from "../../src/web/i18n/runtime";
 import { EventRecord } from "../../src/web/screens/conversations/EventRecord";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-10-02T08:00:00Z";
 afterEach(() => {

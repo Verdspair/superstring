@@ -1,8 +1,9 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { selectLocale } from "../../src/web/i18n";
 import { AllocationModelCapacity } from "../../src/web/screens/connections/AllocationModelCapacity";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 beforeEach(async () => {
   store.getState().resetForTests();

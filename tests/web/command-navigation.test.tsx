@@ -43,7 +43,12 @@ it("command search finds pages with the keyboard and restores focus on dismissal
   await userEvent.keyboard("{Enter}");
   expect(store.getState().settingsRoute).toBe("identity");
   expect(screen.queryByRole("dialog")).toBeNull();
-  await userEvent.click(trigger);
+  // jsdom has zero rectangles; keep this click away from the separator's origin hit target.
+  await userEvent.pointer({
+    target: trigger,
+    keys: "[MouseLeft]",
+    coords: { clientX: 100, clientY: 400 },
+  });
   await userEvent.keyboard("{Escape}");
   await waitFor(() => expect(document.activeElement).toBe(trigger));
 });

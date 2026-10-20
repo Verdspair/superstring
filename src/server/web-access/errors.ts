@@ -8,22 +8,28 @@ export interface WebAccessAttempt {
   readonly channel: string;
   readonly code: string;
   readonly message: string;
+  /** 该次尝试失败响应的真实 HTTP status；没有响应（网络层失败）时缺席。 */
+  readonly status?: number;
 }
 
 export interface WebAccessErrorOptions {
   readonly cause?: unknown;
+  /** 失败响应的真实 HTTP status；只在实际收到 HTTP 响应的失败点附带。 */
+  readonly status?: number;
   /** 多通道尝试失败时的结构化明细（如 searxng → bing 的回退链）。 */
   readonly attempts?: readonly WebAccessAttempt[];
 }
 
 export class WebAccessError extends Error {
   readonly code: string;
+  readonly status?: number;
   readonly attempts?: readonly WebAccessAttempt[];
 
   constructor(code: string, message: string, options: WebAccessErrorOptions = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "WebAccessError";
     this.code = code;
+    if (options.status !== undefined) this.status = options.status;
     if (options.attempts !== undefined) this.attempts = options.attempts;
   }
 }

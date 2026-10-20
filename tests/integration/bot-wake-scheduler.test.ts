@@ -290,8 +290,8 @@ describe("跨会话并发与车道（0.4.0 P1）", () => {
 
   it("stop() 中止全部在飞唤醒（跨会话一起取消）", async () => {
     const h = fixture();
-    offer(h, 0, "a");
-    offer(h, 1, "b");
+    const wakeA = offer(h, 0, "a");
+    const wakeB = offer(h, 1, "b");
     const aborted: string[] = [];
     const scheduler = new WakeScheduler({
       repository: h.a,
@@ -320,6 +320,13 @@ describe("跨会话并发与车道（0.4.0 P1）", () => {
     scheduler.stop();
     await Promise.all(lanes);
     expect([...aborted].sort()).toEqual([h.ids[0]!, h.ids[1]!].sort());
+    // 跨会话取消同样终止 failed：原因 BOT_STOPPED，attempts 保留计数，不重排。
+    for (const wake of [wakeA, wakeB])
+      expect(h.a.get(wake.id)).toMatchObject({
+        status: "failed",
+        attempts: 1,
+        errorCode: "BOT_STOPPED",
+      });
   });
 });
 
@@ -434,8 +441,13 @@ describe("后台短车道（dispatchOnce）与停机排水", () => {
     scheduler.stop();
     await scheduler.waitForIdle();
     expect(scheduler.activeCount).toBe(0);
-    // 中止按失败结算：预算内回 pending 等下次重试，冻结的来源边界不变。
-    expect(h.a.get(wake.id)).toMatchObject({ status: "pending", errorCode: "BOT_STOPPED" });
+    // 取消按 R42 终止 failed：不重排不重试，取消原因与冻结的来源边界保留（游标未 ack）。
+    expect(h.a.get(wake.id)).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      errorCode: "BOT_STOPPED",
+    });
+    expect(h.journal.sourceThroughSeq(h.ids[0]!)).toBe(0);
   });
 
   it("onError 观察者自身抛错不阻断名额回收与排水", async () => {
@@ -534,6 +546,92 @@ describe("后台短车道（dispatchOnce）与停机排水", () => {
       eligibleCount: 7,
       maturityCondition: "time",
       triggerFunction: "qqChimingBatchWindow",
+    });
+    scheduler.stop();
+  });
+});
+
+describe("重试预算与终止结算（R42）", () => {
+  it("requeues a retryable failure with ready_at inside budget and fails on the last attempt", async () => {
+    const h = fixture();
+    const wake = offer(h, 0, "requeue-budget");
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      activate: async () => {
+        throw Object.assign(new Error("model busy"), { code: "MODEL_TIMEOUT" });
+      },
+    });
+    expect(await scheduler.runOnce()).toBe(true);
+    // 预算内（第 1/3 次）：回 pending，ready_at = 失败时刻 + retryDelayMs。
+    expect(h.a.get(wake.id)).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      errorCode: "MODEL_TIMEOUT",
+      readyAt: "2030-01-01T00:00:00.100Z",
+    });
+    // 直驱仓储走完第 2、3 次：末次 attempts 用尽终态 failed。
+    const second = h.a.claim({ at: "2030-01-01T00:00:00.100Z", leaseMs: 60_000 })!;
+    expect(second.attempts).toBe(2);
+    h.a.fail(wake.id, second.leaseToken!, {
+      at: "2030-01-01T00:00:00.200Z",
+      errorCode: "MODEL_TIMEOUT",
+      maxAttempts: 3,
+      retryDelayMs: 100,
+    });
+    expect(h.a.get(wake.id)).toMatchObject({
+      status: "pending",
+      attempts: 2,
+      readyAt: "2030-01-01T00:00:00.300Z",
+    });
+    const third = h.a.claim({ at: "2030-01-01T00:00:00.300Z", leaseMs: 60_000 })!;
+    expect(third.attempts).toBe(3);
+    h.a.fail(wake.id, third.leaseToken!, {
+      at: "2030-01-01T00:00:00.400Z",
+      errorCode: "MODEL_TIMEOUT",
+      maxAttempts: 3,
+      retryDelayMs: 100,
+    });
+    expect(h.a.get(wake.id)).toMatchObject({ status: "failed", attempts: 3 });
+  });
+
+  it("maxAttempts 1 settles the first failure terminal with no requeue", async () => {
+    const h = fixture();
+    const wake = offer(h, 0, "single-shot");
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 1 }),
+      activate: async () => {
+        throw Object.assign(new Error("transient once"), { code: "MODEL_TIMEOUT" });
+      },
+    });
+    expect(await scheduler.runOnce()).toBe(true);
+    expect(h.a.get(wake.id)).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      errorCode: "MODEL_TIMEOUT",
+    });
+    scheduler.stop();
+  });
+
+  it("settles deterministic capacity failures as failed without requeue", async () => {
+    const h = fixture();
+    const wake = offer(h, 0, "deterministic");
+    const scheduler = new WakeScheduler({
+      repository: h.a,
+      now: () => at,
+      policy: () => ({ leaseMs: 60_000, renewMs: 30_000, retryDelayMs: 100, maxAttempts: 3 }),
+      activate: async () => {
+        throw Object.assign(new Error("context too large"), { code: "CONTEXT_BUDGET_EXCEEDED" });
+      },
+    });
+    expect(await scheduler.runOnce()).toBe(true);
+    expect(h.a.get(wake.id)).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      errorCode: "CONTEXT_BUDGET_EXCEEDED",
     });
     scheduler.stop();
   });

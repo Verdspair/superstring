@@ -1,5 +1,5 @@
-import { BookOpen, Brain, FileText } from "lucide-react";
-import { useEffect, useState } from "react";
+import { BookOpen, Check, FileText, Layers, RotateCcw } from "lucide-react";
+import { type ReactNode, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Field } from "@/components/form-field";
@@ -16,8 +16,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { agentPageDirty } from "@/features/agents/page-drafts";
-import { knowledgeModelDirty, knowledgeReadDirty } from "@/features/knowledge/types";
+import { knowledgeReadDirty } from "@/features/knowledge/types";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 import { P5ConfigSchema, RetrievalPresetSchema } from "../../../shared/contracts/models";
@@ -87,7 +88,15 @@ function CatalogBatchFields({
       ).map(([labelKey, key]) => {
         const fieldInvalid = !catalogValid(key, raws[key]);
         return (
-          <Field key={key} label={labelKey}>
+          <Field
+            key={key}
+            label={labelKey}
+            tooltip={t(
+              key === "max_catalog_batches"
+                ? "hints.fieldExtra.catalogBatches"
+                : "hints.fieldExtra.catalogSize",
+            )}
+          >
             <Input
               type="number"
               disabled={disabled}
@@ -115,7 +124,15 @@ function CatalogBatchFields({
   );
 }
 
-export function MemoryToolSettings() {
+export function MemoryReadingRules({
+  navigation,
+  onDirectory,
+  active = true,
+}: {
+  navigation?: ReactNode;
+  onDirectory?: () => void;
+  active?: boolean;
+} = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       discardSettingsPages: state.discardSettingsPages,
@@ -129,239 +146,501 @@ export function MemoryToolSettings() {
       refreshSettingsAgent: state.refreshSettingsAgent,
       saveSettingsPage: state.saveSettingsPage,
       settingsSaving: state.settingsSaving,
+      allocationInvalidInputs: state.allocationInvalidInputs,
     })),
   );
   const t = useTranslation().t;
   const editor = s.pageEditor;
   // 目录批次非法原文只存在于全量档子组件：普通档不挂载，不拦普通档保存。
   const [catalogInvalid, setCatalogInvalid] = useState(false);
-  // 放弃时递增：强制子组件重挂载，清掉非法原文（草稿本来就干净时也能清错误）。
+  // 放弃时递增：强制子组件重挂载，清掉非法原文。
   const [catalogResetSeq, setCatalogResetSeq] = useState(0);
-  if (!editor) return <p role="status">{t("library.loading")}</p>;
+
+  if (!editor) return null;
   const p5 = editor.draft.p5_config;
   const legacyFull = p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body";
-  const patch = (value: Partial<typeof p5>) =>
+  const patchMemoryRules = (value: Partial<typeof p5>) =>
     s.patchPageAgent("memory-tools", { p5_config: { ...p5, ...value } });
-  const dirty = agentPageDirty(editor, "memory-tools");
+
+  const isMemoryDirty = agentPageDirty(editor, "memory-tools");
+  const isContextDirty = agentPageDirty(editor, "context");
   const busy = s.settingsSaving || s.editorLoading || s.knowledgeReadLoading;
+
+  const agentId = editor.agent.id;
+  const isByteValid = (val: string): boolean => {
+    if (!val || val.trim() === "") return false;
+    const n = Number(val);
+    return Number.isInteger(n) && n >= 1 && n <= 1048576;
+  };
+
+  const byteInvalidFor = (mode: (typeof PRESET_MODES)[number]): string | undefined =>
+    s.allocationInvalidInputs[`agent:${agentId}:reading:memory:${mode}`];
+
+  const handleByteChange = (mode: (typeof PRESET_MODES)[number], raw: string) => {
+    const key = `agent:${agentId}:reading:memory:${mode}`;
+    const valid = isByteValid(raw);
+    useSuperstringStore.setState((state) => {
+      const next = { ...state.allocationInvalidInputs };
+      if (valid) delete next[key];
+      else next[key] = raw;
+      return { allocationInvalidInputs: next };
+    });
+    if (valid) {
+      s.patchPageAgent("context", {
+        p5_config: {
+          ...p5,
+          retrieval_presets: {
+            ...p5.retrieval_presets,
+            [mode]: { ...p5.retrieval_presets[mode], max_tokens: Number(raw) },
+          },
+        },
+      });
+    }
+  };
+
+  const hasPresetBytesInvalid = PRESET_MODES.some((mode) => byteInvalidFor(mode) !== undefined);
+  const isAllBytesValid = PRESET_MODES.every(
+    (mode) =>
+      byteInvalidFor(mode) === undefined &&
+      isByteValid(String(p5.retrieval_presets[mode].max_tokens)),
+  );
+
+  const canDiscardMemory = (isMemoryDirty || (legacyFull && catalogInvalid)) && !busy;
+  const canDiscardContext = (isContextDirty || hasPresetBytesInvalid) && !busy;
+
+  const handleDiscardContext = () => {
+    s.discardSettingsPages("context");
+  };
+
   return (
-    <Card className="min-w-0">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Brain className="size-4" />
-          {t("library.memory.retrieval")}
-        </CardTitle>
-        <CardDescription>
-          {t("library.these.rules.belong.to.this.agent.manage.memory.content")}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        <Field label="library.memory.tools.mode">
-          <NativeSelect
-            disabled={busy}
-            value={p5.retrieval_mode}
-            onChange={(e) =>
-              patch({
-                retrieval_mode: e.target.value as typeof p5.retrieval_mode,
-              })
-            }
+    <section className="min-w-0 text-[14px] leading-[1.5]" data-testid="reading-section-memory">
+      <header
+        hidden={!active}
+        data-visual="reading-task-header"
+        className={`${active ? "flex" : "hidden"} mb-[24px] flex-col gap-[14px] border-b border-border pb-[20px] min-[768px]:flex-row min-[768px]:items-start min-[768px]:justify-between`}
+      >
+        <div className="min-w-0 flex-1">
+          <nav
+            aria-label={t("strict.reading.breadcrumb")}
+            className="workspace-page-location flex flex-wrap items-center gap-[6px]"
           >
-            {legacyFull && (
-              // 存量退役档按真实值显示，不伪装成 broad；离开它需主动选择下面四档之一。
-              <option value={p5.retrieval_mode}>
-                {t(
-                  p5.retrieval_mode === "full_catalog"
-                    ? "library.full.catalog"
-                    : "library.full.body",
-                )}
-              </option>
+            <span>{t("strict.workspace")}</span>
+            <span aria-hidden="true">›</span>
+            <span>{t("library.assistant")}</span>
+            <span aria-hidden="true">›</span>
+            {onDirectory ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={onDirectory}
+                    className="rounded-[4px] px-[4px] py-[2px] font-medium leading-[normal] text-muted-foreground hover:text-primary"
+                  >
+                    {t("strict.directory")}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{t("hints.agent.directory")}</TooltipContent>
+              </Tooltip>
+            ) : (
+              <span>{t("strict.directory")}</span>
             )}
-            {Object.entries(MODES).map(([value, name]) => (
-              <option key={value} value={value}>
-                {t(name)}
-              </option>
-            ))}
-          </NativeSelect>
-        </Field>
-        {legacyFull && (
-          <>
-            <p className="text-sm text-muted-foreground">
-              {t("library.memory.tools.legacy.full", { "0": p5.retrieval_mode })}
-              <Button
-                variant="link"
-                size="sm"
-                disabled={busy}
-                onClick={() => patch({ retrieval_mode: "broad" })}
-              >
-                {t("library.memory.tools.use.broad")}
-              </Button>
-            </p>
-            {/* 这两项只在全量档生效（memory-query 的目录批次循环）；key 随编辑会话/Agent/版本重置原文。 */}
-            <CatalogBatchFields
-              key={`${editor.agent.id}:${editor.agent.config_version}:${catalogResetSeq}`}
-              batches={p5.max_catalog_batches}
-              batch={p5.catalog_batch_size}
-              disabled={busy}
-              onPatch={(key, value) => patch({ [key]: value })}
-              onInvalidChange={setCatalogInvalid}
-            />
-          </>
-        )}
-        <Field
-          label="library.memory.tools.retrieval.prompt"
-          info="library.memory.tools.retrieval.prompt.hint"
+            <span aria-hidden="true">›</span>
+            <strong className="font-semibold">{editor.agent.name}</strong>
+          </nav>
+          <div className="flex flex-wrap items-center gap-[12px]">
+            <h1 data-visual="reading-task-title" className="workspace-page-title">
+              {t("strict.reading.title")}
+            </h1>
+            <span className="inline-flex items-center gap-[6px] rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] font-medium text-muted-foreground">
+              {t("strict.scope.object")}
+              <strong className="font-semibold text-primary">{editor.agent.name}</strong>
+            </span>
+          </div>
+          <p className="mt-[6px] max-w-[680px] text-[13.5px] leading-[1.55] text-muted-foreground">
+            {t("strict.reading.description")}
+          </p>
+        </div>
+        <div
+          data-visual="reading-task-actions"
+          className="flex shrink-0 flex-col items-start gap-[10px] min-[768px]:items-end"
         >
-          <Textarea
-            disabled={busy}
-            maxLength={16000}
-            value={editor.draft.memory_retrieval_prompt}
-            onChange={(event) =>
-              s.patchPageAgent("memory-tools", { memory_retrieval_prompt: event.target.value })
-            }
-          />
-        </Field>
-        <p className="text-sm text-muted-foreground">{t("library.memory.tools.on.demand")}</p>
-        <Accordion type="multiple" defaultValue={[...PRESET_MODES]}>
-          {PRESET_MODES.map((mode) => {
-            const preset = p5.retrieval_presets[mode];
-            return (
-              <AccordionItem key={mode} value={mode}>
-                <AccordionTrigger>{t(MODES[mode])}</AccordionTrigger>
-                <AccordionContent className="space-y-4 pt-2">
-                  <div className="grid min-w-0 gap-4 sm:grid-cols-2">
-                    {(["candidate_limit", "max_entries"] as const).map((key) => (
-                      <div key={key} className="min-w-0">
+          <span
+            role="status"
+            className={`rounded-[9999px] border px-[12px] py-[4px] text-[12px] font-semibold whitespace-nowrap ${isMemoryDirty || isContextDirty || hasPresetBytesInvalid || catalogInvalid ? "border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning)]" : "border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success)]"}`}
+          >
+            {t(
+              isMemoryDirty || isContextDirty || hasPresetBytesInvalid || catalogInvalid
+                ? "strict.reading.dirty"
+                : "strict.reading.clean",
+            )}
+          </span>
+          <div className="flex flex-wrap items-center gap-[8px] max-[480px]:w-full max-[480px]:[&>span]:min-w-[110px] max-[480px]:[&>span]:flex-1 max-[480px]:[&_button]:w-full">
+            <Button
+              size="sm"
+              variant="secondary"
+              className="gap-[8px]"
+              disabled={!(canDiscardMemory || canDiscardContext)}
+              tooltip={t("strict.reading.resetHint")}
+              onClick={() => {
+                s.discardSettingsPages("memory-tools");
+                s.discardSettingsPages("context");
+                if (legacyFull) setCatalogResetSeq((n) => n + 1);
+              }}
+            >
+              <RotateCcw className="size-[15px]" />
+              {t("library.discard.changes")}
+            </Button>
+            <Button
+              data-visual="reading-save-rules"
+              data-testid="reading-save-rules-btn"
+              aria-label={t("library.save.memory.rules")}
+              disabled={!isMemoryDirty || (legacyFull && catalogInvalid) || busy}
+              tooltip={t("hints.agent.rulesSave")}
+              disabledReason={t("hints.agent.rulesSaveDisabled")}
+              onClick={() => void s.saveSettingsPage("memory-tools")}
+            >
+              <Check className="size-[15px]" />
+              {t("strict.reading.rulesSave")}
+            </Button>
+            <Button
+              data-testid="reading-save-memory-btn"
+              variant="accent"
+              disabled={!isContextDirty || !isAllBytesValid || busy}
+              tooltip={t("hints.agent.contextSave")}
+              disabledReason={t("hints.agent.contextSaveDisabled")}
+              onClick={() => void s.saveSettingsPage("context")}
+            >
+              <Layers className="size-[15px]" />
+              {s.settingsSaving ? t("workspace.saving") : t("strict.reading.contextSave")}
+            </Button>
+          </div>
+        </div>
+      </header>
+      {navigation}
+      <div hidden={!active}>
+        {s.error && (
+          <p
+            role="alert"
+            className="mb-[20px] rounded-[10px] border border-[var(--danger-border)] bg-[var(--danger-bg)] px-[16px] py-[12px] text-[13px] text-destructive"
+          >
+            {translateNotice(s.error)}
+          </p>
+        )}
+        {s.feedback && !s.error && (
+          <p
+            role="status"
+            className="mb-[20px] rounded-[10px] border border-[var(--success-border)] bg-[var(--success-bg)] px-[16px] py-[12px] text-[13px] text-[var(--success)]"
+          >
+            {translateNotice(s.feedback)}
+          </p>
+        )}
+        <div className="mb-[52px]">
+          <div className="mb-[14px] flex flex-wrap items-baseline justify-between gap-[8px]">
+            <h2 className="text-[15px] font-bold tracking-[-0.01em]">
+              {t("strict.reading.generalTitle")}
+            </h2>
+            <span className="text-[12.5px] text-[var(--text-tertiary)]">
+              {t("strict.reading.agentScope")}
+            </span>
+          </div>
+          <div className="grid gap-[16px]">
+            <Field
+              label="strict.reading.mode"
+              tooltip={t("hints.agent.fieldMemoryMode")}
+              labelAside="retrieval_mode"
+            >
+              <NativeSelect
+                aria-label={t("library.memory.tools.mode")}
+                disabled={busy}
+                value={p5.retrieval_mode}
+                onChange={(e) =>
+                  patchMemoryRules({
+                    retrieval_mode: e.target.value as typeof p5.retrieval_mode,
+                  })
+                }
+              >
+                {legacyFull && (
+                  <option value={p5.retrieval_mode}>
+                    {t(
+                      p5.retrieval_mode === "full_catalog"
+                        ? "library.full.catalog"
+                        : "library.full.body",
+                    )}
+                  </option>
+                )}
+                {Object.keys(MODES).map((value) => (
+                  <option key={value} value={value}>
+                    {t(`strict.mode.${value}`)}
+                  </option>
+                ))}
+              </NativeSelect>
+            </Field>
+
+            {legacyFull && (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  {t("library.memory.tools.legacy.full", { "0": p5.retrieval_mode })}
+                  <Button
+                    variant="link"
+                    size="sm"
+                    disabled={busy}
+                    tooltip={t("hints.agent.useBroad")}
+                    onClick={() => patchMemoryRules({ retrieval_mode: "broad" })}
+                  >
+                    {t("library.memory.tools.use.broad")}
+                  </Button>
+                </p>
+                <CatalogBatchFields
+                  key={`${editor.agent.id}:${editor.agent.config_version}:${catalogResetSeq}`}
+                  batches={p5.max_catalog_batches}
+                  batch={p5.catalog_batch_size}
+                  disabled={busy}
+                  onPatch={(key, value) => patchMemoryRules({ [key]: value })}
+                  onInvalidChange={setCatalogInvalid}
+                />
+              </>
+            )}
+
+            <Field
+              label="strict.reading.prompt"
+              tooltip={t("strict.reading.promptHelp")}
+              labelAside={t("strict.reading.promptBounds")}
+            >
+              <Textarea
+                aria-label={t("library.memory.tools.retrieval.prompt")}
+                disabled={busy}
+                maxLength={16000}
+                className="min-h-[76px] px-[12px] py-[10px] text-[13.5px] leading-[1.5]"
+                value={editor.draft.memory_retrieval_prompt}
+                onChange={(event) =>
+                  s.patchPageAgent("memory-tools", { memory_retrieval_prompt: event.target.value })
+                }
+              />
+            </Field>
+          </div>
+        </div>
+        <div className="mb-[28px]">
+          <div className="mb-[14px] flex flex-wrap items-baseline justify-between gap-[8px]">
+            <h2 className="text-[15px] font-bold tracking-[-0.01em]">
+              {t("strict.reading.presetsTitle")}
+            </h2>
+            <span className="text-[12.5px] text-[var(--text-tertiary)]">
+              {t("strict.reading.presetsHint")}
+            </span>
+          </div>
+          <Accordion
+            type="multiple"
+            defaultValue={[...PRESET_MODES]}
+            className="flex flex-col gap-[12px]"
+          >
+            {PRESET_MODES.map((mode) => {
+              const preset = p5.retrieval_presets[mode];
+              const rawByteVal = byteInvalidFor(mode);
+              const currentByteVal = rawByteVal ?? String(preset.max_tokens);
+              const byteValid = byteInvalidFor(mode) === undefined && isByteValid(currentByteVal);
+
+              return (
+                <AccordionItem
+                  key={mode}
+                  value={mode}
+                  data-visual={`reading-preset-${mode}`}
+                  className="overflow-hidden rounded-[10px] border border-border bg-card last:border-b"
+                >
+                  <AccordionTrigger className="min-h-[52px] items-center leading-[normal] rounded-none border-0 px-[18px] py-[14px] text-[13px] hover:no-underline">
+                    <div className="flex min-w-0 flex-wrap items-center gap-[12px] text-left">
+                      <span
+                        className={`inline-flex rounded-[6px] border px-[10px] py-[3px] text-[12px] leading-[normal] font-bold ${mode === "standard" ? "border-primary bg-[var(--primary-tint)] text-primary" : mode === "broad" ? "border-accent bg-[var(--accent-tint)] text-accent" : "border-border bg-muted text-foreground"}`}
+                      >
+                        {t(`strict.tier.${mode}`)}
+                      </span>
+                      <span className="text-[13px] font-medium text-muted-foreground tabular-nums">
+                        {t("strict.reading.presetSummary", {
+                          "0": preset.candidate_limit,
+                          "1": preset.max_entries,
+                          "2": preset.max_tokens.toLocaleString(),
+                        })}
+                      </span>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="h-auto border-t border-border bg-muted p-[18px] text-[13.5px] leading-[1.5] [&_p:not(:last-child)]:mb-0">
+                    <div className="flex flex-col gap-[16px]">
+                      <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-[16px]">
                         <Field
-                          label={
-                            {
-                              candidate_limit: "library.memory.tools.scan.limit",
-                              max_entries: "library.memory.tools.page.limit",
-                            }[key]
-                          }
+                          label="strict.reading.scan"
+                          labelAside="[1 – 10000]"
+                          unit={t("strict.reading.entriesUnit")}
+                          tooltip={t("hints.agent.fieldScanLimit")}
                         >
                           <Input
                             type="number"
                             disabled={busy}
-                            min={RetrievalPresetSchema.shape[key].minValue ?? undefined}
-                            max={
-                              key === "max_entries"
-                                ? Math.min(
-                                    RetrievalPresetSchema.shape[key].maxValue!,
-                                    preset.candidate_limit,
-                                  )
-                                : (RetrievalPresetSchema.shape[key].maxValue ?? undefined)
-                            }
-                            value={preset[key]}
+                            aria-label={t("library.memory.tools.scan.limit")}
+                            min={RetrievalPresetSchema.shape.candidate_limit.minValue ?? undefined}
+                            max={RetrievalPresetSchema.shape.candidate_limit.maxValue ?? undefined}
+                            value={preset.candidate_limit}
                             onChange={(e) =>
-                              patch({
+                              patchMemoryRules({
                                 retrieval_presets: {
                                   ...p5.retrieval_presets,
-                                  [mode]: { ...preset, [key]: Number(e.target.value) },
+                                  [mode]: { ...preset, candidate_limit: Number(e.target.value) },
                                 },
                               })
                             }
                           />
                         </Field>
+
+                        <Field
+                          label="strict.reading.return"
+                          labelAside={t("strict.reading.returnBounds")}
+                          unit={t("strict.reading.entriesUnit")}
+                          tooltip={t("hints.agent.fieldPageLimit")}
+                        >
+                          <Input
+                            type="number"
+                            disabled={busy}
+                            aria-label={t("library.memory.tools.page.limit")}
+                            min={RetrievalPresetSchema.shape.max_entries.minValue ?? undefined}
+                            max={Math.min(
+                              RetrievalPresetSchema.shape.max_entries.maxValue!,
+                              preset.candidate_limit,
+                            )}
+                            value={preset.max_entries}
+                            onChange={(e) =>
+                              patchMemoryRules({
+                                retrieval_presets: {
+                                  ...p5.retrieval_presets,
+                                  [mode]: { ...preset, max_entries: Number(e.target.value) },
+                                },
+                              })
+                            }
+                          />
+                        </Field>
+
+                        <Field
+                          label="strict.reading.capacity"
+                          tooltip={t("hints.agent.fieldMaxBytes")}
+                          labelAside={t("strict.reading.contextQuota")}
+                          unit="Bytes"
+                        >
+                          <Input
+                            id={`reading-memory-${mode}`}
+                            data-testid={`reading-preset-max-tokens-${mode}`}
+                            aria-label={t("schemes.allocation.reading.maxBytesLabel")}
+                            aria-invalid={!byteValid || undefined}
+                            type="text"
+                            inputMode="numeric"
+                            disabled={busy}
+                            value={currentByteVal}
+                            onChange={(e) => handleByteChange(mode, e.target.value)}
+                            className={`h-[38px] px-[12px] text-[13.5px] leading-[1.5] ${!byteValid ? "border-destructive! bg-[var(--danger-bg)]!" : ""}`}
+                            placeholder="Bytes"
+                          />
+                          {!byteValid && (
+                            <p className="text-[11px] text-destructive mt-1">
+                              {t("schemes.allocation.reading.invalidByteRange", {
+                                defaultValue: "必须为 1 到 1,048,576 之间的整数",
+                              })}
+                            </p>
+                          )}
+                        </Field>
                       </div>
-                    ))}
-                    <div className="col-span-full flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
-                      <div>
-                        <span className="text-muted-foreground">
-                          {t("library.memory.tools.turn.budget")}：
-                        </span>
-                        <span className="font-medium">{preset.max_tokens} Bytes</span>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 text-xs"
-                        onClick={() =>
-                          openContextAllocation({
-                            purpose: "reading",
-                            agentId: editor?.agent.id,
-                            returnRoute: "memory-tools",
-                            returnLabel: t("capabilities.memory.name"),
-                          })
-                        }
+
+                      <Field
+                        label="strict.reading.instruction"
+                        labelAside={t("strict.reading.instructionBounds")}
+                        tooltip={t("hints.fieldExtra.relevance")}
                       >
-                        {t("schemes.allocation.goToCentralAllocation")}
-                      </Button>
+                        <Textarea
+                          aria-label={t("library.memory.tools.relevance.instruction")}
+                          disabled={busy}
+                          maxLength={16000}
+                          value={preset.relevance_instruction}
+                          className="min-h-[38px] px-[12px] py-[8px] text-[13.5px] leading-[20px]"
+                          rows={1}
+                          onChange={(event) =>
+                            patchMemoryRules({
+                              retrieval_presets: {
+                                ...p5.retrieval_presets,
+                                [mode]: { ...preset, relevance_instruction: event.target.value },
+                              },
+                            })
+                          }
+                        />
+                      </Field>
                     </div>
-                  </div>
-                  <Field label="library.memory.tools.relevance.instruction">
-                    <Textarea
-                      disabled={busy}
-                      maxLength={16000}
-                      value={preset.relevance_instruction}
-                      onChange={(event) =>
-                        patch({
-                          retrieval_presets: {
-                            ...p5.retrieval_presets,
-                            [mode]: { ...preset, relevance_instruction: event.target.value },
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <p className="text-sm text-muted-foreground">
-                    {t("library.memory.tools.limits.hint")}
-                  </p>
-                </AccordionContent>
-              </AccordionItem>
-            );
-          })}
-        </Accordion>
-        {s.error && (
-          <p role="alert" className="text-sm text-destructive">
-            {translateNotice(s.error)}
-          </p>
-        )}
-        {s.feedback && !s.error && (
-          <p role="status" className="text-sm text-muted-foreground">
-            {translateNotice(s.feedback)}
-          </p>
-        )}
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
-          {/* 草稿安全跳转：不隐式保存，草稿保留。 */}
+                  </AccordionContent>
+                </AccordionItem>
+              );
+            })}
+          </Accordion>
+        </div>
+        <p className="mb-[12px] text-[12.5px] leading-[1.5] text-muted-foreground">
+          {t("models.contextSaveScope")}
+        </p>
+        <div className="mb-[16px] flex flex-wrap items-center gap-[8px]">
           <Button
             variant="outline"
-            className="mr-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
+            tooltip={t("hints.agent.goToLongMemory")}
             onClick={() => s.openSettingsRoute("long-memory")}
           >
-            <BookOpen />
+            <BookOpen className="size-[15px]" />
             {t("connections.goToLongTermMemory")}
           </Button>
-          <Button variant="outline" disabled={busy} onClick={() => void s.refreshSettingsAgent()}>
+          <Button
+            variant="outline"
+            disabled={busy}
+            tooltip={t("hints.agent.refreshBaseline")}
+            onClick={() => void s.refreshSettingsAgent()}
+          >
             {t("capabilities.resources.refreshBaseline")}
           </Button>
           <Button
-            variant="outline"
-            disabled={(!dirty && !(legacyFull && catalogInvalid)) || busy}
+            variant="ghost"
+            disabled={!canDiscardMemory}
+            tooltip={t("hints.agent.discardMemoryRules")}
             onClick={() => {
               s.discardSettingsPages("memory-tools");
               if (legacyFull) setCatalogResetSeq((n) => n + 1);
             }}
           >
-            {t("library.discard.changes")}
+            {t("strict.reading.discardRules")}
           </Button>
           <Button
-            disabled={!dirty || (legacyFull && catalogInvalid) || busy}
-            onClick={() => void s.saveSettingsPage("memory-tools")}
+            data-testid="reading-discard-memory-btn"
+            variant="ghost"
+            disabled={!canDiscardContext}
+            tooltip={t("hints.agent.discardContextBudget")}
+            onClick={handleDiscardContext}
           >
-            {t("library.save.memory.rules")}
+            {t("schemes.allocation.reading.discardBudget")}
           </Button>
         </div>
-      </CardContent>
-    </Card>
+        <details className="mb-[28px] overflow-hidden rounded-[10px] border border-border bg-card">
+          <summary className="cursor-pointer px-[16px] py-[12px] text-[13px] font-semibold text-muted-foreground">
+            {t("strict.reading.technical")}
+          </summary>
+          <div className="space-y-[10px] border-t border-border bg-muted px-[18px] py-[14px] text-[12.5px] leading-[1.7] text-muted-foreground">
+            <p>{t("library.memory.tools.on.demand")}</p>
+            <p>{t("library.memory.tools.limits.hint")}</p>
+          </div>
+        </details>
+      </div>
+    </section>
   );
 }
 
-/** 知识工具设置：只读写 knowledgeReadEditor 草稿；资料正文仍归资料库文档分区。
- *  全局默认预算独立成组，与默认模型页共用 knowledgeModelEditor（预算只有一个真源）。 */
+/** 记忆工具入口摘要组件：直接呈现包含各档规则与配额的统一记忆配置 */
+export function MemoryToolSettings(
+  props: { navigation?: ReactNode; onDirectory?: () => void; active?: boolean } = {},
+) {
+  return <MemoryReadingRules {...props} />;
+}
+
+/** 知识工具设置：直接内联完整的 4 字段知识读取配置（enabled, context_budget, scope, document_ids），
+ *  杜绝跨域跳转，资料读取独立整份保存至 PUT /agents/{id}/knowledge-read-settings。 */
 export function KnowledgeToolSettings({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
-      discardKnowledgeModel: state.discardKnowledgeModel,
       discardKnowledgeRead: state.discardKnowledgeRead,
       editorAgentId: state.editorAgentId,
       editorLoading: state.editorLoading,
@@ -377,46 +656,119 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
       pageEditor: state.pageEditor,
       patchKnowledgeRead: state.patchKnowledgeRead,
       refreshKnowledgeRead: state.refreshKnowledgeRead,
-      saveKnowledgeModel: state.saveKnowledgeModel,
       saveKnowledgeRead: state.saveKnowledgeRead,
       settingsSaving: state.settingsSaving,
+      allocationInvalidInputs: state.allocationInvalidInputs,
     })),
   );
   const t = useTranslation().t;
+
   useEffect(() => {
     if (active && s.editorAgentId !== "__new__") {
-      // 知识读取配置独立于助手页面草稿加载与保存；资料正文仍在资料库的文档分区管理。
       void s.loadKnowledgeRead();
-      // 全局默认预算与知识整理模型共用同一编辑器；此处只编辑预算字段。
       void s.loadKnowledgeModel();
     }
   }, [active, s.editorAgentId, s.loadKnowledgeRead, s.loadKnowledgeModel]);
+
   const editor = s.pageEditor;
   if (!editor) return <p role="status">{t("library.loading")}</p>;
   const read = s.knowledgeReadEditor?.agentId === editor.agent.id ? s.knowledgeReadEditor : null;
   const global = s.knowledgeModelEditor;
   const busy =
     s.settingsSaving || s.editorLoading || s.knowledgeReadLoading || s.knowledgeModelLoading;
+
+  const agentId = editor.agent.id;
+  const invalidKey = `agent:${agentId}:reading:knowledgeAgent`;
+  const isByteValid = (val: string): boolean => {
+    if (!val || val.trim() === "") return false;
+    const n = Number(val);
+    return Number.isInteger(n) && n >= 1 && n <= 1048576;
+  };
+
+  const rawBudgetInput = s.allocationInvalidInputs[invalidKey];
+  // 严格遵循 ContextAllocationReading 原契约：仅在 draft 为 null 且无无效输入时才视作正在继承；
+  // 当取消继承且全局预算未知时，rawBudgetInput 置为 ""，此时 isInheriting 变为 false，复选框取消勾选，显示空白输入框
+  const isInheriting = read?.draft.context_budget === null && rawBudgetInput === undefined;
+  const isBudgetValid =
+    rawBudgetInput === undefined &&
+    (isInheriting || (read?.draft.context_budget != null && read.draft.context_budget > 0));
+
+  const handleToggleInherit = (inherit: boolean) => {
+    if (inherit) {
+      useSuperstringStore.setState((state) => {
+        const next = { ...state.allocationInvalidInputs };
+        delete next[invalidKey];
+        return { allocationInvalidInputs: next };
+      });
+      s.patchKnowledgeRead({ context_budget: null });
+    } else {
+      const inherited = global?.contextBudget != null ? global.contextBudget : null;
+      if (inherited != null) {
+        useSuperstringStore.setState((state) => {
+          const next = { ...state.allocationInvalidInputs };
+          delete next[invalidKey];
+          return { allocationInvalidInputs: next };
+        });
+        s.patchKnowledgeRead({ context_budget: inherited });
+      } else {
+        // 全局预算未知时保持空白并设为 invalid 状态，此时 isInheriting 变为 false，显示输入框且阻止保存
+        useSuperstringStore.setState((state) => ({
+          allocationInvalidInputs: { ...state.allocationInvalidInputs, [invalidKey]: "" },
+        }));
+        s.patchKnowledgeRead({ context_budget: null });
+      }
+    }
+  };
+
+  const handleBudgetChange = (raw: string) => {
+    const valid = isByteValid(raw);
+    useSuperstringStore.setState((state) => {
+      const next = { ...state.allocationInvalidInputs };
+      if (valid) delete next[invalidKey];
+      else next[invalidKey] = raw;
+      return { allocationInvalidInputs: next };
+    });
+    if (valid) {
+      s.patchKnowledgeRead({ context_budget: Number(raw) });
+    }
+  };
+
+  const isKnowledgeDirty = !!read && knowledgeReadDirty(read);
+  const hasKnowledgeInvalid = rawBudgetInput !== undefined;
+  const canDiscardKnowledge = (isKnowledgeDirty || hasKnowledgeInvalid) && !busy;
+
+  const handleDiscardKnowledge = () => {
+    s.discardKnowledgeRead();
+    void s.loadKnowledgeRead();
+  };
+
   return (
-    <>
-      <Card className="min-w-0">
+    <div className="space-y-6">
+      <Card className="min-w-0" data-testid="reading-section-knowledge-agent">
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <BookOpen className="size-4" />
-            {t("library.knowledge.access")}
-          </CardTitle>
-          <CardDescription>
-            {t("library.document.grants.determine.visibility.this.agent.s.reading.rules")}
-          </CardDescription>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <BookOpen className="size-4" />
+                {t("library.knowledge.access")}
+              </CardTitle>
+              <CardDescription className="mt-1">
+                {t("library.document.grants.determine.visibility.this.agent.s.reading.rules")}
+              </CardDescription>
+            </div>
+            <span className="inline-flex items-center rounded border border-border/60 bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground self-start sm:self-auto shrink-0">
+              {t("schemes.allocation.reading.scopeAgentOverride", { defaultValue: "助手专属" })}
+            </span>
+          </div>
         </CardHeader>
         <CardContent className="space-y-5">
           {!read ? (
             !s.knowledgeReadLoading && s.error ? (
               <div className="flex justify-end">
-                {/* 首次加载失败保留一个可重试的加载入口，而不是停在加载态。 */}
                 <Button
                   variant="outline"
                   disabled={busy}
+                  tooltip={t("hints.agent.retryKnowledgeRead")}
                   onClick={() => void s.loadKnowledgeRead()}
                 >
                   {t("library.refresh.grants")}
@@ -427,41 +779,95 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
             )
           ) : (
             <>
-              <Field label="library.enable.knowledge.reading">
+              {/* 1. enabled 开关 */}
+              <Field
+                label="library.enable.knowledge.reading"
+                tooltip={t("hints.agent.fieldKnowledgeEnabled")}
+              >
                 <Checkbox
                   disabled={busy}
                   checked={read.draft.enabled}
                   onCheckedChange={(v) => s.patchKnowledgeRead({ enabled: v === true })}
                 />
               </Field>
-              <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
-                <div>
-                  <span className="text-muted-foreground">
-                    {t("library.knowledge.tools.budget")}：
-                  </span>
-                  <span className="font-medium">
-                    {read.draft.context_budget
-                      ? `${read.draft.context_budget} Bytes`
-                      : `${t("schemes.allocation.reading.followGlobalDefault")} (${read.globalBudget} Bytes)`}
-                  </span>
+
+              {/* 2. context_budget 额度 (内联完整配置，无外跳按钮) */}
+              <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="knowledge-agent-inherit"
+                    data-testid="reading-knowledge-agent-inherit-checkbox"
+                    disabled={busy}
+                    checked={isInheriting}
+                    onChange={(e) => handleToggleInherit(e.target.checked)}
+                    className="h-4 w-4 rounded border-input text-primary focus:ring-primary cursor-pointer disabled:cursor-not-allowed"
+                  />
+                  <label
+                    htmlFor="knowledge-agent-inherit"
+                    className="text-xs font-medium leading-none cursor-pointer text-foreground"
+                  >
+                    {t("schemes.allocation.reading.followGlobalDefault", {
+                      defaultValue: "跟随全局默认额度 (继承)",
+                    })}
+                  </label>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 text-xs"
-                  onClick={() =>
-                    openContextAllocation({
-                      purpose: "reading",
-                      agentId: s.editorAgentId ?? undefined,
-                      returnRoute: "knowledge-tools",
-                      returnLabel: t("capabilities.knowledge.name"),
-                    })
-                  }
-                >
-                  {t("schemes.allocation.goToCentralAllocation")}
-                </Button>
+
+                <div className="rounded-md border bg-background/60 p-3 text-xs">
+                  <div
+                    data-testid="reading-knowledge-agent-effective-source"
+                    className="flex items-center justify-between"
+                  >
+                    <span className="text-muted-foreground">
+                      {t("schemes.allocation.reading.effectiveSourceLabel", {
+                        defaultValue: "当前生效额度与来源：",
+                      })}
+                    </span>
+                    <span className="font-medium font-mono text-foreground">
+                      {isInheriting
+                        ? `${global?.contextBudget ?? "?"} Bytes ${t("schemes.allocation.reading.bytesInherited", { defaultValue: "(继承全局)" })}`
+                        : `${read.draft.context_budget ?? 0} Bytes ${t("schemes.allocation.reading.bytesAgentOverride", { defaultValue: "(助手独立覆盖)" })}`}
+                    </span>
+                  </div>
+                </div>
+
+                {!isInheriting && (
+                  <div className="ml-1 pl-4 border-l-2 border-primary/20 space-y-1.5 pt-1 max-w-md">
+                    <label
+                      htmlFor="knowledge-agent-budget-input"
+                      className="text-xs font-medium text-muted-foreground block"
+                    >
+                      {t("schemes.allocation.reading.overrideBytesLabel", {
+                        defaultValue: "独立覆盖读取额度 (Bytes, 1..1,048,576)",
+                      })}
+                    </label>
+                    <Input
+                      id="knowledge-agent-budget-input"
+                      data-testid="reading-knowledge-agent-budget-input"
+                      type="text"
+                      inputMode="numeric"
+                      disabled={busy}
+                      value={
+                        rawBudgetInput ??
+                        (read.draft.context_budget != null ? String(read.draft.context_budget) : "")
+                      }
+                      onChange={(e) => handleBudgetChange(e.target.value)}
+                      className={`h-8 text-xs font-mono ${rawBudgetInput !== undefined ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                      placeholder="Bytes"
+                    />
+                    {rawBudgetInput !== undefined && (
+                      <p className="text-[11px] text-destructive">
+                        {t("schemes.allocation.reading.invalidPositiveByte", {
+                          defaultValue: "必须为 1 到 1,048,576 之间的正整数",
+                        })}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
-              <Field label="library.reading.scope">
+
+              {/* 3. scope 模式 */}
+              <Field label="library.reading.scope" tooltip={t("hints.agent.fieldKnowledgeScope")}>
                 <NativeSelect
                   disabled={busy}
                   value={read.draft.scope}
@@ -476,13 +882,15 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
                   <option value="selected">{t("library.selected.documents.only")}</option>
                 </NativeSelect>
               </Field>
+
+              {/* 4. document_ids 清单 */}
               {read.draft.scope === "selected" && (
-                <div className="space-y-2 rounded-xl border p-3">
+                <div className="space-y-4 rounded-xl border p-4">
                   {read.documents.map((doc) => (
                     <label
                       htmlFor={`knowledge-read-${doc.id}`}
                       key={doc.id}
-                      className="flex gap-3 rounded-lg p-2 hover:bg-muted"
+                      className="flex gap-3 rounded-lg p-3 hover:bg-muted"
                     >
                       <Checkbox
                         id={`knowledge-read-${doc.id}`}
@@ -516,6 +924,7 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
                           size="sm"
                           variant="ghost"
                           disabled={busy}
+                          tooltip={t("hints.agent.removeExpiredDoc")}
                           onClick={() =>
                             s.patchKnowledgeRead({
                               document_ids: read.draft.document_ids.filter((other) => other !== id),
@@ -533,11 +942,12 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
                   )}
                 </div>
               )}
+
               <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
-                {/* 草稿安全跳转：不隐式保存，草稿保留。 */}
                 <Button
                   variant="outline"
                   className="mr-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
+                  tooltip={t("hints.agent.goToKnowledgeDocs")}
                   onClick={() => s.openSettingsRoute("knowledge-config")}
                 >
                   <FileText />
@@ -545,23 +955,26 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={!knowledgeReadDirty(read) || busy}
+                  disabled={!isKnowledgeDirty || busy}
+                  tooltip={t("hints.agent.refreshKnowledgeRead")}
                   onClick={() => void s.refreshKnowledgeRead()}
                 >
                   {t("library.refresh.grants")}
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={!knowledgeReadDirty(read) || busy}
-                  onClick={() => {
-                    s.discardKnowledgeRead();
-                    void s.loadKnowledgeRead();
-                  }}
+                  disabled={!canDiscardKnowledge}
+                  tooltip={t("hints.agent.discardKnowledge")}
+                  disabledReason={t("hints.agent.noKnowledgeDirty")}
+                  onClick={handleDiscardKnowledge}
                 >
                   {t("library.discard.changes")}
                 </Button>
                 <Button
-                  disabled={!knowledgeReadDirty(read) || busy}
+                  data-testid="reading-save-knowledge-agent-btn"
+                  disabled={!isKnowledgeDirty || !isBudgetValid || busy}
+                  tooltip={t("hints.agent.knowledgeSave")}
+                  disabledReason={t("hints.agent.knowledgeSaveDisabled")}
                   onClick={() => void s.saveKnowledgeRead()}
                 >
                   {t("library.save.knowledge.rules")}
@@ -581,7 +994,8 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
           )}
         </CardContent>
       </Card>
-      {/* 全局默认预算：与知识整理模型共用 knowledgeModelEditor 真源，只提交预算字段。 */}
+
+      {/* 全局默认预算展示 (纯只读/刷新基线，唯一编辑在模型服务) */}
       <Card className="min-w-0">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -593,10 +1007,10 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
           {!global ? (
             !s.knowledgeModelLoading && s.error ? (
               <div className="flex justify-end">
-                {/* 首次加载失败保留重试入口；上限未知时不渲染输入。 */}
                 <Button
                   variant="outline"
                   disabled={busy}
+                  tooltip={t("hints.agent.refreshGlobalKnowledge")}
                   onClick={() => void s.loadKnowledgeModel(true)}
                 >
                   {t("capabilities.resources.refreshBaseline")}
@@ -606,55 +1020,45 @@ export function KnowledgeToolSettings({ active = true }: { active?: boolean } = 
               <p role="status">{t("library.loading")}</p>
             )
           ) : (
-            <>
-              <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-xs">
-                <div>
-                  <span className="text-muted-foreground">
-                    {t("library.workspace.knowledge.budget.tokens")}：
-                  </span>
-                  <span className="font-medium">{global.contextBudget} Bytes</span>
-                </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+              <div>
+                <span className="text-muted-foreground">
+                  {t("library.workspace.knowledge.budget.tokens")}：
+                </span>
+                <span className="font-medium">{global.contextBudget} Bytes</span>
+              </div>
+              <div className="flex items-center gap-2">
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-6 text-xs"
+                  className="h-7 text-xs"
+                  disabled={busy}
+                  tooltip={t("hints.agent.goToCentralAllocation")}
                   onClick={() =>
                     openContextAllocation({
                       purpose: "reading",
-                      returnRoute: "knowledge-config",
-                      returnLabel: t("workspace.knowledge_settings"),
+                      agentId: null,
+                      returnRoute: "knowledge-tools",
+                      returnLabel: t("capabilities.knowledge.name"),
                     })
                   }
                 >
                   {t("schemes.allocation.goToCentralAllocation")}
                 </Button>
-              </div>
-              <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-4">
                 <Button
                   variant="outline"
+                  size="sm"
                   disabled={busy}
+                  tooltip={t("hints.agent.refreshGlobalKnowledge")}
                   onClick={() => void s.loadKnowledgeModel(true)}
                 >
                   {t("capabilities.resources.refreshBaseline")}
                 </Button>
-                <Button
-                  variant="outline"
-                  disabled={!knowledgeModelDirty(global, "budget") || busy}
-                  onClick={() => s.discardKnowledgeModel("budget")}
-                >
-                  {t("library.discard.knowledge.budget")}
-                </Button>
-                <Button
-                  disabled={!knowledgeModelDirty(global, "budget") || busy}
-                  onClick={() => void s.saveKnowledgeModel("budget")}
-                >
-                  {t("library.save.knowledge.budget")}
-                </Button>
               </div>
-            </>
+            </div>
           )}
         </CardContent>
       </Card>
-    </>
+    </div>
   );
 }

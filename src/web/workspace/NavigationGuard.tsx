@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { AlertDialog } from "../components/confirmation";
 import { Button } from "../components/ui/button";
@@ -83,6 +83,7 @@ function NavigationConfirmDialog({
       )}
       <div className="flex flex-wrap justify-end gap-2">
         <Button
+          tooltip={<Trans i18nKey="hints.complete.stay" />}
           variant="outline"
           data-dialog-cancel
           disabled={pending}
@@ -91,13 +92,18 @@ function NavigationConfirmDialog({
           {t("workspace.stay_here")}
         </Button>
         <Button
+          tooltip={<Trans i18nKey="hints.complete.discardContinue" />}
           variant="destructive"
           disabled={pending}
           onClick={() => void run(state.confirmDiscardAndContinue)}
         >
           {t("workspace.discard_and_continue")}
         </Button>
-        <Button disabled={pending} onClick={() => void run(state.confirmSaveAndContinue)}>
+        <Button
+          tooltip={<Trans i18nKey="hints.complete.saveContinue" />}
+          disabled={pending}
+          onClick={() => void run(state.confirmSaveAndContinue)}
+        >
           {t("workspace.save_and_continue")}
         </Button>
       </div>

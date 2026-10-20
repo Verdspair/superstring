@@ -60,7 +60,10 @@ export function BindingMemoryControls({
           </span>
         )}
       </div>
-      <Field label="library.automatic.batch.size.blank.to.disable">
+      <Field
+        label="library.automatic.batch.size.blank.to.disable"
+        tooltip={t("hints.library.binding.batchSize")}
+      >
         <Input
           type="number"
           min={1}
@@ -80,6 +83,8 @@ export function BindingMemoryControls({
         <Button
           size="sm"
           disabled={busy || !draft}
+          disabledReason={t("hints.library.binding.saveDisabled")}
+          tooltip={t("hints.library.binding.saveBatch")}
           onClick={() => {
             void s.saveQqMemoryBatchDrafts([binding.id]).then((ok) => {
               if (ok) onChanged();
@@ -92,6 +97,8 @@ export function BindingMemoryControls({
           size="sm"
           variant="outline"
           disabled={busy}
+          disabledReason={t("hints.library.binding.organiseDisabled")}
+          tooltip={t("hints.library.binding.organiseNow")}
           onClick={() => {
             void s.organiseQqMemoryRow(binding).then((result) => {
               setVerdict(result);
@@ -106,6 +113,7 @@ export function BindingMemoryControls({
             size="sm"
             variant="ghost"
             disabled={busy}
+            tooltip={t("hints.library.binding.discard")}
             onClick={() => s.patchQqMemoryBatchDraft(binding.id, null)}
           >
             {t("library.discard.changes")}

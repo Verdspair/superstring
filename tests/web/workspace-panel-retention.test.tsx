@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
@@ -6,6 +6,7 @@ import { ConnectionWorkspace } from "../../src/web/screens/connections/Connectio
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
 import { LibraryWorkspace } from "../../src/web/screens/library/LibraryWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 vi.mock("../../src/web/screens/library/KnowledgeLibrary", async () => {
   const React = await import("react");

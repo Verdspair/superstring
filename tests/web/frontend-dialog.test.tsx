@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Profiler, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfirmDialog } from "../../src/web/components/confirmation";
 import { useSuperstringStore } from "../../src/web/store";
 import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(cleanup);
 function Example() {
@@ -35,6 +36,11 @@ describe("Radix确认弹窗", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "确认" }));
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "取消" }));
+    if (screen.queryByRole("tooltip")) {
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+      expect(screen.getByRole("alertdialog")).toBeTruthy();
+    }
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(opener));

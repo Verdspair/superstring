@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema } from "../../src/shared/contracts";
 import { QqBindingResponseSchema, type QqSchemeResponse } from "../../src/shared/contracts/qq";
@@ -7,6 +7,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { BindingEditor } from "../../src/web/screens/connections/binding-editor";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-10-12T00:00:00.000Z";
 const SCHEME = "22222222-2222-4222-8222-222222222222";

@@ -4,7 +4,10 @@ import {
   type PermissionsResponse,
 } from "../../src/shared/contracts/permissions";
 import { api } from "../../src/web/api";
-import { permissionSettingsDirty } from "../../src/web/features/access/permission-state";
+import {
+  type PermissionScope,
+  permissionSettingsDirty,
+} from "../../src/web/features/access/permission-state";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const snapshot = (): PermissionsResponse => ({
@@ -186,5 +189,122 @@ describe("permission settings shared drafts", () => {
     await store.getState().loadPermissionSettings(true);
     expect(store.getState().permissionEditor?.execution.loopModelConcurrency).toBe("1");
     expect(store.getState().permissionEditor?.execution.loopProviderConcurrency).toBe("1");
+  });
+});
+
+describe("retry scope and raw seconds drafts (R42)", () => {
+  // 与两处页面面板的真实保存 scope 对齐：QQ 连接页 4 个执行键、系统执行页重试 2 键。
+  const qqScope: PermissionScope = {
+    executionKeys: [
+      "qqRetryDelaySeconds",
+      "qqMaxAttempts",
+      "qqDeliveryTtlSeconds",
+      "loopConcurrency",
+    ],
+  };
+  const systemScope: PermissionScope = {
+    executionKeys: ["systemMaxAttempts", "systemRetryDelaySeconds"],
+  };
+
+  it("round-trips a saved fractional QQ delay byte-exactly across both save directions", async () => {
+    const f = setup();
+    const start = snapshot();
+    start.policy.execution = ExecutionPolicySchema.parse({ qq: { retryDelayMs: 1500 } });
+    f.replace(start);
+    await store.getState().loadPermissionSettings();
+    // 已存显式 1500ms 以 1.5 秒呈现，不取整。
+    expect(store.getState().permissionEditor?.execution.qqRetryDelaySeconds).toBe("1.5");
+    // 系统页 scope 保存时，界外已存 QQ 毫秒值原样保留（CAS 整域提交但键值不变）。
+    store.getState().patchExecutionSettings({ systemMaxAttempts: "1" });
+    expect(await store.getState().savePermissionSettings(systemScope)).toBe(true);
+    expect(f.save.mock.calls[0][0].policy.execution?.qq).toMatchObject({ retryDelayMs: 1500 });
+    expect(f.save.mock.calls[0][0].policy.execution?.system).toMatchObject({ maxAttempts: 1 });
+    // 反向：QQ 页输入 2.5 秒按精确整毫秒 2500 提交。
+    store.getState().patchExecutionSettings({ qqRetryDelaySeconds: "2.5" });
+    expect(await store.getState().savePermissionSettings(qqScope)).toBe(true);
+    expect(f.save.mock.calls[1][0].policy.execution?.qq).toMatchObject({ retryDelayMs: 2500 });
+    // 三位小数按精确整毫秒提交：1.001 秒 = 1001ms，不圆整。
+    store.getState().patchExecutionSettings({ systemRetryDelaySeconds: "1.001" });
+    expect(await store.getState().savePermissionSettings(systemScope)).toBe(true);
+    expect(f.save.mock.calls[2][0].policy.execution?.system).toMatchObject({ retryDelayMs: 1001 });
+  });
+
+  it("saves system maxAttempts 1 (retries disabled) and keeps it as an explicit draft", async () => {
+    const f = setup();
+    await store.getState().loadPermissionSettings();
+    store.getState().patchExecutionSettings({ systemMaxAttempts: "1" });
+    expect(await store.getState().savePermissionSettings(systemScope)).toBe(true);
+    expect(f.save.mock.calls[0][0].expectedRevision).toBe("r1");
+    expect(f.save.mock.calls[0][0].policy.execution?.system).toMatchObject({
+      maxAttempts: 1,
+      retryDelayMs: 2000,
+    });
+    // 显式存过的 1 在刷新后仍是字符串草稿，缺省不回填覆盖。
+    const next = snapshot();
+    next.revision = "remote";
+    next.policy.execution = ExecutionPolicySchema.parse({ system: { maxAttempts: 1 } });
+    f.replace(next);
+    await store.getState().loadPermissionSettings(true);
+    expect(store.getState().permissionEditor?.execution.systemMaxAttempts).toBe("1");
+    expect(store.getState().permissionEditor?.execution.systemRetryDelaySeconds).toBe("2");
+  });
+
+  it.each(["", "abc", "-1", "0", "0.5", "1.0005", "301"])(
+    "blocks same-scope illegal system seconds %j before any request and names the field",
+    async (raw) => {
+      const f = setup();
+      await store.getState().loadPermissionSettings();
+      store.getState().patchExecutionSettings({ systemRetryDelaySeconds: raw });
+      expect(await store.getState().savePermissionSettings(systemScope)).toBe(false);
+      expect(f.save).not.toHaveBeenCalled();
+      expect(store.getState().permissionProblem).toBe("systemRetryDelaySeconds");
+    },
+  );
+
+  it("commits a QQ-scope save while out-of-scope illegal system raws stay preserved drafts", async () => {
+    const f = setup();
+    await store.getState().loadPermissionSettings();
+    store.getState().patchExecutionSettings({
+      systemMaxAttempts: "-1",
+      systemRetryDelaySeconds: "",
+      qqRetryDelaySeconds: "20",
+    });
+    expect(await store.getState().savePermissionSettings(qqScope)).toBe(true);
+    expect(f.save).toHaveBeenCalledTimes(1);
+    expect(f.save.mock.calls[0][0].policy.execution?.qq).toMatchObject({ retryDelayMs: 20000 });
+    // 界外非法草稿既不进入提交，也不阻断本次保存，更不被回写成基线值。
+    expect(f.save.mock.calls[0][0].policy.execution?.system).toMatchObject({
+      maxAttempts: 3,
+      retryDelayMs: 2000,
+    });
+    const editor = store.getState().permissionEditor!;
+    expect(editor.execution.systemMaxAttempts).toBe("-1");
+    expect(editor.execution.systemRetryDelaySeconds).toBe("");
+    expect(permissionSettingsDirty(editor, systemScope)).toBe(true);
+    expect(permissionSettingsDirty(editor, qqScope)).toBe(false);
+  });
+
+  it("keeps retry drafts on a revision conflict and commits them against the refreshed revision", async () => {
+    const f = setup();
+    await store.getState().loadPermissionSettings();
+    store.getState().patchExecutionSettings({
+      systemRetryDelaySeconds: "5",
+      qqRetryDelaySeconds: "45",
+    });
+    f.save.mockRejectedValueOnce(new Error("revision conflict"));
+    expect(await store.getState().savePermissionSettings(systemScope)).toBe(false);
+    expect(store.getState().permissionEditor?.execution.systemRetryDelaySeconds).toBe("5");
+    expect(store.getState().permissionEditor?.execution.qqRetryDelaySeconds).toBe("45");
+    // 冲突后刷新基线到远端新修订；保留草稿不丢，再按新 expectedRevision 真实提交。
+    const next = snapshot();
+    next.revision = "remote";
+    f.replace(next);
+    await store.getState().loadPermissionSettings(true);
+    expect(store.getState().permissionEditor?.execution.systemRetryDelaySeconds).toBe("5");
+    expect(store.getState().permissionEditor?.execution.qqRetryDelaySeconds).toBe("45");
+    expect(await store.getState().savePermissionSettings(systemScope)).toBe(true);
+    expect(f.save).toHaveBeenCalledTimes(2);
+    expect(f.save.mock.calls[1][0].expectedRevision).toBe("remote");
+    expect(f.save.mock.calls[1][0].policy.execution?.system).toMatchObject({ retryDelayMs: 5000 });
   });
 });

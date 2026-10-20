@@ -1,4 +1,4 @@
-import { cleanup, render, within } from "@testing-library/react";
+import { cleanup, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import type {
   ConversationEventView,
@@ -7,6 +7,7 @@ import type {
 import type { QqMessageFact } from "../../src/shared/contracts/qq-message";
 import { i18n } from "../../src/web/i18n/runtime";
 import { EventRecord } from "../../src/web/screens/conversations/EventRecord";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-10-08T05:00:00Z";
 const conversation: ConversationSummary = {

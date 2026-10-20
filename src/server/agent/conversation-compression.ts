@@ -11,6 +11,7 @@ import type { TextTokenEncoding } from "../llm/text-token-counter";
 import { estimateMessages, validateContextIds } from "../modules/memory-query";
 import { estimateTokens } from "../services/token-estimate";
 import type { LeafAgentRuntime, RunBudget, RunUsage } from "./agent-runtime";
+import type { RetryOrigin } from "./built-in-actions";
 import { measureContextTokens, uniqueSources } from "./context-engine";
 import type { ModelContextBudget } from "./model-port";
 import { SUMMARY_RESULT_JSON_SCHEMA } from "./summary-contract";
@@ -70,6 +71,11 @@ export class ConversationCompressor {
       assertSources: (sources: readonly SourceRef[]) => void;
       usage?: RunUsage;
       budget?: RunBudget;
+      /**
+       * 可信来源声明（可选）：在宿主 ALS 之外跑的水位压缩（QQ 后台队列）必须在这里
+       * 显式声明 qq；网页通道的压缩在会话 ALS 内，可省略由宿主继承。
+       */
+      retryOrigin?: RetryOrigin;
     },
   ) {}
 
@@ -241,6 +247,11 @@ export class ConversationCompressor {
           signal,
           usage: this.options.usage,
           budget: this.options.budget,
+          // 运行时每次额外物理发送会传入冻结的本叶 sources：原样交给宿主守卫复验。
+          assertSources: (sources) => this.options.assertSources(sources),
+          ...(this.options.retryOrigin === undefined
+            ? {}
+            : { retryOrigin: this.options.retryOrigin }),
           messages: prepared.messages,
           validate: (text) => {
             const result = Result.parse(JSON.parse(readJsonBody(text)));

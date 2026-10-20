@@ -1,9 +1,10 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SuperstringApi } from "../../src/web/api";
 import { LocalModelEncodings } from "../../src/web/features/models/LocalModelEncodings";
 import { TokenizerEncodingHelp } from "../../src/web/features/models/TokenizerEncodingHelp";
 import { selectLocale } from "../../src/web/i18n";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(cleanup);
 

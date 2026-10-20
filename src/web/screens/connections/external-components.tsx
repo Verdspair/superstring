@@ -71,6 +71,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
           <Button
             variant="outline"
             size="sm"
+            tooltip={t("hints.extensions.external.manageMcp")}
             className="min-h-8 h-auto gap-1.5 px-3 py-1 text-xs"
             onClick={() => openSettingsRoute("mcp-servers")}
           >
@@ -80,6 +81,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
           <Button
             variant="outline"
             size="sm"
+            tooltip={t("hints.extensions.external.manageSkills")}
             className="min-h-8 h-auto gap-1.5 px-3 py-1 text-xs"
             onClick={() => openSettingsRoute("skill-catalog")}
           >
@@ -89,6 +91,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
           <Button
             variant="outline"
             size="sm"
+            tooltip={t("hints.extensions.external.manageTools")}
             className="min-h-8 h-auto gap-1.5 px-3 py-1 text-xs"
             onClick={() => openSettingsRoute("tool-grants")}
           >
@@ -118,6 +121,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
             <Button
               variant="outline"
               size="sm"
+              tooltip={t("hints.extensions.external.retry")}
               className="min-h-8 h-auto px-2.5 py-1 text-xs"
               onClick={() => mcpRefresh()}
             >
@@ -132,7 +136,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
         )}
 
         {servers.length > 0 && (
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2">
             {servers.map((server) => {
               const serverPrefix = `mcp.${server.config.id}.`;
               const serverTools = mcpTools.filter((tool) => tool.name.startsWith(serverPrefix));
@@ -146,6 +150,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
                     <Button
                       variant="ghost"
                       size="sm"
+                      tooltip={t("hints.extensions.external.openServer")}
                       className="min-h-8 h-auto p-0 font-medium hover:underline text-left justify-start"
                       onClick={() => open({ kind: "mcp", id: server.config.id })}
                     >
@@ -172,6 +177,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
                       <Button
                         variant="outline"
                         size="sm"
+                        tooltip={t("hints.extensions.external.retry")}
                         className="min-h-8 h-auto px-2 py-1 text-xs"
                         onClick={() => toolRefresh()}
                       >
@@ -189,6 +195,11 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
                             key={tool.name}
                             variant="outline"
                             size="sm"
+                            tooltip={
+                              isOff
+                                ? t("hints.extensions.components.openToolOff")
+                                : t("hints.extensions.components.openTool")
+                            }
                             className={`min-h-8 h-auto gap-1.5 px-2 py-1 text-xs font-mono ${
                               isOff ? "opacity-60 bg-muted/50" : ""
                             }`}
@@ -241,6 +252,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
             <Button
               variant="outline"
               size="sm"
+              tooltip={t("hints.extensions.external.retry")}
               className="min-h-8 h-auto px-2.5 py-1 text-xs"
               onClick={() => skillRefresh()}
             >
@@ -268,6 +280,11 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
                   key={skill.name}
                   variant="outline"
                   size="sm"
+                  tooltip={
+                    isOff
+                      ? t("hints.extensions.components.openSkillOff")
+                      : t("hints.extensions.components.openSkill")
+                  }
                   className={`min-h-8 h-auto gap-1.5 px-2.5 py-1 text-xs ${
                     isOff ? "opacity-60 bg-muted/50" : ""
                   }`}

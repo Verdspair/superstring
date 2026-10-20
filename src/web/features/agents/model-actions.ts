@@ -62,16 +62,19 @@ export function createModelActions(
   };
   return {
     recalculateCapacityPreview,
-    refreshModels: async () => {
+    refreshModels: async (prefetchedProviders) => {
+      const api = get().apiClient;
       try {
         // 外部模型 API（0032）：登记过的外部模型名与本地模型并列出现在每个选择器里。取不到外部
         // 清单不是错误——本地列表照旧可用，只是少了几项可选项。
-        const [catalog, providers] = await Promise.all([
-          get().apiClient.listModels(),
-          get()
-            .apiClient.listModelProviders()
-            .catch(() => []),
-        ]);
+        // 若调用方已预取 provider 清单（如 ModelServices 初始读取/主动刷新），直接复用，避免重复 GET /models/providers。
+        const catalogPromise = api.listModels();
+        const providersPromise =
+          prefetchedProviders !== undefined
+            ? Promise.resolve(prefetchedProviders)
+            : api.listModelProviders().catch(() => []);
+        const [catalog, providers] = await Promise.all([catalogPromise, providersPromise]);
+        if (get().apiClient !== api) return;
         const local = [...new Set(catalog.models)];
         const external = providers.flatMap((provider) =>
           provider.models.map((model) => model.name),
@@ -91,6 +94,7 @@ export function createModelActions(
           error: null,
         });
       } catch (error) {
+        if (get().apiClient !== api) return;
         set({
           modelStatus: msg("模型列表加载失败：{0}；仍可保留或手动输入模型 ID。", errorText(error)),
         });

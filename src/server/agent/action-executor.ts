@@ -3,7 +3,7 @@ import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ExecutionMode } from "../../shared/contracts/permissions";
 import type { QqGroupCapability } from "../../shared/contracts/qq-group-config";
 import { type PermissionService, unconfiguredPermissions } from "../permissions/service";
-import type { ActionContext, BuiltInAction } from "./built-in-actions";
+import { type ActionContext, type BuiltInAction, ReadRetryDeadlineError } from "./built-in-actions";
 import { type ActionObservation, uniqueSources } from "./context-engine";
 
 /** 本群能力停用的执行边界。结构类型：Runtime 只装配一个 guard，缺省不传＝行为不变。 */
@@ -116,8 +116,10 @@ export class ActionExecutor {
   ) {
     // An action cannot swallow a failed checkpoint and turn it into a recoverable tool error.
     let authorityFailure: { error: unknown } | undefined;
+    let guardFailure: { error: unknown } | undefined;
     const check = () => {
       if (authorityFailure) throw authorityFailure.error;
+      if (guardFailure) throw guardFailure.error;
       try {
         context.signal.throwIfAborted();
         options.assertCurrent?.();
@@ -130,17 +132,86 @@ export class ActionExecutor {
     check();
     // 引用按动作开始时的纪元签发：飞行期间 off→on，未提交的旧结果也不得按新纪元复活。
     const capSources = this.guard?.actionSources(action, context.owner) ?? [];
-    const executeContext = { ...context, assertAuthority: check };
+    // 来源纪元复验：每次复试前与结果提交前 live 执行；失败缓存并经 check() 硬传播，
+    // 不被适配层折成工具信封。
+    const assertSources = () => {
+      if (guardFailure) throw guardFailure.error;
+      try {
+        this.guard?.assertSources(context.owner, capSources);
+        context.assertSources?.(capSources);
+      } catch (error) {
+        guardFailure = { error };
+        throw error;
+      }
+    };
+    const executeContext: ActionContext = {
+      ...context,
+      assertAuthority: check,
+      runReadWithRetry: async (input) => {
+        if (action.description.effect !== "read" || context.retryOrigin !== "system")
+          return input.operation(context.signal, input.timeoutMs);
+        // 策略快照由属主在 run 起点复制一次（Runtime / TaskService 领取）；本循环只消费，不再读配置。
+        const policy = context.retryPolicy;
+        if (!policy || policy.maxAttempts <= 1)
+          return input.operation(context.signal, input.timeoutMs);
+        const deadline = Date.now() + input.timeoutMs;
+        const controller = new AbortController();
+        const timer = setTimeout(
+          () => controller.abort(new ReadRetryDeadlineError()),
+          input.timeoutMs,
+        );
+        const signal = AbortSignal.any([context.signal, controller.signal]);
+        const attempt = (remainingMs: number) => {
+          signal.throwIfAborted();
+          check();
+          return input.operation(signal, remainingMs);
+        };
+        try {
+          for (let number = 1; ; number += 1) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) throw new ReadRetryDeadlineError();
+            try {
+              return await attempt(remaining);
+            } catch (error) {
+              if (context.signal.aborted) context.signal.throwIfAborted();
+              if (signal.aborted) throw signal.reason ?? new ReadRetryDeadlineError();
+              if (number >= policy.maxAttempts || !input.isRetryableRejection(error)) throw error;
+              const waitMs = Math.min(policy.retryDelayMs, deadline - Date.now());
+              if (waitMs <= 0) throw new ReadRetryDeadlineError();
+              await new Promise<void>((resolve, reject) => {
+                const finish = (failure?: unknown) => {
+                  clearTimeout(wait);
+                  signal.removeEventListener("abort", onAbort);
+                  failure === undefined ? resolve() : reject(failure);
+                };
+                const onAbort = () => finish(signal.reason ?? new ReadRetryDeadlineError());
+                const wait = setTimeout(() => finish(), waitMs);
+                signal.addEventListener("abort", onAbort, { once: true });
+                if (signal.aborted) onAbort();
+              });
+              signal.throwIfAborted();
+              check();
+              // 复试前 live 复验来源纪元：期间 off→on（停用纪元变化）即硬失败，不复活旧结果。
+              assertSources();
+            }
+          }
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+    };
     let result: Awaited<ReturnType<BuiltInAction["execute"]>>;
     try {
       result = await action.execute(arguments_, executeContext);
     } catch (error) {
       check();
+      // 总时限守卫失败是硬失败：不得经工具错误映射变成可恢复的工具信封。
+      if (error instanceof ReadRetryDeadlineError) throw error;
       throw options.mapToolError ? options.mapToolError(error) : error;
     }
     check();
     // 捕获纪元的引用失效是执行边界：硬失败，不随工具错误映射。
-    this.guard?.assertSources(context.owner, capSources);
+    assertSources();
     const sources = uniqueSources([
       ...result.sources,
       ...(action.permission ? [this.permissions.source(action.permission)] : []),
@@ -149,7 +220,7 @@ export class ActionExecutor {
     if (action.description.effect === "read" && action.fitResult) {
       const value = await action.fitResult(result.value, sources, arguments_, executeContext);
       check();
-      this.guard?.assertSources(context.owner, capSources);
+      assertSources();
       return { ...result, value, sources };
     }
     return { ...result, sources };

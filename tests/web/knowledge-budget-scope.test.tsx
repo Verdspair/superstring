@@ -1,23 +1,37 @@
 // 全局知识库预算的归属专测（授权搬迁后）：预算编辑器已移到统一上下文分配页的「资料读取」用途，
 // 旧知识查询页只保留只读摘要与跳转。保存/丢弃/CAS 冲突保稿仍按同一 knowledgeModelEditor 真源，
 // 与模型/自动整理、资料设置、读取规则各自持稿互不夹带；刷新保存基线后按新修订重试。
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderView,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   KnowledgeSettings,
   KnowledgeSettingsUpdate,
 } from "../../src/shared/contracts/knowledge";
 import { ApiError, type api } from "../../src/web/api";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import {
   resetContextAllocationTarget,
   setContextAllocationTarget,
 } from "../../src/web/features/context-allocation";
 import { knowledgeModelDirty } from "../../src/web/features/knowledge/types";
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
-import { ContextAllocationWorkspace } from "../../src/web/screens/connections/ContextAllocationWorkspace";
+import { KnowledgeToolSettings } from "../../src/web/screens/assistants/ResourceRules";
+import { ModelPurposes } from "../../src/web/screens/environment/ModelPurposes";
 import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { B, setupLibrary } from "./helpers/library-fixture";
+
+/** 显式 tooltip（保存按钮/字段帮助）必须挂在真实 DesignSystemProvider 下渲染。 */
+const render = (...[ui, options]: Parameters<typeof renderView>) =>
+  renderView(ui, { wrapper: DesignSystemProvider, ...options });
 
 const zhText = zh as Record<string, string>;
 /** 本地键可能晚于 locales 文件落地：缺失时 i18next 原样返回 key。 */
@@ -48,7 +62,7 @@ function settingsMocks(overrides: Partial<typeof api> = {}) {
 // 搬迁后的统一页入口：进入「资料读取」用途后渲染统一工作区，预算编辑只在这里发生。
 async function renderAllocationReading() {
   setContextAllocationTarget({ purpose: "reading", agentId: B });
-  await act(async () => render(<ContextAllocationWorkspace active={true} />));
+  await act(async () => render(<ModelPurposes active={true} />));
 }
 const budgetInput = () =>
   screen.getByTestId("reading-knowledge-global-budget-input") as HTMLInputElement;
@@ -95,7 +109,8 @@ describe("知识查询页的全局默认预算", () => {
     expect(client.saveAgentKnowledgeRead).not.toHaveBeenCalled();
     expect(client.updateAgent).not.toHaveBeenCalled();
     expect(client.updatePolicy).not.toHaveBeenCalled();
-    expect(store.getState().knowledgeReadEditor?.globalBudget).toBe(4096);
+    // 本页只编辑共享知识基线；读取编辑器未加载时不隐式创建或改写读取草稿。
+    expect(store.getState().knowledgeReadEditor).toBeNull();
     // 再改预算草稿：模型页保存（scope model）只提交模型，不带预算草稿。
     fireEvent.change(budgetInput(), { target: { value: "8192" } });
     expect(await store.getState().saveKnowledgeModel("model")).toBe(true);
@@ -127,7 +142,12 @@ describe("知识查询页的全局默认预算", () => {
     fireEvent.change(budgetInput(), { target: { value: "3000" } });
     await act(async () => fireEvent.click(budgetSave()));
     // 冲突：草稿保留，提示就地可见，基线未被推进。
-    expect(screen.getByRole("alert").textContent).toContain("冲突后请核对最新值再保存");
+    // 宿主级 alert 与分区提示可能并存（同一错误文案），按内容在全局预算冲突文案上断言。
+    expect(
+      screen
+        .getAllByRole("alert")
+        .some((node) => node.textContent?.includes("冲突后请核对最新值再保存")),
+    ).toBe(true);
     expect(budgetInput().value).toBe("3000");
     expect(knowledgeModelDirty(store.getState().knowledgeModelEditor, "budget")).toBe(true);
     expect(store.getState().knowledgeSettings?.revision).toBe(1);
@@ -319,5 +339,35 @@ describe("预算分组的独立丢弃与资料面板只读入口", () => {
     expect(store.getState().settingsRoute).toBe("knowledge-tools");
     expect(store.getState().knowledgeEditor?.kind).toBe("settings");
     expect(client.saveKnowledgeSettings).not.toHaveBeenCalled();
+  });
+
+  it("知识查询页预算卡只读摘要：不再提供保存/放弃，直达资料读取不隐式保存", async () => {
+    const client = setupLibrary(settingsMocks());
+    await act(async () => render(<KnowledgeToolSettings />));
+    // 全局预算来自异步读取：先等真实预算卡落地，再核对只读摘要与跳转。
+    await act(async () => {
+      await waitFor(() => expect(screen.getByText(/全局每轮知识工具结果预算/)).toBeTruthy());
+    });
+    // 远端保存/放弃按钮已移除；已存上限只读显示。
+    expect(
+      screen.queryByRole("button", { name: label("library.save.knowledge.budget") }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: label("library.discard.knowledge.budget") }),
+    ).toBeNull();
+    const summary = screen.getByText(/全局每轮知识工具结果预算/).parentElement;
+    if (!(summary instanceof HTMLElement)) throw new Error("Missing budget summary");
+    expect(summary.textContent).toContain("2048 Bytes");
+    // 精准直达「资料读取」：落点仍是 context-allocation 用途宿主，不隐式保存，草稿不动。
+    const budgetCard = summary.closest('[data-slot="card"]');
+    if (!(budgetCard instanceof HTMLElement)) throw new Error("Missing global budget card");
+    fireEvent.click(
+      within(budgetCard).getByRole("button", {
+        name: label("schemes.allocation.goToCentralAllocation"),
+      }),
+    );
+    await waitFor(() => expect(store.getState().settingsRoute).toBe("context-allocation"));
+    expect(client.saveKnowledgeSettings).not.toHaveBeenCalled();
+    expect(store.getState().knowledgeModelEditor?.contextBudget).toBe(2048);
   });
 });

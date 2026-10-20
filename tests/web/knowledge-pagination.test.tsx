@@ -1,12 +1,13 @@
 // 资料列表的服务端分页专测：过滤进 store、键集翻页、迟到/被顶替响应不写回、
 // 失败保列表可重试、翻页后批量快照只含显式勾选，以及两个跨页入口的 outline/default 层级。
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { KnowledgeDocumentsPage } from "../../src/shared/contracts/knowledge";
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
 import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { A, document as base, D, setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const zhText = zh as Record<string, string>;
 /** 本地键可能晚于 locales 文件落地：缺失时 i18next 原样返回 key。 */

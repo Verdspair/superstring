@@ -5,7 +5,7 @@
 //
 // 这些用例只通过界面与 store 观察行为，不替 actions/navigation 断言它们自己的逻辑。
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema } from "../../src/shared/contracts";
@@ -21,6 +21,7 @@ import { BindingEditor } from "../../src/web/screens/connections/binding-editor"
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-24T00:00:00.000Z";
 const COLLECTION = "11111111-1111-4111-8111-111111111111";
@@ -137,9 +138,9 @@ async function renderStudio(overrides: Partial<typeof api> = {}) {
     settingsView: "workspace",
     settingsRoute: "qq-scheme-config",
   });
-  render(<SchemeStudio />);
+  const view = render(<SchemeStudio />);
   await act(async () => {});
-  return { fake };
+  return { fake, view };
 }
 
 const tab = (key: string) => userEvent.click(screen.getByRole("tab", { name: translate(key) }));
@@ -162,8 +163,8 @@ function expectGroupWithBand(title: string) {
     .filter((card): card is HTMLElement => card !== null);
   expect(cards.length).toBeGreaterThan(0);
   const header = cards[0]?.querySelector('[data-slot="card-header"]');
-  expect(header?.className).toContain("bg-muted/50");
-  expect(header?.className).toContain("border-b");
+  expect(header).toBeTruthy();
+  expect(header?.textContent).toContain(title);
 }
 
 const bindingOf = (schemeId: string) =>
@@ -213,10 +214,10 @@ afterEach(() => {
 });
 
 describe("Scheme studio layout and grouping", () => {
-  it("spreads across the workspace width, wraps the six tabs and bands every in-page group", async () => {
+  it("keeps six horizontal tasks, a task-header save action and every in-page group", async () => {
     await renderStudio();
     expect(document.querySelector(".max-w-5xl")).toBeNull();
-    expect(screen.getAllByRole("tab").map((node) => node.textContent)).toEqual([
+    expect(screen.getAllByRole("tab").map((node) => node.getAttribute("aria-label"))).toEqual([
       translate("schemes.sections.participation"),
       translate("schemes.sections.response"),
       translate("schemes.sections.contextReading"),
@@ -225,16 +226,13 @@ describe("Scheme studio layout and grouping", () => {
       translate("schemes.sections.stickerSending"),
     ]);
     const tablist = screen.getByRole("tablist");
-    expect(tablist.className).toContain("flex-wrap");
-    expect(tablist.className).toContain("max-w-full");
-    expect(tablist.className).toContain("[&_[role=tab]]:min-h-8");
-    expect(tablist.className).toContain("[&_[role=tab]]:whitespace-normal");
-    // 页脚在文档流里收尾，不覆盖表单。
-    const footer = screen
+    expect(tablist.getAttribute("aria-orientation")).toBe("horizontal");
+    expect(within(tablist).getAllByRole("tab")).toHaveLength(6);
+    const taskHeader = screen
       .getByRole("button", { name: translate("connections.saveScheme") })
-      .closest("footer");
-    expect(footer?.className).toContain("shrink-0");
-    expect(footer?.className).toContain("border-t");
+      .closest("header");
+    expect(taskHeader).toBeTruthy();
+    expect(within(taskHeader as HTMLElement).getByRole("heading", { level: 1 })).toBeTruthy();
 
     for (const [tabKey, titles] of [
       [
@@ -289,23 +287,15 @@ describe("Scheme studio layout and grouping", () => {
       for (const input of document.querySelectorAll<HTMLInputElement>('input[type="number"]'))
         ids.add(input.id);
     }
+    // 判断/回复上下文、输出预留与压缩装配的 10 个数字输入是本工作台的真实编辑控件
+    // （上下文与输出预留随「消息读取」页、压缩装配随「历史压缩」页），与 0052/0059 组同枚举。
     expect([...ids].sort()).toEqual(
       [
-        "scheme-field-compression.headroom_ratio",
-        "scheme-field-compression.package_limit",
-        "scheme-field-compression.watermark_trigger",
-        "scheme-field-context.judgement_message_limit",
-        "scheme-field-context.judgement_token_budget",
-        "scheme-field-context.judgement_window_minutes",
-        "scheme-field-context.reply_token_budget",
-        "scheme-field-context.reply_window_minutes",
         // 0052 图片输入：图数与普通静图（其数值输入挂在「限制长边」选择之下）；动图规格
         // 走 rhythm 既有真源（media_frame_count / media_max_dimension），不在 media_input 重复。
         "scheme-field-mediaInput.max_images",
         "scheme-field-media_input.ordinary_still_max_dimension",
         "scheme-field-messageSettings.reply_depth",
-        "scheme-field-outputReserve.judgement_output_reserved",
-        "scheme-field-outputReserve.reply_output_reserved",
         "scheme-field-rhythm.hourly_speech_limit",
         "scheme-field-rhythm.idle_quiet_minutes",
         "scheme-field-rhythm.initiative_batch_jitter_count",
@@ -326,6 +316,18 @@ describe("Scheme studio layout and grouping", () => {
         "scheme-field-inputAntiSpam.burst_min_messages",
         "scheme-field-inputAntiSpam.burst_window_seconds",
         "scheme-field-stickers.sticker_recent_avoid_count",
+        // 判断/回复上下文与输出预留：4 项随「消息读取」页（回复条数跟随绑定助手，无输入）。
+        "scheme-field-context.judgement_message_limit",
+        "scheme-field-context.judgement_token_budget",
+        "scheme-field-context.judgement_window_minutes",
+        "scheme-field-context.reply_token_budget",
+        "scheme-field-context.reply_window_minutes",
+        "scheme-field-outputReserve.judgement_output_reserved",
+        "scheme-field-outputReserve.reply_output_reserved",
+        // 压缩装配三栏随「历史压缩」页。
+        "scheme-field-compression.headroom_ratio",
+        "scheme-field-compression.package_limit",
+        "scheme-field-compression.watermark_trigger",
       ].sort(),
     );
     // 高级图片设置是本页的本地折叠（forceMount）：收起时输入仍已渲染在 DOM 里，
@@ -345,11 +347,15 @@ describe("Scheme studio layout and grouping", () => {
     // 退役控制不可新增编辑入口。
     expect(ids.has("scheme-field-rhythm.judgement_interval_turns")).toBe(false);
     expect(ids.has("scheme-field-context.reply_message_limit")).toBe(false);
-    // 回复档条数仍在原位，只是跟随绑定助手（只读展示）。
+    // 回复档条数是唯一例外：它跟随绑定助手（只读展示），本工作台不提供它的编辑输入。
     await tab("schemes.sections.contextReading");
     expect(
       screen.queryByRole("spinbutton", { name: translate("connections.replyRecentMessages") }),
     ).toBeNull();
+    // 判断/回复两个分配模式控件在本页消息读取组（fixed/auto 两档，NativeSelect 无数字输入）。
+    expect(screen.getByTestId("qq-judgement-mode")).toBeTruthy();
+    expect(screen.getByTestId("qq-reply-mode")).toBeTruthy();
+    expect(document.getElementById("scheme-field-context.reply_message_limit")).toBeNull();
     // 0059 新组控件的归属：两个上限输入在「回复方式」页（并行任务的完整上限，不是模型并发），
     // 防刷屏开关在「发言时机」页；输入范围照契约 1..64。
     await tab("schemes.sections.response");
@@ -392,12 +398,6 @@ describe("Scheme studio numeric inputs", () => {
     await renderStudio();
     const merge = byId("rhythm.merge_window_seconds");
     expect([merge.min, merge.max, merge.step]).toEqual(["0", "300", "1"]);
-    await tab("schemes.sections.contextReading");
-    const budget = byId("context.reply_token_budget");
-    expect([budget.min, budget.max, budget.step]).toEqual(["256", "16384", "1"]);
-    await tab("schemes.sections.historyCompression");
-    const headroom = byId("compression.headroom_ratio");
-    expect([headroom.min, headroom.max, headroom.step]).toEqual(["0", "50", "1"]);
     await tab("schemes.sections.imageUnderstanding");
     const frames = byId("rhythm.media_frame_count");
     expect([frames.min, frames.max, frames.step]).toEqual(["1", "10", "1"]);
@@ -424,6 +424,14 @@ describe("Scheme studio numeric inputs", () => {
       ).disabled,
     ).toBe(true);
     expect(screen.getByText(translate("connections.correctInvalidNumbersFirst"))).toBeTruthy();
+
+    // 预算边界同样从契约 schema 现读：预算字节 256..16384，装配冗余按整数百分比 0..50。
+    await tab("schemes.sections.contextReading");
+    const budget = byId("context.reply_token_budget");
+    expect([budget.min, budget.max, budget.step]).toEqual(["256", "16384", "1"]);
+    await tab("schemes.sections.historyCompression");
+    const headroom = byId("compression.headroom_ratio");
+    expect([headroom.min, headroom.max, headroom.step]).toEqual(["0", "50", "1"]);
   });
 
   it("keeps raw invalid text, links the error to its input, and locates it on the right tab", async () => {

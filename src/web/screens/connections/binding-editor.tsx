@@ -101,7 +101,7 @@ function Assignment({
   );
   return (
     <div className="grid gap-5 sm:grid-cols-2">
-      <Field label="connections.assistant">
+      <Field label="connections.assistant" tooltip={t("hints.fieldExtra.bindingAgent")}>
         <NativeSelect
           value={agentId}
           disabled={qqAccessSaving}
@@ -115,7 +115,7 @@ function Assignment({
           ))}
         </NativeSelect>
       </Field>
-      <Field label="connections.schemes">
+      <Field label="connections.schemes" tooltip={t("hints.fieldExtra.bindingScheme")}>
         <NativeSelect
           value={schemeId}
           disabled={qqAccessSaving}
@@ -331,14 +331,23 @@ export function BindingEditor({
         }}
         onCloseAutoFocus={onCloseAutoFocus}
       >
-        <SheetHeader className="border-b pb-6">
-          <SheetTitle>
-            {t(conversation.kind === "group" ? "connections.group" : "connections.privateChat")}{" "}
-            {conversation.peer_id}
-          </SheetTitle>
-          <SheetDescription>{t("connections.conversationBindingAndOverrides")}</SheetDescription>
+        <SheetHeader className="border-b px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary font-mono text-sm font-semibold">
+              {conversation.kind === "group" ? "Q" : "P"}
+            </div>
+            <div className="space-y-0.5 min-w-0">
+              <SheetTitle className="text-lg font-semibold tracking-tight text-foreground">
+                {t(conversation.kind === "group" ? "connections.group" : "connections.privateChat")}{" "}
+                {conversation.peer_id}
+              </SheetTitle>
+              <SheetDescription className="text-xs text-muted-foreground leading-relaxed">
+                {t("connections.conversationBindingAndOverrides")}
+              </SheetDescription>
+            </div>
+          </div>
         </SheetHeader>
-        <div className="space-y-6 p-6">
+        <div className="min-w-0 space-y-6 p-6">
           {state.error && (
             <p role="alert" className="text-sm text-destructive">
               {translateNotice(state.error)}
@@ -361,7 +370,7 @@ export function BindingEditor({
               }
             />
             {/* 编辑方案直达的是共享方案本体：文案先说明会影响使用它的会话。 */}
-            <div className="space-y-2">
+            <div className="space-y-1.5 pt-1">
               <p className="text-xs text-muted-foreground">
                 {t("connections.aSharedSchemeMayAffectSeveralConversationsReviewIts")}
               </p>
@@ -369,6 +378,7 @@ export function BindingEditor({
                 <Button
                   variant="outline"
                   disabled={saving || state.qqSchemeSaving || !choice.schemeId}
+                  tooltip={t("hints.qq.editSharedScheme")}
                   onClick={() => state.requestQqSchemeNavigation(choice.schemeId, "settings")}
                 >
                   {t("schemes.studio.editScheme")}
@@ -377,6 +387,7 @@ export function BindingEditor({
                   <Button
                     variant="outline"
                     disabled={saving || state.qqGroupConfigSaving}
+                    tooltip={t("hints.qq.openGroupConfig")}
                     onClick={() => state.openQqGroupConfig(binding.id)}
                   >
                     {t("schemes.qq.groupConfig.controls.configure")}
@@ -384,7 +395,7 @@ export function BindingEditor({
                 )}
               </div>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
               <Button
                 disabled={
                   saving ||
@@ -395,7 +406,9 @@ export function BindingEditor({
                   hasInvalidLimits ||
                   hasInvalidAntiSpam
                 }
+                tooltip={t("hints.qq.saveBinding")}
                 onClick={() => void save()}
+                className="h-8 rounded-lg"
               >
                 {t(binding ? "connections.saveBinding" : "connections.bind")}
               </Button>
@@ -403,9 +416,11 @@ export function BindingEditor({
                 <Button
                   variant="outline"
                   disabled={saving}
+                  tooltip={t("hints.qq.togglePause")}
                   onClick={() =>
                     void state.updateQqBindingRow(binding, { paused: !binding.paused })
                   }
+                  className="h-8 rounded-lg"
                 >
                   {t(binding.paused ? "connections.resume" : "connections.pauseSpeech")}
                 </Button>
@@ -420,7 +435,9 @@ export function BindingEditor({
                     state.qqMemoryBatchSaving ||
                     state.qqBindingsLoading
                   }
+                  tooltip={t("hints.qq.refreshBaseline")}
                   onClick={() => void state.loadQqBindingDirectory(binding.id)}
+                  className="h-8 rounded-lg"
                 >
                   {t("capabilities.resources.refreshBaseline")}
                 </Button>
@@ -438,47 +455,65 @@ export function BindingEditor({
                 title={t("schemes.bindings.triggers.title")}
                 description="schemes.bindings.triggers.hint"
               >
-                {Object.entries(TRIGGER_LABELS).map(([key, label]) => {
-                  const trigger = key as keyof typeof TRIGGER_LABELS;
-                  const value = binding.triggers[trigger];
-                  return (
-                    <Field key={key} label={label}>
-                      <NativeSelect
-                        aria-label={t("connections.switchForValue", { "0": t(label) })}
-                        disabled={saving}
-                        value={value === null ? "inherit" : value ? "on" : "off"}
-                        onChange={(e) => {
-                          const val = e.target.value === "inherit" ? null : e.target.value === "on";
-                          let nextTriggers = {
-                            ...binding.triggers,
-                            [key]: val,
-                          };
-                          if (key === "follow_up" && val === true) {
-                            nextTriggers = { ...nextTriggers, follow_up: true, chiming_in: false };
-                          } else if (key === "chiming_in" && val === true) {
-                            nextTriggers = { ...nextTriggers, chiming_in: true, follow_up: false };
-                          } else if (
-                            (key === "follow_up" || key === "chiming_in") &&
-                            val === null
-                          ) {
-                            nextTriggers = { ...nextTriggers, follow_up: null, chiming_in: null };
-                          }
-                          if (nextTriggers.follow_up === true && nextTriggers.chiming_in === true) {
-                            nextTriggers = { ...nextTriggers, follow_up: false, chiming_in: true };
-                          }
-                          void state.updateQqBindingRow(binding, {
-                            triggers: nextTriggers,
-                          });
-                        }}
-                      >
-                        <option value="inherit">{t("connections.followTheScheme")}</option>
-                        <option value="on">{t("connections.on")}</option>
-                        <option value="off">{t("connections.off")}</option>
-                      </NativeSelect>
-                    </Field>
-                  );
-                })}
-                <p className="mt-3 text-xs text-muted-foreground">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {Object.entries(TRIGGER_LABELS).map(([key, label]) => {
+                    const trigger = key as keyof typeof TRIGGER_LABELS;
+                    const value = binding.triggers[trigger];
+                    return (
+                      <Field key={key} label={label} tooltip={t(`strict.qq.trigger.${key}`)}>
+                        <NativeSelect
+                          aria-label={t("connections.switchForValue", { "0": t(label) })}
+                          disabled={saving}
+                          value={value === null ? "inherit" : value ? "on" : "off"}
+                          onChange={(e) => {
+                            const val =
+                              e.target.value === "inherit" ? null : e.target.value === "on";
+                            let nextTriggers = {
+                              ...binding.triggers,
+                              [key]: val,
+                            };
+                            if (key === "follow_up" && val === true) {
+                              nextTriggers = {
+                                ...nextTriggers,
+                                follow_up: true,
+                                chiming_in: false,
+                              };
+                            } else if (key === "chiming_in" && val === true) {
+                              nextTriggers = {
+                                ...nextTriggers,
+                                chiming_in: true,
+                                follow_up: false,
+                              };
+                            } else if (
+                              (key === "follow_up" || key === "chiming_in") &&
+                              val === null
+                            ) {
+                              nextTriggers = { ...nextTriggers, follow_up: null, chiming_in: null };
+                            }
+                            if (
+                              nextTriggers.follow_up === true &&
+                              nextTriggers.chiming_in === true
+                            ) {
+                              nextTriggers = {
+                                ...nextTriggers,
+                                follow_up: false,
+                                chiming_in: true,
+                              };
+                            }
+                            void state.updateQqBindingRow(binding, {
+                              triggers: nextTriggers,
+                            });
+                          }}
+                        >
+                          <option value="inherit">{t("connections.followTheScheme")}</option>
+                          <option value="on">{t("connections.on")}</option>
+                          <option value="off">{t("connections.off")}</option>
+                        </NativeSelect>
+                      </Field>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground">
                   {t("connections.triggersMutualExclusionHint")}
                 </p>
               </SchemeFieldCard>
@@ -486,10 +521,11 @@ export function BindingEditor({
                 title={t("connections.taskLimitsTitle")}
                 description="schemes.bindings.taskLimits.hint"
               >
-                <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                <div className="grid gap-4 sm:grid-cols-2">
                   <Field
                     label="connections.mentionTaskLimit"
                     info="connections.mentionTaskLimitBindingHint"
+                    tooltip={t("connections.mentionTaskLimitBindingHint")}
                   >
                     <Input
                       type="number"
@@ -544,6 +580,7 @@ export function BindingEditor({
                   <Field
                     label="connections.ordinaryTaskLimit"
                     info="connections.ordinaryTaskLimitBindingHint"
+                    tooltip={t("connections.ordinaryTaskLimitBindingHint")}
                   >
                     <Input
                       type="number"
@@ -601,7 +638,7 @@ export function BindingEditor({
                 title={t("connections.inputAntiSpam")}
                 description="schemes.bindings.inputAntiSpam.hint"
               >
-                <Field label="connections.inputAntiSpam">
+                <Field label="connections.inputAntiSpam" tooltip={t("hints.qqBinding.antiSpam")}>
                   <NativeSelect
                     aria-label={t("connections.inputAntiSpam")}
                     disabled={saving}
@@ -628,7 +665,7 @@ export function BindingEditor({
                     <option value="off">{t("connections.off")}</option>
                   </NativeSelect>
                 </Field>
-                <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
+                <div className="grid gap-4 pl-3 border-l-2 border-muted/60 sm:grid-cols-2 sm:pl-4">
                   {(
                     [
                       ["burst_min_messages", "inputAntiSpamBurstMinMessages", 2, 20],
@@ -642,6 +679,7 @@ export function BindingEditor({
                         key={field}
                         label={`connections.${labelKey}`}
                         info={`connections.${labelKey}Hint`}
+                        tooltip={t(`connections.${labelKey}Hint`)}
                       >
                         <Input
                           type="number"
@@ -732,7 +770,10 @@ export function BindingEditor({
                               ({t("connections.scopeHint")})
                             </span>
                           </div>
-                          <Field label="connections.attentionMode">
+                          <Field
+                            label="connections.attentionMode"
+                            tooltip={t("hints.qqBinding.attention")}
+                          >
                             <NativeSelect
                               value={attentionValue.mode}
                               disabled={saving}
@@ -751,57 +792,64 @@ export function BindingEditor({
                               <option value="hard">{t("connections.onlyReplyToTheList")}</option>
                             </NativeSelect>
                           </Field>
-                          <Field
-                            label="connections.attentionList"
-                            info="connections.softPriorityHint"
-                          >
-                            <Input
+                          <div className="space-y-4 pl-3 border-l-2 border-muted/60 sm:pl-4">
+                            <Field
+                              label="connections.attentionList"
+                              info="connections.softPriorityHint"
+                              tooltip={t("connections.softPriorityHint")}
+                            >
+                              <Input
+                                value={attentionValue.members}
+                                disabled={saving || attentionValue.mode === "off"}
+                                placeholder={t("connections.qqNumbersSeparatedByCommasOrSpaces")}
+                                onChange={(e) =>
+                                  setAttention((old) => ({
+                                    ...old,
+                                    [binding.id]: { ...attentionValue, members: e.target.value },
+                                  }))
+                                }
+                              />
+                            </Field>
+                            <AdminMembersEditor
                               value={attentionValue.members}
                               disabled={saving || attentionValue.mode === "off"}
-                              placeholder={t("connections.qqNumbersSeparatedByCommasOrSpaces")}
-                              onChange={(e) =>
+                              onChange={(next) =>
                                 setAttention((old) => ({
                                   ...old,
-                                  [binding.id]: { ...attentionValue, members: e.target.value },
+                                  [binding.id]: { ...attentionValue, members: next },
                                 }))
                               }
                             />
-                          </Field>
-                          <AdminMembersEditor
-                            value={attentionValue.members}
-                            disabled={saving || attentionValue.mode === "off"}
-                            onChange={(next) =>
-                              setAttention((old) => ({
-                                ...old,
-                                [binding.id]: { ...attentionValue, members: next },
-                              }))
-                            }
-                          />
-                          <Button
-                            disabled={!canSaveAttention}
-                            onClick={() =>
-                              void state
-                                .updateQqBindingRow(attentionValue.source, {
-                                  attention:
-                                    attentionValue.mode === "off"
-                                      ? { mode: "off", members: [] }
-                                      : {
-                                          mode: attentionValue.mode,
-                                          members: parsedAttention.validCanonicalMembers,
-                                        },
-                                })
-                                .then((ok) => {
-                                  if (ok)
-                                    setAttention((old) => {
-                                      const next = { ...old };
-                                      delete next[binding.id];
-                                      return next;
-                                    });
-                                })
-                            }
-                          >
-                            {t("connections.saveList")}
-                          </Button>
+                          </div>
+                          <div className="border-t border-border/60 pt-3 flex items-center justify-start">
+                            <Button
+                              disabled={!canSaveAttention}
+                              tooltip={t("hints.qq.saveAttentionList")}
+                              className="h-8 rounded-lg"
+                              onClick={() =>
+                                void state
+                                  .updateQqBindingRow(attentionValue.source, {
+                                    attention:
+                                      attentionValue.mode === "off"
+                                        ? { mode: "off", members: [] }
+                                        : {
+                                            mode: attentionValue.mode,
+                                            members: parsedAttention.validCanonicalMembers,
+                                          },
+                                  })
+                                  .then((ok) => {
+                                    if (ok)
+                                      setAttention((old) => {
+                                        const next = { ...old };
+                                        delete next[binding.id];
+                                        return next;
+                                      });
+                                  })
+                              }
+                            >
+                              {t("connections.saveList")}
+                            </Button>
+                          </div>
                         </>
                       );
                     })()}
@@ -817,15 +865,19 @@ export function BindingEditor({
                   disabled={saving}
                   onChanged={() => void state.loadQqBindingDirectory()}
                 />
-                <Button
-                  variant="link"
-                  onClick={() => {
-                    onClose();
-                    state.openSettingsRoute("long-memory");
-                  }}
-                >
-                  {t("connections.goToLongTermMemory")}
-                </Button>
+                <div className="border-t pt-2 flex items-center justify-start">
+                  <Button
+                    variant="link"
+                    className="h-auto p-0 text-xs"
+                    tooltip={t("hints.qq.openLongMemory")}
+                    onClick={() => {
+                      onClose();
+                      state.openSettingsRoute("long-memory");
+                    }}
+                  >
+                    {t("connections.goToLongTermMemory")}
+                  </Button>
+                </div>
               </SchemeFieldCard>
             </>
           )}
@@ -836,42 +888,57 @@ export function BindingEditor({
                 if (!open) setPreview(null);
               }}
             >
-              <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+              <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg rounded-xl">
                 <DialogHeader>
-                  <DialogTitle>
+                  <DialogTitle className="text-base font-semibold tracking-tight">
                     {t("schemes.qq.groupConfig.scheme.confirmTitle", {
                       "0": preview.schemeName,
                     })}
                   </DialogTitle>
-                  <DialogDescription>
+                  <DialogDescription className="text-xs text-muted-foreground leading-relaxed">
                     {t("schemes.qq.groupConfig.scheme.confirmBody")}
                   </DialogDescription>
                 </DialogHeader>
-                <ul className="space-y-2 text-sm">
+                <ul className="divide-y divide-border/60 rounded-lg border border-border/70 bg-muted/20 p-2 text-sm">
                   {preview.rows.map((row) => (
                     <li
                       key={row.key}
-                      className="flex flex-wrap items-center justify-between gap-2 border-b pb-1.5 last:border-b-0"
+                      className="flex flex-wrap items-center justify-between gap-2 py-2 px-1 text-xs"
                     >
                       <span className="text-muted-foreground">{t(row.label)}</span>
-                      <span className="font-mono text-xs">
+                      <span className="font-mono font-medium text-foreground">
                         {row.current} → {row.next}
                       </span>
                     </li>
                   ))}
                 </ul>
-                <DialogFooter>
-                  <Button variant="outline" onClick={() => setPreview(null)}>
+                <DialogFooter className="gap-2 sm:gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 rounded-lg"
+                    tooltip={t("hints.qq.previewCancel")}
+                    onClick={() => setPreview(null)}
+                  >
                     {t("connections.cancel")}
                   </Button>
                   <Button
                     variant="outline"
+                    size="sm"
+                    className="h-8 rounded-lg"
                     disabled={saving}
+                    tooltip={t("hints.qq.schemeChangeReset")}
                     onClick={() => confirmSchemeChange("reset")}
                   >
                     {t("schemes.qq.groupConfig.scheme.resetLabel")}
                   </Button>
-                  <Button disabled={saving} onClick={() => confirmSchemeChange("keep")}>
+                  <Button
+                    size="sm"
+                    className="h-8 rounded-lg"
+                    disabled={saving}
+                    tooltip={t("hints.qq.schemeChangeKeep")}
+                    onClick={() => confirmSchemeChange("keep")}
+                  >
                     {t("schemes.qq.groupConfig.scheme.keepLabel")}
                   </Button>
                 </DialogFooter>

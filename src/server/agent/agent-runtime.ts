@@ -43,7 +43,12 @@ import type {
   AgentSpec,
   LeafAgentSpec,
 } from "./agent-specs";
-import type { ActionContext, BuiltInAction } from "./built-in-actions";
+import type {
+  ActionContext,
+  BuiltInAction,
+  ReadRetryOptions,
+  RetryOrigin,
+} from "./built-in-actions";
 import { createCodeMode } from "./code-mode";
 import type { CodeRunner, CodeRunnerLimits } from "./code-runner";
 import {
@@ -83,6 +88,10 @@ export interface LeafInput {
   workClass?: ModelWorkClass;
   signal?: AbortSignal;
   sources?: readonly SourceRef[];
+  /** Recheck leaf evidence before each additional physical model send when source-bound. */
+  assertSources?: (sources: readonly SourceRef[]) => void;
+  /** Trusted background/standalone owner provenance; nested calls inherit the ALS origin. */
+  retryOrigin?: RetryOrigin;
   /** 与父 run 共用同一本账（可选）：叶子花的钱算进整棵树。 */
   usage?: RunUsage;
   budget?: RunBudget;
@@ -155,6 +164,8 @@ export interface TargetHooks {
 }
 export interface ConversationInput {
   owner: RunOwner;
+  /** Trusted standalone owner provenance; channel hosts set this at activation, children inherit it. */
+  retryOrigin?: RetryOrigin;
   /** 可信宿主声明的任务类；随本 run 全部 complete/streamText 请求发出。 */
   workClass?: ModelWorkClass;
   context: ConversationContextSource;
@@ -368,9 +379,12 @@ interface Running {
   budget?: RunBudget;
   /** 本 run 的任务类；嵌套子 run 经 taskTree 继承 owning task 的类。 */
   workClass?: ModelWorkClass;
+  retryOrigin?: RetryOrigin;
+  retryPolicy?: ReadRetryOptions;
   spec: LeafAgentSpec;
   signal: AbortSignal;
   callerSignal?: AbortSignal;
+  deadlineAt?: number;
   stepNo: number;
   trace?: TraceScope;
   channel: TraceMetadata["channel"];
@@ -413,6 +427,8 @@ export class AgentRuntime {
     usage: RunUsage;
     budget?: RunBudget;
     workClass?: ModelWorkClass;
+    retryOrigin?: RetryOrigin;
+    retryPolicy?: ReadRetryOptions;
     signal: AbortSignal;
   }>();
   private readonly contextEngine: ContextEngine;
@@ -422,6 +438,7 @@ export class AgentRuntime {
     private readonly options: {
       model: ModelPort;
       repository: AgentRunRepository;
+      systemRetryPolicy?: () => { maxAttempts: number; retryDelayMs: number };
       actions?: readonly BuiltInAction[];
       actionExecutor?: ActionExecutor;
       contextEngine?: ContextEngine;
@@ -478,7 +495,7 @@ export class AgentRuntime {
       ];
       return {
         messages,
-        invoke: async (capture, onModelResolved, onModelResponse) => {
+        invoke: async (capture, onModelResolved, onModelResponse, retryOptions) => {
           const raw = await this.options.model.complete({
             messages,
             model: spec.model,
@@ -490,6 +507,7 @@ export class AgentRuntime {
               ? {}
               : { contextInputLimit: input.contextInputLimit }),
             ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
+            ...retryOptions(),
             signal: active.signal,
             onModelResolved,
             onResponseText: capture,
@@ -499,6 +517,9 @@ export class AgentRuntime {
           await input.validate?.(raw, { resolvedModel: active.resolvedModel ?? "" });
           return raw;
         },
+        ...(input.assertSources === undefined
+          ? {}
+          : { assertSources: () => input.assertSources?.(input.sources ?? []) }),
       };
     });
   }
@@ -520,7 +541,7 @@ export class AgentRuntime {
           });
           return {
             messages,
-            invoke: async (capture, onModelResolved, onModelResponse) => {
+            invoke: async (capture, onModelResolved, onModelResponse, retryOptions) => {
               const raw = await this.options.model.complete({
                 messages,
                 model: spec.model,
@@ -546,6 +567,7 @@ export class AgentRuntime {
                 ...(input.assertPreparedCurrent === undefined
                   ? {}
                   : { assertPreparedCurrent: input.assertPreparedCurrent }),
+                ...retryOptions(),
                 signal: active.signal,
                 onModelResolved,
                 onResponseText: capture,
@@ -555,6 +577,9 @@ export class AgentRuntime {
               await input.validate?.(raw, { resolvedModel: active.resolvedModel ?? "" });
               return raw;
             },
+            ...(input.assertSources === undefined
+              ? {}
+              : { assertSources: () => input.assertSources?.(input.sources ?? []) }),
           };
         });
       } finally {
@@ -594,7 +619,7 @@ export class AgentRuntime {
       ];
       return {
         messages,
-        invoke: async (capture, _onModelResolved, onModelResponse) => {
+        invoke: async (capture, _onModelResolved, onModelResponse, retryOptions) => {
           const raw = await this.options.model.completeMultimodal({
             systemPrompt: spec.instructions,
             temperature: spec.temperature,
@@ -604,6 +629,7 @@ export class AgentRuntime {
             images: input.images,
             responseSchema: spec.responseSchema,
             ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
+            ...retryOptions(),
             signal: active.signal,
             onModelResponse,
           });
@@ -611,6 +637,9 @@ export class AgentRuntime {
           await input.validate?.(raw);
           return raw;
         },
+        ...(input.assertSources === undefined
+          ? {}
+          : { assertSources: () => input.assertSources?.(input.sources ?? []) }),
       };
     });
   }
@@ -630,7 +659,9 @@ export class AgentRuntime {
         capture: (text: string, complete?: boolean) => void,
         onModelResolved: (model: string) => void,
         onModelResponse: (metadata: ModelResponseMetadata) => void,
+        retryOptions: () => { retryPolicy?: ReadRetryOptions; onRetry?: () => void },
       ) => Promise<string>;
+      assertSources?: () => void;
     },
   ): Promise<string> {
     try {
@@ -639,13 +670,26 @@ export class AgentRuntime {
       // 模型调用前查一次并冻结当前纪元；返回后再查当前状态与冻结纪元，且必须夹在这一步落盘为
       // 完成之前——飞行期间停用（哪怕随后恢复）已产出的叶子结果不得发布，该步按失败落盘，运行失败。
       const checkpoint = this.options.assertLeaf?.(input.owner, active.spec.id);
-      const { messages, invoke } = prepare();
+      const { messages, invoke, assertSources } = prepare();
       const guarded = async (
         capture: (text: string, complete?: boolean) => void,
         onModelResolved: (model: string) => void,
         onModelResponse: (metadata: ModelResponseMetadata) => void,
+        retryOptions: () => { retryPolicy?: ReadRetryOptions; onRetry?: () => void },
       ) => {
-        const value = await invoke(capture, onModelResolved, onModelResponse);
+        const value = await invoke(capture, onModelResolved, onModelResponse, () => {
+          const options = retryOptions();
+          if (!options.onRetry) return options;
+          return {
+            ...options,
+            onRetry: () => {
+              assertSources?.();
+              this.options.assertLeaf?.(input.owner, active.spec.id);
+              if (typeof checkpoint === "function") checkpoint();
+              options.onRetry?.();
+            },
+          };
+        });
         this.options.assertLeaf?.(input.owner, active.spec.id);
         if (typeof checkpoint === "function") checkpoint();
         return value;
@@ -697,6 +741,8 @@ export class AgentRuntime {
     spec: { id: string; version?: string },
     input: {
       owner: RunOwner;
+      /** Explicit origin for standalone tasks; a parent task tree always wins. */
+      retryOrigin?: RetryOrigin;
       /** 本任务树的类：嵌套子 run 经 taskTree 继承 owning task 的类，不必逐个传。 */
       workClass?: ModelWorkClass;
       conversationId?: string;
@@ -848,6 +894,10 @@ export class AgentRuntime {
         signal: active.signal,
         runId: active.runId,
         requestId: input.requestId,
+        ...(active.retryOrigin === undefined ? {} : { retryOrigin: active.retryOrigin }),
+        ...(active.retryOrigin === "system" && active.retryPolicy
+          ? { retryPolicy: active.retryPolicy }
+          : {}),
       };
       const usedActions = new Set<BuiltInAction>();
       const usedActionObservations = new Map<BuiltInAction, ActionObservation>();
@@ -982,7 +1032,7 @@ export class AgentRuntime {
             "next",
             context.messages,
             context.sources,
-            async (capture, onModelResolved, onModelResponse) => {
+            async (capture, onModelResolved, onModelResponse, retryOptions) => {
               let resolved =
                 decisionBudget?.model ?? spec.model ?? this.options.model.defaultModel ?? "?";
               // T10/§9 决策相发送（真实 HTTP 服务首拒 unsupported → 宿主标 fallback 重备后
@@ -1027,6 +1077,7 @@ export class AgentRuntime {
                 ...(input.assertPreparedCurrent === undefined
                   ? {}
                   : { assertPreparedCurrent: input.assertPreparedCurrent }),
+                ...retryOptions(),
                 signal: active.signal,
                 onModelResolved: (model) => {
                   resolved = model;
@@ -1093,6 +1144,7 @@ export class AgentRuntime {
               measure: context.tokenMeasure,
               stepInputLimit: spec.limits.inputUnits,
             },
+            () => input.context.assertSources?.(context.sources),
           );
         } catch (error) {
           if (
@@ -1720,7 +1772,7 @@ export class AgentRuntime {
       "generate",
       messages,
       generationContext.sources,
-      async (capture, onModelResolved, onModelResponse) => {
+      async (capture, onModelResolved, onModelResponse, retryOptions) => {
         if (structured) {
           // T10/§9 生成相发送（structured complete）：真实 HTTP 服务首拒
           // MODEL_IMAGE_UNSUPPORTED → 宿主标 fallback 重备后同相同 complete 重试
@@ -1753,6 +1805,7 @@ export class AgentRuntime {
             ...(assertPreparedCurrent === undefined
               ? {}
               : { assertPreparedCurrent: assertPreparedCurrent }),
+            ...retryOptions(),
             signal: active.signal,
             onModelResolved,
             onResponseText: capture,
@@ -1820,6 +1873,7 @@ export class AgentRuntime {
           ...(assertPreparedCurrent === undefined
             ? {}
             : { assertPreparedCurrent: assertPreparedCurrent }),
+          ...retryOptions(),
           signal: active.signal,
           onModelResolved,
           onModelResponse,
@@ -1884,6 +1938,7 @@ export class AgentRuntime {
         measure: generationContext.tokenMeasure,
         stepInputLimit: generationSpec.limits?.inputUnits,
       },
+      () => input.context.assertSources?.(generationContext.sources),
     );
     return {
       outputId: plan.outputId,
@@ -1898,11 +1953,45 @@ export class AgentRuntime {
     };
   }
 
+  private modelRetry(
+    active: Running,
+    signal: AbortSignal,
+    messages: readonly ModelMessage[],
+    assertCurrent?: () => void,
+  ) {
+    const policy = active.retryOrigin === "system" ? active.retryPolicy : undefined;
+    if (!policy || policy.maxAttempts <= 1) return {};
+    const units = inputUnits(messages);
+    const budget = active.budget;
+    return {
+      retryPolicy: policy,
+      onRetry: () => {
+        signal.throwIfAborted();
+        active.assertActions?.();
+        assertCurrent?.();
+        if (active.deadlineAt !== undefined && Date.now() >= active.deadlineAt)
+          throw new AgentRuntimeError("AGENT_DEADLINE", "Agent run deadline exceeded");
+        if (
+          (budget?.maxCalls !== undefined && active.usage.calls + 1 > budget.maxCalls) ||
+          (budget?.maxInputUnits !== undefined &&
+            active.usage.inputUnits + units > budget.maxInputUnits)
+        )
+          throw new AgentRuntimeError(
+            "AGENT_BUDGET_EXCEEDED",
+            "This task tree has used its whole model budget",
+          );
+        active.usage.calls += 1;
+        active.usage.inputUnits += units;
+      },
+    };
+  }
+
   private start(
     spec: LeafAgentSpec,
     input: {
       owner: RunOwner;
       workClass?: ModelWorkClass;
+      retryOrigin?: RetryOrigin;
       signal?: AbortSignal;
       onEvent?: Running["onEvent"];
       conversationId?: string;
@@ -1953,16 +2042,30 @@ export class AgentRuntime {
         },
       };
     });
+    const retryOrigin = parent ? parent.retryOrigin : input.retryOrigin;
+    const configuredRetryPolicy =
+      parent === undefined && retryOrigin === "system"
+        ? this.options.systemRetryPolicy?.()
+        : undefined;
+    const retryPolicy = parent
+      ? parent.retryPolicy
+      : configuredRetryPolicy === undefined
+        ? undefined
+        : { ...configuredRetryPolicy };
     return {
       runId,
       usage: parent?.usage ?? input.usage ?? { calls: 0, inputUnits: 0 },
       budget: parent?.budget ?? input.budget,
       workClass: parent?.workClass ?? input.workClass,
+      retryOrigin,
+      retryPolicy,
       spec,
       signal,
       trace,
       channel,
       callerSignal,
+      deadlineAt:
+        spec.limits?.deadlineMs === undefined ? undefined : Date.now() + spec.limits.deadlineMs,
       stepNo: 0,
       conversationId: input.conversationId,
       onEvent: input.onEvent,
@@ -1995,6 +2098,7 @@ export class AgentRuntime {
       capture: (text: string, complete?: boolean) => void,
       onModelResolved: (model: string) => void,
       onModelResponse: (metadata: ModelResponseMetadata) => void,
+      retryOptions: () => { retryPolicy?: ReadRetryOptions; onRetry?: () => void },
     ) => Promise<T>,
     stepSpec: LeafAgentSpec = active.spec,
     outputId?: string,
@@ -2012,6 +2116,7 @@ export class AgentRuntime {
       measure?: ContextTokenMeasure;
       stepInputLimit?: number;
     },
+    assertRetryCurrent?: () => void,
   ): Promise<T> {
     const stepSignal = signalOverride ?? active.signal;
     stepSignal.throwIfAborted();
@@ -2193,6 +2298,21 @@ export class AgentRuntime {
               scope?.update({ model, details: { modelResolved: true } });
             },
             onModelResponse,
+            () =>
+              this.modelRetry(active, stepSignal, messages, () => {
+                assertRetryCurrent?.();
+                if (active.deadlineAt !== undefined && Date.now() >= active.deadlineAt)
+                  throw new AgentRuntimeError("AGENT_DEADLINE", "Agent run deadline exceeded");
+                if (
+                  (budget?.maxCalls !== undefined && active.usage.calls + 1 > budget.maxCalls) ||
+                  (budget?.maxInputUnits !== undefined &&
+                    active.usage.inputUnits + units > budget.maxInputUnits)
+                )
+                  throw new AgentRuntimeError(
+                    "AGENT_BUDGET_EXCEEDED",
+                    "This task tree has used its whole model budget",
+                  );
+              }),
           );
           active.signal.throwIfAborted();
           if (phase === "next") {
@@ -2278,6 +2398,8 @@ export class AgentRuntime {
         usage: active.usage,
         budget: active.budget,
         workClass: active.workClass,
+        retryOrigin: active.retryOrigin,
+        retryPolicy: active.retryPolicy,
         signal: active.signal,
       },
       () => (active.trace ? active.trace.within(execute) : execute()),
@@ -2538,6 +2660,7 @@ export function createAgentRuntime(options: {
   providerConcurrency?: number | (() => number);
   /** 模型名 → 服务键；省略＝全部模型共用一个名额池。 */
   providerKey?: (model: string | undefined) => string;
+  systemRetryPolicy?: () => { maxAttempts: number; retryDelayMs: number };
   /**
    * 配置保存后的 drain 通知接线（宿主注入 `permissions.subscribe`）：保存成功即触发一次，
    * 让准入重判等待队列；缺省＝无订阅（测试装配）。

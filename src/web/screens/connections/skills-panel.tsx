@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { AlertCircle, BookOpen, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { SkillDetailResponse } from "../../../shared/contracts/skill";
@@ -63,14 +63,29 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
   return (
     <div className="w-full space-y-6 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 className="font-semibold">{t("connections.skills.title")}</h2>
-          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <BookOpen className="size-5 text-primary" />
+            <h2 className="text-lg font-semibold tracking-tight text-foreground">
+              {t("connections.skills.title")}
+            </h2>
+          </div>
+          <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
             {t("connections.skills.description")}
           </p>
         </div>
-        <Button variant="outline" disabled={loading} onClick={refresh}>
-          <RefreshCw />
+        <Button
+          variant="outline"
+          tooltip={t("hints.extensions.skills.refresh")}
+          disabled={loading}
+          onClick={refresh}
+          className="gap-2 shrink-0"
+        >
+          <RefreshCw
+            className={
+              loading ? "size-4 animate-spin text-muted-foreground" : "size-4 text-muted-foreground"
+            }
+          />
           {t("connections.common.refresh")}
         </Button>
       </div>
@@ -79,14 +94,18 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
           {readError || error}
         </p>
       )}
-      <div className="overflow-hidden rounded-lg border">
+      <div className="overflow-hidden rounded-xl border border-border/80 bg-card text-card-foreground">
         <Table>
           <TableHeader>
-            <TableRow>
-              <TableHead>{t("connections.skills.name")}</TableHead>
-              <TableHead>{t("connections.skills.descriptionColumn")}</TableHead>
-              <TableHead>{t("connections.skills.type")}</TableHead>
-              <TableHead className="text-right">{t("connections.actions")}</TableHead>
+            <TableRow className="bg-muted/40 hover:bg-muted/40">
+              <TableHead className="w-48 font-medium">{t("connections.skills.name")}</TableHead>
+              <TableHead className="font-medium">
+                {t("connections.skills.descriptionColumn")}
+              </TableHead>
+              <TableHead className="w-36 font-medium">{t("connections.skills.type")}</TableHead>
+              <TableHead className="w-24 text-right font-medium">
+                {t("connections.actions")}
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -97,7 +116,9 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
                 data-global-enabled={skill.globalEnabled}
                 className={skill.globalEnabled ? undefined : "bg-muted/30 text-muted-foreground"}
               >
-                <TableCell className="font-mono text-sm">{skill.name}</TableCell>
+                <TableCell className="font-mono text-sm font-medium text-foreground">
+                  {skill.name}
+                </TableCell>
                 <TableCell className="max-w-xl whitespace-normal break-words text-sm leading-relaxed text-muted-foreground">
                   {skill.origin === "system"
                     ? t(`connections.components.skillSummary.${skill.name}`, {
@@ -115,12 +136,19 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
                       )}
                     </Badge>
                     {!skill.globalEnabled && (
-                      <p className="text-xs">{t("connections.components.globalOff")}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {t("connections.components.globalOff")}
+                      </p>
                     )}
                   </div>
                 </TableCell>
                 <TableCell className="text-right">
-                  <Button variant="ghost" size="sm" onClick={() => open(skill.name)}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    tooltip={t("hints.extensions.skills.view")}
+                    onClick={() => open(skill.name)}
+                  >
                     {t("connections.skills.view")}
                   </Button>
                 </TableCell>
@@ -144,8 +172,11 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
         </Table>
       </div>
       {!!catalog?.problems.length && (
-        <section className="space-y-2">
-          <h3 className="text-sm font-medium">{t("connections.skills.problems")}</h3>
+        <section className="space-y-2.5 rounded-xl border border-destructive/20 bg-destructive/5 p-4 text-card-foreground">
+          <div className="flex items-center gap-2 text-destructive">
+            <AlertCircle className="size-4 shrink-0" />
+            <h3 className="text-sm font-medium">{t("connections.skills.problems")}</h3>
+          </div>
           <ul className="space-y-1 text-sm text-muted-foreground">
             {catalog.problems.map((problem) => (
               <li key={problem.skill}>
@@ -170,7 +201,7 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
         }}
       >
         <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
-          <SheetHeader className="border-b">
+          <SheetHeader className="border-b pb-4">
             <SheetTitle>{detail?.name}</SheetTitle>
             <SheetDescription>{t("connections.skills.detailHint")}</SheetDescription>
           </SheetHeader>
@@ -181,10 +212,10 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
                   {t("connections.components.definitionLocked")}
                 </p>
               )}
-              <p className="text-sm text-muted-foreground">{detail.description}</p>
+              <p className="text-sm leading-relaxed text-muted-foreground">{detail.description}</p>
               <section className="space-y-2">
                 <h3 className="text-sm font-medium">{t("connections.skills.instructions")}</h3>
-                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 font-mono text-xs leading-relaxed">
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border/50 bg-muted/60 p-4 font-mono text-xs leading-relaxed">
                   {detail.instructions}
                 </pre>
               </section>
@@ -210,7 +241,9 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
                   <dl className="space-y-2 text-sm">
                     {metadata.map(([key, value]) => (
                       <div key={key} className="space-y-1 whitespace-pre-wrap break-words">
-                        <dt className="font-mono text-xs">{key}</dt>
+                        <dt className="font-mono text-xs font-semibold text-foreground/80">
+                          {key}
+                        </dt>
                         <dd className="text-muted-foreground">{value}</dd>
                       </div>
                     ))}
@@ -220,7 +253,7 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
               {detail["allowed-tools"]?.trim() && (
                 <section className="space-y-2">
                   <h3 className="text-sm font-medium">{t("connections.skills.allowedTools")}</h3>
-                  <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 font-mono text-xs leading-relaxed">
+                  <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border/50 bg-muted/60 p-4 font-mono text-xs leading-relaxed">
                     {detail["allowed-tools"]}
                   </pre>
                   <p className="text-xs text-muted-foreground">

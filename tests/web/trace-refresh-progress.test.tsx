@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type {
   RuntimeTrace,
@@ -8,6 +8,7 @@ import type { SuperstringApi } from "../../src/web/api";
 import { useRuntimeTraces } from "../../src/web/features/observability/use-runtime-traces";
 import { resetConversationChangesForTests } from "../../src/web/services/conversation-changes";
 import { setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const trace = (id: number): RuntimeTrace => ({
   traceId: String(id),

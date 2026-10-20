@@ -1,8 +1,9 @@
+import { MessageCircle, Users } from "lucide-react";
 import { lazy, Suspense } from "react";
 import type { ConversationAvatar as AvatarAsset } from "../../../shared/contracts/conversation-avatar";
 import { Avatar, AvatarFallback, AvatarImage } from "../../components/ui/avatar";
 import { cn } from "../../lib/utils";
-import { type AvatarIdentity, defaultConversationAvatar } from "./avatar-designs";
+import type { AvatarIdentity } from "./avatar-designs";
 import type { AvatarImageStatus } from "./avatar-generated-image";
 
 const generatedImages = {
@@ -30,7 +31,22 @@ export function ConversationAvatar({
   onImageError?: () => void;
   onImageStatus?: (status: AvatarImageStatus) => void;
 }) {
-  const resolved = value ?? defaultConversationAvatar(conversation);
+  if (value == null) {
+    const Icon = conversation.topology === "shared" ? Users : MessageCircle;
+    return (
+      <Avatar
+        className={cn("size-10 border border-border bg-primary/8 text-primary", className)}
+        role={label ? "img" : undefined}
+        aria-label={label || undefined}
+        aria-hidden={!label}
+      >
+        <span className="flex size-full items-center justify-center bg-primary/8">
+          <Icon aria-hidden="true" className="size-[52%] stroke-[1.5]" />
+        </span>
+      </Avatar>
+    );
+  }
+  const resolved = value;
   const GeneratedImage = resolved.kind === "generated" ? generatedImages[resolved.style] : null;
   const fallback = Array.from(conversation.title.trim()).slice(0, 2).join("") || "·";
   const statusChanged = (status: AvatarImageStatus) => {

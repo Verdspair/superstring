@@ -9,6 +9,7 @@ import {
   encodeAppearanceMessage,
   MODE_IDS,
   parseAppearanceMessage,
+  SELECTABLE_THEMES,
   THEME_IDS,
 } from "../../src/shared/appearance";
 
@@ -16,14 +17,25 @@ const ALL_COMBOS: AppearanceSnapshot[] = [];
 for (const theme of THEME_IDS) for (const mode of MODE_IDS) ALL_COMBOS.push({ theme, mode });
 
 describe("shared appearance frame contract", () => {
-  it("exposes 16 theme ids and 3 mode ids", () => {
-    expect(THEME_IDS).toHaveLength(16);
+  it("offers six curated themes while retaining saved legacy ids", () => {
+    expect(SELECTABLE_THEMES.map((theme) => theme.id)).toEqual([
+      "lavender",
+      "fjord",
+      "birch",
+      "sage",
+      "hearth",
+      "blossom",
+    ]);
+    expect(THEME_IDS).toHaveLength(22);
     expect(MODE_IDS).toHaveLength(3);
     expect(THEME_IDS).toContain("slate");
+    expect(THEME_IDS).toContain("lavender");
+    expect(THEME_IDS).toContain("fjord");
+    expect(THEME_IDS).toContain("birch");
     expect(MODE_IDS).toEqual(["system", "light", "dark"]);
   });
 
-  it("encodes and parses all 48 theme×mode combinations within the byte cap", () => {
+  it("encodes and parses all theme×mode theme×mode combinations within the byte cap", () => {
     let count = 0;
     for (const snap of ALL_COMBOS) {
       const frame = encodeAppearanceMessage(snap);
@@ -34,7 +46,7 @@ describe("shared appearance frame contract", () => {
       );
       count++;
     }
-    expect(count).toBe(48);
+    expect(count).toBe(THEME_IDS.length * MODE_IDS.length);
   });
 
   it("rejects invalid / out-of-contract / oversized frames", () => {
@@ -99,7 +111,7 @@ describe("AppearanceRepository (server persistence)", () => {
     }
   });
 
-  it("persists and reloads all 48 combinations with strict file shape", async () => {
+  it("persists and reloads all theme×mode combinations with strict file shape", async () => {
     const repo = new AppearanceRepository({ stateDir: dir });
     for (const snap of ALL_COMBOS) {
       await repo.save(snap);

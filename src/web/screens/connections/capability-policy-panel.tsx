@@ -3,7 +3,7 @@
 import { RefreshCw, Save, SlidersHorizontal } from "lucide-react";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Field } from "../../components/form-field";
+import { SettingsGroup, SettingsRow } from "../../components/settings-group";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import {
@@ -33,21 +33,24 @@ export function CapabilityPolicyPanel({
   const save = useSuperstringStore((s) => s.savePermissionSettings);
   const discard = useSuperstringStore((s) => s.discardPermissionSettings);
   const update = useSuperstringStore((s) => s.patchExecutionSettings);
+
   useEffect(() => {
     if (active) void load();
   }, [active, load]);
+
   const scope: PermissionScope = { modules };
   const draft = editor?.execution;
   const dirty = permissionSettingsDirty(editor, scope);
   // 数值越界错误由执行设置页就地提示（那里才能修正）；其余可修复错误不因去重被隐藏。
   const numericInvalid = error === "connections.execution.invalid";
   const showError = !!error && !numericInvalid && errorScope !== "grants";
+
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h3 className="flex items-center gap-2 font-semibold">
-            <SlidersHorizontal className="size-4 text-muted-foreground" />
+            <SlidersHorizontal className="size-4 text-primary" />
             {t("connections.execution.switches")}
           </h3>
           <p className="mt-1 max-w-3xl text-xs text-muted-foreground">
@@ -58,14 +61,25 @@ export function CapabilityPolicyPanel({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={loading || saving} onClick={() => void load(true)}>
+          <Button
+            variant="outline"
+            tooltip={t("hints.extensions.policy.refresh")}
+            disabled={loading || saving}
+            onClick={() => void load(true)}
+          >
             <RefreshCw />
             {t("connections.common.refresh")}
           </Button>
-          <Button variant="outline" disabled={!dirty || saving} onClick={() => discard(scope)}>
+          <Button
+            variant="outline"
+            tooltip={t("hints.extensions.policy.discard")}
+            disabled={!dirty || saving}
+            onClick={() => discard(scope)}
+          >
             {t("library.discard.changes")}
           </Button>
           <Button
+            tooltip={t("hints.extensions.policy.save")}
             disabled={!dirty || saving || loading || !editor}
             onClick={() => void save(scope)}
           >
@@ -87,23 +101,34 @@ export function CapabilityPolicyPanel({
           {t(notice)}
         </p>
       )}
-      <div className="grid gap-5 sm:grid-cols-2">
-        {modules.map((module) => (
-          <Field
-            key={module}
-            label={`connections.execution.modules.${module}`}
-            info={`connections.execution.modules.${module}Hint`}
-          >
-            <Checkbox
-              checked={draft?.modules[module] ?? false}
-              disabled={saving || !draft}
-              onCheckedChange={(checked) =>
-                draft && update({ modules: { ...draft.modules, [module]: checked === true } })
+      <SettingsGroup>
+        {modules.map((module) => {
+          const id = `cap-module-${module}`;
+          const moduleLabel = t(`connections.execution.modules.${module}`);
+          const moduleHint = t(`connections.execution.modules.${module}Hint`);
+          return (
+            <SettingsRow
+              key={module}
+              label={
+                <label htmlFor={id} className="cursor-pointer text-sm font-medium text-foreground">
+                  {moduleLabel}
+                </label>
               }
-            />
-          </Field>
-        ))}
-      </div>
+              description={moduleHint}
+            >
+              <Checkbox
+                id={id}
+                aria-label={moduleLabel}
+                checked={draft?.modules[module] ?? false}
+                disabled={saving || !draft}
+                onCheckedChange={(checked) =>
+                  draft && update({ modules: { ...draft.modules, [module]: checked === true } })
+                }
+              />
+            </SettingsRow>
+          );
+        })}
+      </SettingsGroup>
     </section>
   );
 }

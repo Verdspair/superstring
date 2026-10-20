@@ -17,7 +17,7 @@ A local Agent workspace primarily for everyday companionship and chat, supportin
 
 ### 有上下文的对话工作区
 
-在同一工作区管理网页对话、QQ 群聊和私聊。选择 Agent，配置身份与模型，按需授权读取记忆和文档。模型、提示词和聊天行为都可以按自己的习惯灵活配置。会话记录、配置和导入资料保存在本机；调用外部模型服务时，仅在请求中包含所需的上下文。界面支持 简体中文与 English 切换。
+在同一工作区管理网页对话、QQ 群聊和私聊。选择 Agent，配置身份与模型，按需授权读取记忆和文档。模型、提示词和聊天行为都可以按自己的习惯灵活配置。会话记录、配置和导入资料保存在本机；调用外部模型服务时，仅在请求中包含所需的上下文。界面支持简体中文与 English 切换。偏好中提供雾紫、峡湾、白桦、鼠尾草、暖玫和渐变樱粉六套主题，支持浅色、深色与跟随系统；动效遵循减少动效偏好。
 
 Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、配置、长期记忆与密钥保存在本机，不提供云端数据同步服务，也不要求注册云端账号；调用已配置的模型服务商或工具服务时，仅按已授予的权限将必要的上下文与参数发送至对应端点。
 
@@ -35,7 +35,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 
 新消息到达已绑定的会话时直接显示。加载聊天记录时，新消息不再等旧记录读完才显示，保持当前阅读位置不受影响。群聊顶部显示正在进行的模型任务，点开任务可查看子任务及模型输入输出详情，任务结束后会更新最终结果。
 
-- 可选用连续交谈或自主接话（两种模式互斥）。直接回应与冷场发起可分别配置，直接回应不要求兴趣评分，Agent 仍可保持沉默。自主接话可按消息条数（默认15±5）或经过时间（默认60±20秒）择机判定，新方案默认开启时间窗口，忙时可排队。窗口参数和待发送回复的有效期都可调整，回复有效期默认10分钟。回复失效时，可查看已记录的原因，包括发送超时、对话变化、发送条件变化或内容保留期到期；未记录原因的旧回复只提示“回复已失效”。同一批次中的回复生成完成后即可进入发送流程，不再等待其他目标生成。回复已进入发送流程时，不会再次回答同一条已处理消息。图片工具选错引用时可在本轮纠正；已失效的内容仍不可读取。运行详情同时显示最近尝试结果和失败历史。可为本会话设置多名管理员（Agent 主人），管理员的要求会被优先考虑；入口在群列表与本群配置中直达，也可在方案详情的会话管理中设置。消息历史会避免同一发送的重复显示。自主接话与冷场记录只显示已开始意图判断的任务；尚未判断的等待或跳过记录不再单独展示，已判断后选择沉默的任务仍保留。无法确认判断状态的旧记录、原有消息、任务队列和技术追踪保持可见。
+- 可选用连续交谈或自主接话（两种模式互斥）。直接回应与冷场发起可分别配置，直接回应不要求兴趣评分，Agent 仍可保持沉默。自主接话可按消息条数（默认15±5）或经过时间（默认60±20秒）择机判定，新方案默认开启时间窗口，忙时可排队。窗口参数和待发送回复的有效期都可调整，回复有效期默认10分钟。回复失效时，可查看已记录的原因，包括发送超时、对话变化、发送条件变化或内容保留期到期；未记录原因的旧回复只提示“回复已失效”。同一批次中的回复生成完成后即可进入发送流程，不再等待其他目标生成。回复已进入发送流程时，不会再次回答同一条已处理消息。图片工具选错引用时可在本轮纠正；已失效的内容仍不可读取。运行详情同时显示最近尝试结果和失败历史。可为本会话设置多名管理员（Agent 主人），管理员的要求会被优先考虑；可在「会话与绑定」和本群配置中设置，也可从方案详情查看其使用会话。消息历史会避免同一发送的重复显示。自主接话与冷场记录只显示已开始意图判断的任务；尚未判断的等待或跳过记录不再单独展示，已判断后选择沉默的任务仍保留。无法确认判断状态的旧记录、原有消息、任务队列和技术追踪保持可见。
 - 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。自主接话评分中档（4–6，基准5）认可自然接梗与轻量回应，达标后直接承接意图，并保留合理沉默、自定义约束与状态未确认时的防重复。QQ 回复可在当前授权范围内引用消息、@ 成员或搭配表情。引用和 @ 相互独立，表情需由方案授权。
 - 编辑方案的场景、判断、回复、复核、表情、媒体与压缩提示词。多个绑定可复用同一方案，不会因此共享会话历史。
 - 分别配置判断和回复窗口。超出回复窗口的消息进入缓冲队列，达到阈值后在后台任务队列压缩为上下文包；判断阶段不读取这些包。
@@ -45,7 +45,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 - **输入防刷屏**：新方案默认开，已有方案保持关，可按会话覆盖。默认将同一成员在首条起3秒内的至少3条纯图片消息按一个候选处理；条数可设2–20条，首窗可设1–30秒，方案默认与会话覆盖分别保存。他人插话不打断，自身文字、其它媒体或直接请求结束分组。命中组与纯表情不自动供图，仍可经工具按需读取；直接艾特和合法引用照常处理，原记录不删除。
 - **研究与媒体预算**：QQ 研究按子任务自己的上下文检查容量；媒体或表情结果装不下时返回明确预算提示，不把本可继续的任务拖到下一轮才失败，真正超出容量时明确失败。
 
-**本群配置**已整合至方案与群目录中，为特定群提供独立的个性化设置与覆盖项。参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。
+在「方案 → 会话与绑定」中查看和管理群聊与私聊，进入群聊可编辑**本群配置**。方案设置、会话绑定与 QQ 设置位于同一工作区，为特定群提供独立的个性化设置与覆盖项。参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。
 
 QQ 接入前置步骤与运行要求：
 
@@ -73,16 +73,17 @@ QQ 接入前置步骤与运行要求：
 
 ### 统一 Agent 内核、扩展与工具
 
-导航包含**对话、Agent、系统能力、方案、资料、扩展** 6 个主入口，另设**模型服务**与**偏好**入口。
+导航按**日常**（对话、Agent、资料）、**应用**（方案）与**系统**（模型服务、系统能力、扩展）组织为 7 个工作区入口，底部设**偏好**与搜索入口；主导航与会话列表均支持通过细线拖动调整宽度。
 
 - **工作区整合**：对话工作区整合消息、运行状态与任务三页签，支持在当前会话与全局范围之间切换。 新消息通过会话通知更新消息记录，查看历史时保留阅读位置并提示新消息。运行记录按任务用途显示名称，原始标识可在详情查看。
-- **系统能力分类**：按资料读取、联网、QQ、任务执行和外置扩展查看相关工具、技能与 MCP，点击进入功能配置或组件详情。记忆查询页可编辑检索提示词与每档相关性要求。
+- **系统能力分类**：按资料读取、联网、QQ、任务执行和外置扩展查看相关工具、技能与 MCP，点击进入功能配置或组件详情。记忆读取规则与每档相关性要求在 Agent 的访问规则中配置。
 - **QQ 群成员查询**：助手可按需查看当前群的成员 ID、昵称、群名片和群主／管理员／成员身份，包括自己；支持查找、筛选和按需详情。普通聊天不查询，同轮名单复用；平台未提供的信息明确标为未知。开关在系统能力配置，各群可单独停用。
 - **扩展与 MCP 客户端**：在「扩展 → 工具」中查看已注册的系统工具与外部 MCP 工具；支持通过 stdio、HTTP 与 SSE 连接外部 Model Context Protocol 服务，登记的服务默认未启用，支持配置超时与结果限额；环境变量凭据仅保存变量名。
 - **技能目录**：在「扩展 → 技能」中查看技能文档与随包提供的 6 个系统技能（证据读取、媒体读取、QQ成员查询、QQ回复、任务执行、网络研究）。
 - **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地沙箱中编排与聚合只读工具调用；默认关闭，仅在模型服务明确声明具备代码执行能力时生效。
 - **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
 - **任务与本地审批**：「扩展 → 工具」中的工具授权经批准后持续生效，修订变更时需重新确认；持久化任务中需审批的调用会生成等待审批票据，需在本地手动确认。
+- **调用与唤醒重试**：在「系统能力 → 执行设置」中可配置模型与只读工具调用失败重试（默认共 3 次尝试，含首次，间隔 2 秒，仅对明确的 HTTP 429／503 拒收重试，写操作与超时不盲目重试）；在「方案 → QQ 连接」中可配置唤醒失败重试（默认共 3 次尝试，含首次，间隔 15 秒）。
 - **运行概览与步骤选择**：运行概览聚焦结果与依据，采用竖列步骤卡片展示模型调用，打开时默认选定首个步骤并在下方展示详情。
 - **技术追踪与执行排查**：面向过程诊断，通过时间线查看执行顺序、耗时与错误，点击步骤直接联动下方详情；父任务下的实际模型调用也可查看，消除多余的重复列表。
 - **运行内容展开与按需读取**：选中步骤的输出、输入与关联来源分区呈现且输出在最前，各条目默认收起并支持按需独立展开；打开运行详情时自动预取当前运行全部实际调用，预取完成后切换或展开不再发起网络请求（预取未完成前显示加载状态；输入、输出与来源展示仍受访问权限与保留期限制，已过保留期或已撤回内容明确标示）；区分模型生成完成与平台送达，同一送达结果不重复读取；完整技术追踪记录与关联来源保留。
@@ -150,7 +151,7 @@ Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`。入口会构建�
 
 ### Conversations, with context
 
-Manage web conversations, QQ group chats, and private chats in one unified workspace. Select an Agent, configure its identity and model, and authorize it to access memories and documents. Configure models, prompts, and chat behavior to suit how you use the app. Conversation history, settings, and imported materials stay local; requests to external model providers include only the necessary context. The interface supports English and Simplified Chinese.
+Manage web conversations, QQ group chats, and private chats in one unified workspace. Select an Agent, configure its identity and model, and authorize it to access memories and documents. Configure models, prompts, and chat behavior to suit how you use the app. Conversation history, settings, and imported materials stay local; requests to external model providers include only the necessary context. The interface supports English and Simplified Chinese. Preferences offers six themes—Lavender, Fjord, Birch, Sage, Hearth, and Blossom with soft gradients—with light, dark, and system modes. Animations respect reduced-motion preferences.
 
 Superstring runs locally on Windows, macOS, and Linux. Conversation history, configurations, long-term memory, and encryption keys stay on your machine. Superstring does not require a cloud account, nor does it provide cloud sync services. When connecting to configured model providers or tool services, it sends only authorized context and necessary parameters to the designated endpoints.
 
@@ -168,7 +169,7 @@ Connect a standalone OneBot 11 WebSocket service (such as NapCat), then bind a g
 
 Incoming messages in bound conversations appear automatically. When loading chat history, fresh messages appear right away without waiting for older records to finish loading, keeping your current scroll position undisturbed. In QQ group chats, running model tasks appear above the message history; click a task to view subtasks and model inputs/outputs, and the final result updates upon completion.
 
-- Choose continuous conversation or autonomous participation; these two modes are mutually exclusive. Direct responses and idle-topic initiation can be configured separately. Direct responses bypass interest scoring, while the Agent may still choose silence. Autonomous participation can judge when to join by message count (default 15±5) or elapsed time (default 60±20 seconds). The time window is enabled for new schemes, and opportunities can wait for available capacity. Window settings and the validity period for queued replies are adjustable; replies remain valid for 10 minutes by default. When a reply is no longer valid, the interface shows its recorded reason: delivery timeout, conversation changes, delivery conditions, or content retention expiry. Older replies without a recorded reason use a neutral label. Each completed reply in a batch can enter delivery without waiting for the other targets to finish generating. Once a reply enters the delivery flow, it will not answer the same already-handled message again. When an image tool selects an invalid reference, it can self-correct within the current turn; expired content remains unreadable. Run details display both recent attempt outcomes and failure history. You can appoint several administrators (Agent owners) for a conversation, whose requests are given priority; the entry is available directly in the group directory and group settings, as well as in the scheme's conversation management. Message history avoids duplicate sent messages. Autonomous-participation and idle-topic records show tasks that have started intent judgement, including decisions to remain silent. Waiting or skipped opportunities that have not been judged are no longer shown separately. Older records with unknown judgement status, messages, task queues, and technical traces remain available.
+- Choose continuous conversation or autonomous participation; these two modes are mutually exclusive. Direct responses and idle-topic initiation can be configured separately. Direct responses bypass interest scoring, while the Agent may still choose silence. Autonomous participation can judge when to join by message count (default 15±5) or elapsed time (default 60±20 seconds). The time window is enabled for new schemes, and opportunities can wait for available capacity. Window settings and the validity period for queued replies are adjustable; replies remain valid for 10 minutes by default. When a reply is no longer valid, the interface shows its recorded reason: delivery timeout, conversation changes, delivery conditions, or content retention expiry. Older replies without a recorded reason use a neutral label. Each completed reply in a batch can enter delivery without waiting for the other targets to finish generating. Once a reply enters the delivery flow, it will not answer the same already-handled message again. When an image tool selects an invalid reference, it can self-correct within the current turn; expired content remains unreadable. Run details display both recent attempt outcomes and failure history. You can appoint several administrators (Agent owners) for a conversation, whose requests are given priority; configure them under Conversations & bindings or Group settings, and view a scheme’s conversations from its details. Message history avoids duplicate sent messages. Autonomous-participation and idle-topic records show tasks that have started intent judgement, including decisions to remain silent. Waiting or skipped opportunities that have not been judged are no longer shown separately. Older records with unknown judgement status, messages, task queues, and technical traces remain available.
 - Set initiative thresholds, quiet periods, cooldowns, active hours, and reply grouping. Autonomous participation scoring treats middle scores (4–6, baseline 5) as natural light engagement for natural, brief conversation and carries qualified intent directly into replies, while preserving legitimate silence, custom rules, and duplicate suppression when delivery status is unconfirmed. QQ replies can quote messages, mention members, or include stickers within authorized permissions. Quotes and mentions are mutually independent; stickers require scheme authorization.
 - Edit scheme prompts across scene, judgement, reply, review, sticker, media, and compression roles. Multiple bindings can share schemes without sharing conversation history.
 - Configure separate judgement and reply windows. Messages outside the reply window enter a buffer queue and are compressed into context packages in a background task queue; judgement does not consume these packages.
@@ -178,7 +179,7 @@ Incoming messages in bound conversations appear automatically. When loading chat
 - **Input anti-spam**: Enabled for new schemes and kept off for existing schemes, with conversation overrides. By default, at least three image-only messages from one sender within three seconds of the first form one logical candidate; threshold (2–20 messages) and initial window (1–30 seconds) are configurable, stored separately for scheme defaults and conversation overrides. Other senders do not break the group; the sender's own text, other media, or direct request does. Grouped images and pure expressions are excluded from automatic image input but remain readable through tools. Direct mentions and valid replies are still handled, and original records are not deleted.
 - **Research & media budget**: QQ research runs check capacity against each subtask's own context limit; when media or sticker outputs exceed available space, a clear budget message is returned instead of postponing failure to later turns, and genuine capacity exceedances fail clearly.
 
-**Group settings** are integrated into scheme and group workflows, providing dedicated configurations and overrides for specific groups. Participation, response, context, media, and prompt fields can either follow the base scheme or store group-specific overrides; rebinding does not inherit overrides, and switching back restores them. System capabilities can be disabled per group with immediate effect.
+View and manage group and private chats under Schemes → Conversations & bindings, then open a group to edit **Group settings**. Scheme settings, conversation bindings, and QQ settings share one workspace, with dedicated configurations and overrides for each group. Participation, response, context, media, and prompt fields can either follow the base scheme or store group-specific overrides; rebinding does not inherit overrides, and switching back restores them. System capabilities can be disabled per group with immediate effect.
 
 Prerequisites and operational notes for QQ integration:
 
@@ -206,16 +207,17 @@ Operational details:
 
 ### Unified Agent core, extensions, and tools
 
-The interface provides six primary sections: **Conversations**, **Agents**, **System capabilities**, **Schemes**, **Library**, and **Extensions**, along with entrances for **Model services** and **Preferences**.
+The navigation organizes seven workspace sections across three groups: **Daily** (Conversations, Agents, Library), **Apps** (Schemes), and **System** (Model services, System capabilities, Extensions), with **Preferences** and search at the bottom; both the main navigation and the conversation list can be resized by dragging a subtle divider line.
 
 - **Workspace tabs**: The conversation workspace integrates Messages, Runs, and Tasks tabs, switchable between conversation and global scopes. Conversation notifications update message records while preserving your position when reading history and marking new arrivals. Run records show task names by purpose, with original identifiers available in details.
-- **Capability groups**: Browse related tools, skills, and MCP services under material reading, web access, QQ, execution, and external extensions. Open the existing settings or component details directly. Memory query settings include the retrieval prompt and each mode’s relevance criteria.
+- **Capability groups**: Browse related tools, skills, and MCP services under material reading, web access, QQ, execution, and external extensions. Open the existing settings or component details directly. Configure memory reading rules and each mode’s relevance criteria under Agent access rules.
 - **QQ group members**: Assistants can look up IDs, nicknames, group cards, and owner/admin/member roles in the current group, including their own identity. Search, filters, and individual details are available on demand. Ordinary chat needs no lookup; a roster is reused within the run, and missing fields remain unknown. Configure the global switch in System capabilities or disable it per group.
 - **Extensions & MCP client**: View registered built-in and external MCP tools under Extensions → Tools; connect to external Model Context Protocol services over stdio, HTTP, and SSE; registered servers are disabled by default, with configurable timeouts and result caps; environment credentials store variable names only.
 - **Skills catalog**: View installed skill documentation and six bundled system skills (evidence reading, media reading, QQ members, QQ reply, task execution, web research) under Extensions → Skills.
 - **Programmatic Tool Calling (PTC)**: An optional execution mode using a QuickJS WASM sandbox to orchestrate and aggregate read-only tool calls locally; disabled by default and active only when models declare code execution capabilities.
 - **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
 - **Tasks and local approvals**: Tool authorizations under Extensions → Tools remain active once approved until revisions change; task calls requiring approval generate pending tickets that require manual local confirmation.
+- **Call and wake retries**: Configure model and read-only tool call retries under System capabilities → Execution settings (default: 3 attempts including the first, with a 2-second delay, retrying only explicit 429/503 rejections, without blind retries for writes or timeouts); configure wake retries under Schemes → QQ connection (default: 3 attempts including the first, with a 15-second delay).
 - **Run overview and step selection**: Run overviews focus on results and evidence, presenting model calls as vertical step cards, selecting the first step by default, and displaying its details below.
 - **Technical trace and execution inspection**: Focuses on process diagnosis, using a timeline to inspect execution order, duration, and errors. Selecting a step links directly to its details below, and actual model calls under parent runs can also be inspected, eliminating redundant duplicate step listings.
 - **Run detail content expansion and on-demand reading**: Outputs, inputs, and associated sources of the selected step are clearly separated with outputs shown first; all rows start collapsed and expand independently. When opening run details, all real calls for the current run are prefetched; once prefetched, switching steps or expanding sections requires no additional network requests (a loading indicator displays while prefetching; viewing inputs, outputs, and sources remains subject to access authorization and retention limits, with expired or revoked content clearly marked). Distinguishes model-generated content from platform delivery confirmation, avoiding duplicate reads for the same delivery result; full technical trace records and associated sources are preserved.

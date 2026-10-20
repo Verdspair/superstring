@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ConversationEventView,
@@ -10,6 +10,7 @@ import { ExternalConversation } from "../../src/web/screens/conversations/Extern
 import { useForegroundRead } from "../../src/web/services/use-foreground-read";
 import { useLiveResource } from "../../src/web/services/use-live-resource";
 import { useSuperstringStore } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 let originalVisibilityDesc: PropertyDescriptor | undefined;
 

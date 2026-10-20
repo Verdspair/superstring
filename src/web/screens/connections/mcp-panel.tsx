@@ -160,12 +160,18 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={loading || busy !== ""} onClick={refresh}>
+          <Button
+            variant="outline"
+            tooltip={t("hints.extensions.mcp.refresh")}
+            disabled={loading || busy !== ""}
+            onClick={refresh}
+          >
             <RefreshCw />
             {t("connections.common.refresh")}
           </Button>
           <Button
             variant="outline"
+            tooltip={t("hints.extensions.mcp.reconnect")}
             disabled={busy !== "" || loading}
             onClick={() => {
               if (mutation.current) return;
@@ -190,6 +196,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
             {t("connections.mcp.reload")}
           </Button>
           <Button
+            tooltip={t("hints.extensions.mcp.add")}
             disabled={busy !== "" || !status}
             onClick={() => {
               setProblem(null);
@@ -261,12 +268,18 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                       : t("connections.mcp.noTools")}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button variant="ghost" size="sm" onClick={() => setDetail(row)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      tooltip={t("hints.extensions.mcp.details")}
+                      onClick={() => setDetail(row)}
+                    >
                       {t("connections.tools.details")}
                     </Button>
                     <Button
                       variant="ghost"
                       size="sm"
+                      tooltip={t("hints.extensions.mcp.manage")}
                       disabled={busy !== ""}
                       onClick={() => {
                         setProblem(null);
@@ -323,6 +336,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                   <Button
                     key={tool.name}
                     variant="outline"
+                    tooltip={t("hints.extensions.mcp.openTool")}
                     className="w-full justify-start"
                     onClick={() => openComponent({ kind: "tool", id: tool.name })}
                   >
@@ -352,7 +366,11 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
           </SheetHeader>
           {editor && (
             <div className="space-y-6 p-6">
-              <Field label="connections.mcp.serverId" info="connections.mcp.serverIdHint">
+              <Field
+                label="connections.mcp.serverId"
+                info="connections.mcp.serverIdHint"
+                tooltip={t("connections.mcp.serverIdHint")}
+              >
                 <Input
                   value={editor.draft.id}
                   disabled={busy !== ""}
@@ -361,7 +379,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                   }
                 />
               </Field>
-              <Field label="connections.mcp.name">
+              <Field label="connections.mcp.name" tooltip={t("hints.fieldExtra.mcpName")}>
                 <Input
                   value={editor.draft.name}
                   disabled={busy !== ""}
@@ -370,7 +388,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                   }
                 />
               </Field>
-              <Field label="connections.mcp.transport">
+              <Field label="connections.mcp.transport" tooltip={t("hints.fieldExtra.mcpTransport")}>
                 <NativeSelect
                   value={editor.draft.transport}
                   disabled={busy !== ""}
@@ -391,7 +409,10 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
               </Field>
               {editor.draft.transport === "stdio" ? (
                 <>
-                  <Field label="connections.mcp.command">
+                  <Field
+                    label="connections.mcp.command"
+                    tooltip={t("hints.extensions.mcp.command")}
+                  >
                     <Input
                       value={editor.draft.command}
                       disabled={busy !== ""}
@@ -403,7 +424,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                       }
                     />
                   </Field>
-                  <Field label="connections.mcp.args">
+                  <Field label="connections.mcp.args" tooltip={t("hints.extensions.mcp.args")}>
                     <Textarea
                       rows={3}
                       value={editor.draft.args}
@@ -413,7 +434,11 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                       }
                     />
                   </Field>
-                  <Field label="connections.mcp.env" info="connections.mcp.envHint">
+                  <Field
+                    label="connections.mcp.env"
+                    info="connections.mcp.envHint"
+                    tooltip={t("connections.mcp.envHint")}
+                  >
                     <Textarea
                       rows={3}
                       value={editor.draft.env}
@@ -426,7 +451,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                 </>
               ) : (
                 <>
-                  <Field label="connections.mcp.url">
+                  <Field label="connections.mcp.url" tooltip={t("hints.fieldExtra.mcpUrl")}>
                     <Input
                       value={editor.draft.url}
                       disabled={busy !== ""}
@@ -439,6 +464,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                   <Field
                     label="connections.mcp.authorizationEnv"
                     info="connections.mcp.authorizationEnvHint"
+                    tooltip={t("connections.mcp.authorizationEnvHint")}
                   >
                     <Input
                       value={editor.draft.authorizationEnv}
@@ -454,7 +480,10 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                 </>
               )}
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="connections.mcp.timeoutMs">
+                <Field
+                  label="connections.mcp.timeoutMs"
+                  tooltip={t("hints.extensions.mcp.timeout")}
+                >
                   <Input
                     inputMode="numeric"
                     value={editor.draft.timeoutMs}
@@ -467,7 +496,10 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                     }
                   />
                 </Field>
-                <Field label="connections.mcp.maxResultChars">
+                <Field
+                  label="connections.mcp.maxResultChars"
+                  tooltip={t("hints.extensions.mcp.maxResult")}
+                >
                   <Input
                     inputMode="numeric"
                     value={editor.draft.maxResultChars}
@@ -481,7 +513,11 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                   />
                 </Field>
               </div>
-              <Field label="connections.mcp.enabled" info="connections.mcp.enabledHint">
+              <Field
+                label="connections.mcp.enabled"
+                info="connections.mcp.enabledHint"
+                tooltip={t("connections.mcp.enabledHint")}
+              >
                 <Checkbox
                   checked={editor.draft.enabled}
                   disabled={busy !== ""}
@@ -496,6 +532,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
               <Field
                 label="connections.mcp.trustToolAnnotations"
                 info="connections.mcp.trustToolAnnotationsHint"
+                tooltip={t("connections.mcp.trustToolAnnotationsHint")}
               >
                 <Checkbox
                   checked={editor.draft.trustToolAnnotations === true}
@@ -522,6 +559,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                 {editor.originalId && (
                   <Button
                     variant="ghost"
+                    tooltip={t("hints.extensions.mcp.delete")}
                     disabled={busy !== ""}
                     onClick={() => setRemoving(editor.originalId)}
                   >
@@ -531,6 +569,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                 )}
                 <Button
                   className="ml-auto"
+                  tooltip={t("hints.extensions.mcp.save")}
                   disabled={busy !== "" || loading}
                   onClick={() => {
                     const payload = serverPayload(editor.draft);

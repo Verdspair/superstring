@@ -1,11 +1,12 @@
 // 方案绑定视图：详情「使用会话」与全局「会话绑定」共用（行为断言，界面键经 i18n.t 取）。
 //
-// 覆盖：本方案绑定列表、管理编辑；添加会话草稿存 qqInputs.manual*（关闭不丢、成功才清、
+// 覆盖：本方案绑定列表、管理编辑；全局路由默认 ALL（跨方案群+私聊同列，显式筛选后才收窄）；
+// 添加会话草稿存 qqInputs.manual*（关闭不丢、成功才清、
 // 缺 Agent 原地失败、放弃才清）；已绑定会话不静默覆盖；无方案先创建；显式方案不在目录时不回退；
 // 搜索/类型筛选/最近消息；目录读失败可重试；连接页刷新重读设置与状态、失败不重复提示；
 // 抽屉刷新保存基线：409 后草稿保留并以新 revision 重试，刷新失败不改草稿基线。
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Profiler, type ProfilerOnRenderCallback } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,6 +31,7 @@ import { formatDate, i18n } from "../../src/web/i18n/runtime";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { SchemeBindingsView } from "../../src/web/screens/connections/scheme-bindings";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const ui = (key: string, values?: Record<string, unknown>) => i18n.t(key, values) as string;
 
@@ -872,13 +874,14 @@ describe("刷新保存基线", () => {
 });
 
 describe("scheme-bindings 路由", () => {
-  it("先选方案，再显示该方案的绑定；切方案保留未保存的添加草稿目标", async () => {
+  it("全局看板默认全部方案：跨方案群与私聊同列；显式筛选后添加草稿目标不被隐式改写", async () => {
     const fake = client({
       listQqBindings: vi
         .fn()
         .mockResolvedValue([
           bindingOf(SCHEME_A, BINDING_A, "30003"),
           bindingOf(SCHEME_B, BINDING_B, "40004"),
+          bindingOf(SCHEME_A, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "20002", "private"),
         ]),
     });
     store.getState().resetForTests(fake);
@@ -890,21 +893,43 @@ describe("scheme-bindings 路由", () => {
     });
     render(<SchemesWorkspace />);
     await act(async () => {});
+    // 全局默认 ALL：跨方案的群与私聊同列，不再默认第一个方案。
     expect(screen.getByText("30003")).toBeTruthy();
-    expect(screen.queryByText("40004")).toBeNull();
-    const picker = screen.getByLabelText(ui("schemes.bindings.chooseScheme"));
-    // 先为一个方案写下手工草稿再关闭，切换查看方案不隐式改写草稿目标。
+    expect(screen.getByText("40004")).toBeTruthy();
+    expect(screen.getByText("20002")).toBeTruthy();
+    const picker = screen.getByLabelText(ui("schemes.bindings.chooseScheme")) as HTMLSelectElement;
+    expect(picker.value).toBe("");
+    // ALL 下添加：不种子入口方案，方案选择停在显式占位；号码+Agent 仍不够，必须显式选方案。
     await userEvent.click(screen.getByRole("button", { name: ui("schemes.bindings.add") }));
     let addDialog = screen.getByRole("dialog");
+    const schemeSelect = within(addDialog).getByLabelText(
+      ui("connections.schemes"),
+    ) as HTMLSelectElement;
+    expect(schemeSelect.value).toBe("");
+    expect(store.getState().qqInputs.manualSchemeId).toBe("");
     fireEvent.change(within(addDialog).getByLabelText(ui("connections.number")), {
       target: { value: "60006" },
     });
+    await userEvent.selectOptions(
+      within(addDialog).getByLabelText(ui("connections.assistant")),
+      AGENT_A,
+    );
+    expect(
+      (within(addDialog).getByRole("button", { name: ui("connections.bind") }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    // 显式选中的方案成为草稿目标；取消不提交也不丢。
+    await userEvent.selectOptions(schemeSelect, SCHEME_A);
+    expect(store.getState().qqInputs.manualSchemeId).toBe(SCHEME_A);
     await userEvent.click(
       within(addDialog).getByRole("button", { name: ui("connections.cancel") }),
     );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // 切换查看方案：只列该方案的会话；草稿目标保持显式选择，不被入口方案改写。
     await userEvent.selectOptions(picker, SCHEME_B);
     expect(screen.getByText("40004")).toBeTruthy();
     expect(screen.queryByText("30003")).toBeNull();
+    expect(screen.queryByText("20002")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: ui("schemes.bindings.add") }));
     addDialog = screen.getByRole("dialog");
     expect(

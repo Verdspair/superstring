@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { TaskList, TaskSummary } from "../../src/shared/contracts/agent-task";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
@@ -13,6 +13,7 @@ import {
 } from "../../src/web/services/conversation-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-10-07T00:00:00Z";
 const key = (name: string) => i18n.t(name);

@@ -72,6 +72,7 @@ export function ExecutionLedger({
                 variant="link"
                 data-trace-action={row.original.traceId}
                 className="h-auto justify-start gap-2 whitespace-normal p-0 text-left"
+                tooltip={t("hints.investigation.ledger.investigate")}
                 onClick={(event) => onInvestigate(row.original.traceId, event.currentTarget)}
               >
                 {traceTask(row.original, t)}
@@ -142,7 +143,7 @@ export function ExecutionLedger({
       <div className="flex justify-end">
         <Popover>
           <PopoverTrigger asChild>
-            <Button size="sm" variant="ghost">
+            <Button size="sm" variant="ghost" tooltip={t("hints.investigation.ledger.columns")}>
               <Columns3 />
               {t("observability.columns")}
             </Button>

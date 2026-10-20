@@ -3,13 +3,14 @@
 // The two promises worth pinning: the stored key is never rendered (the field is empty and
 // password-typed, and clearing it is its own explicit action), and a model cannot be saved without
 // a context window — that number is what keeps the QQ chain able to call an external model at all.
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProviderResponse } from "../../src/shared/contracts/models";
 import { api, type SuperstringApi } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const PROVIDER_ID = "11111111-1111-4111-8111-111111111111";
 

@@ -97,14 +97,25 @@ export function ToolGrantsPanel({
           <p className="mt-1 text-xs text-muted-foreground">{t("connections.grants.pauseHint")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={loading || saving} onClick={() => void load(true)}>
+          <Button
+            variant="outline"
+            tooltip={t("hints.extensions.grants.refresh")}
+            disabled={loading || saving}
+            onClick={() => void load(true)}
+          >
             <RefreshCw />
             {t("connections.common.refresh")}
           </Button>
-          <Button variant="outline" disabled={!dirty || saving} onClick={() => discard(editScope)}>
+          <Button
+            variant="outline"
+            tooltip={t("hints.extensions.grants.discard")}
+            disabled={!dirty || saving}
+            onClick={() => discard(editScope)}
+          >
             {t("library.discard.changes")}
           </Button>
           <Button
+            tooltip={t("hints.extensions.grants.save")}
             disabled={!dirty || saving || loading || !snapshot}
             onClick={() => void save(editScope)}
           >
@@ -274,7 +285,12 @@ function ResourceRow({
               : t("connections.grants.scopeNone")}
         </TableCell>
         <TableCell className="text-right align-top">
-          <Button variant="ghost" size="sm" onClick={onToggleExpand}>
+          <Button
+            variant="ghost"
+            size="sm"
+            tooltip={t("hints.extensions.grants.manage")}
+            onClick={onToggleExpand}
+          >
             {t(expanded ? "connections.grants.collapse" : "connections.manage")}
           </Button>
         </TableCell>

@@ -79,7 +79,12 @@ function RunEntry(
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="link" size="sm" className="h-auto gap-1 px-0">
+        <Button
+          variant="link"
+          size="sm"
+          className="h-auto gap-1 px-0"
+          tooltip={t("hints.investigation.runEntry.openDetails")}
+        >
           <ArrowUpRight />
           {"runId" in props
             ? (props.label ?? t("observability.runDetails"))
@@ -107,6 +112,7 @@ function RunEntry(
               variant="outline"
               size="sm"
               aria-label={t("observability.closeRunDetails")}
+              tooltip={t("hints.investigation.runEntry.closeDetails")}
             >
               {t("observability.close")}
             </Button>
@@ -161,7 +167,14 @@ export function RunAttempts({ ownerKind, ownerId }: { ownerKind: string; ownerId
             </NativeSelectOption>
           ))}
         </NativeSelect>
-        <Button variant="outline" size="sm" disabled={loading} onClick={refresh}>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={loading}
+          disabledReason={t("hints.investigation.runEntry.refreshLoading")}
+          tooltip={t("hints.investigation.runEntry.refreshRuns")}
+          onClick={refresh}
+        >
           <RefreshCw />
           {t("observability.refreshRuns")}
         </Button>
@@ -206,7 +219,7 @@ function RunTraceSection({
   };
   return (
     <section
-      className="min-w-0 space-y-4 rounded-lg border p-3"
+      className="min-w-0 space-y-4 rounded-xl border border-border/80 bg-card/50 p-4"
       aria-label={t("observability.traceDetails")}
     >
       <header className="flex flex-wrap items-center justify-between gap-2">
@@ -214,6 +227,9 @@ function RunTraceSection({
         <Button
           size="sm"
           variant="outline"
+          tooltip={
+            copied ? t("observability.copied") : t("hints.investigation.runEntry.copyTraceId")
+          }
           onClick={async () => {
             try {
               await navigator.clipboard.writeText(data.trace.traceId);
@@ -236,6 +252,22 @@ function RunTraceSection({
               size="sm"
               variant="outline"
               disabled={!matches.length}
+              disabledReason={t("hints.investigation.runEntry.locateNone", {
+                "0": t(
+                  status === "failed"
+                    ? "observability.processingFailed"
+                    : status === "unknown"
+                      ? "observability.resultUnconfirmed"
+                      : "observability.inProgress",
+                ),
+              })}
+              tooltip={t(
+                status === "failed"
+                  ? "hints.investigation.runEntry.locateFailed"
+                  : status === "unknown"
+                    ? "hints.investigation.runEntry.locateUnknown"
+                    : "hints.investigation.runEntry.locateStarted",
+              )}
               onClick={() => next(matches.map((item) => item.spanId))}
             >
               <StatusMark status={status} />
@@ -247,6 +279,8 @@ function RunTraceSection({
           size="sm"
           variant="outline"
           disabled={!data.matchedSpanIds.length}
+          disabledReason={t("hints.investigation.canvas.nextMatchNone")}
+          tooltip={t("hints.investigation.canvas.nextMatch")}
           onClick={() => next(data.matchedSpanIds)}
         >
           {t("observability.nextMatch")} · {data.matchedSpanIds.length}
@@ -505,14 +539,19 @@ export function RunWorkspace({
         {loading && !run && <p role="status">{t("observability.loadingRuns")}</p>}
         {run && (
           <>
-            <header className="flex flex-wrap items-start justify-between gap-4 border-b pb-4">
+            <header className="flex flex-wrap items-start justify-between gap-4 rounded-xl border border-border/80 bg-card/60 p-4">
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-lg font-semibold">{taskName(run.specId, t)}</h3>
+                  <h3 className="text-lg font-semibold tracking-tight">
+                    {taskName(run.specId, t)}
+                  </h3>
                   {taskName(run.specId, t) !== run.specId && (
                     <span className="font-mono text-xs text-muted-foreground">{run.specId}</span>
                   )}
-                  <Badge variant={run.status === "failed" ? "destructive" : "secondary"}>
+                  <Badge
+                    variant={run.status === "failed" ? "destructive" : "secondary"}
+                    className="gap-1"
+                  >
                     {t(runStatusLabel(run.status, run.steps.at(-1)?.phase))}
                   </Badge>
                   <Badge variant="outline">v{run.specVersion}</Badge>
@@ -532,12 +571,16 @@ export function RunWorkspace({
                     </>
                   )}
                 </p>
-                <code className="block break-all text-xs text-muted-foreground">{run.runId}</code>
+                <code className="block break-all text-xs text-muted-foreground font-mono">
+                  {run.runId}
+                </code>
               </div>
               <Button
                 variant="outline"
                 size="sm"
                 disabled={loading || tracesResource.loading}
+                disabledReason={t("hints.investigation.runEntry.refreshLoading")}
+                tooltip={t("hints.investigation.runEntry.refreshAll")}
                 onClick={() => {
                   refresh();
                   setInspectionRevision((revision) => revision + 1);
@@ -560,6 +603,7 @@ export function RunWorkspace({
               <Button
                 variant={view === "overview" ? "default" : "outline"}
                 aria-pressed={view === "overview"}
+                tooltip={t("hints.investigation.runEntry.overview")}
                 onClick={() => setView("overview")}
               >
                 {t("observability.overview")}
@@ -567,6 +611,7 @@ export function RunWorkspace({
               <Button
                 variant={view === "technical" ? "default" : "outline"}
                 aria-pressed={view === "technical"}
+                tooltip={t("hints.investigation.runEntry.technical")}
                 onClick={() => setView("technical")}
               >
                 {t("observability.technicalDetails")}
@@ -604,7 +649,7 @@ export function RunWorkspace({
                 <>
                   {/* Vertical list of step buttons */}
                   {modelCalls.length > 0 && (
-                    <fieldset className="grid gap-2" aria-label={t("observability.modelSteps")}>
+                    <fieldset className="grid gap-2.5" aria-label={t("observability.modelSteps")}>
                       {modelCalls.map((call) => {
                         const isSelected = activeCall?.key === call.key;
                         return (
@@ -614,12 +659,17 @@ export function RunWorkspace({
                             data-run-id={call.runId}
                             data-step-id={call.stepId}
                             variant={isSelected ? "default" : "outline"}
-                            className="h-auto w-full flex-col items-start gap-1 p-4 text-left justify-start"
+                            className="h-auto w-full flex-col items-start gap-1.5 rounded-xl p-4 text-left justify-start transition-colors"
                             aria-label={t("observability.stepValueValue", {
                               "0": call.stepNo,
                               "1": t(phaseLabels[call.phase]),
                             })}
                             aria-pressed={isSelected}
+                            tooltip={
+                              isSelected
+                                ? t("hints.investigation.runEntry.stepSelected")
+                                : t("hints.investigation.runEntry.stepSelect")
+                            }
                             onClick={() => setSelectedKey(call.key)}
                           >
                             <span className="font-semibold text-sm">
@@ -664,6 +714,7 @@ export function RunWorkspace({
                         aria-label={label}
                         aria-pressed={fallbackCallKey === call.key}
                         className="h-auto max-w-full flex-col items-start whitespace-normal text-left"
+                        tooltip={t("hints.investigation.runEntry.stepSelect")}
                         onClick={() => {
                           setSelectedSpan(null);
                           setFallbackCallKey(call.key);

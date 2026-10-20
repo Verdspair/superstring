@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Trans } from "react-i18next";
 import type { RetrievalPresets } from "../../../shared/contracts/models";
 import { Button } from "../../components/ui/button";
 import {
@@ -10,10 +11,13 @@ import {
   CardTitle,
 } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
+import { MemoryReadingRules } from "../assistants/ResourceRules";
 
 export type RetrievalModeKey = "conservative" | "standard" | "broad";
 
 export interface ContextAllocationReadingProps {
+  scope?: "global" | "agent" | "all";
+  showMemoryRules?: boolean;
   presets?: RetrievalPresets;
   knowledgeGlobalBudget?: number | null;
   knowledgeAgentBudget?: number | null;
@@ -74,6 +78,8 @@ const MODE_LABEL_KEYS: Record<RetrievalModeKey, { label: string; desc: string }>
 };
 
 export function ContextAllocationReading({
+  scope = "all",
+  showMemoryRules = true,
   presets,
   knowledgeGlobalBudget,
   knowledgeAgentBudget,
@@ -172,13 +178,17 @@ export function ContextAllocationReading({
     invalidFor("knowledgeAgent") === undefined &&
     (isAgentInheriting || isByteValid(knowledgeAgentDraft));
 
+  const effectiveMemoryValid = scope === "global" ? true : isMemoryValid;
+  const effectiveGlobalValid = scope === "agent" ? true : isKnowledgeGlobalValid;
+  const effectiveAgentValid = scope === "global" ? true : isKnowledgeAgentValid;
+
   useEffect(() => {
     onValidityChange?.({
-      memoryValid: isMemoryValid,
-      knowledgeGlobalValid: isKnowledgeGlobalValid,
-      knowledgeAgentValid: isKnowledgeAgentValid,
+      memoryValid: effectiveMemoryValid,
+      knowledgeGlobalValid: effectiveGlobalValid,
+      knowledgeAgentValid: effectiveAgentValid,
     });
-  }, [isMemoryValid, isKnowledgeGlobalValid, isKnowledgeAgentValid, onValidityChange]);
+  }, [effectiveMemoryValid, effectiveGlobalValid, effectiveAgentValid, onValidityChange]);
 
   // Every edit reports its raw text to the host: invalid raw is stored there, a valid raw clears it.
   const handlePresetChange = (mode: RetrievalModeKey, raw: string) => {
@@ -233,318 +243,349 @@ export function ContextAllocationReading({
     }
   };
 
+  const showAgent = scope !== "global";
+  const showGlobal = scope !== "agent";
+
   return (
     <div data-testid="reading-allocation-panel" className="space-y-6">
-      {/* 1. MEMORY PRESETS (AGENT SCOPE) */}
-      <Card data-testid="reading-section-memory">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-base">
-                {labels?.memoryTitle || "Long-Term Memory Retrieval Budgets"}
-              </CardTitle>
-              <CardDescription>
-                {labels?.memoryDesc ||
-                  `Maximum read bytes per retrieval tier${agentName ? ` for ${agentName}` : ""}. Applies to Web and QQ alike.`}
-              </CardDescription>
-            </div>
-            <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-              {labels?.scopeAgent || "Agent Scope"}
-            </span>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-3">
-            {MODES.map(({ key, label, desc }) => {
-              const draftVal = presetRaw(key);
-              const valid = isByteValid(draftVal) && invalidFor(`memory:${key}`) === undefined;
-              const preset = presets?.[key];
+      {/* Memory reading rules render only in the real host view; without a store editor it renders nothing. */}
+      {showAgent && showMemoryRules && <MemoryReadingRules />}
 
-              return (
-                <div
-                  key={key}
-                  className="rounded-lg border bg-background p-3.5 shadow-sm space-y-2.5"
+      {/* 1. MEMORY PRESETS (AGENT SCOPE) */}
+      {showAgent && (
+        <Card data-testid="reading-section-memory" className="border">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div className="space-y-1">
+                <CardTitle className="text-base font-semibold text-foreground">
+                  {labels?.memoryTitle || "Long-Term Memory Retrieval Budgets"}
+                </CardTitle>
+                <CardDescription className="text-xs text-muted-foreground">
+                  {labels?.memoryDesc ||
+                    `Maximum read bytes per retrieval tier${agentName ? ` for ${agentName}` : ""}. Applies to Web and QQ alike.`}
+                </CardDescription>
+              </div>
+              <span className="inline-flex items-center rounded border border-border/60 bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground self-start sm:self-auto shrink-0">
+                {labels?.scopeAgent || "Agent Scope"}
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-3">
+              {MODES.map(({ key, label, desc }) => {
+                const draftVal = presetRaw(key);
+                const valid = isByteValid(draftVal) && invalidFor(`memory:${key}`) === undefined;
+                const preset = presets?.[key];
+
+                return (
+                  <div key={key} className="rounded-lg border bg-card/60 p-4 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-foreground">
+                        {labels?.[MODE_LABEL_KEYS[key].label] || label}
+                      </span>
+                      <span className="text-[11px] text-muted-foreground font-mono">
+                        {preset?.max_entries != null
+                          ? String(preset.max_entries)
+                          : labels?.entriesKeep || "Entry limit preserved"}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed min-h-[32px]">
+                      {labels?.[MODE_LABEL_KEYS[key].desc] || desc}
+                    </p>
+                    <div className="space-y-2">
+                      <label
+                        htmlFor={`reading-memory-${key}`}
+                        className="text-[11px] font-medium text-muted-foreground block"
+                      >
+                        {labels?.maxBytesLabel || "Maximum Read Bytes (1..1,048,576)"}
+                      </label>
+                      <Input
+                        id={`reading-memory-${key}`}
+                        data-testid={`reading-preset-max-tokens-${key}`}
+                        type="text"
+                        inputMode="numeric"
+                        disabled={readOnly}
+                        value={draftVal}
+                        onChange={(e) => handlePresetChange(key, e.target.value)}
+                        className={`h-8 text-xs font-mono ${!valid ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                        placeholder={
+                          preset?.max_tokens != null ? String(preset.max_tokens) : "Bytes"
+                        }
+                      />
+                      {!valid && (
+                        <p className="text-[11px] text-destructive mt-1">
+                          {labels?.invalidByteRange || "Must be an integer between 1 and 1,048,576"}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+          {(onSaveMemory || onDiscardMemory) && (
+            <CardFooter className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
+              {onRefreshMemory && (
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.budgetRefresh" />}
+                  variant="outline"
+                  size="sm"
+                  disabled={readOnly}
+                  onClick={onRefreshMemory}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-foreground">
-                      {labels?.[MODE_LABEL_KEYS[key].label] || label}
-                    </span>
-                    <span className="text-[11px] text-muted-foreground font-mono">
-                      {preset?.max_entries != null
-                        ? String(preset.max_entries)
-                        : labels?.entriesKeep || "Entry limit preserved"}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground leading-relaxed min-h-[32px]">
-                    {labels?.[MODE_LABEL_KEYS[key].desc] || desc}
-                  </p>
-                  <div>
-                    <label
-                      htmlFor={`reading-memory-${key}`}
-                      className="text-[11px] font-medium text-muted-foreground block mb-1"
-                    >
-                      {labels?.maxBytesLabel || "Maximum Read Bytes (1..1,048,576)"}
-                    </label>
-                    <Input
-                      id={`reading-memory-${key}`}
-                      data-testid={`reading-preset-max-tokens-${key}`}
-                      type="text"
-                      inputMode="numeric"
-                      disabled={readOnly}
-                      value={draftVal}
-                      onChange={(e) => handlePresetChange(key, e.target.value)}
-                      className={`h-8 text-xs font-mono ${!valid ? "border-destructive focus-visible:ring-destructive" : ""}`}
-                      placeholder={preset?.max_tokens != null ? String(preset.max_tokens) : "Bytes"}
-                    />
-                    {!valid && (
-                      <p className="text-[11px] text-destructive mt-1">
-                        {labels?.invalidByteRange || "Must be an integer between 1 and 1,048,576"}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-        {(onSaveMemory || onDiscardMemory) && (
-          <CardFooter className="flex justify-end gap-2 border-t pt-3">
-            {onRefreshMemory && (
-              <Button variant="outline" size="sm" disabled={readOnly} onClick={onRefreshMemory}>
-                {labels?.refreshBaseline || "Refresh baseline"}
-              </Button>
-            )}
-            {onDiscardMemory && (
+                  {labels?.refreshBaseline || "Refresh baseline"}
+                </Button>
+              )}
+              {onDiscardMemory && (
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.budgetDiscard" />}
+                  data-testid="reading-discard-memory-btn"
+                  variant="outline"
+                  size="sm"
+                  disabled={readOnly || savingMemory}
+                  onClick={() => onDiscardMemory()}
+                >
+                  {labels?.discardBudget || "Discard budget changes"}
+                </Button>
+              )}
               <Button
-                data-testid="reading-discard-memory-btn"
-                variant="outline"
+                tooltip={<Trans i18nKey="hints.complete.memoryBudgetSave" />}
+                data-testid="reading-save-memory-btn"
                 size="sm"
-                disabled={readOnly || savingMemory}
-                onClick={() => onDiscardMemory()}
+                disabled={readOnly || savingMemory || !canSaveMemory || !isMemoryValid}
+                onClick={() => onSaveMemory?.()}
               >
-                {labels?.discardBudget || "Discard budget changes"}
+                {savingMemory
+                  ? labels?.saving || "Saving..."
+                  : labels?.saveMemory || "Save Memory Budgets"}
               </Button>
-            )}
-            <Button
-              data-testid="reading-save-memory-btn"
-              size="sm"
-              disabled={readOnly || savingMemory || !canSaveMemory || !isMemoryValid}
-              onClick={() => onSaveMemory?.()}
-            >
-              {savingMemory
-                ? labels?.saving || "Saving..."
-                : labels?.saveMemory || "Save Memory Budgets"}
-            </Button>
-          </CardFooter>
-        )}
-      </Card>
+            </CardFooter>
+          )}
+        </Card>
+      )}
 
       {/* 2. KNOWLEDGE BASE GLOBAL BUDGET */}
-      <Card data-testid="reading-section-knowledge-global">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-base">
-                {labels?.knowledgeGlobalTitle || "Global Knowledge Base Default Read Quota"}
-              </CardTitle>
-              <CardDescription>
-                {labels?.knowledgeGlobalDesc ||
-                  "Shared default per-request knowledge read limit; assistants without their own override inherit it."}
-              </CardDescription>
-            </div>
-            <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-              {labels?.scopeGlobal || "Global Scope"}
-            </span>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="max-w-md space-y-1.5">
-            <label
-              htmlFor="reading-global-budget"
-              className="text-xs font-medium text-muted-foreground block"
-            >
-              {labels?.defaultBytesLabel || "Default Read Quota (Bytes, 1..1,048,576)"}
-            </label>
-            <Input
-              id="reading-global-budget"
-              data-testid="reading-knowledge-global-budget-input"
-              type="text"
-              inputMode="numeric"
-              disabled={readOnly}
-              value={invalidFor("knowledgeGlobal") ?? knowledgeGlobalDraft}
-              onChange={(e) => handleGlobalKnowledgeChange(e.target.value)}
-              className={`h-8 text-xs font-mono ${!isKnowledgeGlobalValid ? "border-destructive focus-visible:ring-destructive" : ""}`}
-              placeholder={knowledgeGlobalBudget != null ? String(knowledgeGlobalBudget) : "Bytes"}
-            />
-            {!isKnowledgeGlobalValid && (
-              <p className="text-[11px] text-destructive">
-                {labels?.invalidPositiveByte ||
-                  "Must be a positive integer between 1 and 1,048,576"}
-              </p>
-            )}
-          </div>
-        </CardContent>
-        {(onSaveKnowledgeGlobal || onDiscardKnowledgeGlobal) && (
-          <CardFooter className="flex justify-end gap-2 border-t pt-3">
-            {onRefreshKnowledgeGlobal && (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={readOnly}
-                onClick={onRefreshKnowledgeGlobal}
-              >
-                {labels?.refreshBaseline || "Refresh baseline"}
-              </Button>
-            )}
-            {onDiscardKnowledgeGlobal && (
-              <Button
-                data-testid="reading-discard-knowledge-global-btn"
-                variant="outline"
-                size="sm"
-                disabled={readOnly || savingKnowledgeGlobal}
-                onClick={() => onDiscardKnowledgeGlobal()}
-              >
-                {labels?.discardBudget || "Discard budget changes"}
-              </Button>
-            )}
-            <Button
-              data-testid="reading-save-knowledge-global-btn"
-              size="sm"
-              disabled={
-                readOnly ||
-                savingKnowledgeGlobal ||
-                !canSaveKnowledgeGlobal ||
-                !isKnowledgeGlobalValid
-              }
-              onClick={() => onSaveKnowledgeGlobal?.()}
-            >
-              {savingKnowledgeGlobal
-                ? labels?.saving || "Saving..."
-                : labels?.saveKnowledgeGlobal || "Save Global Knowledge Quota"}
-            </Button>
-          </CardFooter>
-        )}
-      </Card>
-
-      {/* 3. KNOWLEDGE BASE AGENT OVERRIDE */}
-      <Card data-testid="reading-section-knowledge-agent">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-base">
-                {labels?.knowledgeAgentTitle || "Assistant Knowledge Read Quota"}
-              </CardTitle>
-              <CardDescription>
-                {labels?.knowledgeAgentDesc ||
-                  `Independent knowledge read quota override${agentName ? ` for ${agentName}` : ""}.`}
-              </CardDescription>
-            </div>
-            <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-              {labels?.scopeAgentOverride || "Agent Override"}
-            </span>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center space-x-2">
-            <input
-              type="checkbox"
-              id="reading-agent-inherit"
-              data-testid="reading-knowledge-agent-inherit-checkbox"
-              disabled={readOnly}
-              checked={isAgentInheriting}
-              onChange={(e) => handleToggleAgentInherit(e.target.checked)}
-              className="h-4 w-4 rounded border-input text-primary focus:ring-primary cursor-pointer disabled:cursor-not-allowed"
-            />
-            <label
-              htmlFor="reading-agent-inherit"
-              className="text-xs font-medium leading-none cursor-pointer"
-            >
-              {labels?.followGlobalDefault || "Follow global default quota (inherit global)"}
-            </label>
-          </div>
-
-          <div className="rounded-md border bg-muted/20 p-3 text-xs">
-            <div
-              data-testid="reading-knowledge-agent-effective-source"
-              className="flex items-center justify-between"
-            >
-              <span className="text-muted-foreground">
-                {labels?.effectiveSourceLabel || "Effective value and source:"}
-              </span>
-              <span className="font-medium font-mono">
-                {isAgentInheriting
-                  ? `${knowledgeGlobalBudget != null ? knowledgeGlobalBudget : "?"} ${labels?.bytesInherited || "Bytes (inherited from global)"}`
-                  : `${knowledgeAgentDraft || knowledgeAgentBudget || 0} ${labels?.bytesAgentOverride || "Bytes (assistant override)"}`}
+      {showGlobal && (
+        <Card data-testid="reading-section-knowledge-global" className="border">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div className="space-y-1">
+                <CardTitle className="text-base font-semibold text-foreground">
+                  {labels?.knowledgeGlobalTitle || "Global Knowledge Base Default Read Quota"}
+                </CardTitle>
+                <CardDescription className="text-xs text-muted-foreground">
+                  {labels?.knowledgeGlobalDesc ||
+                    "Shared default per-request knowledge read limit; assistants without their own override inherit it."}
+                </CardDescription>
+              </div>
+              <span className="inline-flex items-center rounded border border-border/60 bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground self-start sm:self-auto shrink-0">
+                {labels?.scopeGlobal || "Global Scope"}
               </span>
             </div>
-          </div>
-
-          {!isAgentInheriting && (
-            <div className="max-w-md space-y-1.5 pt-1">
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="max-w-md space-y-2">
               <label
-                htmlFor="reading-agent-budget"
+                htmlFor="reading-global-budget"
                 className="text-xs font-medium text-muted-foreground block"
               >
-                {labels?.overrideBytesLabel || "Override Read Quota (Bytes, 1..1,048,576)"}
+                {labels?.defaultBytesLabel || "Default Read Quota (Bytes, 1..1,048,576)"}
               </label>
               <Input
-                id="reading-agent-budget"
-                data-testid="reading-knowledge-agent-budget-input"
+                id="reading-global-budget"
+                data-testid="reading-knowledge-global-budget-input"
                 type="text"
                 inputMode="numeric"
                 disabled={readOnly}
-                value={invalidFor("knowledgeAgent") ?? knowledgeAgentDraft}
-                onChange={(e) => handleAgentKnowledgeChange(e.target.value)}
-                className={`h-8 text-xs font-mono ${!isKnowledgeAgentValid ? "border-destructive focus-visible:ring-destructive" : ""}`}
-                placeholder="Bytes"
+                value={invalidFor("knowledgeGlobal") ?? knowledgeGlobalDraft}
+                onChange={(e) => handleGlobalKnowledgeChange(e.target.value)}
+                className={`h-8 text-xs font-mono ${!isKnowledgeGlobalValid ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                placeholder={
+                  knowledgeGlobalBudget != null ? String(knowledgeGlobalBudget) : "Bytes"
+                }
               />
-              {!isKnowledgeAgentValid && (
+              {!isKnowledgeGlobalValid && (
                 <p className="text-[11px] text-destructive">
                   {labels?.invalidPositiveByte ||
                     "Must be a positive integer between 1 and 1,048,576"}
                 </p>
               )}
             </div>
+          </CardContent>
+          {(onSaveKnowledgeGlobal || onDiscardKnowledgeGlobal) && (
+            <CardFooter className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
+              {onRefreshKnowledgeGlobal && (
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.budgetRefresh" />}
+                  variant="outline"
+                  size="sm"
+                  disabled={readOnly}
+                  onClick={onRefreshKnowledgeGlobal}
+                >
+                  {labels?.refreshBaseline || "Refresh baseline"}
+                </Button>
+              )}
+              {onDiscardKnowledgeGlobal && (
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.budgetDiscard" />}
+                  data-testid="reading-discard-knowledge-global-btn"
+                  variant="outline"
+                  size="sm"
+                  disabled={readOnly || savingKnowledgeGlobal}
+                  onClick={() => onDiscardKnowledgeGlobal()}
+                >
+                  {labels?.discardBudget || "Discard budget changes"}
+                </Button>
+              )}
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.knowledgeGlobalSave" />}
+                data-testid="reading-save-knowledge-global-btn"
+                size="sm"
+                disabled={
+                  readOnly ||
+                  savingKnowledgeGlobal ||
+                  !canSaveKnowledgeGlobal ||
+                  !isKnowledgeGlobalValid
+                }
+                onClick={() => onSaveKnowledgeGlobal?.()}
+              >
+                {savingKnowledgeGlobal
+                  ? labels?.saving || "Saving..."
+                  : labels?.saveKnowledgeGlobal || "Save Global Knowledge Quota"}
+              </Button>
+            </CardFooter>
           )}
-        </CardContent>
-        {(onSaveKnowledgeAgent || onDiscardKnowledgeAgent) && (
-          <CardFooter className="flex justify-end gap-2 border-t pt-3">
-            {onRefreshKnowledgeAgent && (
-              <Button
-                variant="outline"
-                size="sm"
+        </Card>
+      )}
+
+      {/* 3. KNOWLEDGE BASE AGENT OVERRIDE */}
+      {showAgent && (
+        <Card data-testid="reading-section-knowledge-agent" className="border">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div className="space-y-1">
+                <CardTitle className="text-base font-semibold text-foreground">
+                  {labels?.knowledgeAgentTitle || "Assistant Knowledge Read Quota"}
+                </CardTitle>
+                <CardDescription className="text-xs text-muted-foreground">
+                  {labels?.knowledgeAgentDesc ||
+                    `Independent knowledge read quota override${agentName ? ` for ${agentName}` : ""}.`}
+                </CardDescription>
+                <p className="text-xs text-muted-foreground">{labels?.knowledgeAgentScope}</p>
+              </div>
+              <span className="inline-flex items-center rounded border border-border/60 bg-muted/60 px-2 py-0.5 text-xs font-medium text-muted-foreground self-start sm:self-auto shrink-0">
+                {labels?.scopeAgentOverride || "Agent Override"}
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="reading-agent-inherit"
+                data-testid="reading-knowledge-agent-inherit-checkbox"
                 disabled={readOnly}
-                onClick={onRefreshKnowledgeAgent}
+                checked={isAgentInheriting}
+                onChange={(e) => handleToggleAgentInherit(e.target.checked)}
+                className="h-4 w-4 rounded border-input text-primary focus:ring-primary cursor-pointer disabled:cursor-not-allowed"
+              />
+              <label
+                htmlFor="reading-agent-inherit"
+                className="text-xs font-medium leading-none cursor-pointer text-foreground"
               >
-                {labels?.refreshBaseline || "Refresh baseline"}
-              </Button>
+                {labels?.followGlobalDefault || "Follow global default quota (inherit global)"}
+              </label>
+            </div>
+
+            <div className="rounded-md border bg-muted/20 p-3 text-xs">
+              <div
+                data-testid="reading-knowledge-agent-effective-source"
+                className="flex items-center justify-between"
+              >
+                <span className="text-muted-foreground">
+                  {labels?.effectiveSourceLabel || "Effective value and source:"}
+                </span>
+                <span className="font-medium font-mono text-foreground">
+                  {isAgentInheriting
+                    ? `${knowledgeGlobalBudget != null ? knowledgeGlobalBudget : "?"} ${labels?.bytesInherited || "Bytes (inherited from global)"}`
+                    : `${knowledgeAgentDraft || knowledgeAgentBudget || 0} ${labels?.bytesAgentOverride || "Bytes (assistant override)"}`}
+                </span>
+              </div>
+            </div>
+
+            {!isAgentInheriting && (
+              <div className="ml-1 pl-4 border-l-2 border-primary/20 space-y-2 pt-1 max-w-md">
+                <label
+                  htmlFor="reading-agent-budget"
+                  className="text-xs font-medium text-muted-foreground block"
+                >
+                  {labels?.overrideBytesLabel || "Override Read Quota (Bytes, 1..1,048,576)"}
+                </label>
+                <Input
+                  id="reading-agent-budget"
+                  data-testid="reading-knowledge-agent-budget-input"
+                  type="text"
+                  inputMode="numeric"
+                  disabled={readOnly}
+                  value={invalidFor("knowledgeAgent") ?? knowledgeAgentDraft}
+                  onChange={(e) => handleAgentKnowledgeChange(e.target.value)}
+                  className={`h-8 text-xs font-mono ${!isKnowledgeAgentValid ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                  placeholder="Bytes"
+                />
+                {!isKnowledgeAgentValid && (
+                  <p className="text-[11px] text-destructive">
+                    {labels?.invalidPositiveByte ||
+                      "Must be a positive integer between 1 and 1,048,576"}
+                  </p>
+                )}
+              </div>
             )}
-            {onDiscardKnowledgeAgent && (
+          </CardContent>
+          {(onSaveKnowledgeAgent || onDiscardKnowledgeAgent) && (
+            <CardFooter className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
+              {onRefreshKnowledgeAgent && (
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.budgetRefresh" />}
+                  variant="outline"
+                  size="sm"
+                  disabled={readOnly}
+                  onClick={onRefreshKnowledgeAgent}
+                >
+                  {labels?.refreshBaseline || "Refresh baseline"}
+                </Button>
+              )}
+              {onDiscardKnowledgeAgent && (
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.budgetDiscard" />}
+                  data-testid="reading-discard-knowledge-agent-btn"
+                  variant="outline"
+                  size="sm"
+                  disabled={readOnly || savingKnowledgeAgent}
+                  onClick={() => onDiscardKnowledgeAgent()}
+                >
+                  {labels?.discardBudget || "Discard budget changes"}
+                </Button>
+              )}
               <Button
-                data-testid="reading-discard-knowledge-agent-btn"
-                variant="outline"
+                tooltip={<Trans i18nKey="hints.complete.knowledgeAgentSave" />}
+                data-testid="reading-save-knowledge-agent-btn"
                 size="sm"
-                disabled={readOnly || savingKnowledgeAgent}
-                onClick={() => onDiscardKnowledgeAgent()}
+                disabled={
+                  readOnly ||
+                  savingKnowledgeAgent ||
+                  !canSaveKnowledgeAgent ||
+                  !isKnowledgeAgentValid
+                }
+                onClick={() => onSaveKnowledgeAgent?.()}
               >
-                {labels?.discardBudget || "Discard budget changes"}
+                {savingKnowledgeAgent
+                  ? labels?.saving || "Saving..."
+                  : labels?.saveKnowledgeAgent || "Save Assistant Knowledge Quota"}
               </Button>
-            )}
-            <Button
-              data-testid="reading-save-knowledge-agent-btn"
-              size="sm"
-              disabled={
-                readOnly || savingKnowledgeAgent || !canSaveKnowledgeAgent || !isKnowledgeAgentValid
-              }
-              onClick={() => onSaveKnowledgeAgent?.()}
-            >
-              {savingKnowledgeAgent
-                ? labels?.saving || "Saving..."
-                : labels?.saveKnowledgeAgent || "Save Assistant Knowledge Quota"}
-            </Button>
-          </CardFooter>
-        )}
-      </Card>
+            </CardFooter>
+          )}
+        </Card>
+      )}
     </div>
   );
 }

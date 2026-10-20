@@ -1,8 +1,9 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { useCallback, useRef, useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { type ReadTask, startRead, startReadPolling } from "../../src/web/services/read-task";
 import { useForegroundRead } from "../../src/web/services/use-foreground-read";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(() => {
   cleanup();

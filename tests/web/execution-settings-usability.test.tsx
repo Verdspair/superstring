@@ -1,14 +1,16 @@
 // 执行设置页的排版与易用性用例：完整字段与开关、页内锚点、上下同源保存与非法值不写。
+// QQ 投递参数与跨会话唤醒并发已迁 QQ 应用连接页（capability-permission-scope 覆盖那边的隔离）。
 // permissions 夹具按 access-console 的形状本地取样，不共享实现细节。
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
+import { executionPolicy, type PermissionsResponse } from "../../src/shared/contracts/permissions";
 import { ApiError, api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
 import { i18n } from "../../src/web/i18n/runtime";
 import { ExecutionSettings } from "../../src/web/screens/runs/execution-settings";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 /** 新字段文案随 JSON 落地与否都成立：组件与测试读同一实例同一键。 */
 const T = (key: string, options?: Record<string, string | number>) =>
@@ -54,13 +56,14 @@ const permissions: PermissionsResponse = {
         modelConcurrency: 1,
         providerConcurrency: 1,
       },
+      system: { maxAttempts: 3, retryDelayMs: 2000 },
       qq: { retryDelayMs: 15_000, maxAttempts: 3, deliveryTtlSeconds: 120 },
     },
   },
   resources: [],
 };
 
-// 25 个标签共 26 个输入框：「结论字符上限」在研究档与代码档各有一个。
+// 23 个标签共 24 个输入框：「结论字符上限」在研究档与代码档各有一个。
 const NUMERIC: [string, string[]][] = [
   ["记忆整理总时限（秒）", ["3600"]],
   ["知识整理总时限（秒）", ["7200"]],
@@ -81,12 +84,10 @@ const NUMERIC: [string, string[]][] = [
   ["决策步数上限", ["16"]],
   ["只读并行上限", ["3"]],
   ["无进展终止阈值", ["3"]],
-  ["跨会话唤醒并发", ["4"]],
   ["模型调用上限（整机）", ["1"]],
   ["每个服务并发上限", ["1"]],
-  ["失败重试间隔（毫秒）", ["15000"]],
-  ["最多尝试次数", ["3"]],
-  ["投递意图有效期（秒）", ["120"]],
+  ["最多尝试次数（含首次）", ["3"]],
+  ["失败重试间隔（秒）", ["2"]],
 ];
 const SWITCHES: [string, "checked" | "unchecked"][] = [
   ["使用 MCP 工具", "checked"],
@@ -104,7 +105,7 @@ const NAV = [
   "只读研究",
   "代码沙箱（QuickJS）",
   "主循环与并发",
-  "QQ 投递",
+  "调用失败重试",
   T("connections.execution.retention"),
 ];
 
@@ -123,7 +124,7 @@ afterEach(() => {
 });
 
 describe("execution settings layout and usability", () => {
-  it("shows all 26 numeric fields and the 7 switches with their saved values", async () => {
+  it("shows all 24 numeric fields and the 7 switches with their saved values", async () => {
     await renderSettings({ getPermissions: vi.fn().mockResolvedValue(permissions) });
     let count = 0;
     for (const [label, values] of NUMERIC) {
@@ -134,9 +135,13 @@ describe("execution settings layout and usability", () => {
         count += 1;
       }
     }
-    expect(count).toBe(26);
+    expect(count).toBe(24);
     for (const [label, state] of SWITCHES) {
       expect(screen.getByRole("checkbox", { name: label }).getAttribute("data-state")).toBe(state);
+    }
+    // QQ 投递与跨会话唤醒并发不在系统执行设置页：已迁 QQ 应用连接页。
+    for (const label of ["失败重试间隔（毫秒）", "投递意图有效期（秒）", "跨会话唤醒并发"]) {
+      expect(screen.queryByLabelText(label)).toBeNull();
     }
   });
 
@@ -202,12 +207,14 @@ describe("execution settings layout and usability", () => {
     const [top] = save.mock.calls[0];
     expect(top.expectedRevision).toBe("pr-1");
     expect(top.policy.execution?.loop.maxSteps).toBe(64);
-    // 只带 execution 白名单：未改字段与授权原样保留。
+    // 只带 execution 白名单：未改字段与授权原样保留；已迁走的 QQ 键按基线原值回传。
     expect(top.policy.execution?.maintenance.memoryTimeoutSeconds).toBe(3600);
     expect(top.policy.execution?.telemetry?.retentionDays).toBe(14);
+    expect(top.policy.execution?.loop.concurrency).toBe(4);
+    const baselineQq = executionPolicy(permissions.policy).qq;
+    expect(top.policy.execution?.qq).toEqual(baselineQq);
     expect(top.policy.grants).toEqual(permissions.policy.grants);
 
-    fireEvent.change(screen.getByLabelText("最多尝试次数"), { target: { value: "5" } });
     fireEvent.change(screen.getByLabelText(T("connections.execution.retentionDays")), {
       target: { value: "30" },
     });
@@ -215,12 +222,52 @@ describe("execution settings layout and usability", () => {
     await act(async () => {});
     const [bottom] = save.mock.calls[1];
     expect(bottom.expectedRevision).toBe("pr-2");
-    expect(bottom.policy.execution?.qq.maxAttempts).toBe(5);
-    expect(bottom.policy.execution?.loop.maxSteps).toBe(64);
     expect(bottom.policy.execution?.telemetry?.retentionDays).toBe(30);
+    expect(bottom.policy.execution?.loop.maxSteps).toBe(64);
     expect(bottom.policy.execution?.maintenance.knowledgeTimeoutSeconds).toBe(7200);
+    expect(bottom.policy.execution?.qq).toEqual(baselineQq);
     expect(bottom.policy.grants).toEqual(permissions.policy.grants);
     expect(screen.getByRole("status").textContent).toContain("执行设置已保存");
+  });
+
+  it("saves only the page whitelist: a touched QQ key in the shared draft stays out of the payload", async () => {
+    const save = vi.fn(async ({ policy }: Parameters<typeof api.savePermissions>[0]) => ({
+      revision: "pr-2",
+      policy,
+    }));
+    await renderSettings({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      savePermissions: save,
+    });
+    // QQ 面板草稿进了同一 editor：本页保存不得夹带，也不因它可保存。
+    await act(async () => {
+      store.getState().patchExecutionSettings({ qqMaxAttempts: "9", loopConcurrency: "9" });
+    });
+    expect(
+      (screen.getByRole("button", { name: zh["connections.execution.save"] }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    fireEvent.change(screen.getByLabelText("决策步数上限"), { target: { value: "32" } });
+    fireEvent.click(screen.getByRole("button", { name: zh["connections.execution.save"] }));
+    await act(async () => {});
+    const [payload] = save.mock.calls[0];
+    expect(payload.policy.execution?.loop.maxSteps).toBe(32);
+    expect(payload.policy.execution?.loop.concurrency).toBe(4);
+    expect(payload.policy.execution?.qq.maxAttempts).toBe(3);
+  });
+
+  it("does not repeat a QQ limit error the execution page cannot fix", async () => {
+    await renderSettings({ getPermissions: vi.fn().mockResolvedValue(permissions) });
+    await act(async () => {
+      store.getState().patchExecutionSettings({ qqMaxAttempts: "0" });
+    });
+    await act(async () => {
+      expect(
+        await store.getState().savePermissionSettings({ executionKeys: ["qqMaxAttempts"] }),
+      ).toBe(false);
+    });
+    expect(store.getState().permissionProblem).toBe("qqMaxAttempts");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("disables both save buttons while saving and rejects repeat clicks", async () => {
@@ -282,6 +329,7 @@ describe("execution settings layout and usability", () => {
     expect(container?.className).toContain("w-full");
     expect(container?.className).toContain("min-w-0");
     expect(container?.className).not.toContain("max-w-");
+    // 「执行开关」与「运行数据与保留」未迁 SettingsGroup，仍是分组网格里的整行 Card。
     const switches = screen
       .getByRole("heading", { name: "执行开关" })
       .closest('[data-slot="card"]');
@@ -290,14 +338,20 @@ describe("execution settings layout and usability", () => {
     expect(switches?.className).toContain("xl:col-span-2");
     const retentionTitle = T("connections.execution.retention");
     for (const title of NAV.slice(1)) {
-      const card = screen.getByRole("heading", { name: title }).closest('[data-slot="card"]');
-      expect(card?.parentElement).toBe(grid);
+      const heading = screen.getByRole("heading", { name: title });
       if (title === retentionTitle) {
         // 「运行数据与保留」承载统计表与清单，与执行开关一样整行展开。
+        const card = heading.closest('[data-slot="card"]');
+        expect(card?.parentElement).toBe(grid);
         expect(card?.className).toContain("xl:col-span-2");
-      } else {
-        expect(card?.className).not.toContain("xl:col-span-2");
+        continue;
       }
+      // 其余五组是 SettingsGroup：真实 h2 外标题，就近 section 直接挂在同一分组网格下。
+      expect(heading.tagName).toBe("H2");
+      const section = heading.closest("section");
+      expect(section).not.toBeNull();
+      expect(section?.parentElement).toBe(grid);
+      expect(section?.className).not.toContain("xl:col-span-2");
     }
     const timing = screen.getByText(/数值在新运行、任务或领取时生效/);
     expect(
@@ -414,5 +468,38 @@ describe("execution settings layout and usability", () => {
     fireEvent.click(screen.getByRole("button", { name: zh["connections.execution.save"] }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
     expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves system retry settings with valid decimal seconds and refuses sub-millisecond precision without saving", async () => {
+    const save = vi.fn(async ({ policy }: Parameters<typeof api.savePermissions>[0]) => ({
+      revision: "pr-2",
+      policy,
+    }));
+    await renderSettings({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      savePermissions: save,
+    });
+    const attempts = screen.getByLabelText("最多尝试次数（含首次）") as HTMLInputElement;
+    const delay = screen.getByLabelText("失败重试间隔（秒）") as HTMLInputElement;
+    expect(attempts.value).toBe("3");
+    expect(delay.value).toBe("2");
+
+    // 合法小数秒 1.5s -> 1500ms，尝试次数改为 5
+    fireEvent.change(attempts, { target: { value: "5" } });
+    fireEvent.change(delay, { target: { value: "1.5" } });
+    fireEvent.click(screen.getByRole("button", { name: zh["workspace.save"] }));
+    await act(async () => {});
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0][0].policy.execution?.system).toEqual({
+      maxAttempts: 5,
+      retryDelayMs: 1500,
+    });
+
+    // 亚毫秒超精度 1.0005s 拒绝保存，高亮错误输入框
+    fireEvent.change(delay, { target: { value: "1.0005" } });
+    fireEvent.click(screen.getByRole("button", { name: zh["connections.execution.save"] }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("超出允许范围"));
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(delay.getAttribute("aria-invalid")).toBe("true");
   });
 });

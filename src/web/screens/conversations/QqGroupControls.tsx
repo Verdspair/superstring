@@ -6,7 +6,7 @@
 // `loadFacts={false}` 不再回读，缺失的事实在状态里如实呈现为未知，启停仍按目录里的行可用。
 
 import { useEffect, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/button";
 import { msg, translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
@@ -85,7 +85,13 @@ export function QqGroupControls({
           {t("schemes.qq.groupConfig.controls.unknown")}
         </span>
         {loadFacts && (
-          <Button variant="outline" size="sm" className="min-h-8 whitespace-normal" onClick={retry}>
+          <Button
+            tooltip={<Trans i18nKey="hints.complete.groupRetry" />}
+            variant="outline"
+            size="sm"
+            className="min-h-8 whitespace-normal"
+            onClick={retry}
+          >
             {t("capabilities.retry")}
           </Button>
         )}
@@ -140,6 +146,7 @@ export function QqGroupControls({
         variant="outline"
         size="sm"
         className="min-h-8 whitespace-normal"
+        tooltip={t("hints.conversation.qqEnable")}
         aria-pressed={!binding.paused}
         disabled={bindingBusy || wrongAgent || !binding.paused}
         onClick={() => pause(false)}
@@ -150,6 +157,7 @@ export function QqGroupControls({
         variant="outline"
         size="sm"
         className="min-h-8 whitespace-normal"
+        tooltip={t("hints.conversation.qqDisable")}
         aria-pressed={binding.paused}
         disabled={bindingBusy || wrongAgent || binding.paused}
         onClick={() => pause(true)}
@@ -160,6 +168,7 @@ export function QqGroupControls({
         variant="outline"
         size="sm"
         className="min-h-8 whitespace-normal"
+        tooltip={t("hints.conversation.qqConfigure")}
         disabled={bindingBusy || wrongAgent}
         onClick={() => openQqGroupConfig(bindingId)}
       >

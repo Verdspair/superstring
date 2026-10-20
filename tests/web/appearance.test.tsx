@@ -74,8 +74,23 @@ it("主题只投影强调色，中性表面与边框由语义令牌保持一致"
     applyTheme(theme.id);
     for (const role of ["--primary", "--ring", "--sidebar-primary", "--sidebar-ring"])
       expect(root.style.getPropertyValue(role)).toBe(`light-dark(${theme.color}, ${theme.dark})`);
+    // 旧 16 主题保持原 primary-foreground；新 3 套北欧主题（批准迁移）与自身深色底同系自洽。
+    const darkFg =
+      theme.id === "lavender"
+        ? "#110e18"
+        : theme.id === "fjord"
+          ? "#0c1017"
+          : theme.id === "birch"
+            ? "#14100c"
+            : theme.id === "sage"
+              ? "#0e1511"
+              : theme.id === "hearth"
+                ? "#181012"
+                : theme.id === "blossom"
+                  ? "#1e141d"
+                  : "#171717";
     expect(root.style.getPropertyValue("--primary-foreground")).toBe(
-      "light-dark(#ffffff, #171717)",
+      `light-dark(#ffffff, ${darkFg})`,
     );
     for (const property of [
       "--superstring-tone-deep",

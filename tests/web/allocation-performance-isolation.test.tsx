@@ -1,17 +1,23 @@
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render as renderView } from "@testing-library/react";
 import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AgentResponse, PersonaResponseSchema } from "../../src/shared/contracts";
 import type { QqSchemeResponse } from "../../src/shared/contracts/qq";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import {
+  openContextAllocation,
   resetContextAllocationTarget,
   setContextAllocationTarget,
 } from "../../src/web/features/context-allocation";
 import { selectLocale } from "../../src/web/i18n";
-import { ContextAllocationWorkspace } from "../../src/web/screens/connections/ContextAllocationWorkspace";
+import { CapabilityEditor } from "../../src/web/screens/assistants/StudioEditors";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
+import { ModelPurposes } from "../../src/web/screens/environment/ModelPurposes";
 import { useSuperstringStore as store } from "../../src/web/store";
+
+const render = (...[ui, options]: Parameters<typeof renderView>) =>
+  renderView(ui, { wrapper: DesignSystemProvider, ...options });
 
 const NOW = "2026-10-16T15:00:00.000Z";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -215,23 +221,23 @@ afterEach(() => {
 });
 
 describe("allocation performance & render isolation (PROVEN RED FIRST)", () => {
-  it("does not re-render ContextAllocationWorkspace on unrelated store updates (e.g. qqStickerLoading, traces tick)", async () => {
+  it("does not re-render ModelPurposes on unrelated store updates (e.g. qqStickerLoading, traces tick)", async () => {
     let commitCount = 0;
     render(
       <Profiler
-        id="context-allocation-workspace"
+        id="model-purposes"
         onRender={() => {
           commitCount++;
         }}
       >
-        <ContextAllocationWorkspace active={true} />
+        <ModelPurposes active={true} />
       </Profiler>,
     );
 
     await act(async () => {});
     const baselineCommits = commitCount;
 
-    // Mutate unrelated store properties that ContextAllocationWorkspace does NOT need
+    // Mutate unrelated store properties that ModelPurposes does NOT need
     for (let i = 0; i < 5; i++) {
       await act(async () => {
         store.setState({ qqStickerLoading: i % 2 === 0 });
@@ -239,7 +245,7 @@ describe("allocation performance & render isolation (PROVEN RED FIRST)", () => {
     }
 
     // RED EXPECTATION: Without useShallow selector, whole-store subscription `const s = useSuperstringStore()`
-    // causes ContextAllocationWorkspace to re-commit on EVERY unrelated store mutation.
+    // causes ModelPurposes to re-commit on EVERY unrelated store mutation.
     expect(commitCount).toBe(baselineCommits);
   });
 
@@ -287,17 +293,11 @@ describe("allocation performance & render isolation (PROVEN RED FIRST)", () => {
 
     setContextAllocationTarget({ purpose: "aux" });
 
-    render(<ContextAllocationWorkspace active={true} />);
+    render(<ModelPurposes active={true} />);
 
     await act(async () => {});
 
-    // In mock setup:
-    // memory_consolidate, memory_retrieval_select, research, knowledge_organize all resolve to 'shared-agent-model' (4 roles)
-    // qq_sticker_annotate, qq_media_describe resolve to 'shared-vision-model' (2 roles)
-    // Distinct non-null models = 2 ('shared-agent-model' and 'shared-vision-model').
-    // RED EXPECTATION: Currently 6 separate AllocationModelCapacity components mount and each fires getModelCapacity,
-    // resulting in 6 calls (4 for shared-agent-model, 2 for shared-vision-model).
-    // The requirement is at most 1 getModelCapacity per distinct non-null model (i.e. 2 total calls).
+    // The system page owns knowledge organization only; QQ media capacity is read by its app host.
     const callsForAgentModel = getModelCapacity.mock.calls.filter(
       ([m]) => m === "shared-agent-model",
     ).length;
@@ -306,8 +306,8 @@ describe("allocation performance & render isolation (PROVEN RED FIRST)", () => {
     ).length;
 
     expect(callsForAgentModel).toBe(1);
-    expect(callsForVisionModel).toBe(1);
-    expect(getModelCapacity).toHaveBeenCalledTimes(2);
+    expect(callsForVisionModel).toBe(0);
+    expect(getModelCapacity).toHaveBeenCalledTimes(1);
 
     // Agent identity guard: switching active agent revalidates even if model is identical
     const AGENT_ID_2 = "99999999-9999-4999-8999-999999999999";
@@ -323,5 +323,103 @@ describe("allocation performance & render isolation (PROVEN RED FIRST)", () => {
       });
     });
     expect(getModelCapacity.mock.calls.filter(([m]) => m === "shared-agent-model").length).toBe(2);
+  });
+
+  it("visual tab switching inside ModelPurposes fires zero network requests once loaded", async () => {
+    const listModels = vi.fn().mockResolvedValue({ models: ["shared-agent-model"] });
+    const getOrganizationSettings = vi.fn().mockResolvedValue({
+      model_name: "shared-agent-model",
+      vision_model_name: "shared-vision-model",
+      transcription_model_name: null,
+      auxiliary_allocation: {},
+      revision: 1,
+    });
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        listModels,
+        getOrganizationSettings,
+      },
+    });
+
+    render(<ModelPurposes active={true} />);
+    await act(async () => {});
+
+    const baseCallsList = listModels.mock.calls.length;
+    const baseCallsOrg = getOrganizationSettings.mock.calls.length;
+
+    // Switch between purpose tabs visually
+    await act(async () => {
+      openContextAllocation({ purpose: "aux", agentId: null });
+    });
+    await act(async () => {
+      openContextAllocation({ purpose: "reading" });
+    });
+    await act(async () => {
+      openContextAllocation({ purpose: "assistant" });
+    });
+
+    // Zero extra network requests on visual tab switches
+    expect(listModels.mock.calls.length).toBe(baseCallsList);
+    expect(getOrganizationSettings.mock.calls.length).toBe(baseCallsOrg);
+  });
+  it("uses one capacity reader for the Agent host and revalidates the same model after identity or API changes", async () => {
+    const editor = store.getState().pageEditor;
+    if (!editor) throw new Error("Agent editor fixture missing");
+    const getModelCapacity = vi.fn(async (model: string) => ({
+      model,
+      status: "loaded" as const,
+      context_length: 65536,
+    }));
+    const getOrganizationSettings = vi.fn().mockResolvedValue({
+      model_name: null,
+      vision_model_name: null,
+      transcription_model_name: null,
+      auxiliary_allocation: {},
+      revision: 1,
+    });
+    const getPermissions = vi.fn().mockResolvedValue({
+      revision: "capacity-test",
+      policy: { version: 1, grants: [], execution: {} },
+      resources: [],
+    });
+    const originalApi = store.getState().apiClient;
+    store.setState({
+      settingsRoute: "context",
+      editorDraft: editor.draft,
+      apiClient: { ...originalApi, getModelCapacity, getOrganizationSettings, getPermissions },
+    });
+    const { rerender } = render(<CapabilityEditor active={false} />);
+    await act(async () => {});
+    expect(getModelCapacity).not.toHaveBeenCalled();
+    rerender(<CapabilityEditor active />);
+    await act(async () => {});
+    expect(getModelCapacity).toHaveBeenCalledExactlyOnceWith("shared-agent-model");
+    expect(store.getState().chatContextCapacity).toBe(65536);
+    const second = { ...mockAgent, id: "99999999-9999-4999-8999-999999999999" };
+    await act(async () => {
+      store.setState({
+        agents: [mockAgent, second],
+        editorAgentId: second.id,
+        pageEditor: newPageEditor(second, editor.persona),
+        editorDraft: editor.draft,
+      });
+    });
+    expect(getModelCapacity).toHaveBeenCalledTimes(2);
+    const nextCapacity = vi.fn(async (model: string) => ({
+      model,
+      status: "loaded" as const,
+      context_length: 131072,
+    }));
+    await act(async () => {
+      store.setState({
+        apiClient: { ...store.getState().apiClient, getModelCapacity: nextCapacity },
+      });
+    });
+    expect(nextCapacity).toHaveBeenCalledExactlyOnceWith("shared-agent-model");
+    expect(store.getState().chatContextCapacity).toBe(131072);
+    rerender(<CapabilityEditor active={false} />);
+    await act(async () => {});
+    expect(nextCapacity).toHaveBeenCalledTimes(1);
   });
 });

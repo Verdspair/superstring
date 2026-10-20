@@ -2,7 +2,7 @@
 //
 // 验证方案保存的生命周期：
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSchemeResponse } from "../../src/shared/contracts/qq";
 import { ApiError, api } from "../../src/web/api";
@@ -10,6 +10,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { navigationBusy } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-10-07T00:00:00.000Z";
 const COLLECTION = "11111111-1111-4111-8111-111111111111";
@@ -101,6 +102,7 @@ function createMockClient(overrides: Partial<typeof api> = {}) {
         asset_count: 1,
       },
     ]),
+    listQqBindings: vi.fn().mockResolvedValue([]),
     listQqStickerAssets: vi.fn().mockResolvedValue([]),
     updateQqScheme: vi
       .fn()
@@ -175,6 +177,86 @@ describe("QQ scheme save lifecycle and navigation locking", () => {
 
     // 4. Fields are still enabled (not disabled/greyed out)
     expect(input.disabled).toBe(false);
+  });
+
+  it("edits judgement and reply budgets, output reserve, modes and compression in the studio and saves the whole scheme", async () => {
+    const fake = createMockClient();
+    store.getState().resetForTests(fake);
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "qq-scheme-config",
+    });
+
+    render(<SchemeStudio />);
+    await waitFor(() => expect(store.getState().qqSchemeEditor).not.toBeNull());
+
+    // 消息读取：判断/回复两档模式与预算各自独立；输出预留标签写 Tokens，输入值原样保存。
+    // Radix Tabs 在真实浏览器里由 mousedown/focus 激活页签；jsdom 的 click 不会派发 mousedown。
+    const contextTab = screen.getByRole("tab", { name: "消息读取" });
+    fireEvent.mouseDown(contextTab, { button: 0 });
+    fireEvent.click(contextTab);
+    fireEvent.change(await screen.findByTestId("qq-judgement-mode"), {
+      target: { value: "auto" },
+    });
+    fireEvent.change(screen.getByTestId("qq-reply-mode"), { target: { value: "auto" } });
+    fireEvent.change(screen.getByLabelText("判断：预算（估算字节）"), {
+      target: { value: "2500" },
+    });
+    fireEvent.change(screen.getByLabelText("回复：预算（估算字节）"), {
+      target: { value: "7000" },
+    });
+    fireEvent.change(screen.getByLabelText("判断：输出预留 (Tokens)"), {
+      target: { value: "640" },
+    });
+    fireEvent.change(screen.getByLabelText("回复：输出预留 (Tokens)"), {
+      target: { value: "3072" },
+    });
+
+    // 历史压缩：水位/包上限是真实数字输入；装配冗余按整数百分比换算成存储比例。
+    const compressionTab = screen.getByRole("tab", { name: "历史压缩" });
+    fireEvent.mouseDown(compressionTab, { button: 0 });
+    fireEvent.click(compressionTab);
+    fireEvent.change(screen.getByLabelText("水位触发条数"), { target: { value: "220" } });
+    fireEvent.change(screen.getByLabelText("水位包上限"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("装配冗余百分比"), { target: { value: "8" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "保存方案" }));
+    });
+
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      createFixtureScheme().id,
+      expect.objectContaining({
+        name: "默认方案",
+        triggers: createFixtureScheme().triggers,
+        rhythm: expect.objectContaining({ merge_window_seconds: 30 }),
+        context: {
+          judgement_message_limit: 20,
+          judgement_window_minutes: 60,
+          judgement_token_budget: 2500,
+          reply_message_limit: 60,
+          reply_window_minutes: 360,
+          reply_token_budget: 7000,
+        },
+        output_reserve: {
+          judgement_output_reserved: 640,
+          reply_output_reserved: 3072,
+        },
+        allocation: {
+          judgement: { mode: "auto" },
+          reply: { mode: "auto" },
+        },
+        compression: { watermark_trigger: 220, package_limit: 10, headroom_ratio: 0.08 },
+        prompts: expect.objectContaining({ scene: "场景提示词", compress: "压缩提示词" }),
+        message_settings: createFixtureScheme().message_settings,
+        media_input: createFixtureScheme().media_input,
+        expected_revision: 3,
+      }),
+    );
+    expect(store.getState().qqSchemeSaving).toBe(false);
+    expect(store.getState().error).toBeNull();
+    expect(store.getState().qqSchemeEditor?.source.revision).toBe(4);
   });
 
   it("releases saving state and retains editable fields upon conflict error", async () => {

@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "../../components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
 import { formatDate } from "../../i18n/runtime";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { useForegroundRead } from "../../services/use-foreground-read";
@@ -51,6 +52,16 @@ const statusFilterLabels: Record<RuntimeStorageStatusFilter, string> = {
   all: "observability.all",
   live: `${P}.statusLive`,
   expired: `${P}.statusExpired`,
+};
+const categoryHintKeys: Record<RuntimeStorageCategory, string> = {
+  traces: "hints.investigation.storage.tabTraces",
+  contexts: "hints.investigation.storage.tabContexts",
+  task_payloads: "hints.investigation.storage.tabTaskPayloads",
+};
+const statusHintKeys: Record<RuntimeStorageStatusFilter, string> = {
+  all: "hints.investigation.storage.tabAll",
+  live: "hints.investigation.storage.tabLive",
+  expired: "hints.investigation.storage.tabExpired",
 };
 const contextStatusLabels: Record<"exact" | "expired" | "revoked", string> = {
   exact: `${P}.contextStatusExact`,
@@ -346,6 +357,8 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
         <Button
           variant="outline"
           disabled={summary.loading || busy}
+          disabledReason={t("hints.investigation.storage.refreshLoading")}
+          tooltip={t("hints.investigation.storage.refresh")}
           onClick={() => summary.refresh()}
         >
           <RefreshCw />
@@ -429,9 +442,14 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
             className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal"
           >
             {CATEGORIES.map((value) => (
-              <TabsTrigger key={value} value={value} disabled={busy}>
-                {t(categoryLabels[value])}
-              </TabsTrigger>
+              <Tooltip key={value}>
+                <TooltipTrigger asChild preserveTriggerState>
+                  <TabsTrigger value={value} disabled={busy}>
+                    {t(categoryLabels[value])}
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent>{t(categoryHintKeys[value])}</TooltipContent>
+              </Tooltip>
             ))}
           </TabsList>
         </Tabs>
@@ -445,15 +463,20 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
             className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal"
           >
             {STATUS_FILTERS.map((value) => (
-              <TabsTrigger key={value} value={value} disabled={busy}>
-                {t(statusFilterLabels[value])}
-              </TabsTrigger>
+              <Tooltip key={value}>
+                <TooltipTrigger asChild preserveTriggerState>
+                  <TabsTrigger value={value} disabled={busy}>
+                    {t(statusFilterLabels[value])}
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent>{t(statusHintKeys[value])}</TooltipContent>
+              </Tooltip>
             ))}
           </TabsList>
         </Tabs>
       </div>
       <div className="flex min-w-0 max-w-full flex-wrap items-end gap-2">
-        <Field label={`${P}.filterAgentId`}>
+        <Field label={`${P}.filterAgentId`} tooltip={t("hints.investigation.storage.filterAgent")}>
           <Input
             className="w-56 min-w-0 max-w-full"
             value={agentFilter}
@@ -461,7 +484,10 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
             onChange={(event) => setAgentFilter(event.target.value)}
           />
         </Field>
-        <Field label={`${P}.filterConversationId`}>
+        <Field
+          label={`${P}.filterConversationId`}
+          tooltip={t("hints.investigation.storage.filterConversation")}
+        >
           <Input
             className="w-56 min-w-0 max-w-full"
             value={conversationFilter}
@@ -469,7 +495,13 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
             onChange={(event) => setConversationFilter(event.target.value)}
           />
         </Field>
-        <Button variant="outline" disabled={busy} onClick={applyFilters}>
+        <Button
+          variant="outline"
+          disabled={busy}
+          disabledReason={t("hints.investigation.storage.busy")}
+          tooltip={t("hints.investigation.storage.applyFilters")}
+          onClick={applyFilters}
+        >
           {t("observability.applyFilters")}
         </Button>
       </div>
@@ -482,12 +514,24 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
         <Button
           variant="outline"
           disabled={busy || selected.length === 0}
+          disabledReason={
+            busy
+              ? t("hints.investigation.storage.busy")
+              : t("hints.investigation.storage.noSelection")
+          }
+          tooltip={t("hints.investigation.storage.cleanSelected")}
           onClick={() => void beginPreview({ category, ids: [...selected] })}
         >
           <Trash2 />
           {t(`${P}.cleanSelected`)}
         </Button>
-        <Button variant="outline" disabled={busy} onClick={() => void beginPreview({ category })}>
+        <Button
+          variant="outline"
+          disabled={busy}
+          disabledReason={t("hints.investigation.storage.busy")}
+          tooltip={t("hints.investigation.storage.cleanCategory")}
+          onClick={() => void beginPreview({ category })}
+        >
           <Trash2 />
           {t(`${P}.cleanCategory`)}
         </Button>
@@ -526,7 +570,13 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
           aria-live="polite"
         >
           <span>{t(`${P}.itemsError`, { "0": listError })}</span>
-          <Button variant="outline" disabled={listLoading || busy} onClick={load}>
+          <Button
+            variant="outline"
+            disabled={listLoading || busy}
+            disabledReason={t("hints.investigation.storage.refreshLoading")}
+            tooltip={t("hints.investigation.storage.retry")}
+            onClick={load}
+          >
             {t("capabilities.retry")}
           </Button>
         </div>
@@ -601,6 +651,12 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
               <Button
                 variant="outline"
                 disabled={position === 0 || listLoading || busy}
+                disabledReason={
+                  position === 0
+                    ? t("hints.investigation.storage.firstPage")
+                    : t("hints.investigation.storage.refreshLoading")
+                }
+                tooltip={t("hints.investigation.storage.prev")}
                 onClick={goPrev}
               >
                 {t(`${P}.prev`)}
@@ -608,6 +664,12 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
               <Button
                 variant="outline"
                 disabled={!page.hasMore || listLoading || busy}
+                disabledReason={
+                  !page.hasMore
+                    ? t("hints.investigation.storage.lastPage")
+                    : t("hints.investigation.storage.refreshLoading")
+                }
+                tooltip={t("hints.investigation.storage.next")}
                 onClick={goNext}
               >
                 {t(`${P}.next`)}

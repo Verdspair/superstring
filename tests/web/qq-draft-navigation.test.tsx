@@ -1,13 +1,15 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { QqSchemeResponse, QqSettingsResponse } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
 import { qqDraftChanges } from "../../src/web/features/qq/draft-state";
 import { qqSchemeDirty, qqSchemeEditorFrom } from "../../src/web/features/qq/types";
-import { QqAppManagement } from "../../src/web/screens/connections/qq-app-management";
+import { QqConnectionTab } from "../../src/web/screens/connections/qq-app-management";
+import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { hasUnsavedDrafts } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-24T00:00:00.000Z";
 const qqSchemeFixture = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse => ({
@@ -145,7 +147,7 @@ it("connection draft survives remount and server refresh while retaining its ori
   store.setState({
     qqInputs: { ...store.getState().qqInputs, connection: connection("replacement-secret") },
   });
-  const view = render(<QqAppManagement view="connection" />);
+  const view = render(<QqConnectionTab active={true} />);
   await act(async () => {});
   // 连接配置在 QQ 应用管理的「连接」任务里：字段直接可见。
   expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
@@ -162,7 +164,7 @@ it("connection draft survives remount and server refresh while retaining its ori
       }),
     },
   });
-  render(<QqAppManagement view="connection" />);
+  render(<QqConnectionTab active={true} />);
   await act(async () => {});
   expect((screen.getByRole("textbox", { name: "WebSocket 地址" }) as HTMLInputElement).value).toBe(
     "ws://localhost:4000",
@@ -348,7 +350,13 @@ it("a failed transport save stays visible on the connection page and retains the
     apiClient: { ...store.getState().apiClient, updateQqSettings: save },
     qqInputs: { ...store.getState().qqInputs, connection: connection() },
   });
-  render(<QqAppManagement view="connection" />);
+  // 页首失败提示已随统一壳层 moved 到设置分区 wrapper：用真实工作区路由断言错误语义。
+  store.setState({
+    page: "settings",
+    settingsView: "workspace",
+    settingsRoute: "qq-connection",
+  });
+  render(<SchemesWorkspace />);
   await act(async () => {});
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存接入设置" })));
   expect(save).toHaveBeenCalledTimes(1);

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema } from "../../src/shared/contracts";
 import { api, type SuperstringApi } from "../../src/web/api";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
 import { navigationBusy } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -109,7 +110,11 @@ describe("Assistant workspace create regression", () => {
       modelNames: ["model-a"],
       reloadMemory: vi.fn().mockResolvedValue(undefined),
     });
-    render(<AssistantWorkspace active={true} />);
+    render(
+      <DesignSystemProvider>
+        <AssistantWorkspace active={true} />
+      </DesignSystemProvider>,
+    );
     fireEvent.click(screen.getByRole("button", { name: "创建 Agent" }));
     await act(async () => {});
     expect(store.getState().editorAgentId).toBe("__new__");
@@ -127,7 +132,7 @@ describe("Assistant workspace create regression", () => {
     expect(store.getState().feedback).toContain("已创建 Agent");
     expect(store.getState().pageEditor).not.toBeNull();
     expect(screen.queryByText("选择一个 Agent 以开始编辑。")).toBeNull();
-    expect(screen.getByText("新建助手")).toBeTruthy();
+    expect(screen.getAllByText("新建助手").length).toBeGreaterThan(0);
   });
   it("does not fire extra queries on the create path", async () => {
     const createdId = "66666666-6666-4666-8666-666666666666";

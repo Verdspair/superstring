@@ -537,10 +537,11 @@ describe("运行栏目归并：台账与任务归对话", () => {
     });
   });
 
-  it("activeSpace 与 SPACES：台账/观测归对话，绑定与应用管理归方案，不再有运行栏目", () => {
+  it("activeSpace 与 SPACES：七个一级入口含模型服务（Agent 之后），台账/观测归对话，绑定与应用管理归方案，不再有运行栏目", () => {
     expect(SPACES.map((space) => space.id)).toEqual([
       "conversations",
       "assistants",
+      "models",
       "capabilities",
       "schemes",
       "library",

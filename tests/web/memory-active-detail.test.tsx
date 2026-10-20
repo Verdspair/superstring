@@ -1,8 +1,9 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryDetail } from "../../src/web/screens/library/MemoryLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { memory, memoryContent, setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(() => {
   cleanup();

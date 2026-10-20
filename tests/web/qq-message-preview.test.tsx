@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderQqMessageFacts } from "../../src/server/services/qq-message-renderer";
 import type { QqMessageSettings } from "../../src/shared/contracts/qq-message";
@@ -11,6 +11,7 @@ import {
   QqMessagePreview,
   renderQqMessagePreview,
 } from "../../src/web/screens/connections/qq-message-preview";
+import { render } from "./helpers/render-with-providers";
 
 const hybrid: QqMessageSettings = {
   ...QQ_MESSAGE_SETTINGS_DEFAULT,

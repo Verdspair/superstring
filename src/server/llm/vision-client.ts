@@ -12,7 +12,9 @@
 
 import type { ModelResponseMetadata } from "../../shared/contracts/agent-run";
 import {
+  abortableDelay,
   DEFAULT_LM_STUDIO_API_KEY,
+  isRetryableModelRefusal,
   type LmStudioConfig,
   localhostFetch,
   mapModelError,
@@ -48,6 +50,14 @@ export interface VisionRequest {
    * finish 的既有接受语义原样保留。
    */
   readonly onModelResponse?: (metadata: ModelResponseMetadata) => void;
+  /**
+   * 用户配置的重试（可选；缺席＝旧行为，零自动重试）：只认真实 HTTP 429/503 拒绝。
+   * `maxAttempts` 含首次，重发沿用同一 body，准入逐次重跑；共享 timeoutSignal（首次准入即
+   * 启动）横跨发送与等待，总时限不因重试重置。
+   */
+  readonly retryPolicy?: { maxAttempts: number; retryDelayMs: number };
+  /** 每次额外重发前调用：宿主在此计账/复验预算，抛错＝该次重发不发出。 */
+  readonly onRetry?: () => void;
 }
 
 export interface VisionClient {
@@ -228,6 +238,29 @@ export function createLmStudioVisionClient(
           release?.();
         }
       };
+      // 剩余重发次数按整次逻辑调用共享：schema 降级子链换档不重置（与网关 complete 同口径）。
+      const retryPolicy = request.retryPolicy;
+      let retriesLeft = retryPolicy === undefined ? 0 : Math.max(0, retryPolicy.maxAttempts - 1);
+      // 用户 retryPolicy 驱动的重发：只认 429/503；等待用共享 runSignal（总时限含等待），
+      // onRetry 在每次额外重发前调用，抛错＝不再发送；send 逐次重新准入。
+      const sendWithRetry = async (level: StructuredOutputLevel) => {
+        if (retryPolicy === undefined) return send(level);
+        for (;;) {
+          try {
+            return await send(level);
+          } catch (error) {
+            if (retriesLeft <= 0 || !isRetryableModelRefusal(error)) throw error;
+            retriesLeft -= 1;
+            try {
+              await abortableDelay(retryPolicy.retryDelayMs, startRequestTimeout());
+            } catch (delayError) {
+              if (request.signal?.aborted) throw request.signal.reason ?? delayError;
+              throw mapModelError(delayError);
+            }
+            request.onRetry?.();
+          }
+        }
+      };
       // 与网关同一条降级链：严格 json_schema → json_object → 不带该字段。
       const payload = await withStructuredOutputChain({
         key,
@@ -236,7 +269,7 @@ export function createLmStudioVisionClient(
         // 与网关同一条规则：形状注定被严格模式整单拒绝的 schema 直接起步于 json_object
         // ；本地模型服务不参与这个判断。
         strictAccepted: external === null || strictSchemaAccepted(request.responseSchema),
-        send,
+        send: sendWithRetry,
       });
       return payload.choices?.[0]?.message?.content ?? "";
     },

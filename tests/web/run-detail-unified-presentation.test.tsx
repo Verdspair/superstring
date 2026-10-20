@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentStepSnapshot,
@@ -18,6 +18,7 @@ import {
 } from "../../src/web/screens/observability/ModelEvidence";
 import { RunWorkspace } from "../../src/web/screens/runs/RunEntry";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const origin = Date.parse("2026-10-17T00:00:00Z"),
   at = (ms: number) => new Date(origin + ms).toISOString();

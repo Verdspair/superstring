@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { BrowserStateConfig } from "../../src/shared/contracts";
 import App from "../../src/web/App";
@@ -6,6 +6,7 @@ import { api, type SuperstringApi } from "../../src/web/api";
 import { resetConversationChangesForTests } from "../../src/web/services/conversation-changes";
 import { loadTracesCache } from "../../src/web/services/page-snapshot-cache";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 vi.mock("../../src/web/state/preload-orchestrator", async (importOriginal) => {
   const original =

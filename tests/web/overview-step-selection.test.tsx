@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentStepSnapshot,
@@ -14,6 +14,7 @@ import { api } from "../../src/web/api";
 import { i18n } from "../../src/web/i18n/runtime";
 import { RunAttempts, RunWorkspace } from "../../src/web/screens/runs/RunEntry";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 // 概览「选中的步骤」契约测试（REQUEST 2026-10-17：竖列步骤按钮，点击哪一步下面就显示该步的输入/输出详情）。
 // 实现落地前本文件预期 RED（当前源码仍是全部卡片展开）；首失败保留，不因 RED 放宽断言。

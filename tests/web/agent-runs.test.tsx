@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectedContext, RunEvent, RunSnapshot } from "../../src/shared/contracts/agent-run";
@@ -9,6 +9,7 @@ import { i18n } from "../../src/web/i18n/runtime";
 import { ModelEvidence } from "../../src/web/screens/observability/ModelEvidence";
 import { JobRunLink, RunWorkspace, runStatusLabel } from "../../src/web/screens/runs/RunEntry";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-09-26T00:00:00.000Z";
 function snapshot(

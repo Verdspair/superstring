@@ -1,6 +1,6 @@
 import { ArrowRight, MessageCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Button } from "../../components/ui/button";
 import { BrandLogo } from "../../design-system/BrandLogo";
@@ -34,6 +34,7 @@ export function DirectConversation({ active = true }: { active?: boolean }) {
   }, [deletion, session]);
   return (
     <section
+      data-slot="conversation-surface"
       className="flex h-full min-h-0 min-w-0 flex-col bg-background"
       aria-label={t("workspace.current_conversation")}
     >
@@ -82,12 +83,16 @@ export function DirectConversation({ active = true }: { active?: boolean }) {
             {!conversation && (
               <div className="mt-7 flex flex-wrap items-center gap-3">
                 <CreateConversation>
-                  <Button>
+                  <Button tooltip={<Trans i18nKey="hints.complete.newConversation" />}>
                     <MessageCircle />
                     {t("workspace.new_conversation")}
                   </Button>
                 </CreateConversation>
-                <Button variant="ghost" onClick={() => openSpace("assistants")}>
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.assistants" />}
+                  variant="ghost"
+                  onClick={() => openSpace("assistants")}
+                >
                   {t("workspace.meet_your_assistants")}
                   <ArrowRight />
                 </Button>

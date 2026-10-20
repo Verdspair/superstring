@@ -1,6 +1,6 @@
 import { ArrowLeft, ArrowUpRight, Copy, Maximize2, Minimize2, RefreshCw } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -25,6 +25,13 @@ import {
   traceTask,
   wakeCauseSummary,
 } from "./presentation";
+
+const locateHintKeys = {
+  failed: "hints.investigation.canvas.locateFailed",
+  unknown: "hints.investigation.canvas.locateUnknown",
+  started: "hints.investigation.canvas.locateStarted",
+} as const;
+
 import { TraceTimeline } from "./TraceTimeline";
 export function InvestigationCanvas({
   traceId,
@@ -104,7 +111,12 @@ export function InvestigationCanvas({
     >
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 space-y-2">
-          <Button variant="ghost" className="-ml-2" onClick={onBack}>
+          <Button
+            variant="ghost"
+            className="-ml-2"
+            tooltip={t("hints.investigation.canvas.backToExecutions")}
+            onClick={onBack}
+          >
             <ArrowLeft />
             {t("observability.backToExecutions")}
           </Button>
@@ -150,6 +162,9 @@ export function InvestigationCanvas({
           <Button
             variant="outline"
             size="sm"
+            tooltip={
+              copied ? t("observability.copied") : t("hints.investigation.canvas.copyTraceId")
+            }
             onClick={async () => {
               try {
                 await navigator.clipboard.writeText(traceId);
@@ -162,7 +177,14 @@ export function InvestigationCanvas({
             <Copy />
             {t(copied ? "observability.copied" : "observability.copyTraceId")}
           </Button>
-          <Button variant="outline" size="sm" disabled={loading} onClick={refresh}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={loading}
+            disabledReason={t("hints.investigation.canvas.refreshLoading")}
+            tooltip={t("hints.investigation.canvas.refreshThisTrace")}
+            onClick={refresh}
+          >
             <RefreshCw />
             {t("observability.refreshThisTrace")}
           </Button>
@@ -172,6 +194,7 @@ export function InvestigationCanvas({
         <div className="flex flex-wrap gap-2">
           {conversationIds.map((conversationId) => (
             <Button
+              tooltip={<Trans i18nKey="hints.complete.conversationOpen" />}
               key={conversationId}
               size="sm"
               variant="link"
@@ -268,6 +291,16 @@ export function InvestigationCanvas({
                   variant="outline"
                   size="sm"
                   disabled={!matches.length}
+                  disabledReason={t("hints.investigation.canvas.locateNone", {
+                    "0": t(
+                      status === "failed"
+                        ? "observability.processingFailed"
+                        : status === "unknown"
+                          ? "observability.resultUnconfirmed"
+                          : "observability.inProgress",
+                    ),
+                  })}
+                  tooltip={t(locateHintKeys[status])}
                   onClick={() => next(matches.map((item) => item.spanId))}
                 >
                   <StatusMark status={status} />
@@ -279,6 +312,8 @@ export function InvestigationCanvas({
               size="sm"
               variant="outline"
               disabled={!data.matchedSpanIds.length}
+              disabledReason={t("hints.investigation.canvas.nextMatchNone")}
+              tooltip={t("hints.investigation.canvas.nextMatch")}
               onClick={() => next(data.matchedSpanIds)}
             >
               {t("observability.nextMatch")} · {data.matchedSpanIds.length}
@@ -354,6 +389,11 @@ export function InvestigationCanvas({
                       variant="ghost"
                       size="sm"
                       aria-pressed={expanded}
+                      tooltip={
+                        expanded
+                          ? t("hints.investigation.canvas.restoreLayout")
+                          : t("hints.investigation.canvas.expandReader")
+                      }
                       onClick={() => setExpanded((value) => !value)}
                     >
                       {expanded ? <Minimize2 /> : <Maximize2 />}

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { InspectedContext } from "../../src/shared/contracts/agent-run";
@@ -21,6 +21,7 @@ import { ExecutionWorkspace } from "../../src/web/screens/observability/Observab
 import { traceTask, wakeCauseSummary } from "../../src/web/screens/observability/presentation";
 import { TraceTimeline } from "../../src/web/screens/observability/TraceTimeline";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const origin = Date.parse("2026-09-26T00:00:00Z"),
   at = (ms: number) => new Date(origin + ms).toISOString();

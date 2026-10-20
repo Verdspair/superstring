@@ -55,6 +55,8 @@
 
 本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **71**，新增迁移 0055–0071。
 
+方案、会话与绑定、QQ 设置现位于同一工作区。系统能力的执行设置可配置调用重试，QQ 设置可单独配置唤醒重试；未配置时分别采用共 3 次尝试／2 秒间隔与共 3 次尝试／15 秒间隔（次数均含首次）。既有 QQ 配置保留，新增系统重试设置不需单独迁移；系统调用重试仅针对明确的 HTTP 429／503 拒收，不盲目重放写操作、超时或结果未知的请求。
+
 QQ 回复现在可自主选择文字、单张表情或组合，并可按方案设置三档表情倾向；本群可覆盖，私聊跟随方案。同任务恢复保留首次领取的档位，新任务读取新的有效配置。全局或本群关闭表情后，尚未开始发送的图片不再发送，合法文字不受影响。0064 新增倾向字段，仅更新逐字等于旧出厂默认的表情提示词；自定义提示词与旧数量存值保留。
 
 自主接话兴趣评分校准将 4–6 分（以 5 分为基准）定为自然轻度参与档，认可接梗与轻松互动，达标后正常承接意图组织回复而不重评开口价值；确实无内容、本群自定义规则禁止、来源失效或已确认送达相同内容时仍保留合理沉默，送达状态未知时不盲目重发同一内容且独立新问题仍可回应。默认门槛（6 分）与既有群配置保持不变，无新增数据库字段。
@@ -129,6 +131,8 @@ Unknown schemas or downgrade attempts are rejected to protect data safety. Rolli
 #### Current source updates on main
 
 This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **71**, with migrations 0055–0071.
+
+Schemes, Conversations & bindings, and QQ settings now share one workspace. Configure call retries in System capabilities execution settings and wake retries separately in QQ settings. When unconfigured, defaults are 3 attempts with a 2-second delay and 3 attempts with a 15-second delay, respectively; both counts include the first attempt. Existing QQ settings are preserved, and the new system retry settings need no separate migration. System call retries apply only to explicit HTTP 429/503 rejections, without blind replay of writes, timeouts, or requests with unknown outcomes.
 
 QQ replies can now independently choose text, one sticker, or a combination, with three levels of scheme-level sticker guidance. Groups can override the setting; private chats follow the scheme. Resumed tasks retain the value captured at first claim, while new tasks use the new effective setting. Global or group sticker disable blocks unstarted image sends without blocking valid text. Migration 0064 adds the guidance field and updates only sticker prompts that exactly match the old factory default. Custom prompts and stored legacy count values are preserved.
 

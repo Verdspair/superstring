@@ -35,7 +35,7 @@ import { PermissionError } from "../permissions/service";
 import { qqMemoryScopeKeyset } from "../services/memory-scope";
 import { resolveQqMemoryAccess } from "../services/qq-binding-contract";
 import type { ActionExecutor } from "./action-executor";
-import type { BuiltInAction } from "./built-in-actions";
+import type { ActionContext, BuiltInAction, RetryOrigin } from "./built-in-actions";
 import { sourceAccess } from "./context-access";
 import { uniqueSources } from "./context-engine";
 import { visibleConversation } from "./conversation-access";
@@ -697,11 +697,31 @@ export class AgentTaskService {
       try {
         check();
         for (const call of task.calls) this.resolve(call);
+        // 排队任务的来源按会话真实 channel 判定（与宿主激活同口径，不看 owner.kind）：
+        // 已知 web→system、onebot11→qq，未知不泛化成 System；缺执行配置＝不自动重试。
+        const conversation = new ConversationEventRepository(repository.db).row(
+          task.conversationId,
+        );
+        const retryOrigin: RetryOrigin | undefined = !conversation
+          ? undefined
+          : conversation.channel === "onebot11"
+            ? "qq"
+            : conversation.channel === "web"
+              ? "system"
+              : undefined;
+        // 领取时一次性复制真实快照；没有 execution getter 就保持无策略（不造默认值）。
+        const policy = retryOrigin === "system" ? this.options.execution?.().system : undefined;
+        const retryPolicy = policy === undefined ? undefined : { ...policy };
         for (const call of task.calls) {
           check();
           if (call.status === "completed") continue;
           const action = this.resolve(call);
-          const context = { owner: this.owner(task), signal: controller.signal };
+          const context: ActionContext = {
+            owner: this.owner(task),
+            signal: controller.signal,
+            ...(retryOrigin === undefined ? {} : { retryOrigin }),
+            ...(retryPolicy === undefined ? {} : { retryPolicy }),
+          };
           const approval =
             call.status === "approved" &&
             call.approvalRevision === this.approval(task, call.ordinal)

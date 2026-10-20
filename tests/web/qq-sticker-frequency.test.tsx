@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentKnowledgeReadSettings } from "../../src/shared/contracts/knowledge";
@@ -29,6 +29,7 @@ import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { SystemComponents } from "../../src/web/screens/connections/system-components";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { CAPABILITY_CATALOG, TOOL_HUMAN_LABELS } from "../../src/web/workspace/capability-catalog";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-10-11T00:00:00.000Z";
 const BASE_SCHEME_ID = "22222222-2222-4222-8222-222222222222";

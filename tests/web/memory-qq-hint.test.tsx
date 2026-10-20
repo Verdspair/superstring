@@ -1,8 +1,9 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BindingMemoryControls } from "../../src/web/screens/library/BindingMemoryControls";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { B, binding, setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 beforeEach(() => {
   setupLibrary();

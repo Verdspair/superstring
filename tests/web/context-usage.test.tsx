@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it } from "vitest";
 import { ContextUsageSchema } from "../../src/shared/contracts/context-usage";
 import { selectLocale } from "../../src/web/i18n";
 import { ContextMeter as ContextUsagePanel } from "../../src/web/screens/conversations/ContextMeter";
 import { fixtureStore as store } from "./helpers/chat-fixture";
+import { render } from "./helpers/render-with-providers";
 
 afterEach(() => {
   cleanup();
@@ -85,7 +86,7 @@ it("translates all component labels without translating model IDs", () => {
   expect(container.textContent).toContain("Summaries");
   expect(container.textContent).not.toMatch(/[\u3400-\u9fff]/);
 });
-it("renders unknown vision cost as text-only estimate in zh-CN with trigger aria qualification", () => {
+it("renders unknown vision cost as text-only estimate in zh-CN with trigger aria qualification", async () => {
   selectLocale("zh-CN");
   const unknownUsage = ContextUsageSchema.parse({
     ...usage,
@@ -95,7 +96,13 @@ it("renders unknown vision cost as text-only estimate in zh-CN with trigger aria
   const { baseElement: container } = render(<ContextUsagePanel />);
   const trigger = screen.getByRole("button", { name: "上下文用量（仅文本估算，视觉成本未计入）" });
   expect(trigger).toBeTruthy();
-  expect(trigger.getAttribute("title")).toBe("上下文用量（仅文本估算，视觉成本未计入）");
+  await userEvent.hover(trigger);
+  await waitFor(() =>
+    expect(screen.getByRole("tooltip").textContent).toContain(
+      "上下文用量（仅文本估算，视觉成本未计入）",
+    ),
+  );
+  await userEvent.unhover(trigger);
   fireEvent.click(trigger);
 
   expect(screen.getAllByRole("row")).toHaveLength(10);
@@ -109,7 +116,7 @@ it("renders unknown vision cost as text-only estimate in zh-CN with trigger aria
     "上方用量与剩余空间仅为文本估算，不代表总成本或可容纳更多图片",
   );
 });
-it("renders unknown vision cost in English with trigger aria qualification", () => {
+it("renders unknown vision cost in English with trigger aria qualification", async () => {
   selectLocale("en");
   const unknownUsage = ContextUsageSchema.parse({
     ...usage,
@@ -121,9 +128,13 @@ it("renders unknown vision cost in English with trigger aria qualification", () 
     name: "Context usage (text-only estimate, visual cost not counted)",
   });
   expect(trigger).toBeTruthy();
-  expect(trigger.getAttribute("title")).toBe(
-    "Context usage (text-only estimate, visual cost not counted)",
+  await userEvent.hover(trigger);
+  await waitFor(() =>
+    expect(screen.getByRole("tooltip").textContent).toContain(
+      "Context usage (text-only estimate, visual cost not counted)",
+    ),
   );
+  await userEvent.unhover(trigger);
   fireEvent.click(trigger);
 
   expect(screen.getAllByRole("row")).toHaveLength(10);
@@ -138,7 +149,7 @@ it("renders unknown vision cost in English with trigger aria qualification", () 
   expect(container.textContent).toContain("chat-model");
   expect(container.textContent).not.toMatch(/[㐀-鿿]/);
 });
-it("preserves 10 rows and original labels when no images or zero images estimated", () => {
+it("preserves 10 rows and original labels when no images or zero images estimated", async () => {
   selectLocale("zh-CN");
   const noImageUsage = ContextUsageSchema.parse({
     ...usage,
@@ -147,7 +158,9 @@ it("preserves 10 rows and original labels when no images or zero images estimate
   store.setState({ currentSessionId: "A", contextUsage: noImageUsage, composer: "" });
   const { baseElement: container } = render(<ContextUsagePanel />);
   const trigger = screen.getByRole("button", { name: "上下文用量" });
-  expect(trigger.getAttribute("title")).toBe("上下文用量");
+  await userEvent.hover(trigger);
+  await waitFor(() => expect(screen.getByRole("tooltip").textContent).toContain("上下文用量"));
+  await userEvent.unhover(trigger);
   fireEvent.click(trigger);
 
   expect(screen.getAllByRole("row")).toHaveLength(10);

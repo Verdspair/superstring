@@ -122,9 +122,19 @@ describe("必应搜索解析", () => {
     expect(items[0].snippet.length).toBe(SEARCH_SNIPPET_CHARS);
   });
 
-  it("HTTP 失败归为 WEB_SEARCH_FAILED", async () => {
-    const { fetchImpl } = stubFetch(() => new Response("down", { status: 500 }));
-    expect(await codeOf(searchBing("x", { fetchImpl }))).toBe("WEB_SEARCH_FAILED");
+  it("HTTP 失败归为 WEB_SEARCH_FAILED 并保留结构化 status（5xx/429）", async () => {
+    for (const status of [500, 429]) {
+      const { fetchImpl } = stubFetch(() => new Response("down", { status }));
+      let failure: unknown;
+      try {
+        await searchBing("x", { fetchImpl });
+        throw new Error("should reject");
+      } catch (error) {
+        failure = error;
+      }
+      expect((failure as { code?: string }).code).toBe("WEB_SEARCH_FAILED");
+      expect((failure as { status?: number }).status).toBe(status);
+    }
   });
 });
 
@@ -175,6 +185,7 @@ describe("SearXNG 搜索解析", () => {
     } catch (error) {
       expect((error as { code?: string }).code).toBe("WEB_SEARCH_JSON_DISABLED");
       expect((error as Error).message).toContain("json");
+      expect((error as { status?: number }).status).toBe(403);
     }
     const html = stubFetch(
       () =>
@@ -188,11 +199,17 @@ describe("SearXNG 搜索解析", () => {
     );
   });
 
-  it("其他 HTTP 失败归为 WEB_SEARCH_FAILED", async () => {
+  it("其他 HTTP 失败归为 WEB_SEARCH_FAILED 并保留结构化 status", async () => {
     const { fetchImpl } = stubFetch(() => new Response("boom", { status: 500 }));
-    expect(await codeOf(searchSearxng("x", SEARXNG_ENDPOINT, { fetchImpl }))).toBe(
-      "WEB_SEARCH_FAILED",
-    );
+    let failure: unknown;
+    try {
+      await searchSearxng("x", SEARXNG_ENDPOINT, { fetchImpl });
+      throw new Error("should reject");
+    } catch (error) {
+      failure = error;
+    }
+    expect((failure as { code?: string }).code).toBe("WEB_SEARCH_FAILED");
+    expect((failure as { status?: number }).status).toBe(500);
   });
 });
 
@@ -250,6 +267,31 @@ describe("searchWeb 入口", () => {
       expect(failure.message).toContain("bing");
       expect(failure.attempts).toHaveLength(2);
       expect(calls).toHaveLength(2);
+    }
+  });
+
+  it("聚合 status：逐 attempt 保留真实状态，状态不一致时不伪造单一总状态", async () => {
+    const mixed = stubFetch((call) =>
+      call.url.startsWith("http://127.0.0.1:8888/")
+        ? new Response("forbidden", { status: 403 })
+        : new Response("down", { status: 502 }),
+    );
+    try {
+      await searchWeb("查询", { fetchImpl: mixed.fetchImpl, searxngEndpoint: SEARXNG_ENDPOINT });
+      throw new Error("should reject");
+    } catch (error) {
+      const failure = error as { attempts?: { status?: number }[]; status?: number };
+      expect(failure.attempts?.map((attempt) => attempt.status)).toEqual([403, 502]);
+      expect(failure.status).toBeUndefined();
+    }
+    const same = stubFetch(() => new Response("down", { status: 500 }));
+    try {
+      await searchWeb("查询", { fetchImpl: same.fetchImpl, searxngEndpoint: SEARXNG_ENDPOINT });
+      throw new Error("should reject");
+    } catch (error) {
+      const failure = error as { attempts?: { status?: number }[]; status?: number };
+      expect(failure.attempts?.map((attempt) => attempt.status)).toEqual([500, 500]);
+      expect(failure.status).toBe(500);
     }
   });
 

@@ -1,13 +1,15 @@
 import { RefreshCw, Save, SlidersHorizontal } from "lucide-react";
 import { type MouseEvent, useEffect, useId, useRef } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { EXECUTION_MODULE_KEYS } from "../../../shared/contracts/permissions";
 import { Field } from "../../components/form-field";
+import { SettingsGroup } from "../../components/settings-group";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import {
+  type ExecutionFieldKey,
   type PermissionScope,
   permissionSettingsDirty,
 } from "../../features/access/permission-state";
@@ -118,11 +120,6 @@ const loopFields: NumericField[] = [
     info: "connections.execution.loopNoProgressHint",
   },
   {
-    key: "loopConcurrency",
-    label: "connections.execution.loopConcurrency",
-    info: "connections.execution.loopConcurrencyHint",
-  },
-  {
     key: "loopModelConcurrency",
     label: "connections.execution.loopModelConcurrency",
     info: "connections.execution.loopModelConcurrencyHint",
@@ -133,24 +130,18 @@ const loopFields: NumericField[] = [
     info: "connections.execution.loopProviderConcurrencyHint",
   },
 ];
-const qqFields: NumericField[] = [
+const retryFields: NumericField[] = [
   {
-    key: "qqRetryDelayMs",
-    label: "connections.execution.qqRetryDelayMs",
-    info: "connections.execution.qqRetryDelayMsHint",
+    key: "systemMaxAttempts",
+    label: "connections.execution.systemMaxAttempts",
+    info: "connections.execution.systemMaxAttemptsHint",
   },
   {
-    key: "qqMaxAttempts",
-    label: "connections.execution.qqMaxAttempts",
-    info: "connections.execution.qqMaxAttemptsHint",
-  },
-  {
-    key: "qqDeliveryTtlSeconds",
-    label: "connections.execution.qqDeliveryTtlSeconds",
-    info: "connections.execution.qqDeliveryTtlSecondsHint",
+    key: "systemRetryDelaySeconds",
+    label: "connections.execution.systemRetryDelaySeconds",
+    info: "connections.execution.systemRetryDelaySecondsHint",
   },
 ];
-
 /** 页内锚点与卡片一一对应：标题和导航复用同一份标签，顺序即页面顺序。 */
 const SECTIONS = {
   switches: "connections.execution.switches",
@@ -159,7 +150,7 @@ const SECTIONS = {
   research: "connections.execution.researchGroup",
   code: "connections.execution.codeGroup",
   loop: "connections.execution.loop",
-  qq: "connections.execution.qq",
+  retry: "connections.execution.retryGroup",
   retention: "connections.execution.retention",
 } as const;
 type SectionKey = keyof typeof SECTIONS;
@@ -170,17 +161,29 @@ const SECTION_ORDER: SectionKey[] = [
   "research",
   "code",
   "loop",
-  "qq",
+  "retry",
   "retention",
 ];
 
-// web 与 QQ 媒体及群成员的能力开关在各自的能力专页维护；本页只保存其余模块与数值/研究/代码字段。
+// web 与 QQ 媒体及群成员的能力开关在各自的能力专页维护；QQ 投递参数与跨会话唤醒并发
+// 归 QQ 应用连接页（同一批 loop/qq 契约分组，consumers 只在 QQ 通道）；本页只保存其余字段。
 const PAGE_MODULE_KEYS = EXECUTION_MODULE_KEYS.filter(
   (module) =>
     module !== "web" && module !== "qqMedia" && module !== "qqStickers" && module !== "qqMembers",
 );
+const QQ_KEYS: readonly string[] = [
+  "qqRetryDelaySeconds",
+  "qqMaxAttempts",
+  "qqDeliveryTtlSeconds",
+  "loopConcurrency",
+];
+const PAGE_KEYS: readonly ExecutionFieldKey[] = [
+  ...NUMERIC_KEYS.filter((key) => !QQ_KEYS.includes(key)),
+  "research",
+  "code",
+];
 const PAGE_SCOPE: PermissionScope = {
-  executionKeys: [...NUMERIC_KEYS, "research", "code"],
+  executionKeys: [...PAGE_KEYS],
   modules: [...PAGE_MODULE_KEYS],
 };
 
@@ -206,8 +209,12 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
   }, [load]);
   const draft = editor?.execution;
   const dirty = permissionSettingsDirty(editor, PAGE_SCOPE);
-  // 数值越界（problem 非空）只在本页提示；授权面板的错误不在本页重复。
-  const showError = !!error && (problem !== null || errorScope !== "grants");
+  // 数值越界（problem 非空）只在本页就地提示，且仅限本页 scope 的键；授权面板（grants）
+  // 与 QQ 连接页面板键的越界错误不在这里重复。
+  const showError =
+    !!error &&
+    errorScope !== "grants" &&
+    !(errorScope === "execution" && problem !== null && !PAGE_KEYS.includes(problem));
   const patch = (key: keyof ExecutionDraft, value: string | boolean) => update({ [key]: value });
   // 同一屏幕可能被渲染多份：锚点 id 用 useId 派生，实例之间不冲突。
   const panelId = (section: SectionKey) => `${uid}execution-${section}`;
@@ -233,25 +240,36 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
       {t(SECTIONS[section])}
     </CardTitle>
   );
-  const group = (section: SectionKey, fields: NumericField[]) => (
-    <Card>
-      <CardHeader>{sectionTitle(section)}</CardHeader>
-      <CardContent className="grid gap-5 sm:grid-cols-2">
+  const group = (section: SectionKey, fields: NumericField[], description?: string) => (
+    <SettingsGroup
+      title={
+        <span id={panelId(section)} tabIndex={-1}>
+          {t(SECTIONS[section])}
+        </span>
+      }
+      description={description ? t(description) : undefined}
+    >
+      <div className="divide-y divide-border/60">
         {fields.map((field) => (
-          <Field key={field.key} label={field.label} info={field.info}>
-            <Input
-              inputMode="decimal"
-              aria-invalid={problem === field.key}
-              disabled={saving || !draft}
-              value={draft?.[field.key] ?? ""}
-              className={
-                problem === field.key
-                  ? "border-destructive focus-visible:ring-destructive"
-                  : undefined
-              }
-              onChange={(e) => patch(field.key, e.target.value)}
-            />
-          </Field>
+          <div
+            key={field.key}
+            className="px-4 py-3 [&>[data-slot=field]]:sm:grid [&>[data-slot=field]]:sm:grid-cols-[minmax(0,1fr)_minmax(10rem,16rem)] [&_[data-slot=field-description]]:sm:col-start-1 [&_input]:sm:col-start-2 [&_input]:sm:row-span-2"
+          >
+            <Field label={field.label} info={field.info} tooltip={t(field.info)}>
+              <Input
+                inputMode="decimal"
+                aria-invalid={problem === field.key}
+                disabled={saving || !draft}
+                value={draft?.[field.key] ?? ""}
+                className={
+                  problem === field.key
+                    ? "border-destructive focus-visible:ring-destructive"
+                    : undefined
+                }
+                onChange={(e) => patch(field.key, e.target.value)}
+              />
+            </Field>
+          </div>
         ))}
         {section === "loop" && draft?.loopModelConcurrency === "1" && (
           <p className="text-xs text-muted-foreground sm:col-span-2">
@@ -265,30 +283,50 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
               {t("connections.execution.loopProviderSerialNotice")}
             </p>
           )}
-      </CardContent>
-    </Card>
+      </div>
+    </SettingsGroup>
   );
   return (
-    <div ref={rootRef} className="w-full min-w-0 space-y-6 px-6 py-6 lg:px-8">
+    <div ref={rootRef} className="w-full min-w-0 space-y-6 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="flex items-center gap-2 font-semibold">
-            <SlidersHorizontal className="size-4 text-muted-foreground" />
+            <SlidersHorizontal className="size-4 text-primary" />
             {t("connections.execution.title")}
           </h2>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             {t("connections.execution.description")}
           </p>
+          <p className="mt-1 max-w-3xl text-xs text-muted-foreground">
+            {t("capabilities.policy.globalScope")}
+          </p>
+          <p className="mt-1 max-w-3xl text-xs text-muted-foreground">
+            {t("capabilities.execution.scopeNote")}
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={loading || saving} onClick={() => void load(true)}>
+          <Button
+            variant="outline"
+            tooltip={t("hints.system.executionRefresh")}
+            disabled={loading || saving}
+            onClick={() => void load(true)}
+          >
             <RefreshCw />
             {t("connections.common.refresh")}
           </Button>
-          <Button variant="outline" disabled={!dirty || saving} onClick={() => discard(PAGE_SCOPE)}>
+          <Button
+            variant="outline"
+            tooltip={t("hints.system.discard")}
+            disabled={!dirty || saving}
+            onClick={() => discard(PAGE_SCOPE)}
+          >
             {t("library.discard.changes")}
           </Button>
-          <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()}>
+          <Button
+            tooltip={t("hints.system.executionSave")}
+            disabled={!dirty || saving || loading}
+            onClick={() => void handleSave()}
+          >
             <Save />
             {t("connections.execution.save")}
           </Button>
@@ -309,7 +347,12 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
       )}
       <nav aria-label={t("connections.execution.title")} className="flex flex-wrap gap-1">
         {SECTION_ORDER.map((section) => (
-          <Button key={section} asChild variant="ghost">
+          <Button
+            tooltip={<Trans i18nKey="hints.complete.sectionJump" />}
+            key={section}
+            asChild
+            variant="ghost"
+          >
             <a href={`#${panelId(section)}`} onClick={(event) => jumpToSection(section, event)}>
               {t(SECTIONS[section])}
             </a>
@@ -325,6 +368,7 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
                 key={module}
                 label={`connections.execution.modules.${module}`}
                 info={`connections.execution.modules.${module}Hint`}
+                tooltip={t(`connections.execution.modules.${module}Hint`)}
               >
                 <Checkbox
                   checked={draft?.modules[module] ?? false}
@@ -335,14 +379,22 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
                 />
               </Field>
             ))}
-            <Field label="connections.execution.research" info="connections.execution.researchHint">
+            <Field
+              label="connections.execution.research"
+              info="connections.execution.researchHint"
+              tooltip={t("connections.execution.researchHint")}
+            >
               <Checkbox
                 checked={draft?.research ?? false}
                 disabled={saving || !draft}
                 onCheckedChange={(checked) => patch("research", checked === true)}
               />
             </Field>
-            <Field label="connections.execution.code" info="connections.execution.codeHint">
+            <Field
+              label="connections.execution.code"
+              info="connections.execution.codeHint"
+              tooltip={t("connections.execution.codeHint")}
+            >
               <Checkbox
                 checked={draft?.code ?? false}
                 disabled={saving || !draft}
@@ -367,7 +419,7 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
         {group("research", researchFields)}
         {group("code", codeFields)}
         {group("loop", loopFields)}
-        {group("qq", qqFields)}
+        {group("retry", retryFields, "connections.execution.retryGroupHint")}
         <Card className="xl:col-span-2">
           <CardHeader>{sectionTitle("retention")}</CardHeader>
           <CardContent className="space-y-6">
@@ -375,6 +427,7 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
               <Field
                 label="connections.execution.retentionDays"
                 info="connections.execution.retentionDaysHint"
+                tooltip={t("connections.execution.retentionDaysHint")}
               >
                 <Input
                   inputMode="decimal"
@@ -395,11 +448,20 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
         </Card>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button disabled={!dirty || saving || loading} onClick={() => void handleSave()}>
+        <Button
+          tooltip={t("hints.system.executionSave")}
+          disabled={!dirty || saving || loading}
+          onClick={() => void handleSave()}
+        >
           <Save />
           {t("workspace.save")}
         </Button>
-        <Button variant="outline" disabled={!dirty || saving} onClick={() => discard(PAGE_SCOPE)}>
+        <Button
+          variant="outline"
+          tooltip={t("hints.system.discard")}
+          disabled={!dirty || saving}
+          onClick={() => discard(PAGE_SCOPE)}
+        >
           {t("library.discard.changes")}
         </Button>
       </div>

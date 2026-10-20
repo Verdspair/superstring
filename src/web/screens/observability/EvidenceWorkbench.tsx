@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowUpRight } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useLayoutEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -77,7 +77,12 @@ export function EvidenceWorkbench({
           }
         }}
       >
-        <Button ref={back} variant="ghost" onClick={() => changeRun(false)}>
+        <Button
+          tooltip={<Trans i18nKey="hints.complete.stepBack" />}
+          ref={back}
+          variant="ghost"
+          onClick={() => changeRun(false)}
+        >
           <ArrowLeft />
           {t("observability.backToStepDetails")}
         </Button>
@@ -133,7 +138,12 @@ export function EvidenceWorkbench({
           {reasonLabels[item.code] && <p className="text-sm">{t(reasonLabels[item.code])}</p>}
         </div>
         {!fullEvidence && item.runId && (
-          <Button variant="outline" size="sm" onClick={() => changeRun(true)}>
+          <Button
+            tooltip={<Trans i18nKey="hints.complete.parentRun" />}
+            variant="outline"
+            size="sm"
+            onClick={() => changeRun(true)}
+          >
             <ArrowUpRight />
             {t("observability.parentRun")}
           </Button>

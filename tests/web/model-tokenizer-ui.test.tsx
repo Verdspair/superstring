@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProviderResponse } from "../../src/shared/contracts/models";
 import type { SuperstringApi } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const syntheticProvider: ModelProviderResponse = {
   id: "00000000-0000-4000-8000-000000000001",

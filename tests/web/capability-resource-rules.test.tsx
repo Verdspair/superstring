@@ -1,10 +1,18 @@
 // 系统能力·资源（记忆工具/知识工具）的页面所有权专测。
 // memory-tools 只拥有 retrieval_mode/retrieval_presets；long-memory 只拥有整理提示词与策略，
 // 不再拥有读取。覆盖：一侧保存绝不夹带另一侧、saveAll/基线接受、页面级放弃、
-// policy 部分成功、非法/冲突/切换助手的草稿安全，以及两个导出的渲染、加载、错误与跳转。
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+// policy 部分成功、非法/冲突/切换助手的草稿安全，以及导出组件的渲染、加载、错误与跳转。
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderView,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentKnowledgeReadUpdate } from "../../src/shared/contracts/knowledge";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import {
   dirtyPages,
   newPageEditor,
@@ -13,6 +21,7 @@ import {
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
 import {
   KnowledgeToolSettings,
+  MemoryReadingRules,
   MemoryToolSettings,
 } from "../../src/web/screens/assistants/ResourceRules";
 import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
@@ -20,6 +29,10 @@ import { useSuperstringStore as store } from "../../src/web/store";
 import { A, agent, B, persona, policy, setupLibrary } from "./helpers/library-fixture";
 
 const zhText = zh as Record<string, string>;
+
+/** 显式 tooltip（保存按钮/字段帮助）必须挂在真实 DesignSystemProvider 下渲染。 */
+const render = (...[ui, options]: Parameters<typeof renderView>) =>
+  renderView(ui, { wrapper: DesignSystemProvider, ...options });
 /** 本地键可能晚于 locales 文件落地：缺失时 i18next 原样返回 key。 */
 const label = (key: string) => zhText[key] ?? key;
 
@@ -282,8 +295,8 @@ describe("memory-tools 与 long-memory 的字段所有权", () => {
   });
 });
 
-describe("两个导出的渲染、加载、错误与内容直达", () => {
-  it("缺少页面编辑器时显示加载而不是空白", async () => {
+describe("记忆与知识读取规则的渲染、加载、错误与内容直达", () => {
+  it("缺少页面编辑器时知识读取显示加载守卫，记忆规则等待编辑会话", async () => {
     setupLibrary();
     store.setState({ pageEditor: null });
     await act(async () =>
@@ -294,32 +307,83 @@ describe("两个导出的渲染、加载、错误与内容直达", () => {
         </>,
       ),
     );
-    expect(screen.getAllByText("正在加载…")).toHaveLength(2);
+    // KnowledgeToolSettings 自带加载守卫；MemoryReadingRules 随编辑会话渲染（组件级返回空），
+    // 编辑会话未就绪的整页加载守卫由宿主 AssistantWorkspace 提供（assistant-workspace-activity 覆盖）。
+    expect(screen.getByText("正在加载…")).toBeTruthy();
+    expect(screen.queryByLabelText("记忆工具额度模式")).toBeNull();
+    expect(screen.queryByLabelText("启用知识读取")).toBeNull();
   });
 
-  it("记忆工具设置提供模式/额度、显式保存丢弃、错误与长期记忆直达", async () => {
-    const mocks = toolMocks();
-    setupLibrary(mocks);
-    await act(async () => render(<MemoryToolSettings />));
+  it("记忆工具宿主内联完整规则，全局知识预算精准跳转到统一阅读分配", async () => {
+    const client = setupLibrary({ updateAgent: vi.fn() });
+    await act(async () =>
+      render(
+        <>
+          <MemoryToolSettings />
+          <KnowledgeToolSettings />
+        </>,
+      ),
+    );
+    // 记忆工具路由现为完整规则宿主：模式、三档扫描/返回与每档 Bytes 同组可编辑。
+    expect(screen.getByText("资料读取")).toBeTruthy();
     const mode = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
     expect(mode.value).toBe("standard");
     expect(screen.getAllByLabelText("每次查询扫描候选上限")).toHaveLength(3);
-    const save = screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement;
-    const discard = screen.getByRole("button", { name: "放弃修改" }) as HTMLButtonElement;
-    expect(save.disabled).toBe(true);
-    expect(discard.disabled).toBe(true);
+    const broadItem = screen
+      .getByRole("button", { name: /^广泛/ })
+      .closest("[data-slot=accordion-item]");
+    if (!(broadItem instanceof HTMLElement)) throw new Error("Missing broad preset item");
+    expect(within(broadItem).getByLabelText("每次查询扫描候选上限")).toBeTruthy();
+    expect(within(broadItem).getByTestId("reading-preset-max-tokens-broad")).toBeTruthy();
+    // 精准入口只保留在全局知识预算卡；跳转保留草稿、不隐式保存。
+    const budgetCard = screen.getByText("全局知识读取预算").closest('[data-slot="card"]');
+    if (!(budgetCard instanceof HTMLElement)) throw new Error("Missing global budget card");
+    expect(within(budgetCard).getAllByRole("button", { name: "前往上下文分配" })).toHaveLength(1);
+    await act(async () =>
+      fireEvent.click(within(budgetCard).getByRole("button", { name: "前往上下文分配" })),
+    );
+    expect(store.getState().settingsRoute).toBe("context-allocation");
+    expect(store.getState().contextAllocationTarget).toMatchObject({
+      purpose: "reading",
+      agentId: null,
+      returnRoute: "knowledge-tools",
+      returnLabel: "知识查询",
+    });
+    // Bytes 草稿归 context 页：就地编辑不写 memory-tools 页，也不隐式写库。
+    const bytes = screen.getByTestId("reading-preset-max-tokens-standard") as HTMLInputElement;
+    fireEvent.change(bytes, { target: { value: "5000" } });
+    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.standard.max_tokens).toBe(
+      5000,
+    );
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
+    expect(client.updateAgent).not.toHaveBeenCalled();
+  });
+
+  it("记忆读取规则提供模式/额度、显式保存丢弃、错误与长期记忆直达", async () => {
+    const mocks = toolMocks();
+    setupLibrary(mocks);
+    await act(async () => render(<MemoryReadingRules />));
+    const mode = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
+    expect(mode.value).toBe("standard");
+    expect(screen.getAllByLabelText("每次查询扫描候选上限")).toHaveLength(3);
+    const save = () => screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement;
+    const discard = () => screen.getByRole("button", { name: "放弃修改" }) as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
+    expect(discard().disabled).toBe(true);
     fireEvent.change(mode, { target: { value: "broad" } });
-    expect(save.disabled).toBe(false);
-    fireEvent.click(discard);
+    // 带 tooltip 的按钮在禁用/可用间切换会替换 DOM 节点：每次断言/点击前重新按名取当前按钮。
+    expect(save().isConnected).toBe(true);
+    expect(save().disabled).toBe(false);
+    fireEvent.click(discard());
     expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe("standard");
     // 保存失败：错误就地可见，草稿保留。
     fireEvent.change(mode, { target: { value: "broad" } });
     mocks.updateAgent.mockRejectedValueOnce(new Error("conflict"));
-    await act(async () => fireEvent.click(save));
+    await act(async () => fireEvent.click(save()));
     expect(screen.getByRole("alert").textContent).toContain("conflict");
     expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe("broad");
     // 保存成功接受基线；跳转长期记忆保留草稿、不隐式保存。
-    await act(async () => fireEvent.click(save));
+    await act(async () => fireEvent.click(save()));
     expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
     fireEvent.change(mode, { target: { value: "off" } });
     fireEvent.click(screen.getByRole("button", { name: "前往长期记忆" }));
@@ -338,11 +402,13 @@ describe("两个导出的渲染、加载、错误与内容直达", () => {
     await act(async () => render(<KnowledgeToolSettings />));
     const checkbox = screen.getByRole("checkbox", { name: "启用知识读取" });
     expect(checkbox.getAttribute("data-state")).toBe("checked");
-    const save = screen.getByRole("button", { name: "保存知识规则" }) as HTMLButtonElement;
-    expect(save.disabled).toBe(true);
+    const save = () => screen.getByRole("button", { name: "保存知识规则" }) as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
     fireEvent.click(checkbox);
-    expect(save.disabled).toBe(false);
-    await act(async () => fireEvent.click(save));
+    // 带 tooltip 的按钮在禁用/可用间切换会替换 DOM 节点：重新按名取当前按钮再断言/点击。
+    expect(save().isConnected).toBe(true);
+    expect(save().disabled).toBe(false);
+    await act(async () => fireEvent.click(save()));
     expect(client.saveAgentKnowledgeRead).toHaveBeenCalledWith(A, {
       expected_revision: 1,
       config: { enabled: false, context_budget: null, scope: "all", document_ids: [] },
@@ -550,10 +616,10 @@ describe("保存基线显式刷新", () => {
       listAgents: vi.fn(async () => [fullAgent, { ...fullAgent, id: B, name: "Agent B" }]),
       updateAgent,
     } as never);
-    // null→ready：编辑器未就绪时只有加载态，就绪后输入按存量值出现。
+    // 未就绪时真实编辑区不渲染占位；就绪后输入按存量值出现。
     store.setState({ pageEditor: null });
-    await act(async () => render(<MemoryToolSettings />));
-    expect(screen.getByText("正在加载…")).toBeTruthy();
+    await act(async () => render(<MemoryReadingRules />));
+    expect(screen.queryByLabelText("最多目录批次")).toBeNull();
     await act(async () => store.getState().editAgent(A));
     expect((screen.getByLabelText("最多目录批次") as HTMLInputElement).value).toBe("17");
     expect((screen.getByLabelText("每批目录条数") as HTMLInputElement).value).toBe("23");
@@ -606,10 +672,10 @@ describe("保存基线显式刷新", () => {
     ).toMatchObject({ retrieval_mode: "standard", max_catalog_batches: 40 });
   });
 
-  it("记忆面板提供刷新保存基线按钮；忙碌时输入、选项与保存按钮禁用", async () => {
+  it("记忆读取规则提供刷新保存基线按钮；忙碌时输入、选项与保存按钮禁用", async () => {
     const getAgent = vi.fn(async (id: string) => ({ ...agent, id }));
     setupLibrary({ getAgent });
-    await act(async () => render(<MemoryToolSettings />));
+    await act(async () => render(<MemoryReadingRules />));
     const refreshName = label("capabilities.resources.refreshBaseline");
     const refresh = () => screen.getByRole("button", { name: refreshName }) as HTMLButtonElement;
     expect(refresh().disabled).toBe(false);

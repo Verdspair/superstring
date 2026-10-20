@@ -1,4 +1,4 @@
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -60,7 +60,12 @@ export function ModelCallsTable({
             </TableCell>
             <TableCell>{item.durationMs === null ? "—" : milliseconds(item.durationMs)}</TableCell>
             <TableCell>
-              <Button size="sm" variant="outline" onClick={() => onSelect(item)}>
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.modelCall" />}
+                size="sm"
+                variant="outline"
+                onClick={() => onSelect(item)}
+              >
                 {t("observability.inspectCall")}
               </Button>
             </TableCell>

@@ -1,6 +1,6 @@
 // The preview speaks the page's labels but never rewrites the user's own text.
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSchemeResponse } from "../../src/shared/contracts/qq";
@@ -9,6 +9,7 @@ import { qqSchemeChanges, qqSchemeEditorFrom } from "../../src/web/features/qq/t
 import { selectLocale, translate } from "../../src/web/i18n";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-24T00:00:00.000Z";
 const COLLECTION = "11111111-1111-4111-8111-111111111111";
@@ -114,9 +115,9 @@ async function renderPage(overrides: Partial<typeof api> = {}) {
     settingsView: "workspace",
     settingsRoute: "qq-scheme-config",
   });
-  render(<SchemeStudio />);
+  const view = render(<SchemeStudio />);
   await act(async () => {});
-  return { fake };
+  return { fake, view };
 }
 
 /** The dialog row whose field cell reads exactly `label` (or the raw key for unknown fields). */
@@ -130,15 +131,18 @@ const previewCells = (dialog: HTMLElement, label: string) =>
 
 async function expectPreviewFollowsTheForm() {
   await renderPage();
+  // 装配冗余输入在方案页历史压缩任务（同一个方案草稿）：界面按整数百分比录入、存的是比例。
   await userEvent.click(
     screen.getByRole("tab", { name: translate("schemes.sections.historyCompression") }),
   );
-  const headroom = screen.getByLabelText(
-    translate("connections.assemblyHeadroomPercent"),
+  const headroom = document.getElementById(
+    "scheme-field-compression.headroom_ratio",
   ) as HTMLInputElement;
   expect(headroom.value).toBe("5");
   fireEvent.change(headroom, { target: { value: "10" } });
+  fireEvent.blur(headroom);
   expect(store.getState().qqSchemeEditor?.compression.headroom_ratio).toBe(0.1);
+  // 回到发言时机继续页内编辑：同一份草稿不丢。
   await userEvent.click(
     screen.getByRole("tab", { name: translate("schemes.sections.participation") }),
   );

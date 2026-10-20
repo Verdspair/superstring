@@ -31,6 +31,7 @@ import {
   saveQqStickerTagsDraft,
 } from "../db/qq-sticker-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
+import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
 import { sampleQqAnimationFrames } from "./qq-animation-frames";
 import { checkQqModelCapacity } from "./qq-capacity-preflight";
@@ -70,6 +71,8 @@ export interface QqStickerAnnotatorInput {
   /** 保存档的硬输出预留（0068）：存在时作为 max_tokens 发送；缺席＝既有行为（不发送帽）。 */
   readonly outputReserved?: number;
   readonly maxTokens?: number;
+  /** 调用方提供的真实素材复验：每次额外物理发送前由模型发送循环调用，失效即抛。 */
+  readonly assertSources?: () => void;
 }
 
 /** The injected multimodal call. It may constrain the output; this module still parses strictly. */
@@ -96,6 +99,13 @@ export function createQqStickerAnnotator(agentRuntime: LeafAgentRuntime): QqStic
         validate: (text) => {
           if (readAnswer(text) === null)
             throw new InvalidStickerAnnotation("Invalid sticker annotation result");
+        },
+        // 唯一入口是网页素材管理的显式标注调用（无自动 QQ 唤醒管线）：来源固定 system。
+        retryOrigin: "system",
+        // 每次额外物理发送前：调用方的真实素材复验 + 既有取消信号，二者都过才放行。
+        assertSources: () => {
+          input.assertSources?.();
+          input.signal?.throwIfAborted();
         },
         owner: { kind: "qq_sticker", id: input.assetId ?? "unbound", userId: DEFAULT_USER_ID },
       },
@@ -181,6 +191,18 @@ export async function annotateQqSticker(
   if (asset === null) return { kind: "rejected", reason: "file_unreadable" };
   const model = (request.data.visionModel ?? "").trim();
   if (model === "") return { kind: "rejected", reason: "model_not_configured" };
+  // 每次额外物理发送与保存前的真实边界：素材必须仍存在且身份一致（updatedAt/fileName），
+  // 删除或并发变动即抛既有业务码，失效输入不得继续发送、失效结果不得落成草稿。
+  const assertAssetCurrent = (): void => {
+    signal?.throwIfAborted();
+    const current = readQqStickerAsset(orm, asset.id);
+    if (
+      current === null ||
+      current.updatedAt !== asset.updatedAt ||
+      current.fileName !== asset.fileName
+    )
+      fail("CONTEXT_SOURCE_INVALID", "QQ素材已删除或已变更，标注不得继续");
+  };
   // 全局辅助分配档（0068）：本操作入口读取一次。output_reserved 同时是发送的 max_tokens
   // 与预检预留（修复既有「预检 1024 与实际不接线」的错位）；缺席＝既有 1024 预检预留、
   // 不发送输出帽。图片成本未知仍未知：input_limit 只按可计量的文本部分评估，不伪造图片担保。
@@ -225,11 +247,14 @@ export async function annotateQqSticker(
       images,
       signal,
       assetId: asset.id,
+      assertSources: assertAssetCurrent,
       outputReserved,
       ...(maxTokens === undefined ? {} : { maxTokens }),
       sources: [{ kind: "qq_sticker", id: asset.id, revision: asset.updatedAt }],
     });
   } catch (error) {
+    // 只有素材复验失败是真实状态边界：按既有业务码原样抛出；其余旧模型错误保持 rejected:model_error。
+    if (error instanceof AppError && error.code === "CONTEXT_SOURCE_INVALID") throw error;
     return {
       kind: "rejected",
       reason: error instanceof InvalidStickerAnnotation ? "unreadable_answer" : "model_error",
@@ -237,6 +262,8 @@ export async function annotateQqSticker(
   }
   const answer = readAnswer(raw);
   if (answer === null) return { kind: "rejected", reason: "unreadable_answer" };
+  // 保存前复验：发送期间素材变动时，失效结果不得落成草稿。
+  assertAssetCurrent();
   saveQqStickerDraft(orm, asset.id, answer.description);
   const saved = saveQqStickerTagsDraft(orm, asset.id, answer.tags);
   return { kind: "annotated", asset: saved };

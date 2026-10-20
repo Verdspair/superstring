@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionPolicySchema } from "../../src/shared/contracts/permissions";
 import type { ToolDirectoryEntry } from "../../src/shared/contracts/tool-directory";
@@ -12,6 +12,7 @@ import {
   warmToolDirectory,
 } from "../../src/web/services/connection-resources";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const tool = (name: string): ToolDirectoryEntry => ({
   name,

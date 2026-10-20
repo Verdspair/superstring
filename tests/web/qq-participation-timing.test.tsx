@@ -1,7 +1,7 @@
 // QQ 接话时机评估模式 (participation_timing) 界面与草稿生命周期测试
 // 验证：人类友好选项展示、保存载荷、字段保持、单群继承与稀疏覆盖、409 冲突保稿、数值与枚举校验隔离。
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponse } from "../../src/shared/contracts/agent";
@@ -14,6 +14,7 @@ import { selectLocale } from "../../src/web/i18n";
 import { QqGroupConfigPage } from "../../src/web/screens/connections/group-config";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-10-15T00:00:00.000Z";
 const BASE_SCHEME_ID = "22222222-2222-4222-8222-222222222222";

@@ -1,6 +1,6 @@
 // 失败整理任务重试：仅 failed 行入口、确认框含任务号/模型费用/原快照、失败保留原任务、
 // 迟到响应不得写当前 Agent/列表/feedback（切 Agent 或离页后）。
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MemoryJobView } from "../../src/shared/contracts";
 import { ApiError } from "../../src/web/api";
@@ -9,6 +9,7 @@ import { i18n } from "../../src/web/i18n/runtime";
 import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { A, B, D, M, setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const RETRY_KEY = "library.memory.job.retry.confirm";
 

@@ -1,6 +1,6 @@
 // 方案目录与详情外壳：应用分组、绑定计数未知语义、草稿标识、行点击导航、新建（含脏草稿三选）流程。
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { QqBindingResponseSchema, type QqSchemeResponse } from "../../src/shared/contracts/qq";
@@ -9,6 +9,7 @@ import { qqSchemeEditorFrom } from "../../src/web/features/qq/types";
 import { selectLocale, translate } from "../../src/web/i18n";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-30T00:00:00.000Z";
 const AGENT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -423,7 +424,7 @@ it("详情用法计数由外层使用会话 Tab 承接：计数可见、点击�
   await renderDetail();
   // data-scheme-usage 语义入口移到外层 Tab 触发器；匹配编辑对象时计数=0。
   const usage = document.querySelector("[data-scheme-usage]") as HTMLElement;
-  expect(usage.textContent).toContain(translate("schemes.usageCount", "0"));
+  expect(within(usage).getByLabelText(translate("schemes.usageCount", "0"))).toBeTruthy();
   // Radix Tab 以真实指针事件激活（与既有 tab 切换用例一致），不用合成 click。
   await userEvent.click(usage);
   await act(async () => {});
@@ -440,7 +441,7 @@ it("usage 读取失败时不把未知当 0：显示未知与重试，重试重�
   // 首读失败 → 未知行 + 重试（原 studio 内层行为等价迁移到外层），未知绝不是 0。
   expect(screen.getByText(translate("schemes.usageUnknown"))).toBeTruthy();
   expect(screen.queryByText(translate("schemes.usageCount", "0"))).toBeNull();
-  // 协同编辑期 studio 内层 retry 尚未移除（Gemini lane）：外层未知行的重试按容器定位，点击即重读 usage。
+  // 未知计数旁的重试重新读取 usage，不能展示缓存的零。
   const unknownRow = screen
     .getByText(translate("schemes.usageUnknown"))
     .closest("span") as HTMLElement;
@@ -450,75 +451,47 @@ it("usage 读取失败时不把未知当 0：显示未知与重试，重试重�
   await act(async () => {});
   expect(usage).toHaveBeenCalledTimes(2);
   // 重试成功后计数出现在外层 Tab 上。
-  expect(document.querySelector("[data-scheme-usage]")?.textContent).toContain(
-    translate("schemes.usageCount", "0"),
-  );
+  expect(
+    within(document.querySelector("[data-scheme-usage]") as HTMLElement).getByLabelText(
+      translate("schemes.usageCount", "0"),
+    ),
+  ).toBeTruthy();
 });
 
-it("目录提供全局会话绑定次级入口（工具条小按钮），落到与详情使用会话同一绑定视图", async () => {
+it("用户拒绝的碎片入口不再出现：工具条会话绑定按钮与应用快捷行移除", async () => {
   await renderDirectory();
-  const entry = screen.getByRole("button", { name: translate("schemes.bindings.entry") });
-  // 次级按钮：发现性说明随 title 提示，不再占大横幅。
-  expect(entry.getAttribute("title")).toBe(translate("schemes.bindings.entryHint"));
-  fireEvent.click(entry);
-  expect(store.getState().settingsRoute).toBe("scheme-bindings");
-  // 大横幅容器不再存在。
-  expect(screen.queryByText(translate("schemes.bindings.entryHint"))).toBeNull();
-});
-
-it("QQ 标题与本群配置/连接/数据同为 outline 32px 入口，忙碌禁用与各目标不变", async () => {
-  await renderDirectory();
-  const title = screen.getByRole("button", { name: "QQ" });
-  const groups = screen.getByRole("button", { name: "本群配置" });
-  const connection = screen.getByRole("button", { name: "连接" });
-  const data = screen.getByRole("button", { name: "数据与保留" });
-  // 标题入口保留打开应用管理的属性，与本群配置/连接/数据同为 outline 默认尺寸（min-h-8=32px）。
-  expect(title.getAttribute("data-scheme-app-open")).toBe("qq");
-  for (const button of [title, groups, connection, data]) {
-    expect(button.getAttribute("data-variant")).toBe("outline");
-    expect(button.getAttribute("data-size")).toBe("default");
-    expect(button.className).toContain("h-auto");
-    expect(button.className).toContain("min-h-8");
-    expect(button.className).toContain("whitespace-normal");
-    expect(button.className).not.toContain("h-7");
-  }
-  // 忙碌时四个入口与同页操作一起禁用。
-  act(() => store.setState({ qqSchemeSaving: true }));
-  for (const button of [title, groups, connection, data]) {
-    expect((button as HTMLButtonElement).disabled).toBe(true);
-  }
-  act(() => store.setState({ qqSchemeSaving: false }));
-  // 点击后应用目录卸载、本目录入口随之消失；连接目标由「应用管理直达连接」用例承接。
-  fireEvent.click(groups);
-  expect(store.getState().settingsRoute).toBe("qq-app-groups");
-});
-
-it("进入 QQ 应用管理后目录只留 QQ，不再重复捷径入口", async () => {
-  await renderDirectory();
-  fireEvent.click(screen.getByRole("button", { name: "QQ" }));
-  expect(store.getState().settingsRoute).toBe("qq-app-schemes");
-  await act(async () => {});
-  expect(screen.queryByLabelText(translate("schemes.appFilter"))).toBeNull();
-  expect(screen.queryByRole("button", { name: "数据与保留" })).toBeNull();
+  // 会话绑定升级为常驻同级分区，不再挤在目录工具条末端。
+  expect(screen.queryByRole("button", { name: translate("schemes.bindings.entry") })).toBeNull();
+  // 应用卡片快捷行（本群配置/连接/数据与保留）不再重复出现；目的地由常驻分区承接。
   expect(screen.queryByRole("button", { name: "本群配置" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "数据与保留" })).toBeNull();
+});
+
+it("qq-app-schemes 别名与方案库同页：方案目录只挂一次，切换不重挂", async () => {
+  await renderDirectory();
+  expect(screen.getAllByLabelText(translate("schemes.search"))).toHaveLength(1);
+  const before = document.querySelector('[data-qq-retained-scroll="schemes"]');
+  await act(async () => store.getState().openSettingsRoute("qq-app-schemes"));
+  // 同一别名 pane：滚动容器节点保持同一实例，目录内容不卸载重挂。
+  expect(document.querySelector('[data-qq-retained-scroll="schemes"]')).toBe(before);
   expect(screen.getByText("默认方案")).toBeTruthy();
+  expect(screen.getAllByLabelText(translate("schemes.search"))).toHaveLength(1);
 });
 
-it("详情面包屑的 QQ 回到应用目录，工具条的应用管理直达连接", async () => {
+it("详情不再有外部式 QQ 连接胶囊，返回目录走面包屑", async () => {
   await renderDetail();
+  // 幽灵外链按钮删除：设置走常驻 QQ 设置分区，不再从详情头部跳「外部应用」。
+  expect(screen.queryByRole("button", { name: translate("schemes.detail.connection") })).toBeNull();
   const nav = screen.getByRole("navigation", { name: translate("workspace.schemes") });
-  fireEvent.click(within(nav).getByRole("button", { name: "QQ" }));
-  expect(store.getState().settingsRoute).toBe("qq-app-schemes");
-  cleanup();
-  await renderDetail();
-  fireEvent.click(screen.getByRole("button", { name: translate("schemes.appManagement") }));
-  expect(store.getState().settingsRoute).toBe("qq-connection");
+  expect(within(nav).getByText("QQ")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "返回方案目录" }));
+  expect(store.getState().settingsRoute).toBe("scheme-library");
 });
 
-it("往应用管理的导航复用 QQ 草稿三选，取消保留草稿与原路由", async () => {
+it("从详情点常驻 QQ 设置分区：复用 QQ 草稿三选，取消保留草稿与原路由", async () => {
   await renderDetail();
   makeDirtyEditor();
-  fireEvent.click(screen.getByRole("button", { name: translate("schemes.appManagement") }));
+  await userEvent.click(screen.getByRole("tab", { name: translate("schemes.workspace.settings") }));
   expect(store.getState()).toMatchObject({
     settingsRoute: "qq-scheme-config",
     navigationConfirmOpen: true,
@@ -549,4 +522,20 @@ it("详情空态给出新建入口，不自动新建或分配", async () => {
   const { fake } = await renderDetail({ listQqSchemes: vi.fn().mockResolvedValue([]) });
   expect(screen.getByRole("button", { name: "新建方案" })).toBeTruthy();
   expect(fake.createQqScheme).not.toHaveBeenCalled();
+});
+
+it("使用会话读到目录后保留真实计数，读取失败不伪装成空列表", async () => {
+  await renderDetail();
+  const entry = document.querySelector("[data-scheme-usage]") as HTMLElement;
+  await userEvent.click(entry);
+  await act(async () => {});
+  const expected = store
+    .getState()
+    .qqBindings.filter((binding) => binding.scheme_id === SCHEME_A).length;
+  expect(
+    within(entry).getByLabelText(translate("schemes.usageCount", String(expected))),
+  ).toBeTruthy();
+  act(() => store.setState({ qqBindingsLoaded: false, qqSchemeUsage: null }));
+  expect(screen.getByText(translate("schemes.usageUnknown"))).toBeTruthy();
+  expect(within(entry).queryByLabelText(translate("schemes.usageCount", "0"))).toBeNull();
 });

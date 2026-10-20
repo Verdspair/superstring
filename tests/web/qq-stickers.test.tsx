@@ -1,9 +1,10 @@
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { selectLocale } from "../../src/web/i18n";
 import { StickerLibrary } from "../../src/web/screens/library/StickerLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { D, S, setupLibrary, sticker } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 beforeEach(() => {
   setupLibrary();

@@ -1,10 +1,11 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { QqSchemeResponse } from "../../src/shared/contracts/qq";
 import { qqSchemeEditorFrom } from "../../src/web/features/qq/types";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { setupLibrary } from "./helpers/library-fixture";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-10-08T00:00:00Z";
 const SCHEME_A = "22222222-2222-4222-8222-222222222222";

@@ -6,9 +6,10 @@ import {
   PersonaResponseSchema,
 } from "../../src/shared/contracts";
 import type { SuperstringApi } from "../../src/web/api";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { selectLocale } from "../../src/web/i18n";
-import { CapabilityEditor } from "../../src/web/screens/assistants/StudioEditors";
+import { AgentModelPurpose } from "../../src/web/screens/environment/AgentModelPurpose";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const selectedAgent = AgentResponseSchema.parse({
@@ -54,14 +55,20 @@ afterEach(() => {
 });
 
 describe("memory retrieval model purpose", () => {
-  it("renders the selected Agent memory retrieval model in the existing model-purpose controls", async () => {
+  it("renders the selected Agent memory retrieval model in the agent purpose controls", async () => {
     store.getState().resetForTests();
     store.setState({
       agents: [selectedAgent, otherAgent],
       editorAgentId: selectedAgent.id,
       pageEditor: newPageEditor(selectedAgent, persona),
     });
-    await act(async () => render(<CapabilityEditor active={false} />));
+    await act(async () =>
+      render(
+        <DesignSystemProvider>
+          <AgentModelPurpose active={false} />
+        </DesignSystemProvider>,
+      ),
+    );
     const retrievalModel = screen.getByLabelText("记忆读取模型") as HTMLInputElement;
     expect(retrievalModel.value).toBe("saved-retrieval-model");
     fireEvent.change(retrievalModel, { target: { value: "edited-retrieval-model" } });

@@ -5,7 +5,7 @@
 // says how many conversations would be affected, and the two things §11.1 keeps OFF this page —
 // model selection and rebinding — asserted by absence.
 
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema } from "../../src/shared/contracts";
@@ -16,10 +16,11 @@ import {
   type QqSchemeResponse,
 } from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
-import { selectLocale } from "../../src/web/i18n";
+import { selectLocale, translate } from "../../src/web/i18n";
 import { SchemeStudio } from "../../src/web/screens/connections/scheme-studio";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-24T00:00:00.000Z";
 const COLLECTION = "11111111-1111-4111-8111-111111111111";
@@ -136,9 +137,9 @@ async function renderPage(overrides: Partial<typeof api> = {}) {
     settingsView: "workspace",
     settingsRoute: "qq-scheme-config",
   });
-  render(<SchemeStudio />);
+  const view = render(<SchemeStudio />);
   await act(async () => {});
-  return { fake };
+  return { fake, view };
 }
 
 beforeEach(() => {
@@ -156,12 +157,15 @@ describe("Shared scheme studio", () => {
     fireEvent.change(screen.getByLabelText("合并窗口（秒）"), { target: { value: "15" } });
     await task("回复方式");
     fireEvent.change(screen.getByLabelText("场景与行为"), { target: { value: "New scene" } });
+    await task("表情发送");
+    await userEvent.click(screen.getByRole("checkbox", { name: /日常/ }));
+    // 回复预算输入在方案页消息读取任务（同一个方案草稿）：页脚一次保存整体提交
+    // （CAS 期望修订不变，仍是 3）。
     await task("消息读取");
     fireEvent.change(screen.getByLabelText("回复：预算（估算字节）"), {
       target: { value: "7000" },
     });
-    await task("表情发送");
-    await userEvent.click(screen.getByRole("checkbox", { name: /日常/ }));
+    expect(store.getState().qqSchemeEditor?.context.reply_token_budget).toBe(7000);
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
     expect(fake.updateQqScheme).toHaveBeenCalledWith(
       scheme().id,
@@ -264,28 +268,47 @@ describe("Shared scheme studio", () => {
     );
   });
   /**
-   * 第二版：压缩与装配是方案自己的三栏（水位触发条数、水位包上限、装配冗余），
-   * 冗余在界面里按整数百分比录入、存的是比例；水位压缩任务是一个可编辑的提示词槽位。
+   * 压缩与装配的预算三栏（水位触发条数、水位包上限、装配冗余）在方案页历史压缩任务：
+   * 冗余在界面里按整数百分比录入、存的是比例；保存仍走方案自己的 CAS 保存
+   * （期望修订 3），载荷三栏逐字保留。
    */
-  it("edits the compression and assembly group, entering the headroom as a percent", async () => {
+  it("edits the compression and assembly budgets on the history-compression task", async () => {
     const { fake } = await renderPage();
     await task("历史压缩");
     fireEvent.change(screen.getByLabelText("水位触发条数"), { target: { value: "50" } });
     fireEvent.change(screen.getByLabelText("水位包上限"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("装配冗余百分比"), { target: { value: "10" } });
-    fireEvent.change(screen.getByLabelText("水位压缩任务"), { target: { value: "压事实" } });
     expect(store.getState().qqSchemeEditor?.compression).toEqual({
       watermark_trigger: 50,
       package_limit: 4,
       headroom_ratio: 0.1,
     });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    await act(
+      async () =>
+        void fireEvent.click(
+          screen.getByRole("button", { name: translate("connections.saveScheme") }),
+        ),
+    );
     expect(fake.updateQqScheme).toHaveBeenCalledWith(
       scheme().id,
       expect.objectContaining({
+        expected_revision: 3,
         compression: { watermark_trigger: 50, package_limit: 4, headroom_ratio: 0.1 },
-        prompts: expect.objectContaining({ compress: "压事实" }),
       }),
+    );
+  });
+  /** 水位压缩任务提示词槽位留在方案页「历史压缩」组，仍可编辑并随整体保存提交；预算三栏只读。 */
+  it("keeps the compress prompt editable on the scheme page while the budgets show read-only", async () => {
+    const { fake } = await renderPage();
+    await task("历史压缩");
+    fireEvent.change(screen.getByLabelText("水位压缩任务"), { target: { value: "压事实" } });
+    // 预算三栏在本组是真实编辑输入（契约范围 + 百分比换算），可编辑并与压缩任务同组保存。
+    expect(screen.getByLabelText("水位触发条数")).toBeTruthy();
+    expect(screen.getByLabelText("装配冗余百分比")).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存方案" })));
+    expect(fake.updateQqScheme).toHaveBeenCalledWith(
+      scheme().id,
+      expect.objectContaining({ prompts: expect.objectContaining({ compress: "压事实" }) }),
     );
   });
   /**

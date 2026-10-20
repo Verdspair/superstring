@@ -7,7 +7,7 @@
 // 3. 非白名单 BATCH_* 码（如 BATCH_SKIPPED_BUSY）保持 text-destructive 标红，禁止全 BATCH_* 通配中性化。
 // 4. 英文语言环境下渲染对应本地化中英文案。
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -18,6 +18,7 @@ import { api } from "../../src/web/api";
 import { i18n } from "../../src/web/i18n/runtime";
 import { EventRecord } from "../../src/web/screens/conversations/EventRecord";
 import { useSuperstringStore } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 const now = "2026-10-09T12:00:00Z";
 

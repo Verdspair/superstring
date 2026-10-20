@@ -1,11 +1,20 @@
-import { ChevronLeft, ChevronRight, MessagesSquare, Search, Wrench } from "lucide-react";
+import { ChevronLeft, ChevronRight, MessagesSquare, Search } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { executionPolicy } from "../../../shared/contracts/permissions";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { NativeSelect } from "../../components/ui/native-select";
 import type { PermissionEditor } from "../../features/access/permission-state";
@@ -28,7 +37,6 @@ import {
   SKILL_HUMAN_LABELS,
   TOOL_HUMAN_LABELS,
 } from "../../workspace/capability-catalog";
-import { KnowledgeToolSettings, MemoryToolSettings } from "../assistants/ResourceRules";
 import { ExecutionSettings } from "../runs/execution-settings";
 import { CapabilityPolicyPanel } from "./capability-policy-panel";
 import { ExternalIntegrationsCard } from "./external-components";
@@ -188,17 +196,23 @@ function CapabilityDirectory({
   return (
     <section
       hidden={hidden}
-      className={hidden ? "hidden" : "flex h-full min-h-0 flex-col"}
+      className={
+        hidden
+          ? "hidden"
+          : "mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
+      }
       style={hidden ? { display: "none" } : undefined}
       aria-label={t("workspace.capabilities")}
     >
-      <header className="space-y-1 border-b px-4 py-5">
-        <div className="flex items-center gap-2">
-          <Wrench className="size-4 text-muted-foreground" />
-          <h1 className="text-xl font-semibold tracking-tight">{t("workspace.capabilities")}</h1>
-        </div>
-        <p className="text-sm text-muted-foreground">{t("capabilities.directory.description")}</p>
-        <p className="text-xs text-muted-foreground">{t("capabilities.factNote")}</p>
+      <header className="workspace-page-header mb-[24px]">
+        <p className="workspace-page-location">
+          {t("brand.workspace", { "0": t("workspace.capabilities") })}
+        </p>
+        <h1 className="workspace-page-title">{t("workspace.capabilities")}</h1>
+        <p className="workspace-page-description">{t("capabilities.directory.description")}</p>
+        <p className="mt-[6px] text-[12.5px] leading-[1.55] text-muted-foreground">
+          {t("capabilities.factNote")}
+        </p>
       </header>
       <div className="border-b px-4 py-3">
         <div className="relative max-w-md">
@@ -217,12 +231,17 @@ function CapabilityDirectory({
           <p role="alert" className="text-sm text-destructive">
             {translateNotice(s.permissionError)}
           </p>
-          <Button variant="outline" size="sm" onClick={() => void s.loadPermissionSettings(true)}>
+          <Button
+            variant="outline"
+            size="sm"
+            tooltip={t("hints.system.retryLoad")}
+            onClick={() => void s.loadPermissionSettings(true)}
+          >
             {t("capabilities.retry")}
           </Button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
+      <div className="min-h-0 flex-1 overflow-y-auto py-[24px]" data-workspace-scroll>
         {catalogErrors.length > 0 && (
           <div className="mb-4 space-y-2">
             {catalogErrors.map((resource) => (
@@ -233,7 +252,12 @@ function CapabilityDirectory({
                 <p role="alert" className="text-sm text-destructive">
                   {resource.error}
                 </p>
-                <Button variant="outline" size="sm" onClick={resource.refresh}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  tooltip={t("hints.system.retryCatalog")}
+                  onClick={resource.refresh}
+                >
                   {t("capabilities.retry")}
                 </Button>
               </div>
@@ -250,44 +274,55 @@ function CapabilityDirectory({
                   </h2>
                   <p className="text-xs text-muted-foreground">{t(group.descriptionKey)}</p>
                 </div>
-                <ul className="divide-y overflow-hidden rounded-xl border">
+                <ul className="grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-[16px]">
                   {group.entries.map((entry) => {
                     if (entry.id === "external-integrations") {
                       return (
-                        <li key={entry.id} className="p-3 bg-card">
+                        <li
+                          key={entry.id}
+                          className="rounded-[10px] border border-border bg-card p-[20px]"
+                        >
                           <ExternalIntegrationsCard active={active && !hidden} />
                         </li>
                       );
                     }
                     const fact = capabilityFact(entry, s.permissionEditor);
                     return (
-                      <li key={entry.id} className="bg-card">
-                        <button
-                          type="button"
-                          onClick={() => s.openSettingsRoute(entry.route)}
-                          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          <entry.icon className="size-4 shrink-0 text-muted-foreground" />
-                          <span className="min-w-0 flex-1">
-                            <span className="flex flex-wrap items-center gap-2">
-                              <span className="text-sm font-medium">{t(entry.nameKey)}</span>
-                              <Badge
-                                variant={fact.kind === "on" ? "secondary" : "outline"}
-                                className="h-auto max-w-full whitespace-normal break-words text-left"
-                              >
-                                {t(FACT_KEYS[fact.kind])}
-                              </Badge>
-                            </span>
-                            <span className="mt-0.5 block text-xs text-muted-foreground">
-                              {t(entry.descriptionKey)}
-                            </span>
-                          </span>
-                          <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
-                            <span>{t("connections.components.primaryConfig")}</span>
-                            <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-                          </span>
-                        </button>
-                        <div className="px-4 pb-3">
+                      <li
+                        key={entry.id}
+                        className="flex flex-col rounded-[10px] border border-border border-l-[4px] border-l-primary bg-card p-[20px]"
+                      >
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={() => s.openSettingsRoute(entry.route)}
+                              className="flex w-full items-start gap-[12px] rounded-[6px] text-left transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-primary"
+                            >
+                              <entry.icon className="size-4 shrink-0 text-muted-foreground" />
+                              <span className="min-w-0 flex-1">
+                                <span className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm font-medium">{t(entry.nameKey)}</span>
+                                  <Badge
+                                    variant={fact.kind === "on" ? "secondary" : "outline"}
+                                    className="h-auto max-w-full whitespace-normal break-words text-left"
+                                  >
+                                    {t(FACT_KEYS[fact.kind])}
+                                  </Badge>
+                                </span>
+                                <span className="mt-0.5 block text-xs text-muted-foreground">
+                                  {t(entry.descriptionKey)}
+                                </span>
+                              </span>
+                              <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
+                                <span>{t("connections.components.primaryConfig")}</span>
+                                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                              </span>
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>{t("strict.hints.capabilityOpen")}</TooltipContent>
+                        </Tooltip>
+                        <div className="mt-[16px] border-t border-border pt-[12px]">
                           <SystemComponents entry={entry} active={active && !hidden} />
                         </div>
                       </li>
@@ -320,22 +355,36 @@ function CapabilityDetailShell({
   const navigate = useSuperstringStore((s) => s.openSettingsRoute);
   const back = () => navigate("system-capabilities");
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label={t(entry.nameKey)}>
-      <header className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
-        <Button variant="ghost" size="icon-sm" aria-label={t("capabilities.back")} onClick={back}>
+    <section
+      className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
+      aria-label={t(entry.nameKey)}
+    >
+      <header className="mb-[24px] flex flex-wrap items-center gap-[8px] border-b border-border pb-[20px]">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={t("capabilities.back")}
+          tooltip={t("hints.system.capabilitiesBack")}
+          onClick={back}
+        >
           <ChevronLeft />
         </Button>
         <nav
           aria-label={t("workspace.capabilities")}
-          className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground"
+          className="workspace-page-location flex min-w-0 flex-wrap items-center gap-[6px]"
         >
-          <button
-            type="button"
-            onClick={back}
-            className="rounded-md px-1 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {t("workspace.capabilities")}
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={back}
+                className="rounded-md px-1 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {t("workspace.capabilities")}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{t("hints.system.capabilitiesBack")}</TooltipContent>
+          </Tooltip>
           <ChevronRight className="size-3.5 shrink-0" />
           <span className="truncate font-medium text-foreground">{t(entry.nameKey)}</span>
         </nav>
@@ -459,11 +508,14 @@ function AgentScopedDetail({
     <div className="w-full space-y-6 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight">{t(entry.nameKey)}</h1>
+          <div className="flex items-center gap-2">
+            <entry.icon className="size-5 text-primary" />
+            <h1 className="workspace-page-title">{t(entry.nameKey)}</h1>
+          </div>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{t(entry.descriptionKey)}</p>
         </div>
         {s.agents.length > 0 && (
-          <Field label="library.agent.owner">
+          <Field label="library.agent.owner" tooltip={t("hints.fieldExtra.fieldAssistant")}>
             <NativeSelect
               aria-label={t("library.select.an.assistant")}
               value={s.editorAgentId}
@@ -489,14 +541,65 @@ function AgentScopedDetail({
       {s.agents.length === 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
           <p className="text-sm text-muted-foreground">{t("capabilities.memory.noAgent")}</p>
-          <Button onClick={() => s.openAgentSettings()}>{t("library.create.assistant")}</Button>
+          <Button tooltip={t("hints.system.createAgent")} onClick={() => s.openAgentSettings()}>
+            {t("library.create.assistant")}
+          </Button>
         </div>
       ) : ready ? (
-        entry.detail === "memory" ? (
-          <MemoryToolSettings />
-        ) : (
-          <KnowledgeToolSettings active={active} />
-        )
+        <Card className="min-w-0 border">
+          <CardHeader>
+            <CardTitle className="text-base font-semibold text-foreground flex items-center gap-2">
+              <entry.icon className="size-4 text-primary" />
+              <span>{t(entry.nameKey)}</span>
+            </CardTitle>
+            <CardDescription className="text-xs text-muted-foreground mt-1">
+              {t(entry.descriptionKey)}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              {t(
+                entry.detail === "memory"
+                  ? "capabilities.memory.canonicalNotice"
+                  : "capabilities.knowledge.canonicalNotice",
+                {
+                  defaultValue:
+                    "本项能力规则已收敛至智能体工作区专属管理。点击下方按钮即可前往当前助手的独立配置视图。",
+                },
+              )}
+            </p>
+          </CardContent>
+          <CardFooter className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+            <span className="text-xs text-muted-foreground">
+              {t("library.agent.owner")}：
+              <strong className="text-foreground">
+                {s.agents.find((a) => a.id === s.editorAgentId)?.name ?? s.editorAgentId}
+              </strong>
+            </span>
+            <Button
+              data-testid={
+                entry.detail === "memory"
+                  ? "capability-canonical-memory-link"
+                  : "capability-canonical-knowledge-link"
+              }
+              tooltip={t("hints.system.canonicalLink")}
+              onClick={() =>
+                s.requestAgentNavigation(
+                  s.editorAgentId,
+                  entry.detail === "memory" ? "memory-tools" : "knowledge-tools",
+                )
+              }
+              className="flex items-center gap-1.5"
+            >
+              <span>
+                {entry.detail === "memory"
+                  ? t("capabilities.memory.canonicalLink", { defaultValue: "前往助手记忆配置" })
+                  : t("capabilities.knowledge.canonicalLink", { defaultValue: "前往助手资料配置" })}
+              </span>
+              <ChevronRight className="size-4" />
+            </Button>
+          </CardFooter>
+        </Card>
       ) : (
         <div className="space-y-3">
           {s.error && (
@@ -504,7 +607,12 @@ function AgentScopedDetail({
               <p role="alert" className="text-sm text-destructive">
                 {translateNotice(s.error)}
               </p>
-              <Button variant="outline" size="sm" onClick={() => attempt()}>
+              <Button
+                variant="outline"
+                size="sm"
+                tooltip={t("hints.system.retryLoad")}
+                onClick={() => attempt()}
+              >
                 {t("capabilities.retry")}
               </Button>
             </div>
@@ -512,7 +620,12 @@ function AgentScopedDetail({
           {pendingDraft && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
               <p className="text-sm text-muted-foreground">{t("capabilities.pendingDraft")}</p>
-              <Button variant="outline" size="sm" onClick={() => attempt()}>
+              <Button
+                variant="outline"
+                size="sm"
+                tooltip={t("hints.system.pendingDraftSwitch")}
+                onClick={() => attempt()}
+              >
                 {t("capabilities.pendingDraftAction")}
               </Button>
             </div>
@@ -522,7 +635,13 @@ function AgentScopedDetail({
               <p role="status" className="text-sm text-muted-foreground">
                 {t("library.loading")}
               </p>
-              <Button variant="outline" size="sm" disabled={busy} onClick={() => attempt()}>
+              <Button
+                variant="outline"
+                size="sm"
+                tooltip={t("hints.system.retryLoad")}
+                disabled={busy}
+                onClick={() => attempt()}
+              >
                 {t("capabilities.retry")}
               </Button>
             </div>
@@ -581,19 +700,24 @@ function SessionLinkDetail({
   return (
     <div className="w-full space-y-6 px-4 py-6">
       <div className="min-w-0">
-        <h1 className="text-xl font-semibold tracking-tight">{t(entry.nameKey)}</h1>
+        <div className="flex items-center gap-2">
+          <entry.icon className="size-5 text-primary" />
+          <h1 className="workspace-page-title">{t(entry.nameKey)}</h1>
+        </div>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{t(entry.descriptionKey)}</p>
       </div>
       <p className="text-sm text-muted-foreground">{t("capabilities.session.note")}</p>
       {s.agents.length === 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
           <p className="text-sm text-muted-foreground">{t("capabilities.memory.noAgent")}</p>
-          <Button onClick={() => s.openAgentSettings()}>{t("library.create.assistant")}</Button>
+          <Button tooltip={t("hints.system.createAgent")} onClick={() => s.openAgentSettings()}>
+            {t("library.create.assistant")}
+          </Button>
         </div>
       ) : (
         <div className="space-y-3">
           <div className="flex flex-wrap items-end gap-3 rounded-xl border p-4">
-            <Field label="library.agent.owner">
+            <Field label="library.agent.owner" tooltip={t("hints.fieldExtra.fieldAssistant")}>
               <NativeSelect
                 aria-label={t("library.select.an.assistant")}
                 value={selectedId}
@@ -609,6 +733,7 @@ function SessionLinkDetail({
             </Field>
             <Button
               variant="outline"
+              tooltip={t("hints.system.openContext")}
               className="h-auto min-h-8 max-w-full whitespace-normal break-words"
               disabled={!ready}
               onClick={() => s.openSettingsRoute("context")}
@@ -625,6 +750,7 @@ function SessionLinkDetail({
               <Button
                 variant="outline"
                 size="sm"
+                tooltip={t("hints.system.retryLoad")}
                 onClick={() => s.requestAgentNavigation(selectedId)}
               >
                 {t("capabilities.retry")}
@@ -639,6 +765,7 @@ function SessionLinkDetail({
               <Button
                 variant="outline"
                 size="sm"
+                tooltip={t("hints.system.retryLoad")}
                 disabled={busy}
                 onClick={() => s.requestAgentNavigation(selectedId)}
               >
@@ -681,7 +808,10 @@ function CapabilityDetail({
       <CapabilityDetailShell entry={entry} active={active}>
         <div className="w-full space-y-6 px-4 py-6">
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold tracking-tight">{t(entry.nameKey)}</h1>
+            <div className="flex items-center gap-2">
+              <entry.icon className="size-5 text-primary" />
+              <h1 className="workspace-page-title">{t(entry.nameKey)}</h1>
+            </div>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
               {t(entry.descriptionKey)}
             </p>
@@ -689,17 +819,28 @@ function CapabilityDetail({
           <p className="text-sm text-muted-foreground">{t("capabilities.media.scopeNote")}</p>
           <CapabilityPolicyPanel modules={["qqMedia", "qqStickers"]} active={active} />
           <div className="flex flex-wrap gap-2 border-t pt-4">
-            <Button variant="outline" size="sm" onClick={() => openSettingsRoute("qq-stickers")}>
+            <Button
+              variant="outline"
+              size="sm"
+              tooltip={t("hints.system.openStickers")}
+              onClick={() => openSettingsRoute("qq-stickers")}
+            >
               {t("workspace.sticker_library")}
             </Button>
             <Button
               variant="outline"
               size="sm"
+              tooltip={t("hints.system.openChatSchemes")}
               onClick={() => openSettingsRoute("qq-scheme-config")}
             >
               {t("workspace.chat_schemes")}
             </Button>
-            <Button variant="outline" size="sm" onClick={() => openSettingsRoute("models")}>
+            <Button
+              variant="outline"
+              size="sm"
+              tooltip={t("hints.system.openModelServices")}
+              onClick={() => openSettingsRoute("models")}
+            >
               {t("library.open.model.services")}
             </Button>
           </div>
@@ -711,7 +852,10 @@ function CapabilityDetail({
       <CapabilityDetailShell entry={entry} active={active}>
         <div className="w-full space-y-6 px-4 py-6">
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold tracking-tight">{t(entry.nameKey)}</h1>
+            <div className="flex items-center gap-2">
+              <entry.icon className="size-5 text-primary" />
+              <h1 className="workspace-page-title">{t(entry.nameKey)}</h1>
+            </div>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
               {t(entry.descriptionKey)}
             </p>
@@ -719,10 +863,20 @@ function CapabilityDetail({
           <p className="text-sm text-muted-foreground">{t("capabilities.members.scopeNote")}</p>
           <CapabilityPolicyPanel modules={["qqMembers"]} active={active} />
           <div className="flex flex-wrap gap-2 border-t pt-4">
-            <Button variant="outline" size="sm" onClick={() => openSettingsRoute("qq-app-groups")}>
+            <Button
+              variant="outline"
+              size="sm"
+              tooltip={t("hints.system.openGroupConfig")}
+              onClick={() => openSettingsRoute("qq-app-groups")}
+            >
               {t("schemes.qq.groupConfigTitle")}
             </Button>
-            <Button variant="outline" size="sm" onClick={() => openSettingsRoute("qq-connection")}>
+            <Button
+              variant="outline"
+              size="sm"
+              tooltip={t("hints.system.openQqConnection")}
+              onClick={() => openSettingsRoute("qq-connection")}
+            >
               {t("schemes.qq.connectionTitle")}
             </Button>
           </div>
@@ -734,7 +888,12 @@ function CapabilityDetail({
       <CapabilityDetailShell entry={entry} active={active}>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
           <p className="text-sm text-muted-foreground">{t("capabilities.execution.scopeNote")}</p>
-          <Button variant="outline" size="sm" onClick={() => openSettingsRoute("task-ledger")}>
+          <Button
+            variant="outline"
+            size="sm"
+            tooltip={t("hints.system.openTasks")}
+            onClick={() => openSettingsRoute("task-ledger")}
+          >
             {t("capabilities.execution.openTasks")}
           </Button>
         </div>
