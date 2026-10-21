@@ -46,11 +46,11 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
   const skillHasProblems = skillProblems.length > 0;
 
   return (
-    <div className="space-y-4 rounded-xl border bg-card p-4 text-card-foreground">
+    <div className="space-y-4 text-card-foreground">
       {/* 头部与主配置导航 */}
       <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
         <div className="flex items-start gap-3">
-          <div className="rounded-lg border bg-muted/40 p-2 text-muted-foreground">
+          <div className="rounded-lg bg-muted/40 p-2 text-muted-foreground">
             <Puzzle className="size-5 shrink-0" />
           </div>
           <div>
@@ -130,13 +130,13 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
           </div>
         )}
         {!mcpLoading && !mcpErrorDisplay && servers.length === 0 && (
-          <div className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">
+          <div className="rounded-lg bg-muted/30 p-3 text-center text-xs text-muted-foreground">
             {t("capabilities.external.noServers")}
           </div>
         )}
 
         {servers.length > 0 && (
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-3">
             {servers.map((server) => {
               const serverPrefix = `mcp.${server.config.id}.`;
               const serverTools = mcpTools.filter((tool) => tool.name.startsWith(serverPrefix));
@@ -144,7 +144,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
               return (
                 <div
                   key={server.config.id}
-                  className="space-y-2 rounded-lg border bg-muted/20 p-3 text-xs"
+                  className="space-y-2 rounded-lg bg-muted/20 p-3 text-xs"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <Button
@@ -187,7 +187,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
                   )}
 
                   {!toolLoading && !toolError && serverTools.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-col gap-1">
                       {serverTools.map((tool) => {
                         const isOff = tool.globalEnabled === false;
                         return (
@@ -200,8 +200,8 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
                                 ? t("hints.extensions.components.openToolOff")
                                 : t("hints.extensions.components.openTool")
                             }
-                            className={`min-h-8 h-auto gap-1.5 px-2 py-1 text-xs font-mono ${
-                              isOff ? "opacity-60 bg-muted/50" : ""
+                            className={`flex h-auto min-h-8 w-full items-center justify-start gap-1.5 whitespace-normal break-words rounded-md border-0 bg-background/60 px-2 py-1 text-left font-mono text-xs hover:bg-background ${
+                              isOff ? "opacity-60" : ""
                             }`}
                             onClick={() => open({ kind: "tool", id: tool.name })}
                           >
@@ -272,7 +272,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
         )}
 
         {customSkills.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-col gap-1">
             {customSkills.map((skill) => {
               const isOff = skill.globalEnabled === false;
               return (
@@ -285,8 +285,8 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
                       ? t("hints.extensions.components.openSkillOff")
                       : t("hints.extensions.components.openSkill")
                   }
-                  className={`min-h-8 h-auto gap-1.5 px-2.5 py-1 text-xs ${
-                    isOff ? "opacity-60 bg-muted/50" : ""
+                  className={`flex h-auto min-h-8 w-full items-center justify-start gap-1.5 whitespace-normal break-words rounded-md border-0 bg-muted/60 px-2.5 py-1 text-left text-xs hover:bg-muted ${
+                    isOff ? "opacity-60" : ""
                   }`}
                   onClick={() => open({ kind: "skill", id: skill.name })}
                 >

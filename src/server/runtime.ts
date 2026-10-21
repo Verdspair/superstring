@@ -260,6 +260,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     // name declared on the 外部模型API page routes to that provider, everything else stays local.
     // One resolver for every model call, vision included: a model name declared on the
     // 外部模型API page routes there, and everything else stays on the local service.
+    // 能力声明不是运行许可：存量 toolCalling/vision 字段原样留在配置里，运行时不再按模型开关。
     const externalModel = (model: string) => {
       const route = resolveModelProviderRoute(
         business.orm,
@@ -267,19 +268,10 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         options.modelProviderKeyPath ?? DEFAULT_MODEL_PROVIDER_KEY_PATH,
       );
       if (route === null) return null;
-      // 能力声明是传输开关，每次调用现读：填过声明的模型按声明执行，从未填过的维持现状。
-      const declared = readModelProviders(business.orm)
-        .flatMap((provider) => provider.models)
-        .find((entry) => entry.name === model);
-      const capabilities = declared?.capabilities;
       return {
         baseUrl: route.baseUrl,
         apiKey: route.apiKey,
         contextWindow: route.contextWindow,
-        ...(capabilities === undefined ? {} : { toolCalling: capabilities.toolCalling }),
-        // 能力三态与修订号透传（T11）：vision 走网关的发前闸（undefined 缺席 ≠ false），
-        // providerRevision 是"拒绝过图片"负缓存的指纹——声明翻转/修订后旧观察不再拦新声明。
-        ...(route.vision === undefined ? {} : { vision: route.vision }),
         providerRevision: route.providerRevision,
         // 纯文本计数编码（可选透传；网关只按显式声明计数，不猜模型/provider 名或 OpenAI 兼容）。
         ...(route.tokenizerEncoding === undefined
@@ -324,12 +316,6 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         runner: options.codeRunner ?? createQuickJsCodeRunner(),
         enabled: () => execution().code === true,
         limits: () => execution().codeLimits,
-        allowsModel: (model) =>
-          readModelProviders(business.orm).some((provider) =>
-            provider.models.some(
-              (entry) => entry.name === model && entry.capabilities?.codeExecution === true,
-            ),
-          ),
       },
       // 跨会话可以并发，但模型流量单独封顶：本地单卡安装等于"一条在飞"，外部服务可调大；
       // 服务级名额在整机帽之下再加一层（B09），同一登记服务的调用不会互相插队。

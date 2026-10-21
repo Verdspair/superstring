@@ -50,11 +50,8 @@ export function SystemComponents({
   const isStickerOff = stickerTool ? stickerTool.globalEnabled === false : false;
 
   return (
-    <section
-      className="space-y-3 rounded-lg border bg-muted/20 p-3 text-xs"
-      aria-label={t("connections.components.title")}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
+    <section className="space-y-3 text-xs" aria-label={t("connections.components.title")}>
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
         <h2 className="font-medium text-foreground">{t("connections.components.title")}</h2>
         <span className="text-[11px] text-muted-foreground">
           {t("connections.components.noMcpDependency")}
@@ -69,7 +66,7 @@ export function SystemComponents({
             {t("capabilities.qqReply.runtimeAction")}
           </span>
           <div className="flex flex-wrap gap-1.5">
-            <div className="inline-flex items-center gap-2 rounded-md border bg-background/50 px-2.5 py-1 text-xs">
+            <div className="flex w-full items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1 text-xs">
               <Badge variant="outline" className="px-1 py-0 text-[10px] uppercase shrink-0">
                 {t("connections.components.tools")}
               </Badge>
@@ -79,8 +76,8 @@ export function SystemComponents({
               <span className="font-mono text-[11px] text-muted-foreground">reply.text</span>
             </div>
             <div
-              className={`inline-flex items-center gap-2 rounded-md border bg-background/50 px-2.5 py-1 text-xs ${
-                isStickerOff ? "opacity-60 bg-muted/50" : ""
+              className={`flex w-full items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1 text-xs ${
+                isStickerOff ? "opacity-60" : ""
               }`}
             >
               <Badge
@@ -129,7 +126,7 @@ export function SystemComponents({
           <span className="block text-[11px] font-medium text-muted-foreground">
             {t("connections.components.toolsCount", { count: associatedTools.length })}
           </span>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-col gap-1">
             {associatedTools.map((tool) => {
               const labelKey = TOOL_HUMAN_LABELS[tool.name];
               const humanLabel = labelKey ? t(labelKey) : null;
@@ -144,8 +141,8 @@ export function SystemComponents({
                       ? t("hints.extensions.components.openToolOff")
                       : t("hints.extensions.components.openTool")
                   }
-                  className={`min-h-8 h-auto gap-2 px-2.5 py-1 text-xs whitespace-normal break-words text-left ${
-                    isOff ? "opacity-60 bg-muted/50" : ""
+                  className={`flex h-auto min-h-8 w-full items-center justify-start gap-2 whitespace-normal break-words rounded-md border-0 bg-muted/60 px-2.5 py-1 text-left text-xs hover:bg-muted ${
+                    isOff ? "opacity-60" : ""
                   }`}
                   onClick={() => open({ kind: "tool", id: tool.name })}
                 >
@@ -195,7 +192,7 @@ export function SystemComponents({
           <span className="block text-[11px] font-medium text-muted-foreground">
             {t("connections.components.skillsCount", { count: associatedSkills.length })}
           </span>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-col gap-1">
             {associatedSkills.map((skill) => {
               const labelKey = SKILL_HUMAN_LABELS[skill.name];
               const humanLabel = labelKey ? t(labelKey) : null;
@@ -210,8 +207,8 @@ export function SystemComponents({
                       ? t("hints.extensions.components.openSkillOff")
                       : t("hints.extensions.components.openSkill")
                   }
-                  className={`min-h-8 h-auto gap-2 px-2.5 py-1 text-xs whitespace-normal break-words text-left ${
-                    isOff ? "opacity-60 bg-muted/50" : ""
+                  className={`flex h-auto min-h-8 w-full items-center justify-start gap-2 whitespace-normal break-words rounded-md border-0 bg-muted/60 px-2.5 py-1 text-left text-xs hover:bg-muted ${
+                    isOff ? "opacity-60" : ""
                   }`}
                   onClick={() => open({ kind: "skill", id: skill.name })}
                 >

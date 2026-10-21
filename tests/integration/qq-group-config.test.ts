@@ -634,7 +634,7 @@ describe("本群 Agent 配置的 HTTP 读写", () => {
     expect(schemeRhythm(schemeAfter)).toEqual(schemeRhythm(schemeBefore));
   });
 
-  it("私聊与不存在的绑定：配置路由是 404", async () => {
+  it("私聊与不存在的绑定：私聊读写同一配置入口，不存在仍是 404", async () => {
     const { orm, app, scheme } = setup();
     const created = createQqBinding({
       id: crypto.randomUUID(),
@@ -648,20 +648,58 @@ describe("本群 Agent 配置的 HTTP 读写", () => {
     });
     if (created.kind !== "saved") throw new Error("binding seed rejected");
     const privateBinding = insertQqBinding(orm, created.binding);
-    for (const id of [privateBinding.id, crypto.randomUUID()]) {
-      const response = await app.request(`/qq/bindings/${id}/config`);
-      expect(response.status).toBe(404);
-      expect((await errorOf(response)).code).toBe("MEMORY_NOT_FOUND");
-      const put = await putConfig(app, id, {
-        agent_id: DEFAULT_AGENT_ID,
-        expected_binding_revision: 1,
-        expected_scheme_revision: 1,
-        expected_revision: 0,
-        overrides: {},
-        disabled_capabilities: [],
-      });
-      expect(put.status).toBe(404);
-    }
+
+    // 私聊与群聊共用同一配置读口：无记录＝虚拟默认（空差异、revision 0），基础方案原样返回。
+    const initial = await currentConfig(app, privateBinding.id);
+    expect(initial.revision).toBe(0);
+    expect(initial.overrides).toEqual({});
+    expect(initial.disabled_capabilities).toEqual([]);
+    expect(initial.base_scheme.id).toBe(scheme.id);
+    expect(initial.effective_scheme.id).toBe(scheme.id);
+    // 私聊没有本群能力停用：请求非空 disabled_capabilities 整体被拒，不留半份状态。
+    const caps = await putConfig(app, privateBinding.id, {
+      agent_id: DEFAULT_AGENT_ID,
+      expected_binding_revision: 1,
+      expected_scheme_revision: 1,
+      expected_revision: 0,
+      overrides: {},
+      disabled_capabilities: ["memory_read"],
+    });
+    expect(caps.status).toBe(409);
+    expect((await errorOf(caps)).code).toBe("MEMORY_SOURCE_INVALID");
+    expect(configRows(orm, privateBinding.id)).toHaveLength(0);
+    // 与群聊同一写口：合法整份提交落记录，回读即落库状态。
+    const put = await putConfig(app, privateBinding.id, {
+      agent_id: DEFAULT_AGENT_ID,
+      expected_binding_revision: 1,
+      expected_scheme_revision: 1,
+      expected_revision: 0,
+      overrides: { triggers: { direct_reply: false } },
+      disabled_capabilities: [],
+    });
+    expect(put.status).toBe(200);
+    const saved = (await put.json()) as QqGroupConfigResponse;
+    expect(saved.revision).toBe(1);
+    expect(saved.overrides).toEqual({ triggers: { direct_reply: false } });
+    expect(configRows(orm, privateBinding.id)).toHaveLength(1);
+    const reread = await currentConfig(app, privateBinding.id);
+    expect(reread.overrides).toEqual({ triggers: { direct_reply: false } });
+    expect(reread.revision).toBe(1);
+
+    // 不存在的绑定：读与写都是 404。
+    const missing = crypto.randomUUID();
+    const response = await app.request(`/qq/bindings/${missing}/config`);
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe("MEMORY_NOT_FOUND");
+    const putMissing = await putConfig(app, missing, {
+      agent_id: DEFAULT_AGENT_ID,
+      expected_binding_revision: 1,
+      expected_scheme_revision: 1,
+      expected_revision: 0,
+      overrides: {},
+      disabled_capabilities: [],
+    });
+    expect(putMissing.status).toBe(404);
   });
 });
 

@@ -143,7 +143,7 @@ describe("evidence action lifecycle through AgentRuntime", () => {
     const runtimeA = new AgentRuntime({
       repository,
       model: decisions.port,
-      codeMode: { runner, enabled: () => true, allowsModel: () => true },
+      codeMode: { runner, enabled: () => true },
     });
 
     const gate = deferred<void>();

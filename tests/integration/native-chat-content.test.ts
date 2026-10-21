@@ -127,7 +127,6 @@ interface Hosts {
 async function hosts(options: {
   cloud: (res: http.ServerResponse) => void;
   local?: (res: http.ServerResponse) => void;
-  vision?: boolean;
   modelCallConcurrency?: number;
   providerConcurrency?: number;
 }): Promise<Hosts> {
@@ -135,7 +134,6 @@ async function hosts(options: {
   const local = capturing((_body, res) => (options.local ?? okNone)(res));
   const cloudHost = await listen(cloud.handler);
   const localHost = await listen(local.handler);
-  const vision = options.vision;
   const gateway = createLmStudioClient(
     {
       baseUrl: `http://127.0.0.1:${localHost.port}/v1`,
@@ -150,7 +148,6 @@ async function hosts(options: {
               baseUrl: `http://127.0.0.1:${cloudHost.port}/v1`,
               apiKey: null,
               contextWindow: 8192,
-              ...(vision === undefined ? {} : { vision }),
             }
           : null,
     },
@@ -263,8 +260,8 @@ describe("原生 chat gateway 多模态 wire", () => {
     }
   });
 
-  it("纯文字数组 content 在 vision:false 下不被拒（数组只含文字不是图片）", async () => {
-    const h = await hosts({ cloud: okNone, vision: false });
+  it("纯文字数组 content 不触发图片拒绝（数组只含文字不是图片）", async () => {
+    const h = await hosts({ cloud: okNone });
     try {
       const raw = await h.port.complete({
         messages: [
@@ -356,19 +353,21 @@ describe("原生 chat gateway 多模态 wire", () => {
   });
 });
 
-describe("错误分类：只有明确图片拒绝或 capability=false 才是 MODEL_IMAGE_UNSUPPORTED（Step6）", () => {
-  it("provider 声明 vision=false：发请求前拒绝，零网络", async () => {
-    const h = await hosts({ cloud: okNone, vision: false });
+describe("错误分类：只有明确图片拒绝才是 MODEL_IMAGE_UNSUPPORTED（Step6）", () => {
+  it("服务明确拒绝图片后，同模型后续请求在发前拦截", async () => {
+    const h = await hosts({
+      cloud: status(400, '{"error":{"message":"this model does not support image input"}}'),
+    });
     try {
-      const error = await h.port
-        .complete({ ...completeArgs("cloud/m-off"), imageResolver: h.resolver })
-        .then(
-          () => null,
-          (e: unknown) => e,
-        );
-      expect(error).toBeInstanceOf(ModelUnavailableError);
-      expect((error as ModelUnavailableError).code).toBe("MODEL_IMAGE_UNSUPPORTED");
-      expect(h.cloudSeen.length).toBe(0);
+      const args = { ...completeArgs("cloud/m-off"), imageResolver: h.resolver };
+      await expect(h.port.complete(args)).rejects.toMatchObject({
+        code: "MODEL_IMAGE_UNSUPPORTED",
+      });
+      expect(h.cloudSeen).toHaveLength(1);
+      await expect(h.port.complete(args)).rejects.toMatchObject({
+        code: "MODEL_IMAGE_UNSUPPORTED",
+      });
+      expect(h.cloudSeen).toHaveLength(1);
     } finally {
       await h.dispose();
     }
@@ -1076,7 +1075,9 @@ describe("port 边界与字节隔离", () => {
   });
 
   it("错误与 wire 之外不携带 base64 字节", async () => {
-    const h = await hosts({ cloud: okNone, vision: false });
+    const h = await hosts({
+      cloud: status(400, '{"error":{"message":"this model does not support image input"}}'),
+    });
     try {
       const error = (await h.port
         .complete({ ...completeArgs("cloud/m-leak"), imageResolver: h.resolver })

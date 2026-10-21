@@ -145,6 +145,21 @@ describe("QQ binding memory addresses", () => {
     });
   }
 
+  it("refuses a private binding whose peer is the bot's own account, padded or not", () => {
+    expect(() => createQqBinding(input({ kind: "private", peerId: "10001" }))).toThrow(
+      "对方QQ号不能是机器人自己的账号，请填写联系人的QQ号。",
+    );
+    expect(() => createQqBinding(input({ kind: "private", peerId: "00010001" }))).toThrow(
+      "对方QQ号不能是机器人自己的账号，请填写联系人的QQ号。",
+    );
+    // A group has no "other side": an equal number is an ordinary group binding.
+    expect(binding({ peerId: "10001" }).peerId).toBe("10001");
+    // Malformed input still fails in parse with the existing generic message.
+    expect(() =>
+      createQqBinding(input({ kind: "private", accountId: "abc", peerId: "10001" })),
+    ).toThrow("Invalid QQ binding contract input");
+  });
+
   it("changing scheme or pause retains history; switching back to A recovers A's address", () => {
     const a = binding();
     const edited = update(a, { schemeId: OTHER_SCHEME, paused: true });

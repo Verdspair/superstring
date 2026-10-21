@@ -131,62 +131,71 @@ describe("bounded read-only research", () => {
     expect(budgeted.requests).toHaveLength(1);
   });
   it.each([
-    [false, true, true],
-    [true, false, true],
-    [true, true, false],
-  ])(
-    "requires the code switch, runner and local model opt-in together (%s/%s/%s)",
-    async (enabled, available, supported) => {
-      const f = setup(['{"kind":"none"}'], false, {
-        enabled: () => enabled,
-        allowsModel: () => supported,
-        runner: {
-          available,
-          async run() {
-            throw new Error("must not execute");
-          },
-        },
-      });
-      await f.run();
-      expect(f.requests[0].tools?.map((tool) => tool.name)).toEqual(["read", "write"]);
-    },
-  );
-  it("finishes the current run after a soft pause and disables code for the next run", async () => {
-    let enabled = true;
-    const f = setup([invoke("code.run", { script: "return conclusion" }), inline("reply")], false, {
+    [false, true],
+    [true, false],
+  ])("requires the global code switch and runner together (%s/%s)", async (enabled, available) => {
+    const f = setup(['{"kind":"none"}'], false, {
       enabled: () => enabled,
-      allowsModel: () => true,
       runner: {
-        available: true,
-        async run({ bindings }) {
-          expect(Object.keys(bindings)).toEqual(["read"]);
-          await bindings.read({});
-          enabled = false;
-          return { conclusion: "evidence" };
+        available,
+        async run() {
+          throw new Error("must not execute");
         },
       },
     });
     await f.run();
-    expect(f.publications()).toBe(1);
+    expect(f.requests[0].tools?.map((tool) => tool.name)).toEqual(["read", "write"]);
+  });
+  it("removes code.run from the next run after the global switch is turned off", async () => {
+    let enabled = true;
+    const f = setup([inline("reply"), inline("reply")], false, {
+      enabled: () => enabled,
+      runner: {
+        available: true,
+        async run() {
+          throw new Error("must not execute");
+        },
+      },
+    });
+    await f.run();
+    expect(f.requests.at(-1)?.tools?.map((tool) => tool.name)).toContain("code.run");
+    enabled = false;
     await f.run();
     expect(f.requests.at(-1)?.tools?.map((tool) => tool.name)).not.toContain("code.run");
   });
 
-  it("rejects a local sandbox call when the model opt-in is revoked during the run", async () => {
-    let allowed = true;
-    const f = setup([invoke("code.run", { script: "return conclusion" }), inline("reply")], false, {
-      enabled: () => true,
-      allowsModel: () => allowed,
-      runner: {
-        available: true,
-        async run() {
-          allowed = false;
-          return { conclusion: "must not escape" };
+  it("lets an admitted sandbox task finish after a global soft pause, then omits it for the next task", async () => {
+    let enabled = true;
+    let runnerCalls = 0;
+    const f = setup(
+      [invoke("code.run", { script: "return await tools.read({});" }), inline("reply", "done")],
+      false,
+      {
+        enabled: () => enabled,
+        runner: {
+          available: true,
+          async run({ bindings }) {
+            runnerCalls++;
+            await bindings.read?.({});
+            enabled = false;
+            return { conclusion: "captured task completed" };
+          },
         },
       },
-    });
-    await expect(f.run()).rejects.toMatchObject({ code: "CODE_EXECUTION_UNAVAILABLE" });
-    expect(f.publications()).toBe(0);
+    );
+
+    await f.run();
+    expect(runnerCalls).toBe(1);
+    expect(f.publications()).toBe(1);
+    expect(
+      f.requests
+        .slice(0, 2)
+        .every((request) => request.tools?.some((tool) => tool.name === "code.run")),
+    ).toBe(true);
+
+    await f.run();
+    expect(f.requests[2]?.tools?.map((tool) => tool.name)).toEqual(["read", "write"]);
+    expect(runnerCalls).toBe(1);
   });
 
   it("cannot use a registered but unadvertised tool through research or code", async () => {
@@ -197,7 +206,6 @@ describe("bounded read-only research", () => {
     await expect(research.run()).rejects.toMatchObject({ code: "AGENT_ACTION_UNAVAILABLE" });
     const code = setup([invoke("code.run", { script: "inspect" }), inline("reply")], false, {
       enabled: () => true,
-      allowsModel: () => true,
       runner: {
         available: true,
         async run({ bindings }) {

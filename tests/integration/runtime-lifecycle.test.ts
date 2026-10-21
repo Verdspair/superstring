@@ -423,7 +423,7 @@ describe("application runtime lifecycle", () => {
     }
   });
 
-  it("wires the real sandbox only for an enabled policy and a declared model capability", async () => {
+  it("wires the real sandbox for an enabled policy without a per-model capability declaration", async () => {
     const parent = path.join(import.meta.dir, "../../artifacts/validation/0.4.0/P6");
     mkdirSync(parent, { recursive: true });
     const dir = mkdtempSync(path.join(parent, "policy-"));
@@ -467,7 +467,6 @@ describe("application runtime lifecycle", () => {
           {
             name: model,
             context_window: 65536,
-            capabilities: { codeExecution: true, toolCalling: true, parallelToolCalls: true },
           },
         ],
         keyPath: path.join(dir, "unused.key"),

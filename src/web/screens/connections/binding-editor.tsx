@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
-import type {
-  QqBindingResponse,
-  QqConversationListItem,
-  QqSchemeResponse,
-  UpdateQqBindingRequest,
+import {
+  isQqPrivateSelfTarget,
+  type QqBindingResponse,
+  type QqConversationListItem,
+  type QqSchemeResponse,
+  type UpdateQqBindingRequest,
 } from "../../../shared/contracts/qq";
 import {
   isEmptyQqGroupOverrides,
@@ -342,12 +343,23 @@ export function BindingEditor({
                 {conversation.peer_id}
               </SheetTitle>
               <SheetDescription className="text-xs text-muted-foreground leading-relaxed">
-                {t("connections.conversationBindingAndOverrides")}
+                {t(
+                  conversation.kind === "private"
+                    ? "qq.entry.private.bindingDescription"
+                    : "connections.conversationBindingAndOverrides",
+                )}
               </SheetDescription>
             </div>
           </div>
         </SheetHeader>
         <div className="min-w-0 space-y-6 p-6">
+          {binding &&
+            binding.kind === "private" &&
+            isQqPrivateSelfTarget(binding.account_id, binding.peer_id) && (
+              <p role="alert" className="text-sm text-destructive">
+                {t("qq.entry.existingSelfTarget")}
+              </p>
+            )}
           {state.error && (
             <p role="alert" className="text-sm text-destructive">
               {translateNotice(state.error)}
@@ -383,14 +395,18 @@ export function BindingEditor({
                 >
                   {t("schemes.studio.editScheme")}
                 </Button>
-                {binding?.kind === "group" && (
+                {binding && (
                   <Button
                     variant="outline"
                     disabled={saving || state.qqGroupConfigSaving}
                     tooltip={t("hints.qq.openGroupConfig")}
                     onClick={() => state.openQqGroupConfig(binding.id)}
                   >
-                    {t("schemes.qq.groupConfig.controls.configure")}
+                    {t(
+                      binding.kind === "private"
+                        ? "qq.conversation.privateConfig"
+                        : "schemes.qq.groupConfig.controls.configure",
+                    )}
                   </Button>
                 )}
               </div>
@@ -453,16 +469,30 @@ export function BindingEditor({
             <>
               <SchemeFieldCard
                 title={t("schemes.bindings.triggers.title")}
-                description="schemes.bindings.triggers.hint"
+                description={
+                  conversation.kind === "private"
+                    ? "qq.entry.private.triggers.hint"
+                    : "schemes.bindings.triggers.hint"
+                }
               >
                 <div className="grid gap-4 sm:grid-cols-2">
                   {Object.entries(TRIGGER_LABELS).map(([key, label]) => {
                     const trigger = key as keyof typeof TRIGGER_LABELS;
                     const value = binding.triggers[trigger];
+                    const labelKey =
+                      conversation.kind === "private" ? `qq.entry.private.trigger.${key}` : label;
                     return (
-                      <Field key={key} label={label} tooltip={t(`strict.qq.trigger.${key}`)}>
+                      <Field
+                        key={key}
+                        label={labelKey}
+                        tooltip={t(
+                          conversation.kind === "private"
+                            ? `qq.entry.private.triggerHint.${key}`
+                            : `strict.qq.trigger.${key}`,
+                        )}
+                      >
                         <NativeSelect
-                          aria-label={t("connections.switchForValue", { "0": t(label) })}
+                          aria-label={t("connections.switchForValue", { "0": t(labelKey) })}
                           disabled={saving}
                           value={value === null ? "inherit" : value ? "on" : "off"}
                           onChange={(e) => {
@@ -523,7 +553,11 @@ export function BindingEditor({
               >
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field
-                    label="connections.mentionTaskLimit"
+                    label={
+                      conversation.kind === "private"
+                        ? "qq.entry.private.mentionTaskLimit"
+                        : "connections.mentionTaskLimit"
+                    }
                     info="connections.mentionTaskLimitBindingHint"
                     tooltip={t("connections.mentionTaskLimitBindingHint")}
                   >
@@ -636,7 +670,11 @@ export function BindingEditor({
               </SchemeFieldCard>
               <SchemeFieldCard
                 title={t("connections.inputAntiSpam")}
-                description="schemes.bindings.inputAntiSpam.hint"
+                description={
+                  conversation.kind === "private"
+                    ? "qq.entry.private.inputAntiSpam.hint"
+                    : "schemes.bindings.inputAntiSpam.hint"
+                }
               >
                 <Field label="connections.inputAntiSpam" tooltip={t("hints.qqBinding.antiSpam")}>
                   <NativeSelect
@@ -727,134 +765,146 @@ export function BindingEditor({
                   })}
                 </div>
               </SchemeFieldCard>
-              <div ref={adminSectionRef} data-section="administrators">
-                <SchemeFieldCard
-                  title={t("connections.importantPeople")}
-                  description="schemes.bindings.attention.hint"
-                >
-                  {attentionValue &&
-                    (() => {
-                      const savedAgent = state.agents.find((a) => a.id === binding?.agent_id);
-                      const savedAgentName = savedAgent?.name ?? binding?.agent_id ?? "";
-                      const hasPendingAgentChange =
-                        choice.agentId && choice.agentId !== binding?.agent_id;
-                      const pendingAgentName =
-                        state.agents.find((a) => a.id === choice.agentId)?.name ?? choice.agentId;
-                      const parsedAttention = parseAdminMembers(attentionValue.members);
-                      const canSaveAttention =
-                        !saving &&
-                        (attentionValue.mode === "off" ||
-                          (parsedAttention.canonicalCount > 0 &&
-                            !parsedAttention.hasInvalid &&
-                            !parsedAttention.isOverLimit));
+              {conversation.kind === "group" && (
+                <>
+                  <div ref={adminSectionRef} data-section="administrators">
+                    <SchemeFieldCard
+                      title={t("connections.importantPeople")}
+                      description="schemes.bindings.attention.hint"
+                    >
+                      {attentionValue &&
+                        (() => {
+                          const savedAgent = state.agents.find((a) => a.id === binding?.agent_id);
+                          const savedAgentName = savedAgent?.name ?? binding?.agent_id ?? "";
+                          const hasPendingAgentChange =
+                            choice.agentId && choice.agentId !== binding?.agent_id;
+                          const pendingAgentName =
+                            state.agents.find((a) => a.id === choice.agentId)?.name ??
+                            choice.agentId;
+                          const parsedAttention = parseAdminMembers(attentionValue.members);
+                          const canSaveAttention =
+                            !saving &&
+                            (attentionValue.mode === "off" ||
+                              (parsedAttention.canonicalCount > 0 &&
+                                !parsedAttention.hasInvalid &&
+                                !parsedAttention.isOverLimit));
 
-                      return (
-                        <>
-                          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground pb-2 border-b">
-                            <span>{t("connections.scopeNote")}:</span>
-                            <Badge variant="outline">{conversation.peer_id}</Badge>
-                            <span>·</span>
-                            <span>
-                              {t("schemes.qq.groupConfig.agent")}: {savedAgentName}
-                            </span>
-                            {hasPendingAgentChange && (
-                              <span className="text-muted-foreground font-normal">
-                                （
-                                {t("connections.pendingAgentChangeNote", {
-                                  "0": pendingAgentName,
-                                })}
-                                ）
-                              </span>
-                            )}
-                            <span className="text-[11px] text-muted-foreground">
-                              ({t("connections.scopeHint")})
-                            </span>
-                          </div>
-                          <Field
-                            label="connections.attentionMode"
-                            tooltip={t("hints.qqBinding.attention")}
-                          >
-                            <NativeSelect
-                              value={attentionValue.mode}
-                              disabled={saving}
-                              onChange={(e) =>
-                                setAttention((old) => ({
-                                  ...old,
-                                  [binding.id]: {
-                                    ...attentionValue,
-                                    mode: e.target.value as "off" | "soft" | "hard",
-                                  },
-                                }))
-                              }
-                            >
-                              <option value="off">{t("connections.off2")}</option>
-                              <option value="soft">{t("connections.softPriority")}</option>
-                              <option value="hard">{t("connections.onlyReplyToTheList")}</option>
-                            </NativeSelect>
-                          </Field>
-                          <div className="space-y-4 pl-3 border-l-2 border-muted/60 sm:pl-4">
-                            <Field
-                              label="connections.attentionList"
-                              info="connections.softPriorityHint"
-                              tooltip={t("connections.softPriorityHint")}
-                            >
-                              <Input
-                                value={attentionValue.members}
-                                disabled={saving || attentionValue.mode === "off"}
-                                placeholder={t("connections.qqNumbersSeparatedByCommasOrSpaces")}
-                                onChange={(e) =>
-                                  setAttention((old) => ({
-                                    ...old,
-                                    [binding.id]: { ...attentionValue, members: e.target.value },
-                                  }))
-                                }
-                              />
-                            </Field>
-                            <AdminMembersEditor
-                              value={attentionValue.members}
-                              disabled={saving || attentionValue.mode === "off"}
-                              onChange={(next) =>
-                                setAttention((old) => ({
-                                  ...old,
-                                  [binding.id]: { ...attentionValue, members: next },
-                                }))
-                              }
-                            />
-                          </div>
-                          <div className="border-t border-border/60 pt-3 flex items-center justify-start">
-                            <Button
-                              disabled={!canSaveAttention}
-                              tooltip={t("hints.qq.saveAttentionList")}
-                              className="h-8 rounded-lg"
-                              onClick={() =>
-                                void state
-                                  .updateQqBindingRow(attentionValue.source, {
-                                    attention:
-                                      attentionValue.mode === "off"
-                                        ? { mode: "off", members: [] }
-                                        : {
-                                            mode: attentionValue.mode,
-                                            members: parsedAttention.validCanonicalMembers,
-                                          },
-                                  })
-                                  .then((ok) => {
-                                    if (ok)
-                                      setAttention((old) => {
-                                        const next = { ...old };
-                                        delete next[binding.id];
-                                        return next;
-                                      });
-                                  })
-                              }
-                            >
-                              {t("connections.saveList")}
-                            </Button>
-                          </div>
-                        </>
-                      );
-                    })()}
-                </SchemeFieldCard>
-              </div>
+                          return (
+                            <>
+                              <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground pb-2 border-b">
+                                <span>{t("connections.scopeNote")}:</span>
+                                <Badge variant="outline">{conversation.peer_id}</Badge>
+                                <span>·</span>
+                                <span>
+                                  {t("schemes.qq.groupConfig.agent")}: {savedAgentName}
+                                </span>
+                                {hasPendingAgentChange && (
+                                  <span className="text-muted-foreground font-normal">
+                                    （
+                                    {t("connections.pendingAgentChangeNote", {
+                                      "0": pendingAgentName,
+                                    })}
+                                    ）
+                                  </span>
+                                )}
+                                <span className="text-[11px] text-muted-foreground">
+                                  ({t("connections.scopeHint")})
+                                </span>
+                              </div>
+                              <Field
+                                label="connections.attentionMode"
+                                tooltip={t("hints.qqBinding.attention")}
+                              >
+                                <NativeSelect
+                                  value={attentionValue.mode}
+                                  disabled={saving}
+                                  onChange={(e) =>
+                                    setAttention((old) => ({
+                                      ...old,
+                                      [binding.id]: {
+                                        ...attentionValue,
+                                        mode: e.target.value as "off" | "soft" | "hard",
+                                      },
+                                    }))
+                                  }
+                                >
+                                  <option value="off">{t("connections.off2")}</option>
+                                  <option value="soft">{t("connections.softPriority")}</option>
+                                  <option value="hard">
+                                    {t("connections.onlyReplyToTheList")}
+                                  </option>
+                                </NativeSelect>
+                              </Field>
+                              <div className="space-y-4 pl-3 border-l-2 border-muted/60 sm:pl-4">
+                                <Field
+                                  label="connections.attentionList"
+                                  info="connections.softPriorityHint"
+                                  tooltip={t("connections.softPriorityHint")}
+                                >
+                                  <Input
+                                    value={attentionValue.members}
+                                    disabled={saving || attentionValue.mode === "off"}
+                                    placeholder={t(
+                                      "connections.qqNumbersSeparatedByCommasOrSpaces",
+                                    )}
+                                    onChange={(e) =>
+                                      setAttention((old) => ({
+                                        ...old,
+                                        [binding.id]: {
+                                          ...attentionValue,
+                                          members: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                  />
+                                </Field>
+                                <AdminMembersEditor
+                                  value={attentionValue.members}
+                                  disabled={saving || attentionValue.mode === "off"}
+                                  onChange={(next) =>
+                                    setAttention((old) => ({
+                                      ...old,
+                                      [binding.id]: { ...attentionValue, members: next },
+                                    }))
+                                  }
+                                />
+                              </div>
+                              <div className="border-t border-border/60 pt-3 flex items-center justify-start">
+                                <Button
+                                  disabled={!canSaveAttention}
+                                  tooltip={t("hints.qq.saveAttentionList")}
+                                  className="h-8 rounded-lg"
+                                  onClick={() =>
+                                    void state
+                                      .updateQqBindingRow(attentionValue.source, {
+                                        attention:
+                                          attentionValue.mode === "off"
+                                            ? { mode: "off", members: [] }
+                                            : {
+                                                mode: attentionValue.mode,
+                                                members: parsedAttention.validCanonicalMembers,
+                                              },
+                                      })
+                                      .then((ok) => {
+                                        if (ok)
+                                          setAttention((old) => {
+                                            const next = { ...old };
+                                            delete next[binding.id];
+                                            return next;
+                                          });
+                                      })
+                                  }
+                                >
+                                  {t("connections.saveList")}
+                                </Button>
+                              </div>
+                            </>
+                          );
+                        })()}
+                    </SchemeFieldCard>
+                  </div>
+                </>
+              )}
               <SchemeFieldCard
                 title={t("connections.memoryOrganising")}
                 description="schemes.bindings.memory.hint"

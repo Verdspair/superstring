@@ -19,13 +19,29 @@ import { useSuperstringStore } from "../../store";
 import { openSpace } from "../../workspace/navigation";
 
 /** Creation selects the next conversation's identity; it never edits the current Agent. */
-export function CreateConversation({ children }: { children?: ReactNode }) {
+export function CreateConversation({
+  children,
+  open: controlledOpen,
+  onOpenChange,
+  onCloseAutoFocus,
+}: {
+  children?: ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
+}) {
   const { t, i18n } = useTranslation();
   const agents = useSuperstringStore((s) => s.agents);
   const candidate = useSuperstringStore((s) => s.selectedNewSessionAgentId);
   const setCandidate = useSuperstringStore((s) => s.setNewSessionAgent);
   const create = useSuperstringStore((s) => s.createSession);
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const controlled = controlledOpen !== undefined;
+  const open = controlled ? controlledOpen : uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    if (controlled) onOpenChange?.(next);
+    else setUncontrolledOpen(next);
+  };
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -64,15 +80,17 @@ export function CreateConversation({ children }: { children?: ReactNode }) {
         if (!pending.current) setOpen(next);
       }}
     >
-      <DialogTrigger asChild>
-        {children ?? (
-          <Button tooltip={<Trans i18nKey="hints.complete.newConversation" />} size="sm">
-            <Plus />
-            {t("workspace.new_conversation")}
-          </Button>
-        )}
-      </DialogTrigger>
-      <DialogContent showCloseButton={!busy}>
+      {!controlled && (
+        <DialogTrigger asChild>
+          {children ?? (
+            <Button tooltip={<Trans i18nKey="hints.complete.newConversation" />} size="sm">
+              <Plus />
+              {t("workspace.new_conversation")}
+            </Button>
+          )}
+        </DialogTrigger>
+      )}
+      <DialogContent showCloseButton={!busy} onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>{t("workspace.start_a_new_conversation")}</DialogTitle>
           <DialogDescription>

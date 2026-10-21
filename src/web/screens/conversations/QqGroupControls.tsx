@@ -73,7 +73,7 @@ export function QqGroupControls({
     if (loadFacts && (qqAccessLoading || qqBindingsLoading))
       return (
         <span role="status" className={`${rootClass} text-xs text-muted-foreground`}>
-          {t("schemes.qq.groupConfig.controls.reading")}
+          {t("qq.conversation.reading")}
         </span>
       );
     // 从未尝试且没有失败：先不占位，等读取真正发起（或失败）再出现，避免闪一下「未知」。
@@ -82,7 +82,7 @@ export function QqGroupControls({
     return (
       <span className={rootClass}>
         <span role="status" className="text-xs text-muted-foreground">
-          {t("schemes.qq.groupConfig.controls.unknown")}
+          {t("qq.conversation.unknown")}
         </span>
         {loadFacts && (
           <Button
@@ -100,8 +100,11 @@ export function QqGroupControls({
   }
   const binding = qqBindings.find((row) => row.id === bindingId);
   // 绑定不存在（别处解绑）：把入口留给目录本身，不渲染死按钮。
-  // 私聊（意外行）：本组件的作用域只看群，私聊不渲染群按钮。
-  if (binding?.kind !== "group") return null;
+  if (!binding) return null;
+  const isPrivate = binding.kind === "private";
+  const unknownLabel = isPrivate
+    ? t("qq.conversation.unknown")
+    : t("schemes.qq.groupConfig.controls.unknown");
   const wrongAgent = !!expectedAgentId && binding.agent_id !== expectedAgentId;
   const bindingBusy = qqAccessSaving || qqGroupConfigSaving;
   const agent = agents.find((row) => row.id === binding.agent_id);
@@ -112,15 +115,15 @@ export function QqGroupControls({
     : binding.paused
       ? t("schemes.qq.groupConfig.controls.paused")
       : !qqSettings
-        ? t("schemes.qq.groupConfig.controls.unknown")
+        ? unknownLabel
         : !qqSettings.enabled
           ? t("schemes.qq.groupConfig.controls.globalOff")
           : !qqConnection
-            ? t("schemes.qq.groupConfig.controls.unknown")
+            ? unknownLabel
             : qqConnection.phase !== "ready"
               ? t("schemes.qq.groupConfig.controls.disconnected")
               : !agent
-                ? t("schemes.qq.groupConfig.controls.unknown")
+                ? unknownLabel
                 : !agent.is_active
                   ? t("schemes.qq.groupConfig.controls.agentOff")
                   : t("schemes.qq.groupConfig.controls.enabled");
@@ -128,7 +131,7 @@ export function QqGroupControls({
     const current = useSuperstringStore.getState();
     if (current.qqAccessSaving || current.qqGroupConfigSaving) return;
     const row = current.qqBindings.find((item) => item.id === bindingId);
-    if (row?.kind !== "group" || row.paused === next) return;
+    if (!row || row.paused === next) return;
     if (expectedAgentId && row.agent_id !== expectedAgentId) return;
     setOperationError(null);
     void current.updateQqBindingRow(row, { paused: next }).then((ok) => {
@@ -136,7 +139,12 @@ export function QqGroupControls({
     });
   };
   return (
-    <fieldset aria-label={t("schemes.qq.groupConfig.controls.label")} className={rootClass}>
+    <fieldset
+      aria-label={t(
+        isPrivate ? "qq.conversation.controls" : "schemes.qq.groupConfig.controls.label",
+      )}
+      className={rootClass}
+    >
       {status && (
         <span role="status" className="text-xs text-muted-foreground">
           {status}
@@ -172,7 +180,9 @@ export function QqGroupControls({
         disabled={bindingBusy || wrongAgent}
         onClick={() => openQqGroupConfig(bindingId)}
       >
-        {t("schemes.qq.groupConfig.controls.configure")}
+        {t(
+          isPrivate ? "qq.conversation.privateConfig" : "schemes.qq.groupConfig.controls.configure",
+        )}
       </Button>
       {operationError && (
         <span role="alert" className="text-xs text-destructive">

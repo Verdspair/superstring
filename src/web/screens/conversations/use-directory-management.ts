@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { ConversationSummary } from "../../../shared/contracts/conversation";
+import { msg } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 
 export function useDirectoryManagement() {
@@ -25,7 +26,9 @@ export function useDirectoryManagement() {
       setBusy(false);
     }
   };
+  const isQq = deleting?.channel === "onebot11";
   return {
+    isQq,
     editing,
     deleting,
     name,
@@ -54,12 +57,26 @@ export function useDirectoryManagement() {
         () => useSuperstringStore.getState().renameSession(editing.sourceId, name),
         () => setEditing(null),
       ),
-    confirmDelete: () =>
-      deleting &&
-      operate(
-        () => useSuperstringStore.getState().deleteSessionById(deleting.sourceId),
+    confirmDelete: () => {
+      if (!deleting) return;
+      if (!isQq)
+        return operate(
+          () => useSuperstringStore.getState().deleteSessionById(deleting.sourceId),
+          () => setDeleting(null),
+        );
+      // QQ 删除按「会话摘要 → 当前绑定」逐项核对：同一绑定 id、同一 Agent，且用绑定当前
+      // revision 走 CAS；目录行过期（已解绑或改绑）时只报错，不推测目标。
+      const state = useSuperstringStore.getState();
+      const binding = state.qqBindings.find((row) => row.id === deleting.sourceId);
+      if (!binding || binding.agent_id !== deleting.agentId) {
+        setNotice(msg("操作失败，请重试。"));
+        return;
+      }
+      return operate(
+        () => state.removeQqConversation(binding.id, binding.revision),
         () => setDeleting(null),
-      ),
+      );
+    },
     refresh: (item: ConversationSummary) =>
       operate(
         () => useSuperstringStore.getState().refreshSessionById(item.sourceId),

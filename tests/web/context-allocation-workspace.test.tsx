@@ -307,7 +307,7 @@ afterEach(() => {
 });
 
 describe("Context Allocation Workspace & Navigation", () => {
-  it("keeps context-allocation as the target route and resolves it to the models space", () => {
+  it("keeps context-allocation as the target route and resolves it to the library space", () => {
     const route = SETTINGS_ROUTES.find((r) => r.id === "context-allocation");
     expect(route).toBeDefined();
     expect(route?.id).toBe("context-allocation");
@@ -317,7 +317,7 @@ describe("Context Allocation Workspace & Navigation", () => {
       settingsView: "workspace",
       settingsRoute: "context-allocation",
     });
-    expect(space).toBe("models");
+    expect(space).toBe("library");
   });
 
   it("removes the peer allocation switcher from the schemes directory", async () => {

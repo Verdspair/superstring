@@ -189,6 +189,69 @@ describe("assistant workspace activity gating", () => {
 });
 
 describe("assistant workspace canonical host & resource rules regressions", () => {
+  it("identifies the configured Agent across sections and retains its draft on return", async () => {
+    const updateAgent = vi.fn();
+    prepare({ updateAgent });
+    store.setState({
+      editorAgentId: agent.id,
+      pageEditor: newPageEditor(agent, persona),
+      settingsRoute: "memory-tools",
+    });
+    render(<AssistantWorkspace active />);
+    await act(async () => {});
+    act(() =>
+      store.getState().patchPageAgent("memory-tools", {
+        memory_retrieval_prompt: "retain this reading draft",
+      }),
+    );
+    for (const section of [/资料读取/, /人设表达/, /模型配置/, /工具权限/]) {
+      await act(async () => {
+        fireEvent.mouseDown(screen.getByRole("tab", { name: section }), {
+          button: 0,
+          ctrlKey: false,
+        });
+      });
+      const title = screen.getByRole("heading", { level: 1, name: "Agent 配置 · Agent A" });
+      const header = title.closest("header");
+      expect(header).not.toBeNull();
+      const back = screen.getByRole("button", { name: "所有 Agent" });
+      expect(header?.contains(back)).toBe(true);
+      expect(back.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.getByRole("tab", { name: section }).getAttribute("data-state")).toBe("active");
+    }
+    fireEvent.click(screen.getByRole("button", { name: "所有 Agent" }));
+    expect(screen.getByRole("heading", { name: "你的 Agent" })).toBeTruthy();
+    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe(
+      "retain this reading draft",
+    );
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
+
+  it("returns from reading settings to Agent cards without saving or dropping the current draft", async () => {
+    const updateAgent = vi.fn();
+    prepare({ updateAgent });
+    store.setState({
+      editorAgentId: agent.id,
+      pageEditor: newPageEditor(agent, persona),
+      settingsRoute: "memory-tools",
+    });
+    render(<AssistantWorkspace active />);
+    await act(async () => {});
+    act(() =>
+      store
+        .getState()
+        .patchPageAgent("memory-tools", { memory_retrieval_prompt: "unsaved reading rule" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "所有 Agent" }));
+    expect(screen.getByRole("heading", { name: "你的 Agent" })).toBeTruthy();
+    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("unsaved reading rule");
+    expect(updateAgent).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "打开工作室" })));
+    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("unsaved reading rule");
+    expect(screen.getByRole("button", { name: "所有 Agent" })).toBeTruthy();
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
+
   it("navigating to memory-tools activates studio access tab for the current agent", async () => {
     prepare();
     store.setState({

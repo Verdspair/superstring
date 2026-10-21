@@ -553,8 +553,6 @@ function realPort(
     baseUrl: stub.origin,
     apiKey: "synthetic-p4-key",
     contextWindow: 65536,
-    vision: options.vision ?? true,
-    toolCalling: false,
     providerRevision: options.providerRevision ?? 1,
   };
   const config = {
@@ -671,8 +669,6 @@ function createFaultHarness(input: {
   readonly visionAnswers?: readonly string[];
   /** false＝媒体组件根本不注入（global 关）。 */
   readonly mediaEnabled?: boolean;
-  /** provider 能力声明三态（false＝发前识别为 MODEL_IMAGE_UNSUPPORTED）。 */
-  readonly visionDeclared?: boolean;
   readonly providerRevision?: number;
   readonly triggers?: {
     direct_reply?: boolean;
@@ -693,7 +689,6 @@ function createFaultHarness(input: {
     initiativeBatchTargetCount: 1,
     initiativeBatchJitterCount: 0,
     model: realPort(input.stub, {
-      ...(input.visionDeclared === undefined ? {} : { vision: input.visionDeclared }),
       ...(input.providerRevision === undefined ? {} : { providerRevision: input.providerRevision }),
     }),
     mediaInput: {

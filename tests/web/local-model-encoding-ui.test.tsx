@@ -3,7 +3,17 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { SuperstringApi } from "../../src/web/api";
 import { LocalModelEncodings } from "../../src/web/features/models/LocalModelEncodings";
 import { selectLocale } from "../../src/web/i18n";
+import { i18n } from "../../src/web/i18n/runtime";
 import { render } from "./helpers/render-with-providers";
+
+const T = (key: string, options?: Record<string, string | number>) =>
+  i18n.t(key, options) as string;
+
+function expandEncodingDisclosure() {
+  const summary = screen.getByText(T("models.localEncodingTitle"));
+  const details = summary.closest("details") as HTMLDetailsElement | null;
+  if (details && !details.open) fireEvent.click(summary);
+}
 
 afterEach(cleanup);
 it("loads without writes, saves only its model encoding and clears with CAS", async () => {
@@ -25,6 +35,7 @@ it("loads without writes, saves only its model encoding and clears with CAS", as
   await act(async () => {});
   expect(save).not.toHaveBeenCalled();
   expect(screen.queryByLabelText("文本 token 编码 · external-a")).toBeNull();
+  expandEncodingDisclosure();
   fireEvent.change(screen.getByLabelText("文本 token 编码 · local-a"), {
     target: { value: "o200k_base" },
   });
@@ -64,6 +75,7 @@ it("retains the draft after conflict and merges only edited fields on explicit r
     />,
   );
   await act(async () => {});
+  expandEncodingDisclosure();
   fireEvent.change(screen.getByLabelText("文本 token 编码 · local-a"), {
     target: { value: "o200k_base" },
   });
@@ -119,6 +131,7 @@ it("ignores a late save after hiding the editor and reloads the authoritative sn
     <LocalModelEncodings active apiClient={api} loadedModels={["local-a"]} externalModels={[]} />,
   );
   await act(async () => {});
+  expandEncodingDisclosure();
   fireEvent.change(screen.getByLabelText("文本 token 编码 · local-a"), {
     target: { value: "o200k_base" },
   });
@@ -220,4 +233,54 @@ it("keeps a formerly local declaration visible and clearable after external owne
   });
   expect(save).toHaveBeenCalledWith({ expected_revision: "r1", models: [] });
   expect(screen.queryByLabelText("文本 token 编码 · local-a")).toBeNull();
+});
+
+it("renders no standalone blank encoding panel when there are no local or stored rows", async () => {
+  selectLocale("zh-CN");
+  const get = vi.fn(async () => ({ revision: "r1", models: [] }));
+  const save = vi.fn();
+  const api = {
+    getLocalModelEncodings: get,
+    saveLocalModelEncodings: save,
+  } as unknown as SuperstringApi;
+  const view = render(
+    <LocalModelEncodings active apiClient={api} loadedModels={[]} externalModels={[]} />,
+  );
+  await act(async () => {});
+  expect(get).toHaveBeenCalledTimes(1);
+  expect(save).not.toHaveBeenCalled();
+  expect(screen.queryByText(T("models.localEncodingTitle"))).toBeNull();
+  expect(screen.queryByRole("button", { name: T("models.localEncodingSave") })).toBeNull();
+  expect(screen.queryByRole("button", { name: T("models.localEncodingRefresh") })).toBeNull();
+  expect(view.container.textContent).toBe("");
+});
+
+it("shows the local encoding load error and retries the focused read", async () => {
+  selectLocale("zh-CN");
+  const get = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValueOnce({
+      revision: "r1",
+      models: [{ name: "local-a", tokenizer_encoding: "cl100k_base" }],
+    });
+  const save = vi.fn();
+  const api = {
+    getLocalModelEncodings: get,
+    saveLocalModelEncodings: save,
+  } as unknown as SuperstringApi;
+  render(<LocalModelEncodings active apiClient={api} loadedModels={[]} externalModels={[]} />);
+  await act(async () => {});
+  expect(screen.getByRole("alert").textContent).toContain("offline");
+  expect(screen.queryByLabelText("文本 token 编码 · local-a")).toBeNull();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: T("capabilities.retry") }));
+  });
+  expect(get).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((screen.getByLabelText("文本 token 编码 · local-a") as HTMLSelectElement).value).toBe(
+    "cl100k_base",
+  );
+  expect(save).not.toHaveBeenCalled();
 });

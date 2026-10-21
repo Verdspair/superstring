@@ -110,7 +110,7 @@ it("选当前Agent打开studio后access真实click选中持久；编辑对象/�
   await act(async () => {});
   expect(screen.getByRole("tab", { name: "资料读取" }).getAttribute("aria-selected")).toBe("true");
   // access 内容为真实复用组件：记忆读取摘要 + 知识访问编辑器，读取配置挂在编辑对象 B。
-  expect(screen.getByRole("heading", { name: "资料读取" })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Agent 配置 · Agent B" })).toBeTruthy();
   expect(screen.getByText("知识访问")).toBeTruthy();
   expect(store.getState().knowledgeReadEditor?.agentId).toBe(B);
   // 走一次 identity 路由 effect 路径：identity→access 往返仍不弹回。

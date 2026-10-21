@@ -187,7 +187,12 @@ it("unknown text/sticker delivery shows independent receipt facts and offers no 
   expect((await screen.findByText("platform")).closest("li")?.textContent).toContain("已送达");
   expect(screen.getByText("platform")).toBeTruthy();
   expect(screen.getByText("sticker-id")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /重发|重试|Resend/ })).toBeNull();
+  expect(
+    within(screen.getByRole("tabpanel", { name: i18n.t("workspace.message_history") })).queryByRole(
+      "button",
+      { name: /重发|重试|Resend/ },
+    ),
+  ).toBeNull();
 });
 it("source and output revisions update one row while retaining unrelated observations", () => {
   const revision = {
@@ -594,7 +599,12 @@ it("renders stale delivery causes and legacy neutral, ignores reasons on non-sta
   // Non-stale status ignores reason: confirmed remains "已送达"
   expect(screen.getByText("已送达")).toBeTruthy();
   // No resend button
-  expect(screen.queryByRole("button", { name: /重发|重试|Resend/ })).toBeNull();
+  expect(
+    within(screen.getByRole("tabpanel", { name: i18n.t("workspace.message_history") })).queryByRole(
+      "button",
+      { name: /重发|重试|Resend/ },
+    ),
+  ).toBeNull();
 
   // Test en
   await i18n.changeLanguage("en");
@@ -604,7 +614,12 @@ it("renders stale delivery causes and legacy neutral, ignores reasons on non-sta
   expect(screen.getByText("Content retention expiration")).toBeTruthy();
   expect(screen.getByText("Reply no longer valid")).toBeTruthy();
   expect(screen.getByText("Delivered")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /重发|重试|Resend/ })).toBeNull();
+  expect(
+    within(screen.getByRole("tabpanel", { name: i18n.t("workspace.message_history") })).queryByRole(
+      "button",
+      { name: /重发|重试|Resend/ },
+    ),
+  ).toBeNull();
 
   // Reset to zh-CN
   await i18n.changeLanguage("zh-CN");

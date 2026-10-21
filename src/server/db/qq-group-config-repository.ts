@@ -52,17 +52,24 @@ function emptyConfig(): QqGroupAgentConfigView {
   };
 }
 
-/**
- * 一个绑定 × 当前 Agent 保存的差异与能力停用项。私聊没有本群配置，回答虚拟默认而不是报错：
- * 读路径（含 runtime 的生效方案）不该因为会话是私聊而失败。
- */
+/** A missing private record retains the binding's existing trigger overrides. */
 export function readQqGroupAgentConfig(
   orm: Orm,
   binding: Pick<QqBinding, "id" | "agentId" | "kind">,
 ): QqGroupAgentConfigView {
-  if (binding.kind !== "group") return emptyConfig();
   const row = readQqGroupConfigRow(orm, binding.id, binding.agentId);
-  return row === null ? emptyConfig() : parseQqGroupAgentConfigRow(row);
+  if (row !== null) return parseQqGroupAgentConfigRow(row);
+  const defaults = emptyConfig();
+  if (binding.kind === "private") {
+    const current = readQqBinding(orm, binding.id);
+    if (
+      current?.agentId === binding.agentId &&
+      Object.values(current.triggers).some((value) => value !== null)
+    ) {
+      return { ...defaults, overrides: { triggers: { ...current.triggers } } };
+    }
+  }
+  return defaults;
 }
 
 /**
@@ -74,7 +81,9 @@ export function readQqGroupCapabilityRevisions(
   orm: Orm,
   binding: Pick<QqBinding, "id" | "agentId" | "kind">,
 ): ReadonlyMap<QqGroupCapability, number> {
-  return readQqGroupAgentConfig(orm, binding).capability_revisions;
+  return binding.kind === "group"
+    ? readQqGroupAgentConfig(orm, binding).capability_revisions
+    : emptyConfig().capability_revisions;
 }
 
 /** 单个能力的生效修订（server-only）：语义同 `readQqGroupCapabilityRevisions`。 */
@@ -83,7 +92,9 @@ export function readQqGroupCapabilityRevision(
   binding: Pick<QqBinding, "id" | "agentId" | "kind">,
   capability: QqGroupCapability,
 ): number {
-  return readQqGroupCapabilityRevisions(orm, binding).get(capability) ?? 0;
+  return binding.kind === "group"
+    ? (readQqGroupCapabilityRevisions(orm, binding).get(capability) ?? 0)
+    : 0;
 }
 
 /**
@@ -136,7 +147,6 @@ export function effectiveQqStickerCollectionIds(orm: Orm, binding: QqBinding): s
 function requireGroupBinding(orm: Orm, bindingId: string): QqBinding {
   const binding = readQqBinding(orm, bindingId);
   if (binding === null) fail("MEMORY_NOT_FOUND", "QQ绑定不存在", 404);
-  if (binding.kind !== "group") fail("MEMORY_NOT_FOUND", "只有群聊才有本群配置", 404);
   return binding;
 }
 
@@ -273,6 +283,12 @@ export function updateQqGroupConfig(
         payload.scheme_change === "reset" ? {} : normalizeStickerOverride(payload.overrides);
       assertQqGroupBatchRelation(schemeRhythm(scheme), overrides);
       const capabilities = normalizeQqGroupCapabilities(payload.disabled_capabilities);
+      if (
+        binding.kind === "private" &&
+        (capabilities.length > 0 || overrides.reply?.split_by_speaker !== undefined)
+      ) {
+        fail("MEMORY_SOURCE_INVALID", "私聊不支持群聊专属的能力停用和按发言人拆分设置");
+      }
       assertQqGroupStickerSelection(tx, schemeId, current.overrides, overrides);
 
       // 模式互斥在保存边界一次校验，用 raw 组合而不是 legacy 归一后的读值：

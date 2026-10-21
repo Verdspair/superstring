@@ -19,6 +19,7 @@ import {
   NUMERIC_KEYS,
 } from "../../features/runs/execution-draft";
 import { useSuperstringStore } from "../../store";
+import { ModelDefaults } from "../environment/model-defaults";
 import { RuntimeStoragePanel } from "./runtime-storage";
 
 interface NumericField {
@@ -403,6 +404,7 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
             </Field>
           </CardContent>
         </Card>
+        <ModelDefaults active={active} scope="organization" />
         {group("maintenance", [
           {
             key: "memoryTimeoutSeconds",

@@ -429,6 +429,48 @@ describe("QQ binding routes", () => {
     }
   });
 
+  it("refuses a private binding to the bot's own account, and keeps a legacy one editable", async () => {
+    const h = setup();
+    try {
+      const scheme = await createScheme(h.app, "方案");
+      for (const peer of ["10001", "00010001"]) {
+        expect(
+          (await createBinding(h.app, scheme.id, { kind: "private", peer_id: peer })).status,
+        ).toBe(422);
+      }
+      expect(await body<QqBindingResponse[]>(await h.app.request("/qq/bindings"))).toEqual([]);
+      const group = await createBinding(h.app, scheme.id, { peer_id: "10001" });
+      expect(group.status).toBe(201);
+
+      const legacyId = "31000000-0000-4000-8000-000000000001";
+      h.orm
+        .insert(schema.qqBindings)
+        .values({
+          id: legacyId,
+          accountId: "10001",
+          conversationKind: "private",
+          peerId: "00010001",
+          agentId: AGENT_ID,
+          schemeId: scheme.id,
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        })
+        .run();
+      const listed = await body<QqBindingResponse[]>(await h.app.request("/qq/bindings"));
+      expect(listed.map((row) => row.id)).toContain(legacyId);
+      const paused = await body<QqBindingResponse>(
+        await json(h.app, "PUT", `/qq/bindings/${legacyId}`, {
+          paused: true,
+          expected_revision: 1,
+        }),
+      );
+      expect(paused.paused).toBe(true);
+      expect(paused.revision).toBe(2);
+    } finally {
+      cleanup(h);
+    }
+  });
+
   it("pauses, resumes, and switches the organising count off with an explicit null", async () => {
     const h = setup();
     try {

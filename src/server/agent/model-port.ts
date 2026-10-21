@@ -21,9 +21,8 @@ export interface ModelResolvedPrepareInput {
   /** 本次实际模型（effectiveModel 结果，与发送 body 的 model 逐字同值）。 */
   readonly model: string;
   /**
-   * 能力维度的图片放行判定：外部声明 vision!==false 且进程负缓存未记该模型。
-   * 未声明（undefined）=== true；与明确 vision:false 区分。消息无关——最终消息若仍含图，
-   * 由发送前的 assertVisionAllowed 按最终 messages 再拦。
+   * 图片放行只依据当前服务与模型已观察到的明确拒绝，不依赖手工能力开关。
+   * 该值与消息无关；最终消息若仍含图，由发送前的 assertVisionAllowed 再检查。
    */
   readonly imagesAllowed: boolean;
   /** 原始请求消息（只读；最终发送内容以钩子输出为准）。 */

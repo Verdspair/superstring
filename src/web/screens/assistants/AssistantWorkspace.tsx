@@ -183,6 +183,18 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       {!readingTask && (
         <header className="mb-[24px] flex flex-wrap items-start justify-between gap-[14px] border-b border-border pb-[20px]">
           <div className="min-w-0 flex-1">
+            {studio && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mb-2 -ml-2 w-fit"
+                tooltip={t("hints.agent.directory")}
+                onClick={() => setStudio(false)}
+              >
+                <ArrowLeft />
+                {t("library.all.assistants")}
+              </Button>
+            )}
             <p className="workspace-page-location">
               {t("strict.workspace")} › {t("library.assistant")}
               {studio && current ? ` › ${current.agent.name}` : ""}
@@ -192,23 +204,27 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                 {studio
                   ? isNew
                     ? t("library.create.assistant")
-                    : t(
-                        tab === "tools"
-                          ? "strict.tools.title"
-                          : tab === "capabilities"
-                            ? "strict.task.models"
-                            : "strict.task.identity",
-                      )
+                    : t("agent.configuration.title", { name: current?.agent.name ?? "" })
                   : t("library.your.agents")}
               </h1>
               {studio && current && (
                 <span className="rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] text-muted-foreground">
-                  {t("strict.scope.object")} {current.agent.name}
+                  {t(
+                    tab === "tools"
+                      ? "strict.tools.title"
+                      : tab === "capabilities"
+                        ? "strict.task.models"
+                        : "strict.task.identity",
+                  )}
                 </span>
               )}
             </div>
             <p className="workspace-page-description max-w-[680px]">
-              {t("library.define.each.agent.s.identity.model.capabilities.and.resource")}
+              {t(
+                studio && !isNew && current
+                  ? "agent.configuration.hint"
+                  : "library.define.each.agent.s.identity.model.capabilities.and.resource",
+              )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -229,16 +245,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                   })}
                 </Button>
               )}
-            {studio ? (
-              <Button
-                variant="outline"
-                tooltip={t("hints.agent.directory")}
-                onClick={() => setStudio(false)}
-              >
-                <ArrowLeft />
-                {t("library.all.assistants")}
-              </Button>
-            ) : (
+            {!studio && (
               <Button
                 disabled={s.editorLoading || s.settingsSaving}
                 tooltip={t("hints.agent.create")}
@@ -296,13 +303,13 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
               </Button>
             )}
           </div>
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-[16px]">
+          <div className="mt-[24px] grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-[16px]">
             {visible.map((agent) => (
               <Card
                 key={agent.id}
-                className={`group border-l-[4px] border-l-primary py-[20px] transition-colors ${
+                className={`group py-[20px] transition-colors ${
                   s.editorAgentId === agent.id
-                    ? "border-primary/60 ring-1 ring-primary/30"
+                    ? "border-primary bg-primary/5"
                     : "hover:border-primary/50"
                 }`}
               >

@@ -243,7 +243,13 @@ it("offers an avatar editor for OneBot records without exposing web-only lifecyc
     clientX: 100,
     clientY: 100,
   });
-  expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["更换会话头像"]);
+  expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    "更换会话头像",
+    "本群配置",
+    "移除会话",
+  ]);
+  expect(screen.queryByRole("menuitem", { name: "删除会话" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "刷新对话" })).toBeNull();
   fireEvent.click(screen.getByRole("menuitem", { name: "更换会话头像" }));
   await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
   expect(screen.getByRole("heading", { name: "更换会话头像" })).toBeTruthy();

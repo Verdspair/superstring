@@ -11,6 +11,7 @@ import {
   type KnowledgeListFilters,
   type KnowledgeState,
   knowledgeListQuery,
+  knowledgeSettingsDirty,
   latestKnowledgeSettings,
 } from "./types";
 
@@ -153,7 +154,10 @@ export function createKnowledgeActions(
     },
     requestKnowledgeEditor: (target) => {
       if (get().knowledgeBusy) return;
-      if (get().knowledgeDirty) {
+      if (
+        get().knowledgeDirty ||
+        (get().knowledgeEditor?.kind === "settings" && knowledgeSettingsDirty(get()))
+      ) {
         set({
           pendingNavigation: { kind: "knowledge", target },
           navigationConfirmOpen: true,
@@ -339,8 +343,13 @@ export function createKnowledgeActions(
               editor.source.revision,
             );
         }
+        const keepSettingsOpen =
+          editor.kind === "settings" && knowledgeSettingsDirty({ ...get(), knowledgeDirty: false });
         set({
-          knowledgeEditor: null,
+          knowledgeEditor:
+            keepSettingsOpen && editor.kind === "settings"
+              ? { ...editor, source: get().knowledgeSettings ?? editor.source }
+              : null,
           knowledgeDirty: false,
           knowledgeBusy: false,
           feedback: msg("知识库修改已保存。"),

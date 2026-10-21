@@ -157,8 +157,8 @@ describe("library web memory maintenance", () => {
     setupLibrary(mocks);
     await act(async () => render(<MemoryLibrary />));
     fireEvent.change(screen.getByLabelText("记忆整理提示词"), { target: { value: "草稿" } });
-    fireEvent.click(screen.getByRole("button", { name: "前往模型服务" }));
-    expect(store.getState().settingsRoute).toBe("models");
+    fireEvent.click(screen.getByRole("button", { name: "前往整理默认模型" }));
+    expect(store.getState().settingsRoute).toBe("execution-settings");
     // 跳转不隐式保存、不丢弃草稿。
     expect(store.getState().pageEditor?.draft.memory_consolidation_prompt).toBe("草稿");
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["long-memory"]);

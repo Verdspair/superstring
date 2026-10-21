@@ -436,3 +436,39 @@ it("旧 API 写入的 finally 不清除新 API 上新发起的写锁", async () 
     revision: 2,
   });
 });
+
+it("POST 完成不等待会话目录读取，读取成功后才发布真实私聊", async () => {
+  const created = { ...bindingOf("40004", BINDING_TWO), kind: "private" as const };
+  const summary = {
+    id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    channel: "onebot11" as const,
+    topology: "direct" as const,
+    sourceId: created.id,
+    agentId: AGENT,
+    bindingEpoch: 1,
+    title: "私聊 40004",
+    participants: [],
+    updatedAt: NOW,
+    lastSeq: 0,
+    consumedSeq: 0,
+  };
+  const directory = deferred<{ items: (typeof summary)[]; nextCursor: null }>();
+  reset(
+    {
+      createQqBinding: vi.fn().mockResolvedValue(created),
+      listConversations: vi.fn(() => directory.promise),
+    },
+    { qqBindings: [], qqBindingsLoaded: true },
+  );
+  expect(
+    await store
+      .getState()
+      .bindQqPeerNumber({ kind: "private", peerId: "40004", agentId: AGENT, schemeId: FIRST }),
+  ).toBe(true);
+  expect(navigationBusy(store.getState())).toBe(false);
+  expect(store.getState().directoryIds).not.toContain(summary.id);
+  directory.resolve({ items: [summary], nextCursor: null });
+  await tick();
+  expect(store.getState().directoryIds).toContain(summary.id);
+  expect(store.getState().summaryById[summary.id]).toEqual(summary);
+});

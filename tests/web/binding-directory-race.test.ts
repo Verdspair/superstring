@@ -221,6 +221,26 @@ it("绑定写入开始时在途读取失效：旧绑定列表不得回滚新写�
   expect(store.getState().qqBindingsLoading).toBe(false);
 });
 
+it("同一目录读取在途复用，显式目标刷新仍独立推进", async () => {
+  const pending = deferred<QqBindingResponse[]>();
+  const listBindings = vi.fn(() => pending.promise);
+  const client = reset({
+    listQqBindings: listBindings,
+    getQqSettings: vi.fn().mockResolvedValue(settings),
+    listQqSchemes: vi.fn().mockResolvedValue([scheme()]),
+  });
+  const first = store.getState().loadQqBindingDirectory();
+  const second = store.getState().loadQqBindingDirectory();
+  expect(listBindings).toHaveBeenCalledTimes(1);
+  expect(client.getQqSettings).toHaveBeenCalledTimes(1);
+  expect(client.listQqSchemes).toHaveBeenCalledTimes(1);
+  pending.resolve([bindingOf("30003", BINDING_ONE)]);
+  await Promise.all([first, second]);
+  expect(store.getState().qqBindingsLoaded).toBe(true);
+  await store.getState().loadQqBindingDirectory(BINDING_ONE);
+  expect(listBindings).toHaveBeenCalledTimes(2);
+});
+
 it("保存进行中不开始读取目录", async () => {
   const listBindings = vi.fn();
   const getSettings = vi.fn();

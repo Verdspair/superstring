@@ -52,7 +52,7 @@ describe("large settings entries share one visual weight", () => {
       ),
     );
     expectLargeEntry(screen.getByRole("button", { name: "前往记忆查询" }), "sliders-horizontal");
-    expectLargeEntry(screen.getByRole("button", { name: "前往模型服务" }), "cpu");
+    expectLargeEntry(screen.getByRole("button", { name: "前往整理默认模型" }), "cpu");
   });
 
   it("keeps refresh and save at their original levels in the memory library", async () => {
@@ -80,8 +80,8 @@ describe("large settings entries share one visual weight", () => {
         </DesignSystemProvider>,
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "前往模型服务" }));
-    expect(store.getState().settingsRoute).toBe("models");
+    fireEvent.click(screen.getByRole("button", { name: "前往整理默认模型" }));
+    expect(store.getState().settingsRoute).toBe("execution-settings");
     expect(store.getState().pageEditor?.draft.name).toBe("Kept draft");
   });
 

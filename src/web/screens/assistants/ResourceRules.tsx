@@ -1,4 +1,4 @@
-import { BookOpen, Check, FileText, Layers, RotateCcw } from "lucide-react";
+import { ArrowLeft, BookOpen, Check, FileText, Layers, RotateCcw } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -220,6 +220,18 @@ export function MemoryReadingRules({
         className={`${active ? "flex" : "hidden"} mb-[24px] flex-col gap-[14px] border-b border-border pb-[20px] min-[768px]:flex-row min-[768px]:items-start min-[768px]:justify-between`}
       >
         <div className="min-w-0 flex-1">
+          {onDirectory && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mb-2 -ml-2 w-fit"
+              onClick={onDirectory}
+              tooltip={t("hints.agent.directory")}
+            >
+              <ArrowLeft />
+              {t("library.all.assistants")}
+            </Button>
+          )}
           <nav
             aria-label={t("strict.reading.breadcrumb")}
             className="workspace-page-location flex flex-wrap items-center gap-[6px]"
@@ -249,11 +261,19 @@ export function MemoryReadingRules({
           </nav>
           <div className="flex flex-wrap items-center gap-[12px]">
             <h1 data-visual="reading-task-title" className="workspace-page-title">
-              {t("strict.reading.title")}
+              {onDirectory
+                ? t("agent.configuration.title", { name: editor.agent.name })
+                : t("strict.reading.title")}
             </h1>
             <span className="inline-flex items-center gap-[6px] rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] font-medium text-muted-foreground">
-              {t("strict.scope.object")}
-              <strong className="font-semibold text-primary">{editor.agent.name}</strong>
+              {onDirectory ? (
+                t("strict.reading.title")
+              ) : (
+                <>
+                  {t("strict.scope.object")}
+                  <strong className="font-semibold text-primary">{editor.agent.name}</strong>
+                </>
+              )}
             </span>
           </div>
           <p className="mt-[6px] max-w-[680px] text-[13.5px] leading-[1.55] text-muted-foreground">
@@ -274,7 +294,7 @@ export function MemoryReadingRules({
                 : "strict.reading.clean",
             )}
           </span>
-          <div className="flex flex-wrap items-center gap-[8px] max-[480px]:w-full max-[480px]:[&>span]:min-w-[110px] max-[480px]:[&>span]:flex-1 max-[480px]:[&_button]:w-full">
+          <div className="flex flex-wrap items-center gap-[8px] max-[480px]:w-full max-[480px]:[&>span]:w-full max-[480px]:[&_button]:w-full">
             <Button
               size="sm"
               variant="secondary"

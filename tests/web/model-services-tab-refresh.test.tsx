@@ -8,7 +8,9 @@ import { api } from "../../src/web/api";
 import { knowledgeModelDirty, organizationDirty } from "../../src/web/features/knowledge/types";
 import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
+import { ModelPurposes } from "../../src/web/screens/environment/ModelPurposes";
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
+import { ModelDefaults } from "../../src/web/screens/environment/model-defaults";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { render } from "./helpers/render-with-providers";
 
@@ -117,45 +119,31 @@ describe("providers tab first paint", () => {
   });
 });
 
-describe("defaults tab header refresh", () => {
-  it("re-reads system organization and knowledge without reading QQ or probing providers", async () => {
+describe("model service responsibilities", () => {
+  it("legacy models entry reads resources without fetching unrelated task settings", async () => {
     const fake = await renderModels("models");
-    await waitFor(() => {
-      expect(fake.getOrganizationSettings).toHaveBeenCalledTimes(1);
-      expect(store.getState().organizationLoading).toBe(false);
-      expect(store.getState().organizationEditor).not.toBeNull();
-      expect(fake.getKnowledgeSettings).toHaveBeenCalledTimes(1);
-      expect(store.getState().knowledgeModelLoading).toBe(false);
-      expect(store.getState().knowledgeModelEditor).not.toBeNull();
-      expect(fake.getQqSettings).not.toHaveBeenCalled();
-      expect(store.getState().qqSettings).toBeNull();
-    });
-
-    const refresh = screen.getByRole("button", {
-      name: i18n.t("models.refresh"),
-    }) as HTMLButtonElement;
-    // The old disabled={loading} gate left this permanently disabled because the providers
-    // effect never runs on the defaults tab.
-    expect(refresh.disabled).toBe(false);
-
-    fireEvent.click(refresh);
-    // Wait for the refresh generation to settle so the disabled state is not sampled mid-read.
-    await waitFor(() => expect(refresh.disabled).toBe(false));
-    expect(fake.getOrganizationSettings).toHaveBeenCalledTimes(2);
-    expect(fake.getKnowledgeSettings).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(fake.listModelProviders).toHaveBeenCalledTimes(1));
+    expect(fake.getOrganizationSettings).not.toHaveBeenCalled();
+    expect(fake.getKnowledgeSettings).not.toHaveBeenCalled();
     expect(fake.getQqSettings).not.toHaveBeenCalled();
-
-    // Refreshing the defaults is a read of the two system defaults sources, not an automatic provider
-    // probe: providers and the local catalog belong to the other tab.
-    expect(fake.listModelProviders).not.toHaveBeenCalled();
-    expect(fake.testModelProvider).not.toHaveBeenCalled();
-    expect(fake.listModels).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("models.refresh") }));
+    await waitFor(() => expect(fake.listModelProviders).toHaveBeenCalledTimes(2));
+    expect(fake.listModels).toHaveBeenCalledTimes(2);
+    expect(fake.getOrganizationSettings).not.toHaveBeenCalled();
+    expect(fake.getKnowledgeSettings).not.toHaveBeenCalled();
   });
 });
-
-describe("defaults tab draft merge on refresh", () => {
+describe("task settings draft merge at their own surfaces", () => {
   it("keeps edited draft fields, adopts the fresh revision, and never auto-saves", async () => {
-    const fake = await renderModels("models");
+    const fake = modelServicesFake();
+    store.getState().resetForTests(fake);
+    store.setState({ contextAllocationTarget: { purpose: "reading", agentId: null } });
+    render(
+      <>
+        <ModelDefaults active scope="organization" />
+        <ModelPurposes active embedded />
+      </>,
+    );
     await waitFor(() => {
       expect(store.getState().organizationEditor).not.toBeNull();
       expect(store.getState().organizationLoading).toBe(false);
@@ -186,7 +174,12 @@ describe("defaults tab draft merge on refresh", () => {
     });
     vi.mocked(fake.getQqSettings).mockResolvedValue(qqSettings(9));
 
-    fireEvent.click(screen.getByRole("button", { name: i18n.t("models.refresh") }));
+    await act(async () => {
+      await Promise.all([
+        store.getState().loadOrganization(true),
+        store.getState().loadKnowledgeModel(true),
+      ]);
+    });
     await waitFor(() => {
       expect(store.getState().organizationEditor?.source.revision).toBe(8);
       expect(store.getState().knowledgeModelEditor?.source.revision).toBe(8);

@@ -834,7 +834,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                         variant="outline"
                         className="mr-auto h-auto min-h-8 max-w-full whitespace-normal break-words"
                         tooltip={t("hints.library.memory.modelServices")}
-                        onClick={() => s.openSettingsRoute("models")}
+                        onClick={() => s.openSettingsRoute("execution-settings")}
                       >
                         <Cpu />
                         {t("library.open.model.services")}

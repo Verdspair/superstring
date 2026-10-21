@@ -800,6 +800,13 @@ export const api = {
     requestJson("/qq/bindings", QqBindingResponseSchema, json("POST", body)),
   updateQqBinding: (id: string, body: UpdateQqBindingRequest) =>
     requestJson(`/qq/bindings/${id}`, QqBindingResponseSchema, json("PUT", body)),
+  async deleteQqBinding(id: string, expectedRevision: number): Promise<void> {
+    const response = await fetch(
+      `/qq/bindings/${encodeURIComponent(id)}?expected_revision=${expectedRevision}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) throw await responseError(response);
+  },
   /**
    * One QQ conversation's sparse scheme overrides plus its capability disables. The GET takes an
    * optional signal so the editor can refresh explicitly; the PUT carries the whole intent —

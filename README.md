@@ -45,7 +45,9 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 - **输入防刷屏**：新方案默认开，已有方案保持关，可按会话覆盖。默认将同一成员在首条起3秒内的至少3条纯图片消息按一个候选处理；条数可设2–20条，首窗可设1–30秒，方案默认与会话覆盖分别保存。他人插话不打断，自身文字、其它媒体或直接请求结束分组。命中组与纯表情不自动供图，仍可经工具按需读取；直接艾特和合法引用照常处理，原记录不删除。
 - **研究与媒体预算**：QQ 研究按子任务自己的上下文检查容量；媒体或表情结果装不下时返回明确预算提示，不把本可继续的任务拖到下一轮才失败，真正超出容量时明确失败。
 
-在「方案 → 会话与绑定」中查看和管理群聊与私聊，进入群聊可编辑**本群配置**。方案设置、会话绑定与 QQ 设置位于同一工作区，为特定群提供独立的个性化设置与覆盖项。参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。
+在「对话」列表顶部点击 **新建／添加**，可选择新建网页对话、添加 QQ 群聊或添加 QQ 私聊。QQ 会话可从已观察列表中按类型和已知名称／号码查找，也可手动填写群号或对方 QQ 号，再明确选择 Agent 和方案。群聊填写群号，私聊填写联系人的 QQ 号，不是 NapCat 登录的机器人账号；自身账号会被拦截并提示。添加只保存配置，不会创建群、添加好友、发送消息或自动开启 QQ、主动联系、记忆共享；已有绑定会指向管理入口，不会静默覆盖。添加成功即进入对话列表，没有消息也可打开空会话；目录读取失败时只重读目录，不会重复添加。添加时可原地新建并选中方案，保留号码与 Agent；新方案未开启参与方式会明确提示，不自动替你开启。QQ 连接设置和方案详情的使用会话页复用同一添加流程。
+
+在「方案 → 会话与绑定」中查看和管理群聊与私聊，进入群聊可编辑**本群配置**。群聊的参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。群聊与私聊共用同一套会话配置页，分别显示“本群配置”和“本私聊配置”。可按会话与 Agent 自定义策略，未自定义的项目跟随方案；私聊不显示群成员、群能力停用或按群内发言人拆分等专属项。配置入口位于会话顶部、会话菜单和绑定管理。网页对话不使用 QQ 方案。QQ 会话菜单中的“移除会话”解除绑定并从目录移除，不删除 Agent、方案或 QQ 平台聊天；本机历史资料按原规则保留但不再由这个入口访问。运行中任务或发送结果未知时会拒绝移除，避免中断或误重发。
 
 QQ 接入前置步骤与运行要求：
 
@@ -80,7 +82,7 @@ QQ 接入前置步骤与运行要求：
 - **QQ 群成员查询**：助手可按需查看当前群的成员 ID、昵称、群名片和群主／管理员／成员身份，包括自己；支持查找、筛选和按需详情。普通聊天不查询，同轮名单复用；平台未提供的信息明确标为未知。开关在系统能力配置，各群可单独停用。
 - **扩展与 MCP 客户端**：在「扩展 → 工具」中查看已注册的系统工具与外部 MCP 工具；支持通过 stdio、HTTP 与 SSE 连接外部 Model Context Protocol 服务，登记的服务默认未启用，支持配置超时与结果限额；环境变量凭据仅保存变量名。
 - **技能目录**：在「扩展 → 技能」中查看技能文档与随包提供的 6 个系统技能（证据读取、媒体读取、QQ成员查询、QQ回复、任务执行、网络研究）。
-- **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地沙箱中编排与聚合只读工具调用；默认关闭，仅在模型服务明确声明具备代码执行能力时生效。
+- **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地编排与聚合已授权的只读工具调用；默认关闭，在「系统能力 → 执行设置」开启，不需要逐模型许可。
 - **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
 - **任务与本地审批**：「扩展 → 工具」中的工具授权经批准后持续生效，修订变更时需重新确认；持久化任务中需审批的调用会生成等待审批票据，需在本地手动确认。
 - **调用与唤醒重试**：在「系统能力 → 执行设置」中可配置模型与只读工具调用失败重试（默认共 3 次尝试，含首次，间隔 2 秒，仅对明确的 HTTP 429／503 拒收重试，写操作与超时不盲目重试）；在「方案 → QQ 连接」中可配置唤醒失败重试（默认共 3 次尝试，含首次，间隔 15 秒）。
@@ -113,7 +115,7 @@ QQ 接入前置步骤与运行要求：
 应用安装包包含运行环境。模型推理需要 LM Studio 等本地服务或配置的外部 OpenAI 兼容服务。
 
 1. 安装并打开 Superstring。
-2. 打开**模型服务**配置端点与各用途模型；本地默认端点为 `http://127.0.0.1:1234/v1`。使用原生图片输入需确认模型实际支持图片输入，并检查其视觉能力声明：未声明时程序仍会尝试发送原生图片；模型明确拒绝图片时会自动回退文本描述并记录负缓存（非所有网络错误均自动回退）；若模型不支持图片，请明确声明关闭视觉能力或选用文本描述模式，请勿对不支持的模型虚标支持。使用代码沙箱需服务明确声明代码执行能力。
+2. 打开**模型服务**配置连接与可用模型；本地默认端点为 `http://127.0.0.1:1234/v1`。各任务模型在 Agent、QQ 或知识设置中配置，跨任务整理默认模型在系统执行设置中管理。原生图片输入由服务实际处理；明确拒绝图片时回退文本描述并记住当前进程内的拒绝结果，普通网络错误不自动降级。已知不支持原生图片时可选择文本描述模式，无需配置逐模型视觉或代码执行开关。
 3. 创建或选择 Agent，导入并授权所需知识。
 4. 新建网页对话即可开始使用。
 5. 接入 QQ：安装 QQ NT 与 OneBot 11 服务（如 NapCat），登录 QQ 并保持后台运行，在 NapCat 面板开启正向 WebSocket 服务端并保持常驻。
@@ -179,7 +181,9 @@ Incoming messages in bound conversations appear automatically. When loading chat
 - **Input anti-spam**: Enabled for new schemes and kept off for existing schemes, with conversation overrides. By default, at least three image-only messages from one sender within three seconds of the first form one logical candidate; threshold (2–20 messages) and initial window (1–30 seconds) are configurable, stored separately for scheme defaults and conversation overrides. Other senders do not break the group; the sender's own text, other media, or direct request does. Grouped images and pure expressions are excluded from automatic image input but remain readable through tools. Direct mentions and valid replies are still handled, and original records are not deleted.
 - **Research & media budget**: QQ research runs check capacity against each subtask's own context limit; when media or sticker outputs exceed available space, a clear budget message is returned instead of postponing failure to later turns, and genuine capacity exceedances fail clearly.
 
-View and manage group and private chats under Schemes → Conversations & bindings, then open a group to edit **Group settings**. Scheme settings, conversation bindings, and QQ settings share one workspace, with dedicated configurations and overrides for each group. Participation, response, context, media, and prompt fields can either follow the base scheme or store group-specific overrides; rebinding does not inherit overrides, and switching back restores them. System capabilities can be disabled per group with immediate effect.
+Use **New / add** at the top of the conversation list to start a web conversation, add a QQ group chat, or add a QQ private chat. For QQ, filter observed conversations by type and search known names or numbers, or enter a group/contact number manually, then explicitly select an Agent and a scheme. Enter a group number for groups and the contact’s QQ number for private chats, not the bot account signed into NapCat. A private chat targeting the bot itself is rejected with an explanation. Adding saves configuration only: it does not create a group, add a friend, send a message, or automatically enable QQ, proactive contact, or memory sharing. Existing bindings lead to management rather than being silently overwritten. Added conversations appear in the list immediately and can be opened even without messages. A directory-read failure offers a read-only retry, not another binding creation. Create and select a scheme in place without losing the target or Agent. A new scheme with no participation triggers is clearly marked; nothing is enabled automatically. QQ connection settings and a scheme’s usage page reuse the same flow.
+
+View and manage group and private chats under **Schemes → Conversations & bindings**. Groups have **Group settings** with overrides for participation, replies, context, media, and prompts. Overrides stay with the group/Agent pair and return when switching back; per-group capability restrictions take effect immediately. Groups and private chats use the same conversation policy editor, titled Group settings or Private chat settings. Customize policy for the conversation and Agent, while other fields follow the scheme. Private chats omit group members, group-only capability restrictions, and splitting replies by group speaker. Open settings from the conversation header, its menu, or binding management. Web conversations do not use QQ schemes. Remove conversation in a QQ conversation menu removes its binding and directory entry, not the Agent, scheme, or QQ chat. Local history keeps its retention rules but is no longer accessible through that entry. Removal is refused while work is active or a send result is unknown.
 
 Prerequisites and operational notes for QQ integration:
 
@@ -214,7 +218,7 @@ The navigation organizes seven workspace sections across three groups: **Daily**
 - **QQ group members**: Assistants can look up IDs, nicknames, group cards, and owner/admin/member roles in the current group, including their own identity. Search, filters, and individual details are available on demand. Ordinary chat needs no lookup; a roster is reused within the run, and missing fields remain unknown. Configure the global switch in System capabilities or disable it per group.
 - **Extensions & MCP client**: View registered built-in and external MCP tools under Extensions → Tools; connect to external Model Context Protocol services over stdio, HTTP, and SSE; registered servers are disabled by default, with configurable timeouts and result caps; environment credentials store variable names only.
 - **Skills catalog**: View installed skill documentation and six bundled system skills (evidence reading, media reading, QQ members, QQ reply, task execution, web research) under Extensions → Skills.
-- **Programmatic Tool Calling (PTC)**: An optional execution mode using a QuickJS WASM sandbox to orchestrate and aggregate read-only tool calls locally; disabled by default and active only when models declare code execution capabilities.
+- **Programmatic Tool Calling (PTC)**: An optional QuickJS WASM execution mode for orchestrating and aggregating authorized read-only tool calls locally. It is disabled by default and enabled under System capabilities → Execution settings, without a per-model opt-in.
 - **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
 - **Tasks and local approvals**: Tool authorizations under Extensions → Tools remain active once approved until revisions change; task calls requiring approval generate pending tickets that require manual local confirmation.
 - **Call and wake retries**: Configure model and read-only tool call retries under System capabilities → Execution settings (default: 3 attempts including the first, with a 2-second delay, retrying only explicit 429/503 rejections, without blind retries for writes or timeouts); configure wake retries under Schemes → QQ connection (default: 3 attempts including the first, with a 15-second delay).
@@ -228,7 +232,7 @@ The navigation organizes seven workspace sections across three groups: **Daily**
 
 - Manage long-term memories partitioned by Agent and source, inspect references, and correct or block inaccurate content. QQ memory is isolated by conversation, and sharing with personal private chats requires explicit configuration.
 - Import UTF-8 text or Markdown into the knowledge library, organize documents into categories, and grant access per Agent; importing does not grant automatic access.
-- Select local or external OpenAI-compatible models for conversation, judgement, vision, memory, and organization roles. External providers maintain endpoints, encrypted credentials, and declared capabilities.
+- Select local or external OpenAI-compatible models for conversation, judgement, vision, memory, and organization roles. External providers maintain endpoints, encrypted credentials, model IDs, and context capacity.
 
 Speech transcription, full-video understanding, image generation, and arbitrary unconstrained multi-agent collaboration are not available in this release.
 
@@ -247,7 +251,7 @@ Use files actually attached to the selected release and verify them against its 
 Application packages bundle their runtime. Inference requires a local server such as LM Studio or an external OpenAI-compatible provider.
 
 1. Install and launch Superstring.
-2. In **Model services**, configure endpoints and default models. The default local endpoint is `http://127.0.0.1:1234/v1`. To use native image input, confirm that the model actually supports images and review its vision declaration: undeclared models will still attempt native delivery; when a model explicitly rejects images, the host falls back to text descriptions and caches the failure for the current process (network failures do not trigger fallback); if a model lacks vision capabilities, explicitly disable vision or select description mode rather than falsely declaring support. Programmatic tool calling requires an explicit code execution declaration.
+2. Open **Model services** to configure connections and available models. The default local endpoint is `http://127.0.0.1:1234/v1`. Configure task models in Agent, QQ, or knowledge settings, and the shared organization default in system execution settings. Native images are handled by the service; explicit image rejection triggers a text-description fallback and an in-process rejection cache, while ordinary network failures do not. Use description mode for models known not to accept native images. No per-model vision or code-execution switch is needed.
 3. Create or select an Agent, then import and authorize necessary knowledge.
 4. Start a web conversation.
 5. To connect QQ: install QQ NT and an OneBot 11 service (such as NapCat), keep QQ logged in and running, and enable a forward WebSocket server in the NapCat panel.

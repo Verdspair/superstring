@@ -290,14 +290,14 @@ function CapabilityDirectory({
                     return (
                       <li
                         key={entry.id}
-                        className="flex flex-col rounded-[10px] border border-border border-l-[4px] border-l-primary bg-card p-[20px]"
+                        className="flex flex-col rounded-[10px] border border-border bg-card p-[20px]"
                       >
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <button
                               type="button"
                               onClick={() => s.openSettingsRoute(entry.route)}
-                              className="flex w-full items-start gap-[12px] rounded-[6px] text-left transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-primary"
+                              className="flex w-full flex-wrap items-start gap-x-[12px] gap-y-[6px] rounded-[6px] text-left transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-primary"
                             >
                               <entry.icon className="size-4 shrink-0 text-muted-foreground" />
                               <span className="min-w-0 flex-1">
@@ -314,7 +314,7 @@ function CapabilityDirectory({
                                   {t(entry.descriptionKey)}
                                 </span>
                               </span>
-                              <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
+                              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-primary max-[480px]:w-full max-[480px]:justify-end">
                                 <span>{t("connections.components.primaryConfig")}</span>
                                 <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
                               </span>

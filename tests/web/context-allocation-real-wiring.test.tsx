@@ -529,7 +529,7 @@ describe("统一上下文分配真实接线", () => {
     fireEvent.click(await screen.findByRole("button", { name: "放弃修改并继续" }));
     await waitFor(() => expect(store.getState().editorAgentId).toBe(AGENT_B_ID));
     await waitFor(() => {
-      expect(screen.getByRole("heading", { level: 1, name: "模型配置" })).toBeTruthy();
+      expect(screen.getByRole("heading", { level: 1, name: "Agent 配置 · 助手乙" })).toBeTruthy();
       expect(screen.getAllByText(/助手乙/).length).toBeGreaterThan(0);
     });
   });

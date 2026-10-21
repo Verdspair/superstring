@@ -315,12 +315,17 @@ describe("knowledge editing and authorization", () => {
       await act(async () => {
         changeDraft(sheet);
       });
-      const saveButton = within(sheet).getByRole("button", { name: /保存|save/i });
+      const footer = sheet.querySelector('[data-slot="sheet-footer"]') ?? sheet;
+      const saveButton = within(footer as HTMLElement).getByRole("button", {
+        name: /^(\s*保存\s*|\s*save\s*)$/i,
+      });
       await act(async () => {
         fireEvent.click(saveButton);
       });
       assertApiCall();
-      expect(within(sheet).getByRole("alert")).not.toBeNull();
+      const alert = within(sheet).getByRole("alert");
+      expect(globalThis.document.querySelectorAll('[role="alert"]')).toHaveLength(1);
+      expect(alert.textContent).toContain("冲突");
       assertDraft(sheet);
     },
   );

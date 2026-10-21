@@ -387,3 +387,26 @@ it("only-dirty 0059 groups still trigger the navigation guard: cancel keeps the 
   expect(store.getState().settingsRoute).toBe("qq-stickers");
   expect(store.getState().qqSchemeEditor?.taskLimits.mention_task_limit).toBe(4);
 });
+
+it("incomplete binding navigation explains the actual missing prerequisite and cancel retains the target", async () => {
+  const create = vi.fn();
+  store.setState({
+    apiClient: { ...store.getState().apiClient, createQqBinding: create },
+    qqInputs: {
+      ...store.getState().qqInputs,
+      manualKind: "private",
+      manualPeer: "70007",
+      manualAgentId: "",
+      manualSchemeId: "",
+    },
+  });
+  store.getState().openSettingsRoute("scheme-library");
+  expect(store.getState().navigationConfirmOpen).toBe(true);
+  await store.getState().confirmSaveAndContinue();
+  expect(store.getState().navigationConfirmMessage).toContain("请至少选择一个 Agent");
+  expect(store.getState().navigationConfirmOpen).toBe(true);
+  expect(create).not.toHaveBeenCalled();
+  store.getState().cancelPendingNavigation();
+  expect(store.getState().qqInputs.manualPeer).toBe("70007");
+  expect(store.getState().settingsRoute).toBe("qq-scheme-config");
+});

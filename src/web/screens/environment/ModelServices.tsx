@@ -11,7 +11,6 @@ import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import { NativeSelect } from "../../components/ui/native-select";
 import {
@@ -29,25 +28,71 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
-import { openContextAllocation } from "../../features/context-allocation";
 import { LocalModelEncodings } from "../../features/models/LocalModelEncodings";
 import {
   createProviderEditor,
   type ProviderEditor,
   providerPayload,
 } from "../../features/models/provider-draft";
-import { TokenizerEncodingHelp } from "../../features/models/TokenizerEncodingHelp";
 import { translateNotice } from "../../i18n";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { useSuperstringStore } from "../../store";
-import { ModelPurposes } from "./ModelPurposes";
-import { ModelDefaults } from "./model-defaults";
+
+type ProviderHealth = {
+  ok: boolean;
+  count: number;
+  error: string | null;
+  models: string[];
+};
+
+function UsageEstimateField({
+  model,
+  saving,
+  onTokenizer,
+}: {
+  model: ProviderEditor["models"][number];
+  saving: boolean;
+  onTokenizer: (value: ModelProviderModel["tokenizer_encoding"] | undefined) => void;
+}) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(model.tokenizerEncoding !== undefined);
+  return (
+    <details
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      className="rounded-md border border-border/70 bg-muted/20"
+    >
+      <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground">
+        {t("models.usageEstimateTitle")}
+      </summary>
+      <div className="space-y-3 px-3 pb-3">
+        <p className="text-xs text-muted-foreground">{t("models.usageEstimateHint")}</p>
+        <Field label="models.tokenizerEncoding" tooltip={t("models.tokenizerEncodingHint")}>
+          <NativeSelect
+            value={model.tokenizerEncoding ?? ""}
+            disabled={saving}
+            onChange={(event) =>
+              onTokenizer(
+                event.target.value === ""
+                  ? undefined
+                  : (event.target.value as ModelProviderModel["tokenizer_encoding"]),
+              )
+            }
+          >
+            <option value="">{t("models.tokenizerUnspecified")}</option>
+            <option value="cl100k_base">cl100k_base</option>
+            <option value="o200k_base">o200k_base</option>
+          </NativeSelect>
+        </Field>
+      </div>
+    </details>
+  );
+}
 
 export function ModelServices({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const capacityTarget = useSuperstringStore((s) => s.modelCapacityTarget);
-  const { apiClient, refreshModels, modelStatus, loadedModelNames, modelProviders, settingsRoute } =
+  const { apiClient, refreshModels, modelStatus, loadedModelNames, modelProviders } =
     useSuperstringStore(
       useShallow((state) => ({
         apiClient: state.apiClient,
@@ -55,15 +100,12 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
         modelStatus: state.modelStatus,
         loadedModelNames: state.loadedModelNames,
         modelProviders: state.modelProviders,
-        settingsRoute: state.settingsRoute,
       })),
     );
   // Bootstrap already fetched the registered providers: first paint reuses that snapshot,
   // then the authoritative read below corrects it (no second cache, no sync machinery).
   const [providers, setProviders] = useState<ModelProviderResponse[]>(modelProviders);
-  const [health, setHealth] = useState<
-    Record<string, { ok: boolean; count: number; error: string | null }>
-  >({});
+  const [health, setHealth] = useState<Record<string, ProviderHealth>>({});
   const [editor, setEditor] = useState<ProviderEditor | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -71,27 +113,11 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
   const mutationPending = useRef(false);
   const recheck = useRef<ReadTask | null>(null);
   const [testing, setTesting] = useState(false);
-  const [defaultsRefreshing, setDefaultsRefreshing] = useState(false);
   const [revision, setRevision] = useState(0);
-  const [tab, setTab] = useState(settingsRoute === "external-api" ? "providers" : "defaults");
-  const [visited, setVisited] = useState([
-    settingsRoute === "external-api" ? "providers" : "defaults",
-  ]);
   const [pending, setPending] = useState<"close" | "delete" | null>(null);
-  // The route owns the visible tab: the external API entry opens providers, quick model management
-  // opens defaults. This only retargets the tab — the provider editor lives in its own Sheet outside
-  // the tab panels, so a route-driven tab change never closes it or discards an unsaved draft.
-  useEffect(() => {
-    const next = settingsRoute === "external-api" ? "providers" : "defaults";
-    setTab(next);
-    setVisited((previous) => (previous.includes(next) ? previous : [...previous, next]));
-  }, [settingsRoute]);
-  useEffect(() => {
-    setVisited((previous) => (previous.includes(tab) ? previous : [...previous, tab]));
-  }, [tab]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit refresh generation
   useEffect(() => {
-    if (!active || tab !== "providers") return;
+    if (!active) return;
     setLoading(true);
     const task = startRead((signal) => apiClient.listModelProviders(signal), {
       success: (rows) => {
@@ -106,20 +132,20 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
       settled: () => setLoading(false),
     });
     return () => task.cancel();
-  }, [active, apiClient, refreshModels, revision, tab]);
+  }, [active, apiClient, refreshModels, revision]);
   useEffect(() => {
-    if (!active || tab !== "providers" || loading || !capacityTarget) return;
+    if (!active || loading || !capacityTarget) return;
     const target =
       document.querySelector<HTMLElement>(
         `[data-capacity-model="${CSS.escape(capacityTarget)}"]`,
       ) ?? document.getElementById("local-model-capacity");
     target?.scrollIntoView({ block: "center" });
     target?.focus({ preventScroll: true });
-  }, [active, tab, loading, capacityTarget]);
+  }, [active, loading, capacityTarget]);
   // Provider editing must remain available even while a remote health check is slow.
   // Probing waits for the authoritative read: never probe the stale bootstrap snapshot twice.
   useEffect(() => {
-    if (!active || tab !== "providers" || loading) return;
+    if (!active || loading) return;
     setHealth({});
     setTesting(false);
     const tasks = providers.map((provider) =>
@@ -127,7 +153,12 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
         success: (result) =>
           setHealth((old) => ({
             ...old,
-            [provider.id]: { ok: result.ok, count: result.models.length, error: result.error },
+            [provider.id]: {
+              ok: result.ok,
+              count: result.models.length,
+              error: result.error,
+              models: result.models,
+            },
           })),
         failure: (caught) =>
           setHealth((old) => ({
@@ -136,6 +167,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
               ok: false,
               count: 0,
               error: caught instanceof Error ? caught.message : String(caught),
+              models: [],
             },
           })),
       }),
@@ -145,7 +177,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
       recheck.current?.cancel();
       recheck.current = null;
     };
-  }, [active, apiClient, providers, loading, tab]);
+  }, [active, apiClient, providers, loading]);
   const parsed = useMemo(() => (editor ? providerPayload(editor) : null), [editor]);
   const dirty = useMemo(
     () =>
@@ -194,19 +226,10 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
       setPending(null);
     }
   };
-  const handleHeaderRefresh = () => {
-    if (tab === "defaults") {
-      setDefaultsRefreshing(true);
-      const state = useSuperstringStore.getState();
-      void Promise.all([state.loadOrganization(true), state.loadKnowledgeModel(true)]).finally(
-        () => {
-          setDefaultsRefreshing(false);
-        },
-      );
-    } else {
-      setRevision((v) => v + 1);
-    }
-  };
+  const handleHeaderRefresh = () => setRevision((value) => value + 1);
+  const providerModelIds = editor?.source ? (health[editor.source.id]?.models ?? []) : [];
+  const uniqueProviderModelIds = [...new Set(providerModelIds)];
+  const modelOptionsId = editor?.source ? `provider-model-options-${editor.source.id}` : undefined;
 
   return (
     <section className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]">
@@ -222,7 +245,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
           variant="outline"
           tooltip={t("hints.system.modelsRefresh")}
           onClick={handleHeaderRefresh}
-          disabled={tab === "defaults" ? defaultsRefreshing : loading}
+          disabled={loading}
         >
           <RefreshCw />
           {t("models.refresh")}
@@ -233,150 +256,111 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
           {error}
         </p>
       )}
-      <Tabs
-        value={tab}
-        onValueChange={(next) => {
-          useSuperstringStore
-            .getState()
-            .openSettingsRoute(next === "providers" ? "external-api" : "models");
-        }}
-        className="min-h-0 flex-1 gap-0"
-      >
-        <div className="mb-[24px]">
-          <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">
-            <TabsTrigger value="providers">{t("models.resources")}</TabsTrigger>
-            <TabsTrigger value="defaults">{t("models.purposes")}</TabsTrigger>
-          </TabsList>
+      <div className="min-h-0 flex-1 overflow-y-auto pb-[28px]">
+        <div className="mb-6 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-semibold">{t("models.external")}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{t("models.externalHint")}</p>
+          </div>
+          <Button
+            tooltip={t("hints.system.addProvider")}
+            onClick={() => setEditor(createProviderEditor(null))}
+          >
+            <Plus />
+            {t("models.addProvider")}
+          </Button>
         </div>
-        {visited.includes("providers") && (
-          <TabsContent
-            value="providers"
-            forceMount
-            className="m-0 overflow-y-auto pb-[28px] data-[state=inactive]:hidden"
-          >
-            <div className="mb-6 flex items-start justify-between gap-4">
-              <div>
-                <h2 className="font-semibold">{t("models.external")}</h2>
-                <p className="mt-1 text-sm text-muted-foreground">{t("models.externalHint")}</p>
-              </div>
-              <Button
-                tooltip={t("hints.system.addProvider")}
-                onClick={() => setEditor(createProviderEditor(null))}
-              >
-                <Plus />
-                {t("models.addProvider")}
-              </Button>
-            </div>
-            <div className="rounded-lg border">
-              <Table>
-                <TableHeader className="hidden sm:table-header-group">
-                  <TableRow>
-                    {["name", "endpoint", "declared", "health", "actions"].map((key) => (
-                      <TableHead key={key}>{t(`models.columns.${key}`)}</TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody className="divide-y sm:divide-y-0">
-                  {providers.map((provider) => (
-                    <TableRow
-                      key={provider.id}
-                      tabIndex={-1}
-                      data-capacity-model={
-                        provider.models.some((model) => model.name === capacityTarget)
-                          ? capacityTarget
-                          : undefined
-                      }
-                      className="flex flex-col gap-2 p-4 sm:table-row sm:p-0"
-                    >
-                      <TableCell className="font-medium p-0 sm:p-2">{provider.name}</TableCell>
-                      <TableCell className="max-w-80 truncate font-mono text-xs text-muted-foreground sm:text-foreground p-0 sm:p-2">
-                        {provider.base_url}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground sm:text-sm sm:text-foreground p-0 sm:p-2">
-                        <span className="sm:hidden text-muted-foreground">
-                          {t("models.columns.declared")}:{" "}
-                        </span>
-                        {provider.models.length}
-                      </TableCell>
-                      <TableCell className="p-0 sm:p-2">
-                        <Badge variant={health[provider.id]?.ok ? "secondary" : "outline"}>
-                          {t(
-                            health[provider.id]?.ok
-                              ? "models.reachable"
-                              : health[provider.id]
-                                ? "models.unreachable"
-                                : "models.checking",
-                          )}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="p-0 pt-2 sm:p-2 sm:pt-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="w-full justify-center sm:w-auto"
-                          tooltip={t("hints.system.configureProvider", { "0": provider.name })}
-                          onClick={() => setEditor(createProviderEditor(provider))}
-                        >
-                          {t("models.configure")}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {!providers.length && (
-                    <TableRow className="sm:table-row">
-                      <TableCell
-                        colSpan={5}
-                        className="h-36 text-center text-muted-foreground p-4 sm:p-2"
-                      >
-                        {t(loading ? "models.loading" : "models.noProviders")}
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-            <section id="local-model-capacity" tabIndex={-1} className="mt-8 border-t pt-6">
-              <div className="flex items-center gap-2">
-                <h2 className="font-semibold">{t("models.localProvider")}</h2>
-                <Badge variant="outline">{t("models.local")}</Badge>
-              </div>
-              <p className="mt-2 text-sm text-muted-foreground">{translateNotice(modelStatus)}</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {loadedModelNames.map((name) => (
-                  <Badge key={name} variant="secondary" className="font-mono">
-                    {name}
-                  </Badge>
+        <div className="rounded-lg border">
+          <Table>
+            <TableHeader className="hidden sm:table-header-group">
+              <TableRow>
+                {["name", "endpoint", "declared", "health", "actions"].map((key) => (
+                  <TableHead key={key}>{t(`models.columns.${key}`)}</TableHead>
                 ))}
-              </div>
-              <LocalModelEncodings
-                active={active && tab === "providers"}
-                apiClient={apiClient}
-                loadedModels={loadedModelNames}
-                externalModels={providers.flatMap((provider) =>
-                  provider.models.map((model) => model.name),
-                )}
-              />
-            </section>
-          </TabsContent>
-        )}
-        {visited.includes("defaults") && (
-          <TabsContent
-            value="defaults"
-            forceMount
-            className="m-0 overflow-y-auto data-[state=inactive]:hidden"
-          >
-            <ModelPurposes
-              active={active && tab === "defaults"}
-              embedded
-              sharedDefaults={
-                <ModelDefaults
-                  active={active && tab === "defaults" && settingsRoute === "models"}
-                />
-              }
-            />
-          </TabsContent>
-        )}
-      </Tabs>
+              </TableRow>
+            </TableHeader>
+            <TableBody className="divide-y sm:divide-y-0">
+              {providers.map((provider) => (
+                <TableRow
+                  key={provider.id}
+                  tabIndex={-1}
+                  data-capacity-model={
+                    provider.models.some((model) => model.name === capacityTarget)
+                      ? capacityTarget
+                      : undefined
+                  }
+                  className="flex flex-col gap-2 p-4 sm:table-row sm:p-0"
+                >
+                  <TableCell className="font-medium p-0 sm:p-2">{provider.name}</TableCell>
+                  <TableCell className="max-w-80 truncate font-mono text-xs text-muted-foreground sm:text-foreground p-0 sm:p-2">
+                    {provider.base_url}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground sm:text-sm sm:text-foreground p-0 sm:p-2">
+                    <span className="sm:hidden text-muted-foreground">
+                      {t("models.columns.declared")}:{" "}
+                    </span>
+                    {provider.models.length}
+                  </TableCell>
+                  <TableCell className="p-0 sm:p-2">
+                    <Badge variant={health[provider.id]?.ok ? "secondary" : "outline"}>
+                      {t(
+                        health[provider.id]?.ok
+                          ? "models.reachable"
+                          : health[provider.id]
+                            ? "models.unreachable"
+                            : "models.checking",
+                      )}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="p-0 pt-2 sm:p-2 sm:pt-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="w-full justify-center sm:w-auto"
+                      tooltip={t("hints.system.configureProvider", { "0": provider.name })}
+                      onClick={() => setEditor(createProviderEditor(provider))}
+                    >
+                      {t("models.configure")}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!providers.length && (
+                <TableRow className="sm:table-row">
+                  <TableCell
+                    colSpan={5}
+                    className="h-36 text-center text-muted-foreground p-4 sm:p-2"
+                  >
+                    {t(loading ? "models.loading" : "models.noProviders")}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+        <section id="local-model-capacity" tabIndex={-1} className="mt-8 border-t pt-6">
+          <div className="flex items-center gap-2">
+            <h2 className="font-semibold">{t("models.localProvider")}</h2>
+            <Badge variant="outline">{t("models.local")}</Badge>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">{translateNotice(modelStatus)}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {loadedModelNames.map((name) => (
+              <Badge key={name} variant="secondary" className="font-mono">
+                {name}
+              </Badge>
+            ))}
+          </div>
+          <LocalModelEncodings
+            active={active}
+            apiClient={apiClient}
+            loadedModels={loadedModelNames}
+            externalModels={providers.flatMap((provider) =>
+              provider.models.map((model) => model.name),
+            )}
+          />
+        </section>
+      </div>
       <Sheet
         open={editor !== null && active}
         onOpenChange={(open) => {
@@ -398,21 +382,6 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
               <SheetTitle>
                 {t(editor?.source ? "models.editProvider" : "models.addProvider")}
               </SheetTitle>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="text-xs"
-                tooltip={t("hints.system.goToAllocation")}
-                onClick={() =>
-                  openContextAllocation({
-                    returnRoute: "external-api",
-                    returnLabel: t("workspace.external_model_api"),
-                  })
-                }
-              >
-                {t("schemes.allocation.goToCentralAllocation")}
-              </Button>
             </div>
             <SheetDescription>{t("models.secretHint")}</SheetDescription>
           </SheetHeader>
@@ -461,15 +430,22 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
               <section className="space-y-4 border-t pt-5">
                 <div>
                   <h3 className="font-medium">{t("models.registeredModels")}</h3>
-                  <p className="mt-1 text-xs text-muted-foreground">{t("models.windowHint")}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{t("models.modelsHint")}</p>
                 </div>
-                <TokenizerEncodingHelp />
+                {modelOptionsId && uniqueProviderModelIds.length > 0 && (
+                  <datalist id={modelOptionsId}>
+                    {uniqueProviderModelIds.map((id) => (
+                      <option key={id} value={id} />
+                    ))}
+                  </datalist>
+                )}
                 {editor.models.map((model) => (
-                  <div key={model.key} className="space-y-4 rounded-md border p-4">
+                  <div key={model.key} className="space-y-3 rounded-md border p-4">
                     <div className="grid grid-cols-[minmax(0,1fr)_6rem_auto] items-end gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
                       <Field label="models.modelId" tooltip={t("hints.fieldExtra.providerModel")}>
                         <Input
                           value={model.name}
+                          list={uniqueProviderModelIds.length > 0 ? modelOptionsId : undefined}
                           disabled={saving}
                           onChange={(e) =>
                             setEditor({
@@ -515,168 +491,18 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                         <Trash2 />
                       </Button>
                     </div>
-                    <Field
-                      label="models.tokenizerEncoding"
-                      info="models.tokenizerEncodingHint"
-                      tooltip={t("models.tokenizerEncodingHint")}
-                    >
-                      <NativeSelect
-                        value={model.tokenizerEncoding ?? ""}
-                        disabled={saving}
-                        onChange={(e) =>
-                          setEditor({
-                            ...editor,
-                            models: editor.models.map((item) =>
-                              item.key === model.key
-                                ? {
-                                    ...item,
-                                    tokenizerEncoding:
-                                      e.target.value === ""
-                                        ? undefined
-                                        : (e.target
-                                            .value as ModelProviderModel["tokenizer_encoding"]),
-                                  }
-                                : item,
-                            ),
-                          })
-                        }
-                      >
-                        <option value="">{t("models.tokenizerUnspecified")}</option>
-                        <option value="cl100k_base">cl100k_base</option>
-                        <option value="o200k_base">o200k_base</option>
-                      </NativeSelect>
-                    </Field>
-                    <fieldset
-                      className="min-w-0 space-y-3"
-                      aria-label={t("models.capabilitiesFor", { "0": model.name })}
-                    >
-                      <legend className="text-sm font-medium">{t("models.capabilities")}</legend>
-                      <p className="text-xs text-muted-foreground">
-                        {t("models.capabilitiesHint")}
-                      </p>
-                      <div className="grid gap-3 sm:grid-cols-3">
-                        {(
-                          [
-                            ["toolCalling", "models.toolCalling", "models.toolCallingHint"],
-                            [
-                              "parallelToolCalls",
-                              "models.parallelToolCalls",
-                              "models.parallelToolCallsHint",
-                            ],
-                            ["codeExecution", "models.codeExecution", "models.codeExecutionHint"],
-                          ] as const
-                        ).map(([key, label, hint]) => (
-                          <Field key={key} label={label} info={hint} tooltip={t(hint)}>
-                            <Checkbox
-                              checked={model.capabilities?.[key] ?? false}
-                              disabled={saving}
-                              onCheckedChange={(checked) =>
-                                setEditor({
-                                  ...editor,
-                                  models: editor.models.map((item) =>
-                                    item.key !== model.key
-                                      ? item
-                                      : {
-                                          ...item,
-                                          capabilities: {
-                                            toolCalling: false,
-                                            parallelToolCalls: false,
-                                            codeExecution: false,
-                                            ...item.capabilities,
-                                            [key]: checked === true,
-                                          },
-                                        },
-                                  ),
-                                })
-                              }
-                            />
-                          </Field>
-                        ))}
-                        <Field
-                          label="models.vision"
-                          info="models.visionHint"
-                          tooltip={t("models.visionHint")}
-                        >
-                          <NativeSelect
-                            value={
-                              model.capabilities && "vision" in model.capabilities
-                                ? model.capabilities.vision === true
-                                  ? "supported"
-                                  : "unsupported"
-                                : "unknown"
-                            }
-                            disabled={saving}
-                            onChange={(e) =>
-                              setEditor({
-                                ...editor,
-                                models: editor.models.map((item) => {
-                                  if (item.key !== model.key) return item;
-                                  const next = e.target.value;
-                                  if (next === "unknown") {
-                                    // 未声明 ≠ false：选「未声明」只删除 vision 键，
-                                    // 其余能力声明原样保留；删空后回到整体未声明。
-                                    if (!item.capabilities) return item;
-                                    const { vision: _vision, ...rest } = item.capabilities;
-                                    return {
-                                      ...item,
-                                      capabilities: Object.keys(rest).length ? rest : undefined,
-                                    };
-                                  }
-                                  return {
-                                    ...item,
-                                    capabilities: {
-                                      toolCalling: false,
-                                      parallelToolCalls: false,
-                                      codeExecution: false,
-                                      ...item.capabilities,
-                                      vision: next === "supported",
-                                    },
-                                  };
-                                }),
-                              })
-                            }
-                          >
-                            <option value="unknown">{t("models.visionUnknown")}</option>
-                            <option value="supported">{t("models.visionSupported")}</option>
-                            <option value="unsupported">{t("models.visionUnsupported")}</option>
-                          </NativeSelect>
-                        </Field>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {t(
-                          model.capabilities
-                            ? "models.capabilitiesDeclared"
-                            : "models.capabilitiesUndeclared",
-                        )}
-                      </p>
-                      {model.capabilities && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          tooltip={t("hints.system.clearCapabilities")}
-                          disabled={saving}
-                          onClick={() =>
-                            setEditor({
-                              ...editor,
-                              models: editor.models.map((item) =>
-                                item.key !== model.key
-                                  ? item
-                                  : {
-                                      key: item.key,
-                                      name: item.name,
-                                      window: item.window,
-                                      ...(item.tokenizerEncoding === undefined
-                                        ? {}
-                                        : { tokenizerEncoding: item.tokenizerEncoding }),
-                                    },
-                              ),
-                            })
-                          }
-                        >
-                          {t("models.clearCapabilities")}
-                        </Button>
-                      )}
-                    </fieldset>
+                    <UsageEstimateField
+                      model={model}
+                      saving={saving}
+                      onTokenizer={(value) =>
+                        setEditor({
+                          ...editor,
+                          models: editor.models.map((item) =>
+                            item.key === model.key ? { ...item, tokenizerEncoding: value } : item,
+                          ),
+                        })
+                      }
+                    />
                   </div>
                 ))}
                 <Button
@@ -726,6 +552,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                                 ok: result.ok,
                                 count: result.models.length,
                                 error: result.error,
+                                models: result.models,
                               },
                             })),
                           failure: (caught) =>
@@ -735,6 +562,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                                 ok: false,
                                 count: 0,
                                 error: caught instanceof Error ? caught.message : String(caught),
+                                models: [],
                               },
                             })),
                           settled: () => {

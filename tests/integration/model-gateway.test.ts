@@ -976,16 +976,12 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
     });
   }
 
-  it("声明的 toolCalling:false 是传输开关；true 与未声明（undefined）照发", async () => {
+  it("外部模型默认尝试原生 tools：没有按模型的传输开关", async () => {
     const cloud = bodyOf((_b, res) => none(res));
     const local = bodyOf((_b, res) => none(res));
     const cloudHost = await listen(cloud.handler);
     const localHost = await listen(local.handler);
-    const declarations: Record<string, boolean | undefined> = {
-      "cloud/off": false,
-      "cloud/on": true,
-      "cloud/undeclared": undefined,
-    };
+    const models = ["cloud/one", "cloud/two", "cloud/three"];
     const gateway = createLmStudioClient(
       {
         baseUrl: `http://127.0.0.1:${localHost.port}/v1`,
@@ -995,19 +991,17 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
       },
       {
         externalModel: (model) => {
-          if (!(model in declarations)) return null;
-          const toolCalling = declarations[model];
+          if (!models.includes(model)) return null;
           return {
             baseUrl: `http://127.0.0.1:${cloudHost.port}/v1`,
             apiKey: null,
             contextWindow: 8192,
-            ...(toolCalling === undefined ? {} : { toolCalling }),
           };
         },
       },
     );
     try {
-      for (const model of Object.keys(declarations)) {
+      for (const model of models) {
         await gateway.complete({
           messages: [],
           model,
@@ -1015,7 +1009,7 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
           tools: decisionTools,
         });
       }
-      expect(cloud.seen[0]?.tools).toBeUndefined();
+      expect(cloud.seen[0]?.tools).toBeDefined();
       expect(cloud.seen[1]?.tools).toBeDefined();
       expect(cloud.seen[2]?.tools).toBeDefined();
     } finally {
@@ -1075,10 +1069,10 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
   });
 });
 
-// runtime 装配级（漂移三）：toolCalling 声明经 runtime.ts 自己的 externalModel 闭包进入网关。
+// runtime 装配级：存量的 toolCalling 声明不再经 runtime.ts 的 externalModel 闭包决定 tools。
 // 闭包绑定数据库、每次调用现读，所以这里通过 runtime.gateway 真调一次，而不是在测试里复刻闭包。
-describe("runtime 把能力声明接到原生 tools 传输开关", () => {
-  it("toolCalling:false 的模型不带 tools，true 与未声明照发", async () => {
+describe("runtime 不再把 per-model toolCalling 声明当成原生 tools 闸", () => {
+  it("存量 false/true/未声明三种模型都发送 tools", async () => {
     const seen: Array<Record<string, unknown>> = [];
     const stub = http.createServer((req, res) => {
       if (req.url?.endsWith("/chat/completions")) {
@@ -1149,7 +1143,8 @@ describe("runtime 把能力声明接到原生 tools 传输开关", () => {
           }),
         ).toBe('{"kind":"none"}');
       }
-      expect(seen[0]?.tools).toBeUndefined();
+      expect(seen).toHaveLength(3);
+      expect(seen[0]?.tools).toBeDefined();
       expect(seen[1]?.tools).toBeDefined();
       expect(seen[2]?.tools).toBeDefined();
     } finally {

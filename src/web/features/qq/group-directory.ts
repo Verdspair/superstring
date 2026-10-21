@@ -22,13 +22,15 @@ export function projectQqGroupRows({
   qqSchemes,
   agents,
   summaryById,
+  kind = "group",
 }: {
   qqBindings: readonly QqBindingResponse[];
   qqSchemes: readonly QqSchemeResponse[];
   agents: readonly { id: string; name: string }[];
   summaryById: Readonly<Record<string, ConversationSummary>>;
+  kind?: "group" | "private" | "all";
 }): QqGroupRow[] {
-  const groupBindings = qqBindings.filter((binding) => binding.kind === "group");
+  const groupBindings = qqBindings.filter((binding) => kind === "all" || binding.kind === kind);
   const summaries = Object.values(summaryById);
 
   return groupBindings.map((binding) => {

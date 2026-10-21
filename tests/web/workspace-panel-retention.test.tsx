@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
@@ -128,26 +128,6 @@ vi.mock("../../src/web/screens/connections/tool-directory-panel", async () => {
     },
   };
 });
-vi.mock("../../src/web/screens/environment/model-defaults", async () => {
-  const React = await import("react");
-  return {
-    ModelDefaults: ({ active = true }: { active?: boolean }) => {
-      const [draft, setDraft] = React.useState("");
-      return (
-        <section data-testid="defaults-panel" data-active={active}>
-          <input
-            aria-label="defaults draft"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          <div data-testid="defaults-scroll" style={{ height: 40, overflow: "auto" }}>
-            <div style={{ height: 200 }}>defaults content</div>
-          </div>
-        </section>
-      );
-    },
-  };
-});
 
 beforeEach(() => {
   selectLocale("zh-CN");
@@ -262,22 +242,32 @@ describe("workspace panel retention", () => {
     expectPanel("grants", "grants draft");
   });
 
-  it("retains the model defaults panel while the providers tab is visited", async () => {
+  it("retains the provider editor draft and scroll across model resource aliases", async () => {
+    const create = vi.fn();
     store.setState({
       settingsRoute: "models",
       refreshModels: vi.fn().mockResolvedValue(undefined),
+      apiClient: { ...store.getState().apiClient, createModelProvider: create },
     });
     render(<ModelServices />);
-    const defaultsPanel = screen.getByTestId("defaults-panel");
-    fireEvent.change(screen.getByRole("textbox", { name: "defaults draft" }), {
-      target: { value: "defaults draft" },
-    });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "添加服务" }));
+    const name = screen.getByRole("textbox", { name: "名称" });
+    fireEvent.change(name, { target: { value: "Provider draft" } });
+    const sheet = screen.getByRole("dialog");
+    sheet.scrollTop = 37;
+    fireEvent.scroll(sheet);
 
     visit("external-api");
-    await waitFor(() => expect(defaultsPanel.getAttribute("data-active")).toBe("false"));
+    expect(screen.getByRole("dialog")).toBe(sheet);
+    expect((screen.getByRole("textbox", { name: "名称" }) as HTMLInputElement).value).toBe(
+      "Provider draft",
+    );
+    expect(sheet.scrollTop).toBe(37);
     visit("models");
-    await waitFor(() => expect(defaultsPanel.getAttribute("data-active")).toBe("true"));
-    expect(screen.getByTestId("defaults-panel")).toBe(defaultsPanel);
-    expectPanel("defaults", "defaults draft");
+    expect(screen.getByRole("dialog")).toBe(sheet);
+    expect((name as HTMLInputElement).value).toBe("Provider draft");
+    expect(sheet.scrollTop).toBe(37);
+    expect(create).not.toHaveBeenCalled();
   });
 });

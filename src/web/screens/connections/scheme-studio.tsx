@@ -915,6 +915,11 @@ export function SchemeStudio({
                       title={t("connections.speechTriggers")}
                       description="schemes.studio.triggersHint"
                     >
+                      {!Object.values(editor.triggers).some(Boolean) && (
+                        <p className="mb-3 text-sm text-muted-foreground">
+                          {t("qq.entry.schemeInactive")}
+                        </p>
+                      )}
                       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(230px,100%),1fr))] gap-[12px]">
                         {Object.entries(TRIGGER_LABELS).map(([key, label]) => (
                           <Label

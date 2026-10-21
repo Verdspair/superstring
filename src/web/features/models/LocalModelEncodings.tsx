@@ -29,6 +29,8 @@ export function LocalModelEncodings({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [loadError, setLoadError] = useState(false);
+  const [expanded, setExpanded] = useState<boolean | null>(null);
   const lifecycle = useRef(0);
   const alive = useRef(false);
   useEffect(() => {
@@ -74,9 +76,13 @@ export function LocalModelEncodings({
         setSnapshot(next);
         setDraft([...merged].map(([name, tokenizer_encoding]) => ({ name, tokenizer_encoding })));
         setNotice("");
+        setLoadError(false);
       },
-      failure: (error) =>
-        setNotice(error instanceof Error ? error.message : t("models.localEncodingLoadError")),
+      failure: (error) => {
+        setNotice(error instanceof Error ? error.message : t("models.localEncodingLoadError"));
+        setLoadError(true);
+        setExpanded(true);
+      },
       settled: () => setLoading(false),
     });
     return () => {
@@ -124,70 +130,95 @@ export function LocalModelEncodings({
       if (alive.current) setSaving(false);
     }
   }
+  function reload() {
+    setLoadError(false);
+    setRefresh((value) => value + 1);
+  }
+
+  const hasModels = models.length > 0;
+  if (!hasModels && !loadError) return null;
+  const hasStoredOverride = (snapshot?.models.length ?? 0) > 0 || draft.length > 0;
+  const open = expanded ?? (hasStoredOverride || loadError);
+
   return (
-    <section className="mt-6 space-y-4 rounded-lg border bg-card p-5 text-card-foreground">
-      <div className="space-y-1">
-        <h3 className="text-base font-semibold">{t("models.localEncodingTitle")}</h3>
+    <details
+      open={open}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      className="mt-4 rounded-lg border bg-card text-card-foreground"
+    >
+      <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold">
+        {t("models.localEncodingTitle")}
+      </summary>
+      <div className="space-y-3 px-4 pb-4">
         <p className="text-xs text-muted-foreground">{t("models.localEncodingHint")}</p>
-      </div>
-
-      <TokenizerEncodingHelp />
-
-      <div className="space-y-3 pt-1">
-        {models.map((name) => (
-          <label
-            key={name}
-            htmlFor={`local-model-encoding-${encodeURIComponent(name)}`}
-            className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 sm:items-center"
-          >
-            <span className="break-all font-mono text-foreground/90">{name}</span>
-            <NativeSelect
-              id={`local-model-encoding-${encodeURIComponent(name)}`}
-              aria-label={`${t("models.tokenizerEncoding")} · ${name}`}
-              disabled={loading || saving || !snapshot}
-              value={draft.find((model) => model.name === name)?.tokenizer_encoding ?? ""}
-              onChange={(event) => {
-                const value = event.target.value as Encoding | "";
-                setDraft((old) => [
-                  ...old.filter((model) => model.name !== name),
-                  ...(value ? [{ name, tokenizer_encoding: value }] : []),
-                ]);
-              }}
-            >
-              <option value="">{t("models.tokenizerUnspecified")}</option>
-              <option value="cl100k_base" disabled={externalModels.includes(name)}>
-                cl100k_base
-              </option>
-              <option value="o200k_base" disabled={externalModels.includes(name)}>
-                o200k_base
-              </option>
-            </NativeSelect>
-          </label>
-        ))}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-3 border-t pt-4">
-        <Button
-          tooltip={<Trans i18nKey="hints.complete.encodingSave" />}
-          disabled={loading || saving || !dirty}
-          onClick={() => void save()}
-        >
-          {t("models.localEncodingSave")}
-        </Button>
-        <Button
-          tooltip={<Trans i18nKey="hints.complete.encodingRefresh" />}
-          variant="outline"
-          disabled={loading || saving}
-          onClick={() => setRefresh((value) => value + 1)}
-        >
-          {t("models.localEncodingRefresh")}
-        </Button>
-        {notice && (
-          <p role="status" className="text-xs text-muted-foreground">
-            {notice}
-          </p>
+        {loadError && (
+          <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-destructive">
+            <span>{notice || t("models.localEncodingLoadError")}</span>
+            <Button size="sm" variant="outline" onClick={reload}>
+              {t("capabilities.retry")}
+            </Button>
+          </div>
+        )}
+        {hasModels && (
+          <>
+            <div className="space-y-3 pt-1">
+              {models.map((name) => (
+                <label
+                  key={name}
+                  htmlFor={`local-model-encoding-${encodeURIComponent(name)}`}
+                  className="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 sm:items-center"
+                >
+                  <span className="break-all font-mono text-foreground/90">{name}</span>
+                  <NativeSelect
+                    id={`local-model-encoding-${encodeURIComponent(name)}`}
+                    aria-label={`${t("models.tokenizerEncoding")} · ${name}`}
+                    disabled={loading || saving || !snapshot}
+                    value={draft.find((model) => model.name === name)?.tokenizer_encoding ?? ""}
+                    onChange={(event) => {
+                      const value = event.target.value as Encoding | "";
+                      setDraft((old) => [
+                        ...old.filter((model) => model.name !== name),
+                        ...(value ? [{ name, tokenizer_encoding: value }] : []),
+                      ]);
+                    }}
+                  >
+                    <option value="">{t("models.tokenizerUnspecified")}</option>
+                    <option value="cl100k_base" disabled={externalModels.includes(name)}>
+                      cl100k_base
+                    </option>
+                    <option value="o200k_base" disabled={externalModels.includes(name)}>
+                      o200k_base
+                    </option>
+                  </NativeSelect>
+                </label>
+              ))}
+            </div>
+            <TokenizerEncodingHelp />
+            <div className="flex flex-wrap items-center gap-3 border-t pt-4">
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.encodingSave" />}
+                disabled={loading || saving || !dirty}
+                onClick={() => void save()}
+              >
+                {t("models.localEncodingSave")}
+              </Button>
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.encodingRefresh" />}
+                variant="outline"
+                disabled={loading || saving}
+                onClick={reload}
+              >
+                {t("models.localEncodingRefresh")}
+              </Button>
+              {notice && !loadError && (
+                <p role="status" className="text-xs text-muted-foreground">
+                  {notice}
+                </p>
+              )}
+            </div>
+          </>
         )}
       </div>
-    </section>
+    </details>
   );
 }

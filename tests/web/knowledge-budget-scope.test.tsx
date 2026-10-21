@@ -75,6 +75,145 @@ afterEach(() => {
   resetContextAllocationTarget();
 });
 
+describe("知识设置关闭守卫", () => {
+  async function openSettings(overrides: Partial<typeof api> = {}) {
+    const client = setupLibrary(settingsMocks(overrides));
+    await store.getState().openKnowledgeEditor({ kind: "settings" });
+    await store.getState().loadKnowledgeModel();
+    await store.getState().loadOrganization();
+    return client;
+  }
+
+  it("取消保留子草稿；放弃只清知识设置，不清其他模型与QQ无效稿", async () => {
+    const client = await openSettings();
+    store.getState().patchKnowledgeModel("draft-model");
+    store.getState().patchKnowledgeGlobal({ contextBudget: 4096 });
+    store.getState().patchOrganization("unrelated-default");
+    store.setState({
+      allocationInvalidInputs: {
+        "global:knowledge": "bad",
+        "global:aux:qq_media_describe_input_limit": "qq-bad",
+      },
+    });
+    store.getState().requestKnowledgeEditor({ kind: "none" });
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    store.getState().cancelPendingNavigation();
+    expect(store.getState().knowledgeModelEditor?.modelName).toBe("draft-model");
+    expect(store.getState().allocationInvalidInputs["global:knowledge"]).toBe("bad");
+    store.getState().requestKnowledgeEditor({ kind: "none" });
+    await store.getState().confirmDiscardAndContinue();
+    expect(store.getState().knowledgeEditor).toBeNull();
+    expect(store.getState().knowledgeModelEditor?.modelName).toBeNull();
+    expect(store.getState().knowledgeModelEditor?.contextBudget).toBe(2048);
+    expect(store.getState().organizationEditor?.modelName).toBe("unrelated-default");
+    expect(store.getState().allocationInvalidInputs).toEqual({
+      "global:aux:qq_media_describe_input_limit": "qq-bad",
+    });
+    expect(client.saveKnowledgeSettings).not.toHaveBeenCalled();
+  });
+
+  it("关闭前保存按知识作用域推进CAS，不写无关模型或QQ草稿", async () => {
+    const saveOrg = vi.fn(async (body) => ({
+      revision: body.expected_revision + 1,
+      model_name: "default-model",
+      vision_model_name: null,
+      transcription_model_name: null,
+      auxiliary_allocation: body.auxiliary_allocation,
+    }));
+    const client = await openSettings({ saveOrganizationSettings: saveOrg });
+    store.getState().patchKnowledgeModel("draft-model");
+    store.getState().patchKnowledgeGlobal({ contextBudget: 4096 });
+    store.getState().patchOrganization("unrelated-default");
+    store.getState().patchOrganizationAllocation({
+      knowledge_organize: { mode: "auto", input_limit: 8000, output_reserved: 2048 },
+    });
+    store.setState({
+      allocationInvalidInputs: { "global:aux:qq_media_describe_input_limit": "qq-bad" },
+    });
+    store.getState().requestKnowledgeEditor({ kind: "none" });
+    await store.getState().confirmSaveAndContinue();
+    expect(client.saveKnowledgeSettings).toHaveBeenNthCalledWith(1, {
+      expected_revision: 1,
+      auto_enabled: true,
+      model_name: "draft-model",
+      context_budget: 2048,
+    });
+    expect(client.saveKnowledgeSettings).toHaveBeenNthCalledWith(2, {
+      expected_revision: 2,
+      auto_enabled: true,
+      model_name: "draft-model",
+      context_budget: 4096,
+    });
+    expect(saveOrg).toHaveBeenCalledExactlyOnceWith({
+      expected_revision: 1,
+      auxiliary_allocation: {
+        knowledge_organize: { mode: "auto", input_limit: 8000, output_reserved: 2048 },
+      },
+    });
+    expect(store.getState().organizationEditor?.modelName).toBe("unrelated-default");
+    expect(
+      store.getState().allocationInvalidInputs["global:aux:qq_media_describe_input_limit"],
+    ).toBe("qq-bad");
+    expect(store.getState().knowledgeEditor).toBeNull();
+    expect(store.getState().navigationConfirmOpen).toBe(false);
+  });
+
+  it("部分保存失败保留未成功预算、弹窗和已成功模型基线", async () => {
+    const save = vi
+      .fn()
+      .mockResolvedValueOnce({
+        revision: 2,
+        auto_enabled: true,
+        model_name: "draft-model",
+        context_budget: 2048,
+      })
+      .mockRejectedValueOnce(new ApiError(409, "KNOWLEDGE_SETTINGS_CONFLICT", "conflict"));
+    await openSettings({ saveKnowledgeSettings: save });
+    store.getState().patchKnowledgeModel("draft-model");
+    store.getState().patchKnowledgeGlobal({ contextBudget: 4096 });
+    store.getState().requestKnowledgeEditor({ kind: "none" });
+    await store.getState().confirmSaveAndContinue();
+    expect(store.getState().knowledgeEditor?.kind).toBe("settings");
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    expect(store.getState().knowledgeModelEditor?.source.revision).toBe(2);
+    expect(knowledgeModelDirty(store.getState().knowledgeModelEditor, "model")).toBe(false);
+    expect(knowledgeModelDirty(store.getState().knowledgeModelEditor, "budget")).toBe(true);
+    expect(store.getState().knowledgeModelEditor?.contextBudget).toBe(4096);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it("自动整理单独保存后，仍有子预算草稿则保持面板打开", async () => {
+    const client = await openSettings();
+    store.getState().patchKnowledgeGlobal({ contextBudget: 4096 });
+    const editor = store.getState().knowledgeEditor;
+    if (editor?.kind !== "settings") throw new Error("Missing settings editor");
+    store.getState().updateKnowledgeEditor({ ...editor, auto_enabled: false });
+    expect(await store.getState().saveKnowledgeEditor()).toBe(true);
+    expect(client.saveKnowledgeSettings).toHaveBeenCalledExactlyOnceWith({
+      expected_revision: 1,
+      auto_enabled: false,
+      model_name: null,
+      context_budget: 2048,
+    });
+    expect(store.getState().knowledgeEditor?.kind).toBe("settings");
+    expect(store.getState().knowledgeDirty).toBe(false);
+    expect(store.getState().knowledgeModelEditor?.contextBudget).toBe(4096);
+    store.getState().requestKnowledgeEditor({ kind: "none" });
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+  });
+
+  it("无效知识预算阻止保存和关闭且保留原始文本", async () => {
+    const client = await openSettings();
+    store.setState({ allocationInvalidInputs: { "global:knowledge": "bad" } });
+    store.getState().requestKnowledgeEditor({ kind: "none" });
+    await store.getState().confirmSaveAndContinue();
+    expect(store.getState().knowledgeEditor?.kind).toBe("settings");
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    expect(store.getState().allocationInvalidInputs["global:knowledge"]).toBe("bad");
+    expect(client.saveKnowledgeSettings).not.toHaveBeenCalled();
+  });
+});
+
 describe("知识查询页的全局默认预算", () => {
   it("预算保存只提交预算字段：模型/自动整理草稿与读取、维护保存都不受牵动", async () => {
     const client = setupLibrary(settingsMocks());
@@ -314,31 +453,33 @@ describe("预算分组的独立丢弃与资料面板只读入口", () => {
     expect(client.saveKnowledgeSettings).not.toHaveBeenCalled();
   });
 
-  it("资料设置面板里预算只读显示已存上限，直达知识查询页不改草稿", async () => {
-    const client = setupLibrary({ saveKnowledgeSettings: vi.fn() });
+  it("知识设置内联编辑全局预算，不隐式保存其他分组", async () => {
+    const client = setupLibrary(settingsMocks());
     await act(async () => render(<KnowledgeLibrary />));
     await act(async () =>
       fireEvent.click(
         screen.getByRole("button", { name: label("library.organization.workspace.budget") }),
       ),
     );
-    const sheet = document.querySelector('[data-slot="sheet-content"]');
-    if (!(sheet instanceof HTMLElement)) throw new Error("Missing settings sheet");
-    // 预算不再由资料设置持有编辑：只读显示已存上限。
-    const budget = within(sheet).getByLabelText(
-      label("library.workspace.knowledge.budget.tokens"),
+    const sheet = screen.getByRole("dialog");
+    const budget = within(sheet).getByTestId(
+      "reading-knowledge-global-budget-input",
     ) as HTMLInputElement;
-    expect(budget.disabled).toBe(true);
+    expect(budget.disabled).toBe(false);
     expect(budget.value).toBe("2048");
-    // 直达知识查询页：不隐式保存，草稿安全。
-    fireEvent.click(
-      within(sheet).getByRole("button", {
-        name: label("capabilities.resources.openKnowledgeTools"),
-      }),
-    );
-    expect(store.getState().settingsRoute).toBe("knowledge-tools");
-    expect(store.getState().knowledgeEditor?.kind).toBe("settings");
+    fireEvent.change(budget, { target: { value: "4096" } });
+    expect(within(sheet).getByText(label("library.unsaved.changes"))).toBeTruthy();
     expect(client.saveKnowledgeSettings).not.toHaveBeenCalled();
+    await act(async () =>
+      fireEvent.click(within(sheet).getByTestId("reading-save-knowledge-global-btn")),
+    );
+    expect(client.saveKnowledgeSettings).toHaveBeenCalledExactlyOnceWith({
+      expected_revision: 1,
+      auto_enabled: true,
+      model_name: null,
+      context_budget: 4096,
+    });
+    expect(store.getState().knowledgeEditor?.kind).toBe("settings");
   });
 
   it("知识查询页预算卡只读摘要：不再提供保存/放弃，直达资料读取不隐式保存", async () => {

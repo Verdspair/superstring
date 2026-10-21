@@ -126,7 +126,17 @@ const permissions: PermissionsResponse = {
 };
 
 async function renderWith(fake: Partial<typeof api>, node: React.ReactNode) {
-  store.getState().resetForTests({ ...api, ...fake } as unknown as typeof api);
+  store.getState().resetForTests({
+    ...api,
+    getOrganizationSettings: vi.fn().mockResolvedValue({
+      model_name: null,
+      vision_model_name: null,
+      transcription_model_name: null,
+      auxiliary_allocation: {},
+      revision: 1,
+    }),
+    ...fake,
+  } as unknown as typeof api);
   render(<>{node}</>);
   await act(async () => {});
 }

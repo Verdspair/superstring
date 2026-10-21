@@ -10,6 +10,7 @@ import { StickerLibrary } from "./StickerLibrary";
 export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
   const route = useSuperstringStore((s) => s.settingsRoute),
     navigate = useSuperstringStore((s) => s.openSettingsRoute),
+    requestKnowledgeEditor = useSuperstringStore((s) => s.requestKnowledgeEditor),
     t = useTranslation().t;
   const tab =
     route === "qq-stickers"
@@ -18,6 +19,15 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
         ? "memory"
         : "knowledge";
   const [visited, setVisited] = useState([tab]);
+  useEffect(() => {
+    if (
+      active &&
+      route === "context-allocation" &&
+      useSuperstringStore.getState().knowledgeEditor?.kind !== "settings"
+    ) {
+      requestKnowledgeEditor({ kind: "settings" });
+    }
+  }, [active, route, requestKnowledgeEditor]);
   const workspaceScroll = useRef<HTMLDivElement>(null);
   const scrollPositions = useRef(new Map<string, number>());
   const previousTab = useRef(tab);

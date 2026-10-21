@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProviderResponse } from "../../src/shared/contracts/models";
-import type { SuperstringApi } from "../../src/web/api";
+import { ApiError, type SuperstringApi } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -22,8 +22,8 @@ const syntheticProvider: ModelProviderResponse = {
       tokenizer_encoding: "cl100k_base",
       capabilities: {
         toolCalling: true,
-        parallelToolCalls: false,
-        codeExecution: false,
+        parallelToolCalls: true,
+        codeExecution: true,
         vision: false,
       },
     },
@@ -73,13 +73,13 @@ function client(overrides: Partial<SuperstringApi> = {}) {
   } as unknown as SuperstringApi;
 }
 
-function renderModelServices(fake: SuperstringApi) {
+function renderModelServices(fake: SuperstringApi, provider = syntheticProvider) {
   store.getState().resetForTests(fake);
   store.setState({
     page: "settings",
     settingsView: "workspace",
     settingsRoute: "external-api",
-    modelProviders: [syntheticProvider],
+    modelProviders: [provider],
     loadedModelNames: [],
     modelStatus: "",
   });
@@ -108,6 +108,7 @@ describe("ModelServices tokenizer UI component lifecycle", () => {
 
     const encodingSelect = screen.getByLabelText("文本 token 编码") as HTMLSelectElement;
     expect(encodingSelect.value).toBe("cl100k_base");
+    expect((encodingSelect.closest("details") as HTMLDetailsElement | null)?.open).toBe(true);
 
     await act(async () => {
       fireEvent.change(encodingSelect, { target: { value: "o200k_base" } });
@@ -133,8 +134,8 @@ describe("ModelServices tokenizer UI component lifecycle", () => {
           tokenizer_encoding: "o200k_base",
           capabilities: {
             toolCalling: true,
-            parallelToolCalls: false,
-            codeExecution: false,
+            parallelToolCalls: true,
+            codeExecution: true,
             vision: false,
           },
         },
@@ -145,7 +146,7 @@ describe("ModelServices tokenizer UI component lifecycle", () => {
     expect(sentPayload).not.toHaveProperty("api_key");
   });
 
-  it("clears capabilities while preserving tokenizer encoding on truthful existing list", async () => {
+  it("does not expose per-model ability controls", async () => {
     const fake = client();
     renderModelServices(fake);
     await act(async () => {});
@@ -154,36 +155,15 @@ describe("ModelServices tokenizer UI component lifecycle", () => {
       fireEvent.click(screen.getByRole("button", { name: "配置" }));
     });
 
-    const clearCapsBtn = screen.getByRole("button", { name: "清除能力声明" });
-    await act(async () => {
-      fireEvent.click(clearCapsBtn);
-    });
-
+    expect(screen.queryByLabelText("图片理解")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "原生工具调用" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "并行工具调用" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "允许使用本机代码沙箱" })).toBeNull();
     expect(screen.queryByRole("button", { name: "清除能力声明" })).toBeNull();
-
-    const saveBtn = screen.getByRole("button", { name: "保存服务" });
-    await act(async () => {
-      fireEvent.click(saveBtn);
-    });
-
-    expect(fake.updateModelProvider).toHaveBeenCalledTimes(1);
-    expect(fake.updateModelProvider).toHaveBeenCalledWith(syntheticProvider.id, {
-      name: "Synthetic Provider",
-      base_url: "https://api.synthetic.example/v1",
-      expected_revision: 3,
-      models: [
-        {
-          name: "synthetic-model",
-          context_window: 8192,
-          tokenizer_encoding: "cl100k_base",
-        },
-      ],
-    });
-
-    const sentModel = (fake.updateModelProvider as any).mock.calls[0][1].models[0];
-    expect(sentModel).not.toHaveProperty("capabilities");
-    expect(sentModel.tokenizer_encoding).toBe("cl100k_base");
-    expect(sentModel.context_window).toBe(8192);
+    expect(screen.queryByRole("button", { name: "执行设置" })).toBeNull();
+    // The only optional per-model declaration left is the tokenizer usage estimate.
+    expect(screen.getByLabelText("文本 token 编码")).toBeTruthy();
+    expect(fake.updateModelProvider).not.toHaveBeenCalled();
   });
 
   it("does not dispatch save or add request on select Enter key down, dispatches only on explicit save", async () => {
@@ -226,5 +206,132 @@ describe("ModelServices tokenizer UI component lifecycle", () => {
         ],
       }),
     );
+  });
+
+  it("keeps legacy capability declarations unchanged on an ordinary save", async () => {
+    const legacyProvider: ModelProviderResponse = {
+      ...syntheticProvider,
+      id: "00000000-0000-4000-8000-000000000004",
+      name: "Legacy Provider",
+      revision: 7,
+      models: [
+        {
+          name: "legacy-model",
+          context_window: 2048,
+          capabilities: {
+            toolCalling: false,
+            parallelToolCalls: false,
+            codeExecution: false,
+            vision: false,
+          },
+        },
+      ],
+    };
+    const update = vi.fn(async (_id: string, body: object) => ({
+      ...legacyProvider,
+      ...body,
+      revision: 8,
+    }));
+    const fake = client({
+      listModelProviders: vi.fn(async () => [legacyProvider]),
+      testModelProvider: vi.fn(async () => ({
+        ok: true,
+        models: ["legacy-model"],
+        error: null,
+      })),
+      updateModelProvider: update,
+    });
+    renderModelServices(fake, legacyProvider);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    });
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Renamed" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "保存服务" }));
+    });
+    expect(update).toHaveBeenCalledWith(legacyProvider.id, {
+      name: "Renamed",
+      base_url: "https://api.synthetic.example/v1",
+      expected_revision: 7,
+      models: [
+        {
+          name: "legacy-model",
+          context_window: 2048,
+          capabilities: {
+            toolCalling: false,
+            parallelToolCalls: false,
+            codeExecution: false,
+            vision: false,
+          },
+        },
+      ],
+    });
+  });
+
+  it("keeps an unset encoding draft on a CAS conflict", async () => {
+    const update = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiError(409, "CONFIG_VERSION_CONFLICT", "provider 已变化，请重新加载后保存"),
+      );
+    const fake = client({ updateModelProvider: update });
+    renderModelServices(fake);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    });
+    const encodingSelect = screen.getByLabelText("文本 token 编码") as HTMLSelectElement;
+    await act(async () => {
+      fireEvent.change(encodingSelect, { target: { value: "" } });
+    });
+    expect(encodingSelect.value).toBe("");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "保存服务" }));
+    });
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect((screen.getByLabelText("文本 token 编码") as HTMLSelectElement).value).toBe("");
+    expect(
+      screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("provider 已变化")),
+    ).toBe(true);
+    expect((screen.getByRole("button", { name: "保存服务" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(screen.getByText("配置模型服务")).toBeTruthy();
+  });
+
+  it("provider 409 keeps the edited draft and does not retry automatically", async () => {
+    const update = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiError(409, "CONFIG_VERSION_CONFLICT", "provider 已变化，请重新加载后保存"),
+      );
+    const fake = client({ updateModelProvider: update });
+    renderModelServices(fake);
+    await act(async () => {});
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "配置" }));
+    });
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Renamed" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "保存服务" }));
+    });
+
+    expect(
+      screen
+        .getAllByRole("alert")
+        .some((alert) => alert.textContent?.includes("provider 已变化，请重新加载后保存")),
+    ).toBe(true);
+    expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe("Renamed");
+    expect(update).toHaveBeenCalledTimes(1);
+    expect((screen.getByRole("button", { name: "保存服务" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(screen.getByText("配置模型服务")).toBeTruthy();
   });
 });

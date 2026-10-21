@@ -166,6 +166,23 @@ export function organizationDirty(
   return models || allocation;
 }
 
+export function knowledgeSettingsDirty(state: {
+  knowledgeDirty: boolean;
+  knowledgeModelEditor: KnowledgeModelEditor | null;
+  organizationEditor: OrganizationEditor | null;
+  allocationInvalidInputs: Record<string, string>;
+}): boolean {
+  return (
+    state.knowledgeDirty ||
+    knowledgeModelDirty(state.knowledgeModelEditor, "model") ||
+    knowledgeModelDirty(state.knowledgeModelEditor, "budget") ||
+    organizationDirty(state.organizationEditor, "allocation", ["knowledge_organize"]) ||
+    Object.keys(state.allocationInvalidInputs).some(
+      (key) => key === "global:knowledge" || key.startsWith("global:aux:knowledge_organize_"),
+    )
+  );
+}
+
 export interface KnowledgeReadEditor {
   token: object;
   agentId: string;

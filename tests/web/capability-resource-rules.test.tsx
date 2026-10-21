@@ -338,9 +338,9 @@ describe("记忆与知识读取规则的渲染、加载、错误与内容直达"
     // 精准入口只保留在全局知识预算卡；跳转保留草稿、不隐式保存。
     const budgetCard = screen.getByText("全局知识读取预算").closest('[data-slot="card"]');
     if (!(budgetCard instanceof HTMLElement)) throw new Error("Missing global budget card");
-    expect(within(budgetCard).getAllByRole("button", { name: "前往上下文分配" })).toHaveLength(1);
+    expect(within(budgetCard).getAllByRole("button", { name: "前往知识设置" })).toHaveLength(1);
     await act(async () =>
-      fireEvent.click(within(budgetCard).getByRole("button", { name: "前往上下文分配" })),
+      fireEvent.click(within(budgetCard).getByRole("button", { name: "前往知识设置" })),
     );
     expect(store.getState().settingsRoute).toBe("context-allocation");
     expect(store.getState().contextAllocationTarget).toMatchObject({

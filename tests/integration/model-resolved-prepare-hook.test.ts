@@ -189,14 +189,17 @@ describe("model resolved prepare hook（T10 基础）", () => {
     });
   });
 
-  it("vision:false 声明 + 钩子仍回图：发送前 MODEL_IMAGE_UNSUPPORTED，零 HTTP", async () => {
+  it("服务已明确拒绝图片 + 钩子仍回图：发送前拦截，不再请求", async () => {
     let chatCalls = 0;
     const handler: http.RequestListener = (req, res) => {
       if ((req.url ?? "").endsWith("/chat/completions")) {
         chatCalls += 1;
+        req.on("data", () => {});
         req.on("end", () => {
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(OK("x"));
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({ error: { message: "this model does not support image input" } }),
+          );
         });
         return;
       }
@@ -214,12 +217,39 @@ describe("model resolved prepare hook（T10 基础）", () => {
                   baseUrl: `http://127.0.0.1:${port}/v1`,
                   apiKey: null,
                   contextWindow: 8192,
-                  vision: false,
                 }
               : null,
         },
       );
       const hooked = createModelPort({ gateway });
+      await expect(
+        hooked.complete({
+          messages: [{ role: "user", content: [{ kind: "text", text: "image" }] }],
+          model: "novision/model",
+          runId: "prepared-image-run",
+          owner: OWNER,
+          prepareWithResolved: async () => ({
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    kind: "image",
+                    sourceId: "known-image",
+                    revision: "1",
+                    mimeType: "image/png",
+                    sha256: "0".repeat(64),
+                  },
+                ],
+              },
+            ],
+            imageResolver: {
+              resolve: async () => ({ mimeType: "image/png", bytes: new Uint8Array([1, 2, 3]) }),
+            },
+          }),
+        }),
+      ).rejects.toMatchObject({ code: "MODEL_IMAGE_UNSUPPORTED" });
+      expect(chatCalls).toBe(1);
       await expect(
         hooked.complete({
           messages: TEXT,
@@ -230,7 +260,7 @@ describe("model resolved prepare hook（T10 基础）", () => {
           },
         }),
       ).rejects.toMatchObject({ code: "MODEL_IMAGE_UNSUPPORTED" });
-      expect(chatCalls).toBe(0);
+      expect(chatCalls).toBe(1);
     } finally {
       await close(server);
     }

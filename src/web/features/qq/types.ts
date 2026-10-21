@@ -422,7 +422,7 @@ export interface QqSchemeState {
   loadQqSchemes: (options?: boolean | QqSchemesReadOptions) => Promise<boolean>;
   /** 显式刷新保存基线：重读目录并按字段合并草稿（含非法原值），推进未改字段与 revision，不自动重试保存。 */
   refreshQqScheme: () => Promise<boolean>;
-  createQqScheme: (name: string) => Promise<boolean>;
+  createQqScheme: (name: string, options?: { forBinding?: boolean }) => Promise<boolean>;
   selectQqScheme: (id: string) => void;
   patchQqScheme: (patch: Partial<Omit<QqSchemeEditor, "source">>) => void;
   patchQqSchemeGroup: (group: QqSchemeGroupKey, patch: QqSchemeGroupPatch) => void;
@@ -635,6 +635,7 @@ export interface QqAccessState {
     agentId: string;
     schemeId: string;
   }) => Promise<boolean>;
+  removeQqConversation: (bindingId: string, expectedRevision: number) => Promise<boolean>;
   updateQqBindingRow: (
     binding: QqBindingResponse,
     patch: {

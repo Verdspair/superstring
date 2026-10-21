@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { UuidSchema } from "../../shared/contracts/common";
 import {
+  isQqPrivateSelfTarget,
   QQ_ATTENTION_MEMBER_LIMIT,
   QqBindingInputAntiSpamSchema,
   QqBindingTaskLimitsSchema,
@@ -364,6 +365,10 @@ export function createQqBinding(
   const value = parse(CreateSchema, input);
   if (value.triggers !== undefined && isBothTrueInteractionPair(value.triggers)) {
     throw new TypeError("连续交谈与自主接话互斥，开启一项时另一项必须关闭");
+  }
+  // Same guard as the HTTP contract; create only — stored rows never pass through here.
+  if (value.kind === "private" && isQqPrivateSelfTarget(value.accountId, value.peerId)) {
+    throw new TypeError("对方QQ号不能是机器人自己的账号，请填写联系人的QQ号。");
   }
   const identity = ownerOrNull(owner);
   if (value.shareWebMemory) {

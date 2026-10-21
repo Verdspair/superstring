@@ -1412,6 +1412,11 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
     })),
   );
   const editor = state.qqGroupConfigEditor;
+  const selectedBinding = state.qqBindings.find((row) => row.id === state.qqGroupConfigBindingId);
+  const isPrivate = (selectedBinding?.kind ?? editor?.source.binding.kind) === "private";
+  const configTitle = t(
+    isPrivate ? "qq.conversation.privateConfig" : "schemes.qq.groupConfigTitle",
+  );
   const bindingId = state.qqGroupConfigBindingId;
   // 编辑器可能属于上一个打开的群：绑定身份不等就整页不显示它的任何内容。
   const visibleEditor =
@@ -1496,22 +1501,31 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
       qqSchemes: state.qqSchemes,
       agents: state.agents,
       summaryById: state.summaryById,
+      kind: isPrivate ? "private" : "group",
     });
-  }, [state.qqBindingsLoaded, state.qqBindings, state.qqSchemes, state.agents, state.summaryById]);
+  }, [
+    state.qqBindingsLoaded,
+    state.qqBindings,
+    state.qqSchemes,
+    state.agents,
+    state.summaryById,
+    isPrivate,
+  ]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label={t("schemes.qq.groupConfigTitle")}>
+    <section className="flex h-full min-h-0 flex-col" aria-label={configTitle}>
       <header className="mb-[24px] flex shrink-0 flex-wrap items-start gap-[14px] border-b border-border pb-[20px]">
         <Button
-          variant="ghost"
-          size="icon-sm"
+          variant="outline"
+          size="sm"
           tooltip={t("hints.qq.backToDirectory")}
           aria-label={t("schemes.qq.groups.backToDirectory")}
           onClick={back}
         >
           <ChevronLeft />
+          {t("schemes.qq.groups.backToDirectory")}
         </Button>
-        <h1 className="text-[22px] font-bold leading-[1.25]">{t("schemes.qq.groupConfigTitle")}</h1>
+        <h1 className="workspace-page-title">{configTitle}</h1>
         {visibleEditor && (
           <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <Badge variant="outline">
@@ -1543,7 +1557,9 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                 className="h-auto min-h-8 text-xs"
                 value={visibleEditor.source.binding.id}
                 tooltip={t("hints.custom.qqGroupSwitcher")}
-                aria-label={t("schemes.qq.groups.switchGroup")}
+                aria-label={t(
+                  isPrivate ? "qq.conversation.switch" : "schemes.qq.groups.switchGroup",
+                )}
                 disabled={saving || state.qqGroupConfigLoading}
                 onChange={(event) => state.openQqGroupConfig(event.target.value)}
               >
@@ -1557,7 +1573,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           </div>
         )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          {visibleEditor && (
+          {visibleEditor && !isPrivate && (
             <Button
               variant="outline"
               size="sm"
@@ -1674,7 +1690,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             </div>
             <Tabs
               orientation="horizontal"
-              value={tab}
+              value={isPrivate && tab === "capabilities" ? "participation" : tab}
               onValueChange={setTab}
               className="flex min-h-0 flex-col gap-0"
             >
@@ -1691,13 +1707,15 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                         {t(section.labelKey)}
                       </TabsTrigger>
                     ))}
-                    <TabsTrigger
-                      value="capabilities"
-                      tooltip={t("hints.custom.qqTab.capabilities")}
-                      className="whitespace-nowrap"
-                    >
-                      {t("schemes.qq.groupConfig.capabilities")}
-                    </TabsTrigger>
+                    {!isPrivate && (
+                      <TabsTrigger
+                        value="capabilities"
+                        tooltip={t("hints.custom.qqTab.capabilities")}
+                        className="whitespace-nowrap"
+                      >
+                        {t("schemes.qq.groupConfig.capabilities")}
+                      </TabsTrigger>
+                    )}
                   </TabsList>
                 </div>
                 <div className="min-w-0 flex-1 w-full space-y-6">
@@ -1716,7 +1734,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                               base={baseBag("triggers")}
                               group="triggers"
                               name={key}
-                              labelKey={label}
+                              labelKey={isPrivate ? `qq.entry.private.trigger.${key}` : label}
                             />
                           ))}
                       </div>
@@ -1840,7 +1858,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                     )}
                   </TabsContent>
                   <TabsContent value="response" className="m-0 space-y-6">
-                    {visible("reply", "split_by_speaker") && (
+                    {!isPrivate && visible("reply", "split_by_speaker") && (
                       <SchemeFieldCard
                         title={t("schemes.studio.replyStructure")}
                         description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
@@ -2291,14 +2309,16 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                       )}
                     </SchemeFieldCard>
                   </TabsContent>
-                  <TabsContent value="capabilities" className="m-0 space-y-6">
-                    <SchemeFieldCard
-                      title={t("schemes.qq.groupConfig.capabilities")}
-                      description="schemes.qq.groupConfig.capability.description"
-                    >
-                      <CapabilityList editor={visibleEditor} knowledge={knowledgeRead} />
-                    </SchemeFieldCard>
-                  </TabsContent>
+                  {!isPrivate && (
+                    <TabsContent value="capabilities" className="m-0 space-y-6">
+                      <SchemeFieldCard
+                        title={t("schemes.qq.groupConfig.capabilities")}
+                        description="schemes.qq.groupConfig.capability.description"
+                      >
+                        <CapabilityList editor={visibleEditor} knowledge={knowledgeRead} />
+                      </SchemeFieldCard>
+                    </TabsContent>
+                  )}
                 </div>
               </div>
             </Tabs>
@@ -2350,7 +2370,9 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             tooltip={t("hints.qq.groupSave")}
             onClick={() => void state.saveQqGroupConfig()}
           >
-            {saving ? t("workspace.saving") : t("schemes.qq.groupConfig.save")}
+            {saving
+              ? t("workspace.saving")
+              : t(isPrivate ? "qq.conversation.save" : "schemes.qq.groupConfig.save")}
           </Button>
         </footer>
       )}
@@ -2383,7 +2405,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
                   void state.saveQqGroupConfig();
                 }}
               >
-                {t("schemes.qq.groupConfig.save")}
+                {t(isPrivate ? "qq.conversation.save" : "schemes.qq.groupConfig.save")}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -2419,7 +2441,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           </div>
         </AlertDialog>
       )}
-      {adminEditorOpen && visibleEditor && (
+      {adminEditorOpen && visibleEditor && !isPrivate && (
         <BindingEditor
           conversation={{
             account_id: visibleEditor.source.binding.account_id,

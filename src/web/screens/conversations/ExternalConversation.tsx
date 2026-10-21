@@ -136,7 +136,7 @@ export function ExternalConversation({
               </Button>
             }
           />
-          {conversation.channel === "onebot11" && conversation.topology === "shared" && (
+          {conversation.channel === "onebot11" && (
             <div className="min-w-0 shrink-0 border-b px-4 py-2 md:px-7">
               <QqGroupControls
                 bindingId={conversation.sourceId}

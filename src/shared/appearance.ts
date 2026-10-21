@@ -29,7 +29,7 @@ export const THEMES = [
   { id: "fjord", name: "峡湾", color: "#34587c", dark: "#6b94be" },
   { id: "birch", name: "白桦", color: "#764f28", dark: "#b88b58" },
   { id: "sage", name: "鼠尾草", color: "#426451", dark: "#90b29b" },
-  { id: "hearth", name: "暖玫", color: "#80535e", dark: "#c59aa5" },
+  { id: "hearth", name: "暖玫", color: "#8e3a50", dark: "#d68b9c" },
   { id: "blossom", name: "樱粉", color: "#a34375", dark: "#e4a1c5" },
 ] as const;
 

@@ -336,4 +336,77 @@ describe("canonical conversation read APIs", () => {
     );
     expect((await app.request(`/v2/deliveries/${intent.id}`)).status).toBe(404);
   });
+
+  it("discovers an empty private binding as canonical direct and the group as shared without any agent activity", async () => {
+    const { app, business } = setup(true);
+    const scheme = createQqScheme(business.orm, { name: "directory fixture" });
+    const now = nowIso();
+    const privateId = crypto.randomUUID();
+    const groupId = crypto.randomUUID();
+    const bindings = [
+      { id: privateId, conversationKind: "private", peerId: "40001" },
+      { id: groupId, conversationKind: "group", peerId: "50001" },
+    ] as const;
+    for (const binding of bindings)
+      business.orm
+        .insert(schema.qqBindings)
+        .values({
+          id: binding.id,
+          accountId: "10001",
+          conversationKind: binding.conversationKind,
+          peerId: binding.peerId,
+          agentId: DEFAULT_AGENT_ID,
+          schemeId: scheme.id,
+          paused: 0,
+          shareWebMemory: 0,
+          revision: 1,
+          authorityRevision: 1,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+    const bySourceId = async (sourceId: string) =>
+      ConversationListSchema.parse(
+        await (await app.request(`/v2/conversations?channel=onebot11&sourceId=${sourceId}`)).json(),
+      );
+    const discover = async () =>
+      ConversationListSchema.parse(await (await app.request("/v2/conversations")).json());
+    const mine = await bySourceId(privateId);
+    expect(mine.items).toHaveLength(1);
+    expect(mine.items[0]).toMatchObject({
+      sourceId: privateId,
+      channel: "onebot11",
+      topology: "direct",
+      lastSeq: 0,
+      consumedSeq: 0,
+      title: "私聊 40001",
+      participants: [
+        { id: DEFAULT_AGENT_ID, role: "agent" },
+        { id: "40001", label: "40001", role: "user" },
+      ],
+    });
+    expect((await bySourceId(privateId)).items[0].id).toBe(mine.items[0].id);
+    const shared = await bySourceId(groupId);
+    expect(shared.items).toHaveLength(1);
+    expect(shared.items[0]).toMatchObject({
+      sourceId: groupId,
+      channel: "onebot11",
+      topology: "shared",
+      lastSeq: 0,
+    });
+    expect(shared.items[0].qqGroup).toMatchObject({
+      number: "50001",
+      originalName: null,
+      customName: null,
+    });
+    const directory = await discover();
+    const listed = Object.fromEntries(
+      directory.items.map((item) => [item.sourceId, item.topology]),
+    );
+    expect(listed[privateId]).toBe("direct");
+    expect(listed[groupId]).toBe("shared");
+    expect(business.db.query("SELECT COUNT(*) AS n FROM agent_runs").get()).toEqual({ n: 0 });
+    expect(business.db.query("SELECT COUNT(*) AS n FROM wake_signals").get()).toEqual({ n: 0 });
+    expect(business.db.query("SELECT COUNT(*) AS n FROM outbound_intents").get()).toEqual({ n: 0 });
+  });
 });

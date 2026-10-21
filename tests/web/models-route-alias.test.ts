@@ -10,7 +10,7 @@ beforeEach(() => {
 });
 
 describe("models route alias and context-allocation target lifecycle", () => {
-  it("keeps context-allocation as the target route and resolves it to the models space", async () => {
+  it("keeps global knowledge allocation in the library while model resources remain in models", async () => {
     expect(SETTINGS_ROUTES.some((route) => route.id === "context-allocation")).toBe(true);
     expect(
       activeSpace({
@@ -18,7 +18,7 @@ describe("models route alias and context-allocation target lifecycle", () => {
         settingsView: "workspace",
         settingsRoute: "context-allocation",
       }),
-    ).toBe("models");
+    ).toBe("library");
     expect(
       activeSpace({
         page: "settings",
@@ -49,7 +49,7 @@ describe("models route alias and context-allocation target lifecycle", () => {
     store.getState().requestContextAllocation({ purpose: "reading", agentId: null });
     await waitFor(() => expect(store.getState().settingsRoute).toBe("context-allocation"));
     expect(store.getState().contextAllocationTarget.purpose).toBe("reading");
-    expect(activeSpace(store.getState())).toBe("models");
+    expect(activeSpace(store.getState())).toBe("library");
   });
 
   it("returns to external-api with the precise capacity target and clears the stale purpose target", async () => {

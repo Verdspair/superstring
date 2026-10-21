@@ -12,6 +12,11 @@ export interface ConversationDirectoryState {
   directoryRevision: number;
   selectionRevision: number;
   rememberConversation: (summary: ConversationSummary) => void;
+  resolveConversationSource: (
+    channel: "web" | "onebot11",
+    sourceId: string,
+    agentId: string | null,
+  ) => Promise<ConversationSummary | null>;
   refreshConversationSummary: (id: string) => Promise<boolean>;
   loadConversations: (mode?: "refresh" | "more" | "refresh-loaded") => Promise<boolean>;
   selectConversation: (id: string) => Promise<void>;
@@ -42,11 +47,16 @@ export function createDirectoryActions(
   get: StoreGet,
 ): Pick<
   ConversationDirectoryState,
-  "rememberConversation" | "refreshConversationSummary" | "loadConversations" | "selectConversation"
+  | "rememberConversation"
+  | "resolveConversationSource"
+  | "refreshConversationSummary"
+  | "loadConversations"
+  | "selectConversation"
 > {
   let activeRead = 0;
   let nextSummaryToken = 0;
   const activeSummaryTokens = new Map<string, number>();
+  const activeResolveTokens = new Map<string, number>();
 
   return {
     rememberConversation: (summary) =>
@@ -59,6 +69,39 @@ export function createDirectoryActions(
             : state.sessionConversationIds,
         directoryRevision: state.directoryRevision + 1,
       })),
+    // 单一规范来源读取：exact channel/source(/agent) 命中即由既有 rememberConversation 落地目录；
+    // 迟到的旧 API/旧读取不回写；读取失败只记 directoryError，属非致命，调用方自行决定重试。
+    resolveConversationSource: async (channel, sourceId, agentId) => {
+      const capturedApi = get().apiClient;
+      const key = `${channel}/${sourceId}`;
+      const token = ++nextSummaryToken;
+      activeResolveTokens.set(key, token);
+      try {
+        const { items } = await capturedApi.listConversations({ channel, sourceId });
+        const summary = items.find(
+          (item) =>
+            item.channel === channel &&
+            item.sourceId === sourceId &&
+            (agentId === null || item.agentId === agentId),
+        );
+        if (get().apiClient !== capturedApi || activeResolveTokens.get(key) !== token) return null;
+        if (!summary) return null;
+        if (channel === "onebot11") {
+          const binding = get().qqBindings.find((row) => row.id === sourceId);
+          if (!binding || binding.agent_id !== agentId) return null;
+        }
+        set({ directoryError: null });
+        get().rememberConversation(summary);
+        return summary;
+      } catch (reason) {
+        if (get().apiClient === capturedApi && activeResolveTokens.get(key) === token) {
+          set({ directoryError: errorText(reason) });
+        }
+        return null;
+      } finally {
+        if (activeResolveTokens.get(key) === token) activeResolveTokens.delete(key);
+      }
+    },
     refreshConversationSummary: async (id: string) => {
       const capturedApi = get().apiClient;
       const token = ++nextSummaryToken;

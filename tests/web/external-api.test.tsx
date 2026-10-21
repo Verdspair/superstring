@@ -3,7 +3,7 @@
 // The two promises worth pinning: the stored key is never rendered (the field is empty and
 // password-typed, and clearing it is its own explicit action), and a model cannot be saved without
 // a context window — that number is what keeps the QQ chain able to call an external model at all.
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProviderResponse } from "../../src/shared/contracts/models";
 import { api, type SuperstringApi } from "../../src/web/api";
@@ -100,70 +100,45 @@ describe("Model services workspace", () => {
     });
   });
   it.each(["zh-CN", "en"] as const)(
-    "explains local sandbox consent separately from hosted capabilities in %s",
+    "does not expose per-model ability switches in %s",
     async (locale) => {
       selectLocale(locale);
       await renderPage();
       fireEvent.click(
         screen.getByRole("button", { name: locale === "zh-CN" ? "配置" : "Configure" }),
       );
-      const label = locale === "zh-CN" ? "允许使用本机代码沙箱" : "Allow the local code sandbox";
-      expect(screen.getByRole("checkbox", { name: label }).getAttribute("data-state")).toBe(
-        "unchecked",
-      );
+      const labels =
+        locale === "zh-CN"
+          ? ["原生工具调用", "并行工具调用", "允许使用本机代码沙箱", "图片理解"]
+          : [
+              "Native tool calling",
+              "Parallel tool calls",
+              "Allow the local code sandbox",
+              "Image understanding",
+            ];
+      for (const label of labels) {
+        expect(screen.queryByLabelText(label)).toBeNull();
+        expect(screen.queryByRole("checkbox", { name: label })).toBeNull();
+      }
       expect(
-        screen.getByText(
-          locale === "zh-CN" ? /不是托管 PTC 能力认证/ : /not certification of hosted PTC support/,
-        ),
-      ).toBeTruthy();
+        screen.queryByRole("button", {
+          name: locale === "zh-CN" ? "清除能力声明" : "Clear declarations",
+        }),
+      ).toBeNull();
+      expect(
+        screen.queryByRole("button", {
+          name: locale === "zh-CN" ? "执行设置" : "Execution settings",
+        }),
+      ).toBeNull();
+      const encoding = screen.getByLabelText(
+        locale === "zh-CN" ? "文本 token 编码" : "Text token encoding",
+      );
+      expect(encoding).toBeTruthy();
+      expect((encoding.closest("details") as HTMLDetailsElement | null)?.open).toBe(false);
     },
   );
-  it.each(["zh-CN", "en"] as const)(
-    "describes tool calls as a transport switch and parallel calls as a declaration in %s",
-    async (locale) => {
-      selectLocale(locale);
-      await renderPage();
-      fireEvent.click(
-        screen.getByRole("button", { name: locale === "zh-CN" ? "配置" : "Configure" }),
-      );
-      // 工具调用：填过声明的模型按声明执行——未勾选就不发原生 tools，JSON 决策协议仍在。
-      expect(
-        screen.getByText(
-          locale === "zh-CN"
-            ? /不再接收原生工具声明/
-            : /no longer receives native tool declarations/,
-        ),
-      ).toBeTruthy();
-      // 并行工具调用：只是声明记录；批量调用的安全调度与它无关。
-      expect(
-        screen.getByText(locale === "zh-CN" ? /只读并行、写串行/ : /read-only in parallel/),
-      ).toBeTruthy();
-    },
-  );
-  it("edits capabilities without losing the other flags and keeps the draft on conflict", async () => {
-    const capabilities = { toolCalling: true, parallelToolCalls: false, codeExecution: false };
-    const update = vi.fn().mockRejectedValue(new Error("配置已变化，请刷新"));
-    await renderPage([{ ...provider, models: [{ ...provider.models[0], capabilities }] }], {
-      updateModelProvider: update,
-    });
-    fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "允许使用本机代码沙箱" }));
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
-    expect(update.mock.calls[0][1].models[0].capabilities).toEqual({
-      ...capabilities,
-      codeExecution: true,
-    });
-    expect(
-      screen.getByRole("checkbox", { name: "允许使用本机代码沙箱" }).getAttribute("data-state"),
-    ).toBe("checked");
-    expect(
-      screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("配置已变化")),
-    ).toBe(true);
-  });
-  it("keeps absent capabilities absent until edited and can restore the undeclared state", async () => {
+  it("keeps absent capabilities absent on an ordinary save", async () => {
     const fake = await edit();
-    fireEvent.click(screen.getByRole("checkbox", { name: "允许使用本机代码沙箱" }));
-    fireEvent.click(screen.getByRole("button", { name: "清除能力声明" }));
     fireEvent.change(screen.getByLabelText("上下文窗口"), { target: { value: "131072" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
     expect(fake.updateModelProvider).toHaveBeenCalledWith(PROVIDER_ID, {
@@ -183,219 +158,38 @@ describe("Model services workspace", () => {
     });
     expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe("Draft name");
   });
-  // 0052：vision 是三态——false 与「未声明」是不同的持久状态，往返都不许被压成另一端。
-  it("preserves vision:false through a save round-trip", async () => {
-    const declared = {
-      ...provider,
-      models: [
-        {
-          name: "deepseek-chat",
-          context_window: 65536,
-          capabilities: {
-            toolCalling: false,
-            parallelToolCalls: false,
-            codeExecution: false,
-            vision: false,
-          },
-        },
-      ],
-    };
-    const fake = await renderPage([declared]);
-    fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Renamed" } });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
-    expect(fake.updateModelProvider).toHaveBeenCalledWith(
-      PROVIDER_ID,
-      expect.objectContaining({
-        models: [
-          {
-            name: "deepseek-chat",
-            context_window: 65536,
-            capabilities: expect.objectContaining({ vision: false }),
-          },
-        ],
-      }),
-    );
-  });
-  it("keeps an undeclared vision absent after saving (not written as false)", async () => {
-    const undeclared = {
-      ...provider,
-      models: [
-        {
-          name: "deepseek-chat",
-          context_window: 65536,
-          capabilities: { toolCalling: true, parallelToolCalls: false, codeExecution: false },
-        },
-      ],
-    };
-    const fake = await renderPage([undeclared]);
-    fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Renamed" } });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
-    expect(fake.updateModelProvider).toHaveBeenCalledWith(
-      PROVIDER_ID,
-      expect.objectContaining({
-        models: [
-          {
-            name: "deepseek-chat",
-            context_window: 65536,
-            capabilities: { toolCalling: true, parallelToolCalls: false, codeExecution: false },
-          },
-        ],
-      }),
-    );
-  });
-  // 0052：vision 三态下拉——unknown 是「未声明」不是 false；清除只删 vision 键，
-  // 保留其余能力（含合法的未知现有键，payload 沿真实 spread 保留）。
-  it("writes vision:true through the tri-state select without touching other declarations", async () => {
-    const capabilities = { toolCalling: true, parallelToolCalls: false, codeExecution: true };
-    const current = { ...provider, models: [{ ...provider.models[0], capabilities }] };
-    const fake = await renderPage([current]);
-    fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    fireEvent.change(screen.getByLabelText("图片理解"), { target: { value: "supported" } });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
-    expect(fake.updateModelProvider).toHaveBeenCalledWith(
-      PROVIDER_ID,
-      expect.objectContaining({
-        models: [
-          {
-            name: "deepseek-chat",
-            context_window: 65536,
-            capabilities: {
-              toolCalling: true,
-              parallelToolCalls: false,
-              codeExecution: true,
-              vision: true,
-            },
-          },
-        ],
-      }),
-    );
-  });
-  it("writes vision:false through the select and keeps other capability keys when saving", async () => {
-    const capabilities = { toolCalling: false, parallelToolCalls: false, codeExecution: true };
-    const current = { ...provider, models: [{ ...provider.models[0], capabilities }] };
-    const fake = await renderPage([current]);
-    fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    fireEvent.change(screen.getByLabelText("图片理解"), { target: { value: "unsupported" } });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
-    expect(fake.updateModelProvider).toHaveBeenCalledWith(
-      PROVIDER_ID,
-      expect.objectContaining({
-        models: [
-          {
-            name: "deepseek-chat",
-            context_window: 65536,
-            capabilities: {
-              toolCalling: false,
-              parallelToolCalls: false,
-              codeExecution: true,
-              vision: false,
-            },
-          },
-        ],
-      }),
-    );
-  });
-  it("clearing the vision selection removes only vision and preserves the other declarations", async () => {
+  it("preserves legacy capability declarations on an ordinary save", async () => {
     const capabilities = {
-      toolCalling: true,
-      parallelToolCalls: false,
+      toolCalling: false,
+      parallelToolCalls: true,
       codeExecution: true,
-      vision: true,
+      vision: false,
     };
     const current = { ...provider, models: [{ ...provider.models[0], capabilities }] };
     const fake = await renderPage([current]);
     fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    fireEvent.change(screen.getByLabelText("图片理解"), { target: { value: "unknown" } });
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
-    expect(fake.updateModelProvider).toHaveBeenCalledWith(
-      PROVIDER_ID,
-      expect.objectContaining({
-        models: [
-          {
-            name: "deepseek-chat",
-            context_window: 65536,
-            capabilities: { toolCalling: true, parallelToolCalls: false, codeExecution: true },
-          },
-        ],
-      }),
-    );
-  });
-  it("shows 未声明 for a model without capabilities and keeps it undeclared after saving", async () => {
-    const fake = await renderPage();
-    fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    expect((screen.getByLabelText("图片理解") as HTMLSelectElement).value).toBe("unknown");
-    fireEvent.change(screen.getByLabelText("上下文窗口"), { target: { value: "131072" } });
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Renamed" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
     expect(fake.updateModelProvider).toHaveBeenCalledWith(PROVIDER_ID, {
-      name: provider.name,
+      name: "Renamed",
       base_url: provider.base_url,
-      models: [{ name: "deepseek-chat", context_window: 131072 }],
+      models: current.models,
       expected_revision: 3,
     });
   });
-  it("keeps per-model vision tri-state independent across multiple models", async () => {
-    const current: ModelProviderResponse = {
-      ...provider,
-      models: [
-        {
-          name: "vision-model",
-          context_window: 65536,
-          capabilities: {
-            toolCalling: false,
-            parallelToolCalls: false,
-            codeExecution: false,
-            vision: true,
-          },
-        },
-        { name: "plain-model", context_window: 32768 },
-      ],
-    };
-    const fake = await renderPage([current]);
+  it("keeps the provider draft on a CAS conflict", async () => {
+    const update = vi.fn().mockRejectedValue(new Error("配置已变化，请刷新"));
+    await renderPage([provider], { updateModelProvider: update });
     fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    // 两个模型各有一个同名字段：按模型的能力声明分组取各自的下拉，不靠脆弱的全局序号。
-    const group = screen.getByRole("group", { name: "vision-model 的能力声明" });
-    const visionSelect = within(group).getByRole("combobox");
-    expect(visionSelect).toBeTruthy();
-    expect((visionSelect as HTMLSelectElement).value).toBe("supported");
-    fireEvent.change(visionSelect, { target: { value: "unsupported" } });
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "Renamed" } });
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存服务" })));
-    const models = vi.mocked(fake.updateModelProvider).mock.calls[0][1].models as {
-      name: string;
-      capabilities?: { vision?: boolean };
-    }[];
-    expect(models).toEqual([
-      {
-        name: "vision-model",
-        context_window: 65536,
-        capabilities: {
-          toolCalling: false,
-          parallelToolCalls: false,
-          codeExecution: false,
-          vision: false,
-        },
-      },
-      { name: "plain-model", context_window: 32768 },
-    ]);
-  });
-  it("reads back an existing model without vision as 未声明 and keeps its saved declarations", async () => {
-    const saved = {
-      ...provider,
-      models: [
-        {
-          name: "deepseek-chat",
-          context_window: 65536,
-          capabilities: { toolCalling: true, parallelToolCalls: true, codeExecution: false },
-        },
-      ],
-    };
-    await renderPage([saved]);
-    fireEvent.click(screen.getByRole("button", { name: "配置" }));
-    const select = screen.getByLabelText("图片理解") as HTMLSelectElement;
-    expect(select.value).toBe("unknown");
-    expect(screen.getByRole("checkbox", { name: "原生工具调用" }).getAttribute("data-state")).toBe(
-      "checked",
+    expect(update).toHaveBeenCalledTimes(1);
+    expect((screen.getByLabelText("名称") as HTMLInputElement).value).toBe("Renamed");
+    expect(
+      screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("配置已变化")),
+    ).toBe(true);
+    expect((screen.getByRole("button", { name: "保存服务" }) as HTMLButtonElement).disabled).toBe(
+      false,
     );
   });
   it("rejects missing capacity using the provider contract", async () => {

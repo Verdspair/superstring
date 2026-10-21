@@ -203,14 +203,14 @@ describe("fresh assistant studio", () => {
     );
     expect(screen.queryByRole("button", { name: "保存全局预算" })).toBeNull();
     expect(screen.queryByRole("button", { name: "放弃预算修改" })).toBeNull();
-    // 精准入口按卡 scope 计数：全局知识预算卡 1 个前往上下文分配；
+    // 精准入口按卡 scope 计数：全局知识预算卡 1 个前往知识设置；
     // 记忆规则宿主现为整节 section（h1 资料读取，不再包 card），Bytes 就地编辑，
     // 读取规则节内不重复放置跳转入口（断言保留，仅按真实结构改 scope 入口）。
     const memorySection = screen.getByTestId("reading-section-memory");
-    expect(within(memorySection).queryByRole("button", { name: "前往上下文分配" })).toBeNull();
+    expect(within(memorySection).queryByRole("button", { name: "前往知识设置" })).toBeNull();
     const budgetCard = screen.getByText("全局知识读取预算").closest('[data-slot="card"]');
     if (!(budgetCard instanceof HTMLElement)) throw new Error("Missing global budget card");
-    expect(within(budgetCard).getAllByRole("button", { name: "前往上下文分配" })).toHaveLength(1);
+    expect(within(budgetCard).getAllByRole("button", { name: "前往知识设置" })).toHaveLength(1);
     // 记忆工具页不承载记忆内容维护（维护仍归资料库记忆分区）。
     expect(screen.queryByLabelText("自动整理网页对话记忆")).toBeNull();
     expect(screen.queryByLabelText("记忆整理提示词")).toBeNull();

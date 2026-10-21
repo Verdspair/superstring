@@ -38,11 +38,15 @@
 
 以下功能属于 main 源码更新，未重发 v0.4.0-alpha-2 安装包。
 
+- **QQ会话添加与独立配置**：对话列表的“新建／添加”直达网页对话、QQ群聊和QQ私聊；添加时可原地新建并选中方案。群聊、私聊共用会话配置页，支持跟随方案或保存当前会话与Agent的独立策略；私聊不显示群专属成员、能力停用及按发言人拆分设置。群号与对方QQ号分开标识，私聊不能绑定机器人自身账号。添加成功即显示在对话列表，没有消息也可打开空会话。
+- **QQ会话移除**：群聊和私聊菜单均可移除会话并解除绑定。Agent、方案与QQ平台消息不删除，本机历史按原保留规则保留但不再由旧入口访问；运行中任务或未知发送结果会阻止移除。
+- **Agent导航与共享滚动条**：Agent详情突出当前配置对象，左上返回保留未保存草稿；会话列表边界更清晰。原生与组件滚动条统一，绑定列表刷新保留行并暂时禁用操作，读取失败明确提示。
+
 - **导航与方案工作区**：七个工作区入口按日常、应用和系统分组，底部提供偏好与搜索；主导航和会话列表可拖动细线调整宽度。方案、会话与绑定、QQ 设置共用一个工作区，可查看方案的使用会话、管理绑定并进入本群配置。
 - **主题、间距与滚动**：提供五套精选北欧配色与渐变樱粉，支持浅色、深色及跟随系统。移除装饰性阴影，调整文字、控件和内容分组间距，保留焦点与选中提示；修复 QQ 设置长内容被裁切、无法滚动的问题。统一界面动效，并遵循减少动效偏好。
 - **调用与唤醒重试**：系统能力执行设置可配置模型与受信任只读工具的调用重试，默认共 3 次尝试（含首次）、间隔 2 秒，仅对明确的 HTTP 429／503 拒收重试；不盲目重放写操作、超时或结果未知的请求。QQ 设置可单独配置唤醒失败重试，默认共 3 次尝试（含首次）、间隔 15 秒。
 
-- **自主文字与表情回复**：Agent 可选择纯文字、单张表情或图文组合。只发文字时无需额外声明不用表情。方案可设置较少使用、平衡选择或积极考虑三档表情倾向，默认平衡；本群可覆盖，私聊跟随方案。这是软倾向，不是发送比例或次数限制。
+- **自主文字与表情回复**：Agent 可选择纯文字、单张表情或图文组合。只发文字时无需额外声明不用表情。方案可设置较少使用、平衡选择或积极考虑三档表情倾向，默认平衡；群聊与私聊均可在会话配置中覆盖。这是软倾向，不是发送比例或次数限制。
 - **表情关闭即时生效**：关闭全局或本群表情后，尚未开始发送的表情（含排队部件）不再发送，合法文字照常。已开始的请求不撤回，未知送达结果不盲目重发。回复仍至多一张表情，旧数量控件退役但不重写已保存值。
 
 - **自主接话参与度校准**：自主接话兴趣评分将 4–6 分（以 5 分为基准档）定为自然轻度参与档，认可日常接梗与轻松互动的社交价值，不要求每轮必须提供重要新信息；达到方案开口门槛后直接承接意图资料组织回复，不再重复评估是否值得开口。同时保留合理沉默机制：在确实无话可说、违反本群自定义规则、引用来源失效或已有任务确认送达相同内容时保持沉默；送达状态未知时不盲目重发同一内容，独立新问题仍可回应。出厂默认门槛（6 分）与既有群设置保持不变。
@@ -54,7 +58,7 @@
 - 较新回复确认后，已被完整覆盖的旧自主回复提前停止；多成员任务只跳过已覆盖成员，不同艾特任务保持独立。
 - 聊天记录加载失败后重试拉取最新页，不从最早记录重新开始。
 - 修正 QQ 表情回复的输出规则冲突；错误的表情写法不会发送，并可在现有步骤限制内纠正后继续回复。
-- **模型编码**：在模型服务 → LM Studio 本地编码或外部服务登记模型时可选填文本编码（如 `cl100k_base`、`o200k_base`），未指定时采用保守估算；提供参考帮助与来源说明但不自动选择；用量显示实际生效的模型、容量与编码；保存发生冲突时保留当前草稿。
+- **模型编码**：在模型服务 → LM Studio 本地编码或外部服务登记模型时可选填文本编码（如 `cl100k_base`、`o200k_base`），未指定时采用保守估算；提供参考帮助与来源说明但不自动选择；用量显示实际生效的模型、容量与编码；保存发生冲突时保留当前草稿。 模型页只管理接入与基础配置；工具、视觉与沙箱不再按模型开关，知识设置和跨任务整理默认模型分别放在资料与系统执行设置中。
 - **QQ 研究与工具结果**：研究模式按子任务自己的上下文检查容量；媒体或表情结果装不下时返回明确的预算提示，不把本可继续的任务拖到下一轮才失败；仍超出容量时明确失败。
 - **运行概览与步骤选择**：运行概览聚焦结果与依据，采用竖列步骤卡片展示模型调用，默认选定首个步骤并在下方查看对应详情。
 - **技术追踪与执行排查**：面向过程与诊断，通过时间线查看执行顺序、耗时与错误，点击步骤直接联动下方详情；父任务下的实际模型调用也可查看，消除多余的重复列表。
@@ -101,11 +105,15 @@ Fully exit the application and back up your data directory before updating. The 
 
 These features are source updates on main. The v0.4.0-alpha-2 packages have not been reissued.
 
+- **QQ conversation setup and per-conversation policy**: New / add in the conversation list opens web, QQ group, or QQ private chat setup; create and select a scheme in place. Groups and private chats share one policy editor with scheme inheritance and overrides for the conversation and Agent. Private chats omit group-only member, capability-disable, and speaker-splitting settings. Group and contact numbers are clearly distinguished, and private self-bindings are rejected. Added conversations appear immediately and open even without messages.
+- **QQ conversation removal**: Group and private chat menus remove the conversation and its binding. Agents, schemes, and QQ messages remain; local history retains its existing lifetime but is inaccessible through the old entry. Active work or unknown send outcomes block removal.
+- **Agent navigation and shared scrollbars**: Agent details identify the configuration target and offer an upper-left return without dropping drafts. Conversation boundaries are clearer. Native and component scrollbars share one style; binding refresh retains disabled rows and reports failed reads clearly.
+
 - **Navigation and the scheme workspace**: Seven workspace sections are grouped under Daily, Apps, and System, with Preferences and search at the bottom. Resize the navigation and conversation list by dragging their divider lines. Schemes, Conversations & bindings, and QQ settings share one workspace for viewing scheme usage, managing bindings, and opening group settings.
 - **Themes, spacing, and scrolling**: Choose five curated Nordic palettes or Blossom with soft gradients, in light, dark, or system mode. Decorative shadows are removed and spacing between text, controls, and content groups is adjusted, while focus and selection indicators remain. Fixed clipped, unscrollable long content in QQ settings. Interface animations are consistent and respect reduced-motion preferences.
 - **Call and wake retries**: System capabilities execution settings offer retries for model calls and trusted read-only tools, defaulting to 3 attempts including the first, with a 2-second delay. Only explicit HTTP 429/503 rejections are retried; writes, timeouts, and requests with unknown outcomes are not blindly replayed. QQ settings have separate wake retry controls, defaulting to 3 attempts including the first, with a 15-second delay.
 
-- **Independent text and sticker replies**: The Agent can choose text, one sticker, or a combination. Text-only replies need no extra sticker opt-out. Schemes offer low, medium, or high sticker-use guidance, defaulting to medium; groups can override it, while private chats follow the scheme. This is a soft preference, not a sending ratio or count limit.
+- **Independent text and sticker replies**: The Agent can choose text, one sticker, or a combination. Text-only replies need no extra sticker opt-out. Schemes offer low, medium, or high sticker-use guidance, defaulting to medium; groups and private chats can override it in conversation settings. This is a soft preference, not a sending ratio or count limit.
 - **Immediate sticker disable**: Turning off global or group stickers blocks unstarted sticker sends, including queued parts, without blocking valid text. Started requests are not withdrawn, and unknown delivery results are not blindly retried. Replies still allow at most one sticker. The old count control is retired without rewriting stored values.
 
 - **Autonomous participation calibration**: The interest scoring rubric treats 4–6 (with 5 as baseline) as a natural light-participation range that recognizes the social value of natural, brief conversation without requiring novel information each round; once a candidate passes the scheme's initiative threshold, it directly carries forward intent material to craft a response without judging the same participation decision again. Legitimate silence remains preserved: the Agent may choose not to send a message when there is genuinely nothing to say, when custom group rules forbid it, when cited sources become invalid, or when delivery of identical content is already confirmed; it does not blindly resend identical content while delivery status is unknown, while responses to independent new questions remain allowed. Default threshold (6) and existing group configurations remain unchanged.
@@ -117,7 +125,7 @@ These features are source updates on main. The v0.4.0-alpha-2 packages have not 
 - After a newer reply is confirmed, fully covered autonomous replies stop early. Multi-member tasks skip only covered members, and separate mention tasks remain independent.
 - Chat history load failures retry from the newest page instead of restarting from the earliest records.
 - Fixed conflicting output rules for QQ sticker replies. Invalid sticker output is not sent and can be corrected within the existing step limit before the reply continues.
-- **Model encodings**: Optionally select text token encodings (such as `cl100k_base` or `o200k_base`) when configuring LM Studio local models or external services under Model Services; falls back to conservative estimation when unspecified. Reference help and documentation links assist verification without auto-selection. Usage details show the actual effective model, capacity, and encoding, and unsaved drafts are preserved if save conflicts occur.
+- **Model encodings**: Optionally select text token encodings (such as `cl100k_base` or `o200k_base`) when configuring LM Studio local models or external services under Model Services; falls back to conservative estimation when unspecified. Reference help and documentation links assist verification without auto-selection. Usage details show the actual effective model, capacity, and encoding, and unsaved drafts are preserved if save conflicts occur. The model page now focuses on connections and basic settings, without per-model tool, vision, or sandbox switches. Knowledge settings and the shared organization default are available under Materials and system execution settings respectively.
 - **QQ research and tool results**: Research runs check capacity against each subtask's own context limit; when media or sticker results exceed the available window, a clear budget message is returned instead of postponing failures to subsequent turns, with requests that genuinely exceed capacity failing clearly.
 - **Run overview and step selection**: Run overviews focus on results and evidence, presenting model calls as vertical step cards, selecting the first step by default, and displaying its details below.
 - **Technical trace and execution inspection**: Focuses on process diagnosis, using a timeline to inspect execution order, duration, and errors. Selecting a step links directly to its details below, and actual model calls under parent runs can also be inspected, eliminating redundant duplicate step listings.

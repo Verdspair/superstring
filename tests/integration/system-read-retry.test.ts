@@ -397,6 +397,7 @@ describe("System 只读重试（真实 MCP 动作）", () => {
   });
 
   it("重试总时限（含等待）用尽按原 MCP_TIMEOUT 信封返回，不再消耗新尝试", async () => {
+    // 间隔长于总时限，固定为首次调用；成功二次重试由上例覆盖。
     const setup = mcpSetup(() => http429(), 150);
     const [readAction] = setup.actions;
     const started = Date.now();
@@ -404,15 +405,14 @@ describe("System 只读重试（真实 MCP 动作）", () => {
       await setup.executor.execute(
         readAction,
         {},
-        systemContext({ maxAttempts: 10, retryDelayMs: 100 }),
+        systemContext({ maxAttempts: 10, retryDelayMs: 1_000 }),
       )
     ).value as { status: string; code: string };
     const elapsed = Date.now() - started;
     expect(value).toMatchObject({ status: "unavailable", code: "MCP_TIMEOUT" });
     expect(elapsed).toBeGreaterThanOrEqual(140);
     expect(elapsed).toBeLessThan(1_000);
-    expect(setup.calls()).toBeGreaterThanOrEqual(2);
-    expect(setup.calls()).toBeLessThanOrEqual(4);
+    expect(setup.calls()).toBe(1);
   });
 
   it("写工具只调用一次，即使回调与策略快照都可用", async () => {

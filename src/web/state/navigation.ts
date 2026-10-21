@@ -770,6 +770,34 @@ export function createNavigationActions(
     confirmSaveAndContinue: async () => {
       const pending = get().pendingNavigation;
       const state = get();
+      if (pending?.kind === "knowledge" && state.knowledgeEditor?.kind === "settings") {
+        if (navigationBusy(state) || state.knowledgeModelLoading || state.organizationLoading)
+          return;
+        const invalid = Object.keys(state.allocationInvalidInputs).some(
+          (key) => key === "global:knowledge" || key.startsWith("global:aux:knowledge_organize_"),
+        );
+        if (invalid) {
+          set({
+            navigationConfirmOpen: true,
+            navigationConfirmMessage: msg("请先修正方案中的无效数字，再保存。"),
+          });
+          return;
+        }
+        if (
+          !(await get().saveKnowledgeModel("model")) ||
+          !(await get().saveKnowledgeModel("budget")) ||
+          !(await get().saveOrganization("allocation", ["knowledge_organize"])) ||
+          (get().knowledgeDirty && !(await get().saveKnowledgeEditor()))
+        ) {
+          set({
+            navigationConfirmOpen: true,
+            navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
+          });
+          return;
+        }
+        await performNavigation(get, set, pending, false, markLanded);
+        return;
+      }
       if (Object.keys(state.allocationInvalidInputs).length) {
         set({
           navigationConfirmOpen: true,
@@ -790,7 +818,7 @@ export function createNavigationActions(
         if (!(await get().saveQqDrafts())) {
           set({
             navigationConfirmOpen: true,
-            navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
+            navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
           });
           return;
         }
@@ -800,7 +828,7 @@ export function createNavigationActions(
       if (!(await get().saveQqDrafts())) {
         set({
           navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
+          navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
         });
         return;
       }
@@ -925,6 +953,15 @@ export function createNavigationActions(
     confirmDiscardAndContinue: async () => {
       const pending = get().pendingNavigation;
       if (!pending || navigationBusy(get())) return;
+      if (pending.kind === "knowledge" && get().knowledgeEditor?.kind === "settings") {
+        get().discardOrganization("allocation", ["knowledge_organize"]);
+        get().discardKnowledgeModel("budget");
+        const editor = get().knowledgeModelEditor;
+        if (editor)
+          set({ knowledgeModelEditor: { ...editor, modelName: editor.source.model_name } });
+        await performNavigation(get, set, pending, true, markLanded);
+        return;
+      }
       set({ allocationInvalidInputs: {} });
       await performNavigation(get, set, pending, true, markLanded);
       // 切换方案不能顺带丢弃其他资料草稿。

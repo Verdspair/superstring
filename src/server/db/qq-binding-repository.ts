@@ -270,7 +270,7 @@ export function saveQqBinding(orm: Orm, args: SaveQqBindingArgs): QqBinding {
   const before = readQqBinding(orm, args.binding.id);
   if (before === null) fail("MEMORY_NOT_FOUND", "QQ绑定不存在", 404);
   assertBindingInteractionPair(orm, before, args.binding);
-  if (!needsGroupEffects(before, args.binding)) return saveQqBindingRow(orm, args);
+  if (!needsGroupEffects(orm, before, args.binding)) return saveQqBindingRow(orm, args);
   return orm.transaction(
     (tx) => {
       const current = readQqBinding(tx, args.binding.id);
@@ -635,8 +635,13 @@ export function assertQqGroupStickerSubset(
   }
 }
 
-function needsGroupEffects(before: QqBinding, after: QqBinding): boolean {
-  if (before.kind !== "group") return false;
+function needsGroupEffects(orm: Orm, before: QqBinding, after: QqBinding): boolean {
+  if (
+    before.kind !== "group" &&
+    readQqGroupConfigRow(orm, before.id, before.agentId) === null &&
+    readQqGroupConfigRow(orm, before.id, after.agentId) === null
+  )
+    return false;
   return (
     before.agentId !== after.agentId ||
     before.schemeId !== after.schemeId ||

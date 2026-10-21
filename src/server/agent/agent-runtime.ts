@@ -454,7 +454,6 @@ export class AgentRuntime {
       codeMode?: {
         runner: CodeRunner;
         enabled(): boolean;
-        allowsModel(model: string | undefined): boolean;
         /** 沙箱限额；函数形式＝每次编排重新读取。 */
         limits?: () => Partial<CodeRunnerLimits>;
       };
@@ -820,12 +819,7 @@ export class AgentRuntime {
         extensions.push(input.prepareResearchAction?.(research) ?? research);
       }
       const code = this.options.codeMode;
-      if (
-        mode === "direct" &&
-        code?.enabled() &&
-        code.runner.available &&
-        code.allowsModel(spec.model)
-      ) {
+      if (mode === "direct" && code?.enabled() && code.runner.available) {
         const program = createCodeMode({
           actions: baseActions.filter((action) =>
             this.executor.allowed(action, { owner: input.owner, signal: active.signal }, "sandbox"),
@@ -836,10 +830,10 @@ export class AgentRuntime {
           limits: code.limits?.(),
           assertSources: (sources) => input.context.assertSources?.(sources),
           assertCurrent: () => {
-            if (!code.runner.available || !code.allowsModel(spec.model))
+            if (!code.runner.available)
               throw new AgentRuntimeError(
                 "CODE_EXECUTION_UNAVAILABLE",
-                "Code execution was disabled",
+                "Code execution is unavailable",
               );
             input.context.assertCurrent?.();
           },
@@ -849,12 +843,12 @@ export class AgentRuntime {
             ...program,
             assertAvailable: () => {
               program.assertAvailable?.();
-              if (!code.runner.available || !code.allowsModel(spec.model))
+              if (!code.runner.available)
                 throw new AgentRuntimeError(
                   "CODE_EXECUTION_UNAVAILABLE",
-                  "Code execution was disabled",
+                  "Code execution is unavailable",
                 );
-              // 本群停用「代码」后构造时即使可用，也不能再启动 runner（执行边界，即时生效）。
+              // 普通全局暂停只影响新任务；本次已捕获的任务仍由权限、来源和 QQ 守卫即时复验。
               if (
                 !this.executor.allowed(program, { owner: input.owner, signal: active.signal }, mode)
               )
@@ -2651,7 +2645,6 @@ export function createAgentRuntime(options: {
   codeMode?: {
     runner: CodeRunner;
     enabled(): boolean;
-    allowsModel(model: string | undefined): boolean;
     limits?: () => Partial<CodeRunnerLimits>;
   };
   /** 进程级模型调用并发（见 `createModelPort`）；省略＝不限，与旧行为一致。 */

@@ -1,5 +1,5 @@
 import { ArrowLeft, BookOpen, Wrench } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Badge } from "../../components/ui/badge";
@@ -21,11 +21,9 @@ export function ModelPurposes({
   active = true,
   // Embedded views share the host header.
   embedded = false,
-  sharedDefaults,
 }: {
   active?: boolean;
   embedded?: boolean;
-  sharedDefaults?: ReactNode;
 } = {}) {
   const { t } = useTranslation();
   const s = useSuperstringStore(
@@ -59,12 +57,7 @@ export function ModelPurposes({
   });
 
   const target = s.contextAllocationTarget;
-  const route = useSuperstringStore((state) => state.settingsRoute);
-  const purpose = sharedDefaults && route === "models" ? "shared" : target.purpose;
-  const [sharedVisited, setSharedVisited] = useState(purpose === "shared");
-  useEffect(() => {
-    if (purpose === "shared") setSharedVisited(true);
-  }, [purpose]);
+  const purpose = target.purpose === "aux" ? "aux" : "reading";
 
   // Subpanel validities
   const [readingValidity, setReadingValidity] = useState({
@@ -75,10 +68,10 @@ export function ModelPurposes({
 
   // Synchronize initial target and load domains when becoming active
   useEffect(() => {
-    if (!active || purpose === "shared") return;
+    if (!active) return;
     void s.loadKnowledgeModel();
     void s.loadOrganization();
-  }, [active, purpose, s.loadKnowledgeModel, s.loadOrganization]);
+  }, [active, s.loadKnowledgeModel, s.loadOrganization]);
 
   // Derived active objects strictly from store editors to avoid desync
   const effectiveAgentId =
@@ -97,7 +90,7 @@ export function ModelPurposes({
   const [modelCapacities, setModelCapacities] = useState<Record<string, number | null>>({});
 
   useEffect(() => {
-    if (!active || purpose === "shared") return;
+    if (!active) return;
     let current = true;
     const isCurrent = () => {
       const state = useSuperstringStore.getState();
@@ -160,7 +153,7 @@ export function ModelPurposes({
       data-testid="context-allocation-workspace"
       aria-label={t("schemes.contextAllocation.title")}
       hidden={!active}
-      className={active ? "flex h-full min-h-0 flex-col" : "hidden"}
+      className={active ? `flex min-h-0 flex-col ${embedded ? "" : "h-full"}` : "hidden"}
     >
       {!embedded && (
         <header className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
@@ -219,12 +212,12 @@ export function ModelPurposes({
           </Button>
         </div>
       )}
-      {s.error && (
+      {!embedded && s.error && (
         <p role="alert" className="px-4 py-2 text-sm text-destructive">
           {translateNotice(s.error)}
         </p>
       )}
-      {s.feedback && (
+      {!embedded && s.feedback && (
         <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
           {translateNotice(s.feedback)}
         </p>
@@ -235,18 +228,12 @@ export function ModelPurposes({
         value={purpose}
         onValueChange={(val) => {
           if (useSuperstringStore.getState().editorLoading) return;
-          if (val === "shared") useSuperstringStore.getState().openSettingsRoute("models");
-          else openContextAllocation({ purpose: val as AllocationPurpose });
+          openContextAllocation({ purpose: val as AllocationPurpose });
         }}
         className="flex min-h-0 min-w-0 flex-1 flex-col gap-0"
       >
         <aside className="shrink-0 pb-[24px]">
           <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">
-            {sharedDefaults && (
-              <TabsTrigger value="shared" className="h-auto min-h-9 whitespace-normal text-left">
-                {t("models.sharedDefaults")}
-              </TabsTrigger>
-            )}
             <TabsTrigger
               value="reading"
               className="flex h-auto min-h-9 w-full min-w-0 shrink-0 items-center justify-start gap-2 whitespace-normal px-3 py-2 text-xs font-medium text-foreground"
@@ -270,10 +257,6 @@ export function ModelPurposes({
 
         {/* Main Content Area */}
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-[28px]" data-workspace-scroll>
-          {sharedDefaults && (sharedVisited || purpose === "shared") && (
-            <div hidden={purpose !== "shared"}>{sharedDefaults}</div>
-          )}
-
           {/* PURPOSE: READING BUDGETS (GLOBAL SCOPE) */}
           {purpose === "reading" && (
             <div className="w-full min-w-0 space-y-6">

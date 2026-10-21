@@ -83,13 +83,13 @@ export function activeSpace(
   // and the external API entry stay here so each destination keeps its own screen and tab.
   // context-allocation 是既有定向目标路由（requestContextAllocation 生命周期不变），
   // 现投影到模型服务空间；唯一宿主是 environment/ModelPurposes。
+  if (["models", "external-api", "management", "knowledge-model"].includes(state.settingsRoute))
+    return "models";
   if (
-    ["models", "external-api", "management", "knowledge-model", "context-allocation"].includes(
+    ["long-memory", "profile", "knowledge-config", "qq-stickers", "context-allocation"].includes(
       state.settingsRoute,
     )
   )
-    return "models";
-  if (["long-memory", "profile", "knowledge-config", "qq-stickers"].includes(state.settingsRoute))
     return "library";
   if (
     [

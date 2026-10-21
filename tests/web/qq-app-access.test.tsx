@@ -263,7 +263,9 @@ describe("scheme bindings (详情「使用会话」与全局「会话绑定」�
     const fake = await renderBindings();
     fireEvent.click(screen.getByRole("button", { name: i18n.t("schemes.bindings.add") }));
     const dialog = () => within(screen.getByRole("dialog"));
-    fireEvent.change(dialog().getByLabelText("号码"), { target: { value: "50005" } });
+    fireEvent.change(dialog().getByLabelText(i18n.t("qq.entry.groupNumber")), {
+      target: { value: "50005" },
+    });
     fireEvent.change(dialog().getByLabelText("Agent"), { target: { value: AGENT_ID } });
     // ALL 入口无默认首方案：显式选择方案后绑定才可用。
     fireEvent.change(dialog().getByLabelText("方案"), { target: { value: SCHEME_ID } });

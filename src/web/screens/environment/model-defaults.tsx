@@ -1,5 +1,5 @@
 import { BookOpen, Bot, Layers } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { SettingsGroup, SettingsRow } from "../../components/settings-group";
@@ -10,8 +10,18 @@ import { knowledgeModelDirty, organizationDirty } from "../../features/knowledge
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 
-export function ModelDefaults({ active = true }: { active?: boolean } = {}) {
+export function ModelDefaults({
+  active = true,
+  scope = "organization",
+}: {
+  active?: boolean;
+  scope?: "organization" | "knowledge";
+} = {}) {
   const { t } = useTranslation();
+  const instanceId = useId();
+  const catalogId = `${instanceId}-model-catalog`;
+  const defaultModelId = `${instanceId}-organization-model`;
+  const knowledgeModelId = `${instanceId}-knowledge-model`;
   const state = useSuperstringStore(
     useShallow((state) => ({
       discardOrganization: state.discardOrganization,
@@ -33,148 +43,157 @@ export function ModelDefaults({ active = true }: { active?: boolean } = {}) {
   const { loadOrganization, loadKnowledgeModel, organizationEditor: editor } = state;
   useEffect(() => {
     if (!active) return;
-    void loadOrganization();
-    void loadKnowledgeModel();
-  }, [active, loadOrganization, loadKnowledgeModel]);
+    if (scope === "organization") void loadOrganization();
+    else void loadKnowledgeModel();
+  }, [active, scope, loadOrganization, loadKnowledgeModel]);
 
   return (
     <div className="w-full space-y-6">
-      <datalist id="workspace-model-catalog">
+      <datalist id={catalogId}>
         {state.modelNames.map((name) => (
           <option key={name} value={name} />
         ))}
       </datalist>
 
-      <SettingsGroup
-        title={t("models.sharedDefaults")}
-        description={t("models.defaultsHint")}
-        icon={Layers}
-      >
-        {editor && (
-          <>
-            <SettingsRow
-              label={
-                <label
-                  htmlFor="default-model-modelName"
-                  className="cursor-pointer text-sm font-medium text-foreground"
-                >
-                  {t("models.purpose.organization")}
-                </label>
-              }
-              description={t("models.purpose.organization.hint")}
-            >
-              <Input
-                id="default-model-modelName"
-                list="workspace-model-catalog"
-                value={editor.modelName ?? ""}
-                placeholder={t("models.followDefault")}
-                disabled={state.settingsSaving || state.organizationLoading}
-                aria-label={t("models.purpose.organization")}
-                onChange={(e) => state.patchOrganization(e.target.value || null)}
-                className="w-full sm:w-64 sm:min-w-56"
-              />
-            </SettingsRow>
+      {scope === "organization" && (
+        <SettingsGroup
+          title={t("models.sharedDefaults")}
+          description={t("models.defaultsHint")}
+          icon={Layers}
+        >
+          {editor && (
+            <>
+              <SettingsRow
+                label={
+                  <label
+                    htmlFor={defaultModelId}
+                    className="cursor-pointer text-sm font-medium text-foreground"
+                  >
+                    {t("models.purpose.organization")}
+                  </label>
+                }
+                description={t("models.purpose.organization.hint")}
+              >
+                <Input
+                  id={defaultModelId}
+                  list={catalogId}
+                  value={editor.modelName ?? ""}
+                  placeholder={t("models.followDefault")}
+                  disabled={state.settingsSaving || state.organizationLoading}
+                  aria-label={t("models.purpose.organization")}
+                  onChange={(e) => state.patchOrganization(e.target.value || null)}
+                  className="w-full sm:w-64 sm:min-w-56"
+                />
+              </SettingsRow>
 
-            <div className="flex flex-wrap items-center justify-end gap-2 bg-muted/15 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-end gap-2 bg-muted/15 px-4 py-3">
+                <Button
+                  variant="outline"
+                  tooltip={t("hints.system.discard")}
+                  disabled={
+                    state.settingsSaving || !organizationDirty(editor, "organization-model")
+                  }
+                  onClick={() => state.discardOrganization("organization-model")}
+                >
+                  {t("models.discard")}
+                </Button>
+                <Button
+                  tooltip={t("hints.system.saveOrganizationDefault")}
+                  disabled={
+                    state.settingsSaving || !organizationDirty(editor, "organization-model")
+                  }
+                  onClick={() => void state.saveOrganization("organization-model")}
+                >
+                  {t("models.saveDefaults")}
+                </Button>
+              </div>
+            </>
+          )}
+
+          {!editor && (
+            <div className="p-4 sm:p-5">
               <Button
                 variant="outline"
-                tooltip={t("hints.system.discard")}
-                disabled={state.settingsSaving || !organizationDirty(editor, "organization-model")}
-                onClick={() => state.discardOrganization("organization-model")}
+                tooltip={t("hints.system.retryOrganizationDefault")}
+                disabled={state.organizationLoading}
+                onClick={() => void loadOrganization()}
               >
-                {t("models.discard")}
-              </Button>
-              <Button
-                tooltip={t("hints.system.saveOrganizationDefault")}
-                disabled={state.settingsSaving || !organizationDirty(editor, "organization-model")}
-                onClick={() => void state.saveOrganization("organization-model")}
-              >
-                {t("models.saveDefaults")}
+                {t(state.organizationLoading ? "models.loadingDefaults" : "models.retryDefaults")}
               </Button>
             </div>
-          </>
-        )}
+          )}
 
-        {!editor && (
-          <div className="p-4 sm:p-5">
-            <Button
-              variant="outline"
-              tooltip={t("hints.system.retryOrganizationDefault")}
-              disabled={state.organizationLoading}
-              onClick={() => void loadOrganization()}
+          {state.organizationError && (
+            <div
+              role="alert"
+              className="border-t border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
             >
-              {t(state.organizationLoading ? "models.loadingDefaults" : "models.retryDefaults")}
-            </Button>
-          </div>
-        )}
+              {translateNotice(state.organizationError)}
+            </div>
+          )}
+        </SettingsGroup>
+      )}
 
-        {state.organizationError && (
-          <div
-            role="alert"
-            className="border-t border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
-          >
-            {translateNotice(state.organizationError)}
-          </div>
-        )}
-      </SettingsGroup>
-
-      <SettingsGroup
-        title={t("models.knowledgeOrganization")}
-        description={t("models.knowledgeHint")}
-        icon={BookOpen}
-      >
-        <SettingsRow
-          label={
-            <label
-              htmlFor="knowledge-default-model"
-              className="cursor-pointer text-sm font-medium text-foreground"
-            >
-              {t("models.knowledgeModel")}
-            </label>
-          }
+      {scope === "knowledge" && (
+        <SettingsGroup
+          title={t("models.knowledgeOrganization")}
           description={t("models.knowledgeHint")}
+          icon={BookOpen}
         >
-          <Input
-            id="knowledge-default-model"
-            list="workspace-model-catalog"
-            value={state.knowledgeModelEditor?.modelName ?? ""}
-            disabled={
-              !state.knowledgeModelEditor || state.knowledgeModelLoading || state.settingsSaving
+          <SettingsRow
+            label={
+              <label
+                htmlFor={knowledgeModelId}
+                className="cursor-pointer text-sm font-medium text-foreground"
+              >
+                {t("models.knowledgeModel")}
+              </label>
             }
-            placeholder={t("models.followDefault")}
-            aria-label={t("models.knowledgeModel")}
-            onChange={(event) => state.patchKnowledgeModel(event.target.value || null)}
-            className="w-full sm:w-64 sm:min-w-56"
-          />
-        </SettingsRow>
+          >
+            <Input
+              id={knowledgeModelId}
+              list={catalogId}
+              value={state.knowledgeModelEditor?.modelName ?? ""}
+              disabled={
+                !state.knowledgeModelEditor || state.knowledgeModelLoading || state.settingsSaving
+              }
+              placeholder={t("models.followDefault")}
+              aria-label={t("models.knowledgeModel")}
+              onChange={(event) => state.patchKnowledgeModel(event.target.value || null)}
+              className="w-full sm:w-64 sm:min-w-56"
+            />
+          </SettingsRow>
 
-        {!state.knowledgeModelEditor && (
-          <div className="p-4 sm:p-5">
+          {!state.knowledgeModelEditor && (
+            <div className="p-4 sm:p-5">
+              <Button
+                variant="outline"
+                tooltip={t("hints.system.retryKnowledgeModel")}
+                disabled={state.knowledgeModelLoading}
+                onClick={() => void loadKnowledgeModel()}
+              >
+                {t(
+                  state.knowledgeModelLoading ? "models.loadingKnowledge" : "models.retryKnowledge",
+                )}
+              </Button>
+            </div>
+          )}
+
+          <div className="flex items-center justify-end bg-muted/15 px-4 py-3">
             <Button
-              variant="outline"
-              tooltip={t("hints.system.retryKnowledgeModel")}
-              disabled={state.knowledgeModelLoading}
-              onClick={() => void loadKnowledgeModel()}
+              tooltip={t("hints.system.saveKnowledgeModel")}
+              disabled={
+                state.settingsSaving ||
+                state.knowledgeModelLoading ||
+                !knowledgeModelDirty(state.knowledgeModelEditor, "model")
+              }
+              onClick={() => void state.saveKnowledgeModel("model")}
             >
-              {t(state.knowledgeModelLoading ? "models.loadingKnowledge" : "models.retryKnowledge")}
+              {t("models.saveKnowledgeModel")}
             </Button>
           </div>
-        )}
-
-        <div className="flex items-center justify-end bg-muted/15 px-4 py-3">
-          <Button
-            tooltip={t("hints.system.saveKnowledgeModel")}
-            disabled={
-              state.settingsSaving ||
-              state.knowledgeModelLoading ||
-              !knowledgeModelDirty(state.knowledgeModelEditor, "model")
-            }
-            onClick={() => void state.saveKnowledgeModel("model")}
-          >
-            {t("models.saveKnowledgeModel")}
-          </Button>
-        </div>
-      </SettingsGroup>
+        </SettingsGroup>
+      )}
     </div>
   );
 }

@@ -78,14 +78,9 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         }));
       return existing;
     }
-    const { items } = await get().apiClient.listConversations({
-      channel: "web",
-      sourceId: sessionId,
-    });
-    const summary = items.find((item) => item.sourceId === sessionId && item.channel === "web");
+    const summary = await get().resolveConversationSource("web", sessionId, null);
     if (!summary)
       throw new ApiError(404, "CONVERSATION_NOT_FOUND", msg("未找到对应会话，请刷新后重试。"));
-    get().rememberConversation(summary);
     set((state) => ({
       sessionConversationIds: { ...state.sessionConversationIds, [sessionId]: summary.id },
       conversationById: {

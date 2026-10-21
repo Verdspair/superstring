@@ -39,10 +39,12 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { latestKnowledgeSettings } from "@/features/knowledge/types";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 import type { KnowledgeCategory } from "../../../shared/contracts/knowledge";
+import { knowledgeSettingsDirty } from "../../features/knowledge/types";
+import { ModelPurposes } from "../environment/ModelPurposes";
+import { ModelDefaults } from "../environment/model-defaults";
 import { JobRunLink } from "../runs/RunEntry";
 
 /** 搜索输入防抖常量（250ms），避免高频击键请求风暴与网络竞态 */
@@ -321,7 +323,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
           </Button>
         </div>
       )}
-      {s.error && (
+      {s.error && !s.knowledgeEditor && (
         <div className="flex flex-wrap items-center gap-3">
           <p role="alert" className="text-sm text-destructive">
             {translateNotice(s.error)}
@@ -589,6 +591,9 @@ function KnowledgeEditorPanel() {
         knowledgeDirty: state.knowledgeDirty,
         knowledgeEditor: state.knowledgeEditor,
         knowledgeModelEditor: state.knowledgeModelEditor,
+        organizationEditor: state.organizationEditor,
+        allocationInvalidInputs: state.allocationInvalidInputs,
+        settingsSaving: state.settingsSaving,
         knowledgeSettings: state.knowledgeSettings,
         openSettingsRoute: state.openSettingsRoute,
         requestKnowledgeEditor: state.requestKnowledgeEditor,
@@ -887,42 +892,9 @@ function KnowledgeEditorPanel() {
                       }
                     />
                   </Field>
-                  {/* 预算归系统能力→知识查询的全局分组：这里只读展示已存上限并直达，避免双写。 */}
-                  <Field
-                    label="library.workspace.knowledge.budget.tokens"
-                    tooltip={t("hints.library.knowledge.budgetField")}
-                  >
-                    <Input
-                      type="number"
-                      disabled
-                      value={
-                        latestKnowledgeSettings([
-                          s.knowledgeSettings,
-                          s.knowledgeModelEditor?.source,
-                          editor.source,
-                        ])?.context_budget ?? editor.source.context_budget
-                      }
-                    />
-                  </Field>
-                  <p className="text-sm text-muted-foreground">
-                    {t("library.organization.model")}:{" "}
-                    {editor.source.model_name ?? t("library.unset")}
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      tooltip={t("hints.library.knowledge.tools")}
-                      onClick={() => s.openSettingsRoute("knowledge-tools")}
-                    >
-                      {t("capabilities.resources.openKnowledgeTools")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      tooltip={t("hints.library.knowledge.modelServices")}
-                      onClick={() => s.openSettingsRoute("knowledge-model")}
-                    >
-                      {t("library.open.model.services")}
-                    </Button>
+                  <ModelDefaults active scope="knowledge" />
+                  <div className="min-h-0">
+                    <ModelPurposes active embedded />
                   </div>
                 </>
               )}
@@ -930,7 +902,9 @@ function KnowledgeEditorPanel() {
             <SheetFooter className="border-t">
               <div className="flex w-full items-center justify-between gap-3">
                 <span className="text-xs text-muted-foreground">
-                  {s.knowledgeDirty ? t("library.unsaved.changes") : t("library.saved")}
+                  {(editor.kind === "settings" ? knowledgeSettingsDirty(s) : s.knowledgeDirty)
+                    ? t("library.unsaved.changes")
+                    : t("library.saved")}
                 </span>
                 <div className="flex gap-2">
                   <Button
@@ -942,7 +916,11 @@ function KnowledgeEditorPanel() {
                     {t("library.close")}
                   </Button>
                   <Button
-                    disabled={s.knowledgeBusy}
+                    disabled={
+                      s.knowledgeBusy ||
+                      s.settingsSaving ||
+                      (editor.kind === "settings" && !s.knowledgeDirty)
+                    }
                     tooltip={t("hints.library.knowledge.saveEditor")}
                     onClick={() => void s.saveKnowledgeEditor()}
                   >

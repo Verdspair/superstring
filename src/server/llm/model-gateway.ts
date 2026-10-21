@@ -756,13 +756,6 @@ export interface ExternalModelRoute {
   readonly baseUrl: string;
   readonly apiKey: string | null;
   readonly contextWindow: number;
-  /** 能力声明里的"工具调用"；undefined = 从未声明过能力，维持现状（照发原生 tools）。 */
-  readonly toolCalling?: boolean;
-  /**
-   * 能力声明里的"图片输入"三态。undefined = 未声明（不是 false，允许原生尝试）；
-   * false = 发请求前识别为 MODEL_IMAGE_UNSUPPORTED；true = 声明支持。
-   */
-  readonly vision?: boolean;
   /**
    * Provider 行修订号：声明/登记变化后，"这个 provider+model 拒绝过图片"的负缓存指纹随之
    * 失效，不会用旧观察拦新声明。本地路由没有修订号。
@@ -862,8 +855,8 @@ export function createLmStudioClient(
   const localEncodingOf = options.localModelEncoding;
 
   /**
-   * 预算描述符的当前性判定：准备时冻结的外部路由（providerRevision/baseUrl/apiKey/窗口/tokenizer/
-   * vision/toolCalling）必须与**此刻**解析出来的一致，local 路由则要求现在仍不是外部路由。
+   * 预算描述符的当前性判定：准备时冻结的外部路由（providerRevision/baseUrl/apiKey/窗口/tokenizer）
+   * 必须与**此刻**解析出来的一致，local 路由则要求现在仍不是外部路由。
    * 比较只做布尔判定，不回传 baseUrl/apiKey/窗口——密钥与服务地址不进错误消息。
    */
   const sameRoute = (model: string, frozen: ExternalModelRoute | null): boolean => {
@@ -874,18 +867,16 @@ export function createLmStudioClient(
       frozen.baseUrl.replace(/\/+$/, "") === current.baseUrl.replace(/\/+$/, "") &&
       (frozen.apiKey ?? "") === (current.apiKey ?? "") &&
       frozen.contextWindow === current.contextWindow &&
-      frozen.tokenizerEncoding === current.tokenizerEncoding &&
-      frozen.vision === current.vision &&
-      frozen.toolCalling === current.toolCalling
+      frozen.tokenizerEncoding === current.tokenizerEncoding
     );
   };
   const ROUTE_CHANGED_MESSAGE =
     "上下文预算已过期：模型的路由配置在准备之后发生了变化，本次请求不发出（重新准备后再试）";
 
   /**
-   * Vision 闸门：只有**声明** vision:false 的模型在发请求前拦下；未声明（undefined）允许
-   * 原生尝试，不猜「含 image 就不支持」。进程级按 provider 修订+服务+模型指纹记住"明确拒绝
-   * 过图片"的服务/模型（见 complete 内 imageRejectedKeys），不回写 provider 持久配置。
+   * Vision 闸门只看实际观察：进程级按 provider 修订+服务+模型指纹记住"明确拒绝过图片"的
+   * 服务/模型（见 complete 内 imageRejectedKeys），不回写 provider 持久配置；不再读取用户
+   * 声明的 vision 开关，未拒绝过就允许原生尝试，不猜「含 image 就不支持」。
    */
   const visionRejected = new Map<string, number>();
   const imageFingerprint = (model: string, route: ExternalModelRoute | null): string =>
@@ -897,10 +888,7 @@ export function createLmStudioClient(
     const route = routeOfExternal(model);
     const key = imageFingerprint(model, route);
     const rejectedAt = visionRejected.get(key);
-    if (
-      route?.vision === false ||
-      (rejectedAt !== undefined && rejectedAt === imageFingerprintRevision(route))
-    ) {
+    if (rejectedAt !== undefined && rejectedAt === imageFingerprintRevision(route)) {
       throw new ModelUnavailableError(
         "MODEL_IMAGE_UNSUPPORTED",
         `当前模型 ${model} 不支持图片输入，请改用支持视觉的模型或关闭图片输入`,
@@ -909,12 +897,10 @@ export function createLmStudioClient(
   };
 
   /**
-   * 能力维度的图片放行判定（T10 准备钩子用）：与消息无关——只看声明与进程负缓存。
-   * 未声明（undefined）=== true，与明确 vision:false 区分；未知不全拒，最终消息是否真的
-   * 带图由发送前的 assertVisionAllowed 按最终 messages 再拦。
+   * 图片放行判定（T10 准备钩子用）：与消息无关——只看进程负缓存；未观察过明确拒绝就允许，
+   * 最终消息是否真的带图由发送前的 assertVisionAllowed 按最终 messages 再拦。
    */
   const imagesAllowedFor = (model: string, route: ExternalModelRoute | null): boolean => {
-    if (route?.vision === false) return false;
     const rejectedAt = visionRejected.get(imageFingerprint(model, route));
     return !(rejectedAt !== undefined && rejectedAt === imageFingerprintRevision(route));
   };
@@ -1148,8 +1134,8 @@ export function createLmStudioClient(
         });
         options.signal?.throwIfAborted();
         const finalMessages = prepared.messages ?? options.preparedFrom.messages;
-        // 能力已拒（声明 vision:false 或负缓存）而钩子仍回图：转换前就拦——不取字节、不解码，
-        // 能力问题不冒充来源问题（缺 resolver 的转换错误是另一类缺陷）。
+        // 负缓存已拒而钩子仍回图：转换前就拦——不取字节、不解码，能力问题不冒充来源问题
+        // （缺 resolver 的转换错误是另一类缺陷）。
         if (!imagesAllowed && hasModelImageParts(finalMessages)) {
           throw new ModelUnavailableError(
             "MODEL_IMAGE_UNSUPPORTED",
@@ -1187,14 +1173,11 @@ export function createLmStudioClient(
           : isExternal
             ? toStrictRequiredSchema(options.responseSchema)
             : options.responseSchema;
-      // 原生 tools 只发给外部路由（issue #10）：本地模型服务保持那份冻结的 JSON 决策协议。声明的
-      // toolCalling:false 是传输开关；明确拒绝过 tools 的服务本进程也不再带（见 tool-calling.ts）。
+      // 原生 tools 只发给外部路由（issue #10）：本地模型服务保持那份冻结的 JSON 决策协议。
+      // 外部模型默认允许尝试原生 tools；只有服务明确拒绝过 tools 的本进程负缓存才不再带
+      // （见 tool-calling.ts）。
       const toolDeclarations = options.tools ?? [];
-      let sendTools =
-        isExternal &&
-        externalRoute?.toolCalling !== false &&
-        toolDeclarations.length > 0 &&
-        !toolsUnavailable(key);
+      let sendTools = isExternal && toolDeclarations.length > 0 && !toolsUnavailable(key);
       // retryPolicy 路径的整次逻辑调用共享状态：剩余次数与一个共享 lifetime（定时器在第一次
       // 真正发送时启动，总时限横跨重试等待与后续发送、不因重试重置；收口 finally 关闭）。
       let retriesLeft =

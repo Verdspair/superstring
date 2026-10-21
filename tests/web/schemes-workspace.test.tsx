@@ -484,7 +484,7 @@ it("详情不再有外部式 QQ 连接胶囊，返回目录走面包屑", async 
   expect(screen.queryByRole("button", { name: translate("schemes.detail.connection") })).toBeNull();
   const nav = screen.getByRole("navigation", { name: translate("workspace.schemes") });
   expect(within(nav).getByText("QQ")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "返回方案目录" }));
+  fireEvent.click(within(nav).getByRole("button", { name: "返回方案目录" }));
   expect(store.getState().settingsRoute).toBe("scheme-library");
 });
 
@@ -514,7 +514,12 @@ it("详情外壳：面包屑显示真实编辑对象、返回目录", async () =
   expect(within(nav).getByText("QQ")).toBeTruthy();
   const name = within(nav).getByText("默认方案");
   expect(name.className).not.toContain("truncate");
-  fireEvent.click(screen.getByRole("button", { name: "返回方案目录" }));
+  const breadcrumbBack = within(nav).getByRole("button", { name: "返回方案目录" });
+  const explicitBack = screen
+    .getAllByRole("button", { name: "返回方案目录" })
+    .find((button) => button !== breadcrumbBack);
+  expect(explicitBack).toBeTruthy();
+  fireEvent.click(explicitBack!);
   expect(store.getState().settingsRoute).toBe("scheme-library");
 });
 

@@ -55,6 +55,7 @@ import {
 } from "../../shared/contracts/qq-storage";
 import { botDiagnostics } from "../db/bot-diagnostics";
 import { readOrganizationSettings } from "../db/organization-repository";
+import { deleteQqBinding } from "../db/qq-binding-removal";
 import {
   bindingResponse,
   insertQqBinding,
@@ -903,6 +904,18 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
         }),
       ),
     );
+  });
+
+  router.delete("/bindings/:bindingId", (c) => {
+    const bindingId = parseUuidParam(c.req.param("bindingId"));
+    const rawRevision = c.req.query("expected_revision");
+    // Query integers are parsed the same way the page-number helpers do: digits only, then the
+    // safe-integer check — "1.5", "1e3" and "" are request validation failures, never a revision.
+    if (rawRevision === undefined || !/^\d+$/.test(rawRevision)) throw validationFailed();
+    const expectedRevision = Number(rawRevision);
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw validationFailed();
+    deleteQqBinding(orm, bindingId, expectedRevision);
+    return c.body(null, 204);
   });
 
   /** 本群 Agent 配置：读是原始快照，写是对绑定 / Agent / 基础方案 / 配置四处 revision 的一次比较交换。 */

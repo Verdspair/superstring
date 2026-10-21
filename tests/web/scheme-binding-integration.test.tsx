@@ -246,6 +246,34 @@ afterEach(() => {
 });
 
 describe("使用会话绑定视图", () => {
+  it("刷新目录时保留已显示行和DOM，禁用操作；读取失败后改为未知", async () => {
+    let rejectRefresh!: (reason: unknown) => void;
+    const pending = new Promise<QqBindingResponse[]>((_resolve, reject) => {
+      rejectRefresh = reject;
+    });
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce([bindingOf(SCHEME_A, BINDING_A, "30003")])
+      .mockReturnValueOnce(pending);
+    await renderBoards({ listQqBindings: list });
+    const row = screen.getByText("30003").closest("li");
+    expect(row).not.toBeNull();
+    const refreshing = store.getState().loadQqBindingDirectory();
+    await act(async () => {});
+    expect(screen.getByText("30003").closest("li")).toBe(row);
+    expect(
+      screen.getByRole("button", { name: ui("connections.manage") }).closest("fieldset")?.disabled,
+    ).toBe(true);
+    expect(store.getState().qqBindingsLoaded).toBe(false);
+    expect(store.getState().qqBindingsLoading).toBe(true);
+    await act(async () => {
+      rejectRefresh(new Error("目录离线"));
+      await refreshing;
+    });
+    expect(screen.queryByText("30003")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain(ui("schemes.bindings.loadFailed"));
+  });
+
   it("用键盘关闭绑定抽屉后焦点回到管理按钮", async () => {
     await renderBoards({
       listQqBindings: vi.fn().mockResolvedValue([bindingOf(SCHEME_A, BINDING_A, "30003")]),
@@ -419,7 +447,8 @@ describe("添加会话", () => {
         scheme_id: SCHEME_A,
       }),
     );
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("dialog", { name: ui("qq.entry.successTitle") })).toBeTruthy();
+    expect(screen.getByRole("button", { name: ui("qq.entry.configure") })).toBeTruthy();
     // 成功才清目标草稿。
     expect(store.getState().qqInputs.manualPeer).toBe("");
     expect(store.getState().qqInputs.manualPicked).toBe("");
@@ -433,7 +462,7 @@ describe("添加会话", () => {
         .mockResolvedValue(bindingOf(SCHEME_A, BINDING_A, "60006")),
     });
     let dialog = await openAdd();
-    const number = within(dialog).getByLabelText(ui("connections.number")) as HTMLInputElement;
+    const number = within(dialog).getByLabelText(ui("qq.entry.groupNumber")) as HTMLInputElement;
     fireEvent.change(number, { target: { value: "60006" } });
     const agentSelect = within(dialog).getByLabelText(
       ui("connections.assistant"),
@@ -454,7 +483,7 @@ describe("添加会话", () => {
     dialog = screen.getByRole("dialog");
     expect(within(dialog).getByRole("alert").textContent).toContain("bind failed");
     expect(
-      (within(dialog).getByLabelText(ui("connections.number")) as HTMLInputElement).value,
+      (within(dialog).getByLabelText(ui("qq.entry.groupNumber")) as HTMLInputElement).value,
     ).toBe("60006");
     expect(store.getState().qqInputs.manualPeer).toBe("60006");
     expect(store.getState().qqInputs.manualAgentId).toBe(AGENT_B);
@@ -475,7 +504,7 @@ describe("添加会话", () => {
     // 打开即预选当前方案，但不产生脏草稿。
     expect(store.getState().qqInputs.manualSchemeId).toBe(SCHEME_A);
     expect(qqDraftChanges(store.getState())).toEqual([]);
-    fireEvent.change(within(dialog).getByLabelText(ui("connections.number")), {
+    fireEvent.change(within(dialog).getByLabelText(ui("qq.entry.groupNumber")), {
       target: { value: "60006" },
     });
     await userEvent.selectOptions(
@@ -495,7 +524,7 @@ describe("添加会话", () => {
     // 重开（含观察行选择）草稿仍在。
     dialog = await openAdd();
     expect(
-      (within(dialog).getByLabelText(ui("connections.number")) as HTMLInputElement).value,
+      (within(dialog).getByLabelText(ui("qq.entry.groupNumber")) as HTMLInputElement).value,
     ).toBe("60006");
     expect(
       (within(dialog).getByLabelText(ui("connections.assistant")) as HTMLSelectElement).value,
@@ -594,7 +623,7 @@ describe("添加会话", () => {
   it("添加草稿的方案失效时不静默改绑到入口方案", async () => {
     const { fake } = await renderBoards();
     const dialog = await openAdd();
-    fireEvent.change(within(dialog).getByLabelText(ui("connections.number")), {
+    fireEvent.change(within(dialog).getByLabelText(ui("qq.entry.groupNumber")), {
       target: { value: "60006" },
     });
     await userEvent.selectOptions(
@@ -622,7 +651,7 @@ describe("添加会话", () => {
       listQqBindings: vi.fn().mockResolvedValue([bindingOf(SCHEME_B, BINDING_B, "40004")]),
     });
     const dialog = await openAdd();
-    fireEvent.change(within(dialog).getByLabelText(ui("connections.number")), {
+    fireEvent.change(within(dialog).getByLabelText(ui("qq.entry.groupNumber")), {
       target: { value: "40004" },
     });
     expect(
@@ -635,7 +664,7 @@ describe("草稿的保存与放弃", () => {
   it("缺 Agent 时保存并继续原地失败：不写绑定、不改路由、草稿保留；放弃才清", async () => {
     const { fake } = await renderBoards();
     const dialog = await openAdd();
-    fireEvent.change(within(dialog).getByLabelText(ui("connections.number")), {
+    fireEvent.change(within(dialog).getByLabelText(ui("qq.entry.groupNumber")), {
       target: { value: "60006" },
     });
     await userEvent.click(within(dialog).getByRole("button", { name: ui("connections.cancel") }));
@@ -907,7 +936,7 @@ describe("scheme-bindings 路由", () => {
     ) as HTMLSelectElement;
     expect(schemeSelect.value).toBe("");
     expect(store.getState().qqInputs.manualSchemeId).toBe("");
-    fireEvent.change(within(addDialog).getByLabelText(ui("connections.number")), {
+    fireEvent.change(within(addDialog).getByLabelText(ui("qq.entry.groupNumber")), {
       target: { value: "60006" },
     });
     await userEvent.selectOptions(
@@ -936,7 +965,7 @@ describe("scheme-bindings 路由", () => {
       (within(addDialog).getByLabelText(ui("connections.schemes")) as HTMLSelectElement).value,
     ).toBe(SCHEME_A);
     expect(
-      (within(addDialog).getByLabelText(ui("connections.number")) as HTMLInputElement).value,
+      (within(addDialog).getByLabelText(ui("qq.entry.groupNumber")) as HTMLInputElement).value,
     ).toBe("60006");
   });
 });
@@ -1181,7 +1210,9 @@ describe("本会话并行上限与防刷屏覆盖（0059）", () => {
     await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
     let sheet = screen.getByRole("dialog");
     // 抽屉标题是「私聊 {peer_id}」：按同一文案键的子串核对编辑入口一致。
-    expect(within(sheet).getByText(new RegExp(ui("connections.privateChat")))).toBeTruthy();
+    expect(
+      within(sheet).getByRole("heading", { name: `${ui("connections.privateChat")} 30003` }),
+    ).toBeTruthy();
     const anti = () =>
       within(sheet).getByRole("combobox", {
         name: ui("connections.inputAntiSpam"),

@@ -12,6 +12,7 @@ import { useSuperstringStore } from "../../store";
 import { QqJudgementModel } from "../environment/model-defaults";
 import { AllocationModelCapacity } from "./AllocationModelCapacity";
 import { ContextAllocationAuxiliary } from "./ContextAllocationAuxiliary";
+import { QqConversationEntry } from "./QqConversationEntry";
 import { TransportSettings } from "./transport-settings";
 
 const connectionPhaseLabels: Record<string, string> = {
@@ -338,6 +339,7 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
               <RefreshCw className="size-3.5" />
               {t("connections.refreshState")}
             </Button>
+            <QqConversationEntry />
           </div>
           <TransportSettings active={active} />
           <div className="mt-6">

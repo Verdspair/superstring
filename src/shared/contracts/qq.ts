@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { IsoTimestampSchema, nonBlankString, UuidSchema } from "./common";
 import { QqSchemeAllocationSchema } from "./context-allocation";
+import { normalizeOneBotAccountId } from "./onebot-identity";
 import {
   QQ_MEDIA_INPUT_DEFAULT,
   type QqMediaInputSettings,
@@ -983,6 +984,13 @@ export const UpdateQqOwnerRequestSchema = z.strictObject({
 // not configured or does not match (`owner_identity_required`). Turning it on therefore
 // cannot half-succeed.
 
+/** Both sides normalize through the shared OneBot account id before comparing. */
+export function isQqPrivateSelfTarget(accountId: unknown, peerId: unknown): boolean {
+  const account = normalizeOneBotAccountId(accountId);
+  const peer = normalizeOneBotAccountId(peerId);
+  return account !== null && peer !== null && account === peer;
+}
+
 /**
  * Per-conversation module switches (§0.6/F05). `null` follows the scheme; true/false override it
  * for this conversation only. The plan allows a group to switch a MODULE off — the detailed
@@ -1046,24 +1054,34 @@ export const QqBindingResponseSchema = z.strictObject({
 });
 export type QqBindingResponse = z.infer<typeof QqBindingResponseSchema>;
 
-export const CreateQqBindingRequestSchema = z.strictObject({
-  account_id: z.string().min(1),
-  kind: z.enum(["group", "private"]),
-  peer_id: z.string().min(1),
-  agent_id: UuidSchema,
-  scheme_id: UuidSchema,
-  paused: z.boolean().default(false),
-  /** Omitted means a fresh conversation: every module follows its scheme. */
-  triggers: QqBindingTriggersSchema.optional(),
-  /** Omitted means no attention list, which is what a fresh conversation has. */
-  attention: QqBindingAttentionSchema.optional(),
-  /** `null` means automatic organising is off for this conversation, which is the default. */
-  memory_batch_size: z.number().int().min(1).nullable().default(null),
-  share_web_memory: z.boolean().default(false),
-  /** 0059 的覆盖两组。省略＝全新会话：全部跟随方案（成员全 null）。 */
-  task_limits: QqBindingTaskLimitsSchema.optional(),
-  input_anti_spam: QqBindingInputAntiSpamSchema.optional(),
-});
+export const CreateQqBindingRequestSchema = z
+  .strictObject({
+    account_id: z.string().min(1),
+    kind: z.enum(["group", "private"]),
+    peer_id: z.string().min(1),
+    agent_id: UuidSchema,
+    scheme_id: UuidSchema,
+    paused: z.boolean().default(false),
+    /** Omitted means a fresh conversation: every module follows its scheme. */
+    triggers: QqBindingTriggersSchema.optional(),
+    /** Omitted means no attention list, which is what a fresh conversation has. */
+    attention: QqBindingAttentionSchema.optional(),
+    /** `null` means automatic organising is off for this conversation, which is the default. */
+    memory_batch_size: z.number().int().min(1).nullable().default(null),
+    share_web_memory: z.boolean().default(false),
+    /** 0059 的覆盖两组。省略＝全新会话：全部跟随方案（成员全 null）。 */
+    task_limits: QqBindingTaskLimitsSchema.optional(),
+    input_anti_spam: QqBindingInputAntiSpamSchema.optional(),
+  })
+  // Private only: a group's peer is not a "counterpart", so the same number stays legal there.
+  .refine(
+    (request) =>
+      request.kind !== "private" || !isQqPrivateSelfTarget(request.account_id, request.peer_id),
+    {
+      message: "对方QQ号不能是机器人自己的账号，请填写联系人的QQ号。",
+      path: ["peer_id"],
+    },
+  );
 export type CreateQqBindingRequest = z.infer<typeof CreateQqBindingRequestSchema>;
 
 export const UpdateQqBindingRequestSchema = z.strictObject({

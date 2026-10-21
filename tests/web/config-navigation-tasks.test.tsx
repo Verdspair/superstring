@@ -219,27 +219,23 @@ describe("model entry routing", () => {
   });
 });
 
-describe("model services route-driven tab", () => {
-  it("follows the route in both directions between providers and defaults", async () => {
+describe("model services resource routes", () => {
+  it("keeps provider resources on both the canonical and legacy model routes", async () => {
     await renderModels("external-api");
-    expect(
-      screen.getByRole("tab", { selected: true, name: i18n.t("models.resources") }).textContent,
-    ).toBe(i18n.t("models.resources"));
+    expect(screen.getByText(provider.name)).toBeTruthy();
+    expect(screen.queryByRole("tab")).toBeNull();
     await act(async () => {
       store.setState({ settingsRoute: "models" });
     });
-    expect(
-      screen.getByRole("tab", { selected: true, name: i18n.t("models.purposes") }).textContent,
-    ).toBe(i18n.t("models.purposes"));
+    expect(screen.getByText(provider.name)).toBeTruthy();
+    expect(screen.queryByRole("tab")).toBeNull();
     await act(async () => {
       store.setState({ settingsRoute: "external-api" });
     });
-    expect(
-      screen.getByRole("tab", { selected: true, name: i18n.t("models.resources") }).textContent,
-    ).toBe(i18n.t("models.resources"));
+    expect(screen.getByText(provider.name)).toBeTruthy();
   });
 
-  it("keeps an unsaved provider draft open when a route change retargets the tab", async () => {
+  it("keeps an unsaved provider draft open across resource-route aliases", async () => {
     const update = vi.fn().mockResolvedValue(provider);
     await renderModels("external-api", { updateModelProvider: update });
     fireEvent.click(screen.getByRole("button", { name: i18n.t("models.configure") }));
@@ -249,15 +245,6 @@ describe("model services route-driven tab", () => {
     await act(async () => {
       store.setState({ settingsRoute: "models" });
     });
-    // The modal editor marks the workspace behind it aria-hidden; the tab still moved underneath.
-    expect(
-      screen.getByRole("tab", {
-        selected: true,
-        hidden: true,
-        name: i18n.t("models.purposes"),
-      }).textContent,
-    ).toBe(i18n.t("models.purposes"));
-    // The editor Sheet lives outside the tab panels: the draft is still there, unsaved and unsent.
     expect((screen.getByLabelText(i18n.t("models.name")) as HTMLInputElement).value).toBe(
       "草稿服务",
     );

@@ -255,7 +255,7 @@ describe("本群控制的读取与状态", () => {
     render(<QqGroupControls bindingId={BINDING_ONE} />);
     await act(async () => {});
     await act(async () => {});
-    expect(screen.getByText(ctrl("unknown"))).toBeTruthy();
+    expect(screen.getByText(ui("qq.conversation.unknown"))).toBeTruthy();
     // 半路失败不再继续读连接，也不会自己重发读取。
     expect(fake.getQqStatus).not.toHaveBeenCalled();
     expect(list).toHaveBeenCalledTimes(1);
@@ -526,15 +526,27 @@ describe("群会话顶部：控制行与身份栏分离", () => {
     expect(container.querySelector('[role="tabpanel"]')?.hasAttribute("hidden")).toBe(true);
   });
 
-  it("私聊会话不渲染群控制，身份栏刷新照旧", async () => {
+  it("私聊复用会话控制与独立配置入口，身份栏刷新照旧", async () => {
     const events = vi.fn().mockResolvedValue(emptyHistory());
-    const fake = fakeClient({ getConversationEvents: events });
+    const privateBinding = bindingOf(BINDING_ONE, "30003", { kind: "private" });
+    const fake = fakeClient({
+      getConversationEvents: events,
+      getQqGroupConfig: vi.fn().mockResolvedValue(configOf(privateBinding)),
+    });
     ready(fake);
+    store.setState({
+      qqBindings: [privateBinding],
+      qqBindingsLoaded: true,
+      qqSettings: settings,
+      qqConnection: readyConnection,
+    });
     render(<ExternalConversation conversation={conversationOf({ topology: "direct" })} />);
     await act(async () => {});
-    expect(screen.queryByRole("group", { name: ctrl("label") })).toBeNull();
-    expect(screen.queryByRole("button", { name: ctrl("disable") })).toBeNull();
-    // 群控制没有被挂载：一次事实自读都不该发生。
+    const controls = screen.getByRole("group", { name: ui("qq.conversation.controls") });
+    expect(
+      within(controls).getByRole("button", { name: ui("qq.conversation.privateConfig") }),
+    ).toBeTruthy();
+    expect(within(controls).getByRole("button", { name: ctrl("disable") })).toBeTruthy();
     expect(fake.listQqBindings).not.toHaveBeenCalled();
     const header = screen.getByRole("heading", { level: 1 }).closest("header");
     expect(header).not.toBeNull();

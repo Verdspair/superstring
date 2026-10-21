@@ -6,6 +6,7 @@ import {
   MessageCircle,
   RefreshCw,
   Search,
+  Settings2,
   Trash2,
   X,
 } from "lucide-react";
@@ -32,7 +33,7 @@ import { cn } from "../../lib/utils";
 import { useSuperstringStore } from "../../store";
 import { ConversationAvatar } from "./avatar";
 import { ConversationAvatarDialog } from "./avatar-control";
-import { CreateConversation } from "./CreateConversation";
+import { ConversationEntryButton } from "./ConversationEntryButton";
 import { QqGroupControls } from "./QqGroupControls";
 import { RecordActions } from "./RecordActions";
 import { useDirectoryManagement } from "./use-directory-management";
@@ -115,7 +116,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
               {t("workspace.conversations")}
             </h2>
           </div>
-          <CreateConversation />
+          <ConversationEntryButton />
         </div>
         <InputGroup>
           <InputGroupAddon>
@@ -209,6 +210,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
             }}
             onRefresh={() => void management.refresh(item)}
             onDelete={() => management.remove(item)}
+            onConfigure={() => useSuperstringStore.getState().openQqGroupConfig(item.sourceId)}
             onAvatar={() => setAvatarId(item.id)}
           />
         ))}
@@ -325,14 +327,17 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
       )}
       {management.deleting && (
         <AlertDialog
-          title={t("workspace.delete_chat")}
+          title={t(management.isQq ? "qq.conversation.removeTitle" : "workspace.delete_chat")}
           busy={management.busy}
           onCancel={management.cancel}
         >
           <p className="text-sm">
-            {t("workspace.delete_and_all_its_messages_this_cannot_be_undone", {
-              "0": management.deleting.title,
-            })}
+            {t(
+              management.isQq
+                ? "qq.conversation.removeHint"
+                : "workspace.delete_and_all_its_messages_this_cannot_be_undone",
+              { "0": management.deleting.title, name: management.deleting.title },
+            )}
           </p>
           {management.notice && (
             <p role="alert" className="text-sm text-destructive">
@@ -360,7 +365,9 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
                 })
               }
             >
-              {management.busy ? t("workspace.deleting") : t("workspace.delete")}
+              {management.busy
+                ? t("workspace.deleting")
+                : t(management.isQq ? "qq.conversation.remove" : "workspace.delete")}
             </Button>
           </div>
         </AlertDialog>
@@ -377,6 +384,7 @@ function IndexRecord({
   onRename,
   onRefresh,
   onDelete,
+  onConfigure,
   onAvatar,
 }: {
   item: ConversationSummary;
@@ -387,6 +395,7 @@ function IndexRecord({
   onRename: () => void;
   onRefresh: () => void;
   onDelete: () => void;
+  onConfigure: () => void;
   onAvatar: () => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -429,13 +438,35 @@ function IndexRecord({
                 run: onDelete,
               },
             ]
-          : item.channel === "onebot11" && item.topology === "shared" && item.qqGroup
+          : item.channel === "onebot11"
             ? [
+                ...(item.topology === "shared" && item.qqGroup
+                  ? [
+                      {
+                        label: t("workspace.rename"),
+                        tooltip: t("hints.recordMenu.rename"),
+                        icon: Edit3,
+                        run: onRename,
+                      },
+                    ]
+                  : []),
                 {
-                  label: t("workspace.rename"),
-                  tooltip: t("hints.recordMenu.rename"),
-                  icon: Edit3,
-                  run: onRename,
+                  label: t(
+                    item.topology === "shared"
+                      ? "schemes.qq.groupConfig.controls.configure"
+                      : "qq.conversation.privateConfig",
+                  ),
+                  tooltip: t("hints.conversation.qqConfigure"),
+                  icon: Settings2,
+                  run: onConfigure,
+                },
+                {
+                  label: t("qq.conversation.remove"),
+                  tooltip: t("hints.recordMenu.deleteConversation"),
+                  icon: Trash2,
+                  disabled: busy,
+                  destructive: true,
+                  run: onDelete,
                 },
               ]
             : []),
@@ -444,12 +475,12 @@ function IndexRecord({
       {(trigger) => (
         <div
           className={cn(
-            "group mb-3 rounded-xl border border-transparent p-2 transition-colors",
-            selected ? "border-border bg-background" : "hover:bg-muted/60",
+            "group mb-3 rounded-xl border p-2 transition-colors",
+            selected ? "border-primary/40 bg-primary/5" : "border-border bg-card hover:bg-muted/60",
           )}
         >
-          {/* QQ 群卡片常显启停与「本群配置」：独立一行放在标题/选择按钮上方，点控件不选中会话。 */}
-          {item.channel === "onebot11" && item.topology === "shared" && (
+          {/* QQ 卡片常显启停与配置入口：独立一行放在标题/选择按钮上方，点控件不选中会话。 */}
+          {item.channel === "onebot11" && (
             <div className="px-2 pb-2 pt-2">
               <QqGroupControls bindingId={item.sourceId} expectedAgentId={item.agentId} />
             </div>

@@ -585,8 +585,6 @@ function realPort(stub: ProviderStub) {
     baseUrl: stub.origin,
     apiKey: "synthetic-expression-key",
     contextWindow: 65536,
-    vision: true,
-    toolCalling: false,
     providerRevision: 1,
   };
   return createModelPort({

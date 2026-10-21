@@ -211,3 +211,59 @@ it("failure while refreshing a later loaded page keeps the prior visible range w
   expect(store.getState().directoryIds).toEqual(before);
   expect(store.getState().directoryError).toBe("later page unavailable");
 });
+
+it("source resolution rejects old clients, stale requests and changed QQ Agent ownership", async () => {
+  const summary = { ...direct, sourceId: "binding", agentId: "agent-a" };
+  let finish!: (page: { items: (typeof summary)[]; nextCursor: null }) => void;
+  const list = vi.fn(
+    () =>
+      new Promise<{ items: (typeof summary)[]; nextCursor: null }>((done) => {
+        finish = done;
+      }),
+  );
+  store.setState({
+    apiClient: { ...store.getState().apiClient, listConversations: list },
+    qqBindings: [{ id: "binding", agent_id: "agent-a" }] as ReturnType<
+      typeof store.getState
+    >["qqBindings"],
+  });
+  const oldClientRead = store
+    .getState()
+    .resolveConversationSource("onebot11", "binding", "agent-a");
+  store.setState({ apiClient: { ...store.getState().apiClient } });
+  finish({ items: [summary], nextCursor: null });
+  expect(await oldClientRead).toBeNull();
+  expect(store.getState().directoryIds).not.toContain(summary.id);
+
+  const changedAgentRead = store
+    .getState()
+    .resolveConversationSource("onebot11", "binding", "agent-a");
+  store.setState({
+    qqBindings: [{ id: "binding", agent_id: "agent-b" }] as ReturnType<
+      typeof store.getState
+    >["qqBindings"],
+  });
+  finish({ items: [summary], nextCursor: null });
+  expect(await changedAgentRead).toBeNull();
+  expect(store.getState().directoryIds).not.toContain(summary.id);
+});
+
+it("resolving a source publishes only the server's exact matching summary and clears its read error", async () => {
+  const correct = { ...direct, sourceId: "binding", agentId: "agent-a", lastSeq: 0 };
+  const other = { ...correct, id: "wrong-agent", agentId: "agent-b" };
+  const list = vi.fn().mockResolvedValue({ items: [other, correct], nextCursor: null });
+  store.setState({
+    apiClient: { ...store.getState().apiClient, listConversations: list },
+    qqBindings: [{ id: "binding", agent_id: "agent-a" }] as ReturnType<
+      typeof store.getState
+    >["qqBindings"],
+    directoryError: "offline",
+  });
+  expect(
+    await store.getState().resolveConversationSource("onebot11", "binding", "agent-a"),
+  ).toEqual(correct);
+  expect(list).toHaveBeenCalledWith({ channel: "onebot11", sourceId: "binding" });
+  expect(store.getState().directoryIds).toEqual([correct.id]);
+  expect(store.getState().summaryById[other.id]).toBeUndefined();
+  expect(store.getState().directoryError).toBeNull();
+});

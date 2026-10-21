@@ -19,7 +19,8 @@ import type {
 } from "../../../shared/contracts/qq-storage";
 import { ApiError, type SuperstringApi } from "../../api";
 import { msg } from "../../i18n";
-import { errorText } from "../../state/helpers";
+import { removeDirectoryCache, removeQqEventsCache } from "../../services/page-snapshot-cache";
+import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { invalidSchemeInputs, invalidSchemeTimezone, parseAttentionMembers } from "./draft-state";
 import {
@@ -592,8 +593,9 @@ export function createQqSchemeActions(
       if (get().qqSchemesLoading) return false;
       return readDirectory({ editor: true, forceUsage: true });
     },
-    createQqScheme: async (name) => {
+    createQqScheme: async (name, options) => {
       if (get().qqSchemeSaving) return false;
+      const bindingDraft = get().qqInputs;
       const operation = beginOperation();
       try {
         // A new scheme starts with the project's defaults: every trigger off (§11.1) and the
@@ -602,7 +604,16 @@ export function createQqSchemeActions(
         if (!isCurrentApi(operation)) return false;
         set((state) => ({ qqSchemes: [...state.qqSchemes, scheme] }));
         // 等待期间编辑器被切走（含同 id 重选）：新方案仍在目录里可选，但不抢当前会话。
-        if (get().qqSchemeEditor === operation.editor) schemeDirectory.openEditor(scheme);
+        if (options?.forBinding) {
+          const current = get().qqInputs;
+          if (
+            current.manualKind === bindingDraft.manualKind &&
+            current.manualPeer === bindingDraft.manualPeer &&
+            current.manualPicked === bindingDraft.manualPicked &&
+            current.manualSchemeId === bindingDraft.manualSchemeId
+          )
+            set({ qqInputs: { ...current, manualSchemeId: scheme.id } });
+        } else if (get().qqSchemeEditor === operation.editor) schemeDirectory.openEditor(scheme);
         set({ feedback: "已新建方案" });
         return true;
       } catch (error) {
@@ -1128,6 +1139,7 @@ export function createQqAccessActions(
   | "bindQqConversation"
   | "bindQqPeerNumber"
   | "updateQqBindingRow"
+  | "removeQqConversation"
   | "organiseQqMemoryRow"
 > {
   const report = (error: unknown) =>
@@ -1135,6 +1147,12 @@ export function createQqAccessActions(
   const schemeDirectory = createSchemeDirectorySync(set, get);
   let bindingsInFlight: { promise: Promise<void>; readId: number; api: SuperstringApi } | null =
     null;
+  let directoryInFlight: {
+    promise: Promise<void>;
+    readId: number;
+    api: SuperstringApi;
+    bindingId?: string;
+  } | null = null;
   // 访问侧读取的模块级令牌（与方案模块同一模式）：`resetForTests` 会把 store 里的代次清零，
   // 单靠代次无法区分「重置后新读取恰好拿到同一编号」；令牌不随重置回收。
   let accessReadToken = 0;
@@ -1156,6 +1174,7 @@ export function createQqAccessActions(
   /** 写入开始即作废在途读取：旧列表/旧设置晚到不得盖掉刚写入的结果，也不留悬空的 loading。 */
   const invalidateAccessReads = () => {
     bindingsInFlight = null;
+    directoryInFlight = null;
     set({ qqBindingsReadId: get().qqBindingsReadId + 1, qqBindingsLoading: false });
   };
   // 变更操作的模块级令牌：`resetForTests` 会把 store 里的代次清零，单靠代次无法区分
@@ -1296,6 +1315,7 @@ export function createQqAccessActions(
         void reload().catch(() => {});
       }
       refreshSchemeUsage();
+      void get().resolveConversationSource("onebot11", saved.id, saved.agent_id);
       set({ feedback: "已绑定会话" });
       return true;
     } catch (error) {
@@ -1391,6 +1411,14 @@ export function createQqAccessActions(
     loadQqBindingDirectory: async (bindingId?: string) => {
       // 保存进行中不开始读取：结果只会与刚写入的内容竞争，等保存方完成后自己重读。
       if (get().qqSchemeSaving || get().qqAccessSaving || get().qqGroupConfigSaving) return;
+      const api = get().apiClient;
+      if (
+        directoryInFlight &&
+        directoryInFlight.api === api &&
+        directoryInFlight.bindingId === bindingId &&
+        get().qqBindingsReadId === directoryInFlight.readId
+      )
+        return directoryInFlight.promise;
       const operation = beginAccessRead();
       const schemeReadId = get().qqSchemesReadId;
       set({
@@ -1400,43 +1428,50 @@ export function createQqAccessActions(
         qqSchemeUsage: null,
         qqSchemeUsageReadId: get().qqSchemeUsageReadId + 1,
       });
-      try {
-        const [settings, conversations, bindings, schemes] = await Promise.all([
-          operation.api.getQqSettings(),
-          operation.api.listQqConversations(),
-          operation.api.listQqBindings(),
-          operation.api.listQqSchemes(),
-        ]);
-        if (!isCurrentAccessApi(operation)) return;
-        set({
-          qqSettings: settings,
-          qqConversations: conversations,
-          qqBindings: bindings,
-          qqBindingsLoaded: true,
-          qqBindingsError: null,
-          qqBindingsLoading: false,
-        });
-        // 方案目录行不直接落地：经方案模块同一保护/合并路径，在途方案保存或更新读取优先。
-        if (get().qqSchemesReadId === schemeReadId)
-          schemeDirectory.applyDirectoryRead(schemes, false);
-        // 只有显式点名（「刷新保存基线」）才合并该绑定草稿；隐式读取绝不自动刷新保存基线。
-        if (bindingId) {
-          const fresh = bindings.find((row) => row.id === bindingId);
-          if (fresh) {
-            const patch = mergeExplicitBindingDraft(get(), bindingId, fresh);
-            if (patch) set(patch);
+      const execute = async () => {
+        try {
+          const [settings, conversations, bindings, schemes] = await Promise.all([
+            operation.api.getQqSettings(),
+            operation.api.listQqConversations(),
+            operation.api.listQqBindings(),
+            operation.api.listQqSchemes(),
+          ]);
+          if (!isCurrentAccessApi(operation)) return;
+          set({
+            qqSettings: settings,
+            qqConversations: conversations,
+            qqBindings: bindings,
+            qqBindingsLoaded: true,
+            qqBindingsError: null,
+            qqBindingsLoading: false,
+          });
+          // 方案目录行不直接落地：经方案模块同一保护/合并路径，在途方案保存或更新读取优先。
+          if (get().qqSchemesReadId === schemeReadId)
+            schemeDirectory.applyDirectoryRead(schemes, false);
+          // 只有显式点名（「刷新保存基线」）才合并该绑定草稿；隐式读取绝不自动刷新保存基线。
+          if (bindingId) {
+            const fresh = bindings.find((row) => row.id === bindingId);
+            if (fresh) {
+              const patch = mergeExplicitBindingDraft(get(), bindingId, fresh);
+              if (patch) set(patch);
+            }
+            set({ error: null, feedback: msg("刷新不提交草稿；冲突后请核对最新值再保存。") });
           }
-          set({ error: null, feedback: msg("刷新不提交草稿；冲突后请核对最新值再保存。") });
+        } catch (error) {
+          if (!isCurrentAccessApi(operation)) return;
+          // 失败按「未知」呈现：由视图给出可重试的失败态，不拿缓存列表继续操作。
+          set({
+            qqBindingsLoaded: false,
+            qqBindingsError: errorText(error),
+            qqBindingsLoading: false,
+          });
+        } finally {
+          if (directoryInFlight?.readId === operation.id) directoryInFlight = null;
         }
-      } catch (error) {
-        if (!isCurrentAccessApi(operation)) return;
-        // 失败按「未知」呈现：由视图给出可重试的失败态，不拿缓存列表继续操作。
-        set({
-          qqBindingsLoaded: false,
-          qqBindingsError: errorText(error),
-          qqBindingsLoading: false,
-        });
-      }
+      };
+      const promise = execute();
+      directoryInFlight = { api, bindingId, readId: operation.id, promise };
+      return promise;
     },
     // Settings only, for the surfaces that need nothing else from the access page (the
     // default-model page's judgement select, 0038). Always refetches: this one can be saved from,
@@ -1588,6 +1623,78 @@ export function createQqAccessActions(
         agentId,
         schemeId,
       });
+    },
+    removeQqConversation: async (bindingId, expectedRevision) => {
+      if (get().qqAccessSaving || get().qqSchemeSaving || get().qqGroupConfigSaving) return false;
+      const binding = get().qqBindings.find((row) => row.id === bindingId);
+      if (!binding || binding.revision !== expectedRevision) {
+        set({ error: msg("操作失败，请重试。"), feedback: "" });
+        return false;
+      }
+      const op = beginAccessWrite();
+      try {
+        await op.api.deleteQqBinding(bindingId, expectedRevision);
+        if (!isCurrentAccessWriteApi(op)) return false;
+        invalidateAccessReads();
+        const bindingSummaries = get().summaryById;
+        const selectedId = get().currentConversationId;
+        const selectedRemoved =
+          !!selectedId &&
+          bindingSummaries[selectedId]?.channel === "onebot11" &&
+          bindingSummaries[selectedId]?.sourceId === bindingId;
+        set((state) => {
+          const removed = new Set(
+            Object.values(state.summaryById)
+              .filter((row) => row.channel === "onebot11" && row.sourceId === bindingId)
+              .map((row) => row.id),
+          );
+          const summaryById = Object.fromEntries(
+            Object.entries(state.summaryById).filter(([id]) => !removed.has(id)),
+          );
+          const conversationById = Object.fromEntries(
+            Object.entries(state.conversationById).filter(([id]) => !removed.has(id)),
+          );
+          const { [bindingId]: _choice, ...choices } = state.qqInputs.choices;
+          const { [bindingId]: _attention, ...attention } = state.qqInputs.attention;
+          const { [bindingId]: _batch, ...qqMemoryBatchDrafts } = state.qqMemoryBatchDrafts;
+          const currentRemoved =
+            !!state.currentConversationId && removed.has(state.currentConversationId);
+          return {
+            qqBindings: state.qqBindings.filter((row) => row.id !== bindingId),
+            qqConversations: state.qqConversations.map((row) =>
+              row.binding_id === bindingId ? { ...row, binding_id: null } : row,
+            ),
+            qqInputs: { ...state.qqInputs, choices, attention },
+            qqMemoryBatchDrafts,
+            summaryById,
+            conversationById,
+            directoryIds: state.directoryIds.filter((id) => !removed.has(id)),
+            directoryRevision: state.directoryRevision + 1,
+            ...(currentRemoved
+              ? { currentConversationId: null, selectionRevision: state.selectionRevision + 1 }
+              : {}),
+            ...(state.qqGroupConfigBindingId === bindingId
+              ? { qqGroupConfigBindingId: null, qqGroupConfigEditor: null }
+              : {}),
+            qqSchemeUsage: null,
+            error: null,
+          };
+        });
+        void removeDirectoryCache(get().sessionStateStorage);
+        for (const [id, summary] of Object.entries(bindingSummaries)) {
+          if (summary.channel === "onebot11" && summary.sourceId === bindingId)
+            void removeQqEventsCache(get().sessionStateStorage, id);
+        }
+        if (selectedRemoved)
+          persistBrowserState(get().browserStateStorage, "superstring-conversation", "");
+        refreshSchemeUsage();
+        return true;
+      } catch (error) {
+        if (isCurrentAccessWriteApi(op)) report(error);
+        return false;
+      } finally {
+        endAccessWrite(op);
+      }
     },
     updateQqBindingRow: async (binding, patch) => {
       // 本群配置保存进行中同样不开始：两个写会落在同一行绑定上，让保存方先落地，

@@ -59,6 +59,9 @@
 }
 
 :root {
+  --scrollbar-size: 10px;
+  --scrollbar-thumb: color-mix(in srgb, var(--muted-foreground) 42%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--muted-foreground) 64%, transparent);
   --motion-fast: 120ms;
   --motion-base: 160ms;
   --motion-slow: 240ms;
@@ -217,6 +220,49 @@
 }
 
 @layer base {
+  :where(*) {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  @supports selector(::-webkit-scrollbar) {
+    :where(*) {
+      scrollbar-width: auto;
+      scrollbar-color: auto;
+    }
+    :where(*)::-webkit-scrollbar {
+      width: var(--scrollbar-size);
+      height: var(--scrollbar-size);
+    }
+    :where(*)::-webkit-scrollbar-track,
+    :where(*)::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+    :where(*)::-webkit-scrollbar-thumb {
+      border: 3px solid transparent;
+      border-radius: 999px;
+      background: var(--scrollbar-thumb);
+      background-clip: padding-box;
+    }
+    :where(*)::-webkit-scrollbar-thumb:hover {
+      background-color: var(--scrollbar-thumb-hover);
+    }
+    :where(*)::-webkit-scrollbar-button {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+  }
+
+  @media (forced-colors: active) {
+    :where(*) {
+      scrollbar-color: auto;
+    }
+    :where(*)::-webkit-scrollbar-thumb {
+      background-color: ButtonText;
+    }
+  }
+
   * {
     @apply border-border outline-ring/50 motion-reduce:animate-none motion-reduce:transition-none;
   }
@@ -872,33 +918,33 @@ html[data-theme="sage"].dark {
 
 html[data-theme="hearth"] {
   /* Tonal surfaces and controls share one restrained hue family. */
-  --canvas-bg: #f6f0f1;
+  --canvas-bg: #f5efed;
   --canvas-ambient: none;
-  --header-bg: rgba(246, 240, 241, 0.94);
-  --sidebar-bg: #eee2e6;
-  --surface: #fcf8f9;
-  --surface-subtle: #f3e9ec;
+  --header-bg: rgba(245, 239, 237, 0.94);
+  --sidebar-bg: #ecdedc;
+  --surface: #fcf8f6;
+  --surface-subtle: #f1e5e3;
   --surface-elevated: #ffffff;
-  --border-subtle: #e1d0d6;
-  --border-strong: #cdb6be;
-  --border-hover: #ad8d98;
+  --border-subtle: #dfcac7;
+  --border-strong: #c9aaa9;
+  --border-hover: #ad7c82;
   --text-main: #2b1c21;
   --text-muted: #68505a;
   --text-tertiary: #876e77;
   --text-inverse: #ffffff;
-  --primary-solid: #80535e;
-  --primary-hover: #6c424e;
+  --primary-solid: #8e3a50;
+  --primary-hover: #762d42;
   --primary-fg: #ffffff;
-  --primary-tint: rgba(128, 83, 94, 0.08);
+  --primary-tint: rgba(142, 58, 80, 0.08);
   --accent-solid: #633d48;
   --accent-hover: #4f303b;
   --accent-fg: #ffffff;
   --accent-tint: rgba(99, 61, 72, 0.08);
-  --scheme-solid: #80535e;
-  --scheme-hover: #6c424e;
-  --nav-active-bg: #ead9df;
-  --nav-active-text: #563440;
-  --nav-active-bar: #80535e;
+  --scheme-solid: #8e3a50;
+  --scheme-hover: #762d42;
+  --nav-active-bg: #e9d4d6;
+  --nav-active-text: #642c3c;
+  --nav-active-bar: #8e3a50;
   --danger: #9b2c2c;
   --danger-bg: #fdf2f2;
   --danger-border: #f8d7d7;
@@ -959,19 +1005,19 @@ html[data-theme="hearth"].dark {
   --text-muted: #b49ba5;
   --text-tertiary: #927983;
   --text-inverse: #181012;
-  --primary-solid: #c59aa5;
-  --primary-hover: #d4adb7;
+  --primary-solid: #d68b9c;
+  --primary-hover: #e3a4b2;
   --primary-fg: #181012;
-  --primary-tint: rgba(197, 154, 165, 0.12);
+  --primary-tint: rgba(214, 139, 156, 0.12);
   --accent-solid: #ddb6c1;
   --accent-hover: #e8c8d0;
   --accent-fg: #181012;
   --accent-tint: rgba(221, 182, 193, 0.12);
-  --scheme-solid: #c59aa5;
-  --scheme-hover: #d4adb7;
+  --scheme-solid: #d68b9c;
+  --scheme-hover: #e3a4b2;
   --nav-active-bg: #3c2932;
   --nav-active-text: #faedf2;
-  --nav-active-bar: #c59aa5;
+  --nav-active-bar: #d68b9c;
   --danger: #f56565;
   --danger-bg: #3b1414;
   --danger-border: #5c1d1d;
@@ -1017,6 +1063,11 @@ html[data-theme="hearth"].dark {
 }
 
 html[data-theme="blossom"] {
+  --button-primary-bg: #f3d4e4;
+  --button-primary-fg: #71334f;
+  --button-primary-border: #dcb4c9;
+  --button-primary-hover: #ecc4d9;
+  --button-primary-hover-border: #c995b0;
   /* Tonal surfaces and controls share one restrained hue family. */
   --canvas-bg: #fff0f5;
   --canvas-ambient: linear-gradient(118deg, #ffdfef 0%, #fdeaf3 42%, #faf5eb 100%);
@@ -1090,6 +1141,11 @@ html[data-theme="blossom"] {
 }
 
 html[data-theme="blossom"].dark {
+  --button-primary-bg: #4a2e41;
+  --button-primary-fg: #fce9f4;
+  --button-primary-border: #765168;
+  --button-primary-hover: #5b394f;
+  --button-primary-hover-border: #9c6b89;
   /* Tonal surfaces and controls share one restrained hue family. */
   --canvas-bg: #1e141d;
   --canvas-ambient: linear-gradient(118deg, #352032 0%, #261b2b 46%, #24201c 100%);

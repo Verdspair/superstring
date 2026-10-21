@@ -1,4 +1,4 @@
-import { ChevronRight, Plus, RefreshCw, Search } from "lucide-react";
+import { ArrowLeft, ChevronRight, Plus, RefreshCw, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -238,7 +238,7 @@ export function SchemeDirectory({ active = true }: { active?: boolean } = {}) {
                             data-scheme-open={row.scheme.id}
                             disabled={busy}
                             onClick={() => openScheme(row.scheme.id)}
-                            className="grid h-full w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-4 rounded-[10px] border border-border border-l-[4px] border-l-primary bg-card p-4 text-left transition-colors hover:border-[var(--border-hover)] hover:bg-muted focus-visible:outline-2 focus-visible:outline-primary disabled:pointer-events-none disabled:opacity-60 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center sm:p-6"
+                            className="grid h-full w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-4 rounded-[10px] border border-border bg-card p-4 text-left transition-colors hover:border-[var(--border-hover)] hover:bg-muted focus-visible:outline-2 focus-visible:outline-primary disabled:pointer-events-none disabled:opacity-60 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center sm:p-6"
                           >
                             <span className="col-span-2 min-w-0 sm:col-span-1">
                               <span className="flex flex-wrap items-center gap-2">
@@ -457,6 +457,16 @@ function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean })
       <header className="mb-6 shrink-0 space-y-4">
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-[10px]">
           {breadcrumb}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={back}
+            disabled={busy}
+            tooltip={t("hints.qq.backToCatalog")}
+          >
+            <ArrowLeft />
+            {t("schemes.backToCatalog")}
+          </Button>
         </div>
         <Tabs value={view} onValueChange={switchView} className="min-w-0">
           <TabsList className="w-full justify-start gap-[4px] group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-[36px] [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-1 [&_[role=tab]]:whitespace-normal sm:w-auto sm:[&_[role=tab]]:flex-none">

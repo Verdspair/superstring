@@ -213,7 +213,6 @@ describe("AgentRuntime tool catalog binding", () => {
               researchEnabled: () => name === "research.run",
               codeMode: {
                 enabled: () => name === "code.run",
-                allowsModel: () => true,
                 runner: { available: true, run: async () => ({ conclusion: "unused" }) },
               },
             },
