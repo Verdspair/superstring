@@ -6,12 +6,13 @@ import {
   ConversationGroupNamePatchSchema,
 } from "../../shared/contracts/conversation";
 import type { QqConversationScope, QqMessageFact } from "../../shared/contracts/qq-message";
-import { visibleConversation } from "../agent/conversation-access";
+import { visibleConversation, visibleConversationMetadata } from "../agent/conversation-access";
 import {
   loadQqOutboundMessageFacts,
   projectQqMessageFacts,
 } from "../channels/onebot11/message-projection";
 import {
+  type ConversationChange,
   publishConversationChange,
   subscribeConversationChanges,
 } from "../conversation/conversation-changes";
@@ -114,14 +115,12 @@ export function conversationRoutes(
   });
   // Metadata-only change stream for directory + timeline. Registered before /:id
   // so "changes" is never captured as a conversation id; each notification still
-  // passes the ordinary visibleConversation projection guard.
+  // passes the ordinary conversation read guard without projecting display fields.
   router.get("/changes", (c) => {
     let stopped = false;
     let wake: (() => void) | undefined;
-    const pending = new Map<
-      string,
-      { conversationId: string; seq: number; bindingEpoch: number }
-    >();
+    // One entry per conversation and kind: a burst keeps content and activity separate.
+    const pending = new Map<string, ConversationChange>();
     const notify = () => {
       const ready = wake;
       wake = undefined;
@@ -129,8 +128,8 @@ export function conversationRoutes(
     };
     const unsubscribe = subscribeConversationChanges(db, (change) => {
       if (stopped) return;
-      // The visible projection owns both history-root identity and epoch/seq.
-      const view = visibleConversation(
+      // The authorized history projection owns root identity and epoch/seq.
+      const view = visibleConversationMetadata(
         db,
         repository,
         change.conversationId,
@@ -138,7 +137,8 @@ export function conversationRoutes(
         options.includeShared,
       );
       if (view) {
-        pending.set(view.id, {
+        pending.set(`${view.id}\u0000${change.kind}`, {
+          ...change,
           conversationId: view.id,
           seq: view.lastSeq,
           bindingEpoch: view.bindingEpoch,
@@ -167,9 +167,21 @@ export function conversationRoutes(
             });
             continue;
           }
-          const [id, change] = next.value;
-          pending.delete(id);
-          await stream.send("conversation_changed", change);
+          const [key, change] = next.value;
+          pending.delete(key);
+          if (change.kind === "activity")
+            await stream.send("conversation_activity_changed", {
+              conversationId: change.conversationId,
+              seq: change.seq,
+              bindingEpoch: change.bindingEpoch,
+              activity: change.activity,
+            });
+          else
+            await stream.send("conversation_changed", {
+              conversationId: change.conversationId,
+              seq: change.seq,
+              bindingEpoch: change.bindingEpoch,
+            });
         }
       },
     );

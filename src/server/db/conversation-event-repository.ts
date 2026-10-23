@@ -344,19 +344,36 @@ export class ConversationEventRepository {
         ORDER BY c.binding_epoch`)
       .all(id) as ConversationRow[];
   }
-  historySummary(id: string): ConversationSummary | null {
+  private historyPosition(id: string): {
+    current: ConversationRow;
+    id: string;
+    lastSeq: number;
+    consumedSeq: number;
+  } | null {
     const rows = this.historyRows(id);
     const current = rows.at(-1);
     if (!current || current.closed_at !== null) return null;
     const offset = rows.slice(0, -1).reduce((total, row) => total + row.next_seq - 1, 0);
     return {
-      ...this.summary(current),
+      current,
       id: rows[0]!.id,
       lastSeq: offset + current.next_seq - 1,
       // Sealed activations have no actionable input. This is a read-view position,
       // never a watermark passed to acknowledge(), WakeRepository or an output intent.
       consumedSeq: offset + current.consumed_seq,
     };
+  }
+  historyMetadata(id: string): Pick<ConversationSummary, "id" | "lastSeq" | "bindingEpoch"> | null {
+    const position = this.historyPosition(id);
+    return position
+      ? { id: position.id, lastSeq: position.lastSeq, bindingEpoch: position.current.binding_epoch }
+      : null;
+  }
+  historySummary(id: string): ConversationSummary | null {
+    const position = this.historyPosition(id);
+    if (!position) return null;
+    const { current, ...metadata } = position;
+    return { ...this.summary(current), ...metadata };
   }
   /**
    * Stable history cursor: sealed epochs cannot append, so their seq ranges never move.
@@ -696,6 +713,39 @@ export class ConversationEventRepository {
       occurredAt: m.created_at,
       recordedAt: m.created_at,
     });
+  }
+  /** Existing source identities and whether ingestion must still merge media references. */
+  oneBotRecoverySources(
+    conversationId: string,
+    eventKeys: readonly string[],
+  ): Map<string, { seq: number; missingMediaRefs: boolean }> {
+    if (!eventKeys.length) return new Map();
+    const rows = this.db
+      .query(
+        `SELECT ce.source_id AS event_key,ce.seq,
+          EXISTS(SELECT 1 FROM qq_media_notes n
+            WHERE n.event_key=ce.source_id AND NOT EXISTS(
+              SELECT 1 FROM json_each(ce.sources) s
+              WHERE json_extract(s.value,'$.kind')='qq_media'
+                AND json_type(s.value,'$.id')='text'
+                AND json_extract(s.value,'$.id')=n.id
+            )) AS missing_media_refs
+        FROM json_each(?) requested
+        JOIN conversation_events ce ON ce.conversation_id=?
+          AND ce.event_key='onebot:'||requested.value
+          AND ce.source_kind='qq_event' AND ce.source_id=requested.value`,
+      )
+      .all(JSON.stringify(eventKeys), conversationId) as {
+      event_key: string;
+      seq: number;
+      missing_media_refs: number;
+    }[];
+    return new Map(
+      rows.map((row) => [
+        row.event_key,
+        { seq: row.seq, missingMediaRefs: row.missing_media_refs === 1 },
+      ]),
+    );
   }
   ingestOneBotEvent(
     eventKey: string,

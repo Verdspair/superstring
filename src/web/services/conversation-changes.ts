@@ -94,14 +94,19 @@ export function startConversationChanges(apiClient: SuperstringApi): () => void 
             hasInitialReady = true;
           }
           notifyConversationChange(event);
-        } else if (event.event === "conversation_changed") {
-          if (document.visibilityState === "hidden") {
-            // Hidden: no data reads; reconcile directionally once back in the foreground.
-            dirtyIds.add(event.conversationId);
-          } else {
-            // Directional summary update for directory; does not do full list discover
-            void useSuperstringStore.getState().refreshConversationSummary(event.conversationId);
+        } else if (
+          event.event === "conversation_changed" ||
+          event.event === "conversation_activity_changed"
+        ) {
+          if (event.event === "conversation_changed") {
+            if (document.visibilityState === "hidden") {
+              // Hidden: no data reads; reconcile directionally once back in the foreground.
+              dirtyIds.add(event.conversationId);
+            } else {
+              void useSuperstringStore.getState().refreshConversationSummary(event.conversationId);
+            }
           }
+          // Span activity changes runtime records, not the directory summary.
           notifyConversationChange(event);
         }
       }, controller.signal);
@@ -172,7 +177,8 @@ export function useConversationChangeSubscription(
       if (document.visibilityState === "hidden") return;
       const matches =
         event.event === "ready" ||
-        (event.event === "conversation_changed" &&
+        ((event.event === "conversation_changed" ||
+          event.event === "conversation_activity_changed") &&
           (!conversationId || event.conversationId === conversationId));
       if (matches) {
         onInvalidateRef.current();

@@ -155,10 +155,13 @@ const slowGate = () => {
     release = () => resolve();
     pendingGates.push(release);
   });
+  // The controlled crash is observed from creation: abort may abandon the waiting model call.
+  const observed = gate.catch((error: unknown) => error);
   let armed = true;
   return {
     reject,
     release,
+    observed,
     /** 只在第一次慢目标进入时真等阀门；此后立即放行（一次性语义）。 */
     async wait() {
       if (!armed) return;
@@ -244,7 +247,7 @@ function setup(options: { schemeName: string; unknownFastReceipt?: boolean }) {
   const calls: Call[] = [];
   const sends: { peerId: string | undefined; request: unknown }[] = [];
   const gate = slowGate();
-  let slowEntered = false;
+  const slowEntered = Promise.withResolvers<void>();
   const model: ModelPort = {
     complete: async (request) => {
       calls.push({ kind: "complete", request });
@@ -260,7 +263,8 @@ function setup(options: { schemeName: string; unknownFastReceipt?: boolean }) {
       }
       const target = authorizedTargetOf(request);
       if (target === SLOW) {
-        slowEntered = true;
+        // Signal model entry before the gate wait; the crash must hit a live call.
+        slowEntered.resolve();
         await gate.wait();
       }
       return inlineFinal(target, `reply-${target}`);
@@ -328,7 +332,7 @@ function setup(options: { schemeName: string; unknownFastReceipt?: boolean }) {
     calls,
     sends,
     gate,
-    slowEntered: () => slowEntered,
+    slowEntered: slowEntered.promise,
   };
 }
 
@@ -388,6 +392,9 @@ function partialRecoveryCase(options: { schemeName: string; unknownFastReceipt?:
     expect(fastIntent?.through_seq).toBe(before.source_through_seq);
     const sendsBeforeCrash = f.sends.length;
 
+    // 先等 B 进入模型调用：此时租约仍有效。置为过去后再等，排队的生成会在进模型前被拒。
+    await f.slowEntered;
+
     // 夹具模拟进程消失：把任务租约置为过去（不 sleep，续租周期 40s > 测试时长，不手造任何 JSON/历史）。
     const expiredAt = new Date(Date.now() - 30_000).toISOString();
     expect(
@@ -396,9 +403,11 @@ function partialRecoveryCase(options: { schemeName: string; unknownFastReceipt?:
         .run(expiredAt, before.id).changes,
     ).toBe(1);
 
-    // 受控崩溃：B 的生成调用被拒绝；旧实例结算 CAS 失败 → 任务留在 running+expired。
-    f.gate.reject(new Error("QQ_SYNTHETIC_MODEL_CRASH"));
+    // 受控崩溃：B 已在模型调用中，拒绝落在真实等待者上；旧实例结算 CAS 失败 → 任务留在 running+expired。
+    const modelCrash = new Error("QQ_SYNTHETIC_MODEL_CRASH");
+    f.gate.reject(modelCrash);
     await bot1.scheduler.waitForIdle();
+    expect(await f.gate.observed).toBe(modelCrash);
     const crashed = taskRows(f.db)[0];
     expect(crashed?.status).toBe("running");
     expect(Date.parse(crashed?.lease_expires_at ?? "")).toBeLessThanOrEqual(Date.now());

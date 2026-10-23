@@ -166,6 +166,15 @@ const notifyChanged = (seq: number) =>
     bindingEpoch: 1,
   });
 
+const notifyActivity = (seq: number) =>
+  notifyConversationChange({
+    event: "conversation_activity_changed",
+    conversationId,
+    seq,
+    bindingEpoch: 1,
+    activity: "span",
+  });
+
 beforeEach(() => {
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   void i18n.changeLanguage("zh-CN");
@@ -242,6 +251,22 @@ describe("conversation active traces strip", () => {
 
     await act(async () => {});
     expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it("span-activity frame refreshes the strip without waiting for a content event", async () => {
+    const list = vi
+      .fn<(filters: unknown, signal?: AbortSignal) => Promise<RuntimeTracesPage>>()
+      .mockResolvedValueOnce(page([traceGroup()]))
+      .mockResolvedValueOnce(page([]));
+    store.getState().resetForTests({ ...api, listRuntimeTraces: list });
+    render(<ConversationActiveTraces conversationId={conversationId} />);
+
+    await screen.findByRole("complementary");
+    notifyActivity(1);
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(list.mock.calls[1][0]).toEqual({ conversationId, status: "started", limit: 50 });
+    await waitFor(() => expect(screen.queryByRole("complementary")).toBeNull());
   });
 
   it("removes the active entry on the terminal conversation event", async () => {

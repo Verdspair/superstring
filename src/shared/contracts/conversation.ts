@@ -168,6 +168,34 @@ export const DeliverySchema = z.strictObject({
   createdAt: z.string(),
   parts: z.array(DeliveryPartSchema),
 });
+/**
+ * Live conversation change stream. `conversation_changed` carries content/identity
+ * changes (journal rows, same-seq body/media invalidation, display names) and keeps
+ * its existing payload. `conversation_activity_changed` carries execution-only
+ * activity (currently span start/finish) and never implies new timeline content.
+ */
+export const ConversationChangeEventSchema = z.discriminatedUnion("event", [
+  z.strictObject({
+    event: z.literal("ready"),
+    ready: z.boolean().optional(),
+    conversationId: z.string().nullable().optional(),
+  }),
+  z.strictObject({
+    event: z.literal("conversation_changed"),
+    conversationId: z.string(),
+    seq: z.number().int().nonnegative(),
+    bindingEpoch: z.number().int().positive(),
+  }),
+  z.strictObject({
+    event: z.literal("conversation_activity_changed"),
+    conversationId: z.string(),
+    seq: z.number().int().nonnegative(),
+    bindingEpoch: z.number().int().positive(),
+    activity: z.literal("span"),
+  }),
+]);
+export type ConversationChangeEvent = z.infer<typeof ConversationChangeEventSchema>;
+
 export type ConversationSummary = z.infer<typeof ConversationSummarySchema>;
 export type ConversationParticipant = z.infer<typeof ConversationParticipantSchema>;
 export type ConversationAddressing = z.infer<typeof ConversationAddressingSchema>;

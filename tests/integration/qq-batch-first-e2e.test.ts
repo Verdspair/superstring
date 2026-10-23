@@ -780,18 +780,30 @@ async function recoverDurableAudience(
   let rejectSlow: (error: unknown) => void = () => {};
   let releaseSlow: () => void = () => {};
   let crashing = true;
+  let markSlowEntered: () => void = () => {};
+  const slowEntered = new Promise<void>((resolve) => {
+    markSlowEntered = resolve;
+  });
   const slowGate = new Promise<void>((resolve, reject) => {
     releaseSlow = resolve;
     rejectSlow = reject;
     pendingGates.push(resolve);
   });
+  // The deliberate crash rejection is observed from creation: stop() may abandon the model
+  // call before another consumer attaches.
+  const slowFailure = slowGate.catch((error: unknown) => error);
   const f = setup({
     clockTime: baseTime,
     batchSize: 5,
     judgementMessageLimit: 4,
     replyComplete: async (request) => {
       const targetId = authorizedTargetOf(request);
-      if (crashing && targetId === "20005") await slowGate;
+      if (crashing && targetId === "20005") {
+        // Signal entry before the gate wait: the crash must land on a live call, not a
+        // target still queued behind context preparation.
+        markSlowEntered();
+        await slowGate;
+      }
       return inlineFinal(targetId, `RECOVERY_TARGET_${targetId}`);
     },
   });
@@ -871,6 +883,11 @@ async function recoverDurableAudience(
     expect(f.outbox.list({}).some((delivery) => delivery.target?.participantId === "20002")).toBe(
       false,
     );
+    // Entry barrier BEFORE any baseline snapshot: the gated sibling is already inside its model
+    // call while the lease is still valid, so every legitimate fast sibling that commits during
+    // the wait is part of originalDeliveries/existingIds/sentBefore. A sibling still queued after
+    // the simulated expiry is refused by the pre-model lease check and could never enter.
+    await slowEntered;
     const originalDeliveries = f.outbox.list({});
     const existingIds = originalDeliveries.map((delivery) => delivery.id);
     const originalUnknown = originalDeliveries.filter((delivery) => delivery.status === "unknown");
@@ -912,8 +929,10 @@ async function recoverDurableAudience(
     f.clock.seconds = Math.floor(Date.parse(task.lease_expires_at) / 1000) + 1;
     setSystemTime(new Date(f.clock.seconds * 1000));
     bot.scheduler.stop();
-    rejectSlow(new Error("SYNTHETIC_PROCESS_INTERRUPTED"));
+    const slowError = new Error("SYNTHETIC_PROCESS_INTERRUPTED");
+    rejectSlow(slowError);
     await Promise.allSettled([first]);
+    expect(await slowFailure).toBe(slowError);
     bot.delivery.stop();
     await bot.delivery.waitForIdle();
     bot.release();
@@ -1035,6 +1054,10 @@ it("an own chiming intent confirmed during the crash still resumes the frozen ba
   // 覆盖判定——崩溃恢复后复用持久判断（0 次新评分）、已确认目标不重生成不重发、目标集完整。
   let releaseSlow: () => void = () => {};
   let rejectCrash: (error: unknown) => void = () => {};
+  let markSlowEntered: () => void = () => {};
+  const slowEntered = new Promise<void>((resolve) => {
+    markSlowEntered = resolve;
+  });
   const slowGate = new Promise<void>((resolve) => {
     releaseSlow = resolve;
     pendingGates.push(releaseSlow);
@@ -1042,10 +1065,15 @@ it("an own chiming intent confirmed during the crash still resumes the frozen ba
   const crashed = new Promise<never>((_, reject) => {
     rejectCrash = reject;
   });
+  // Observe the deliberate crash from creation; abort can abandon the racing model call.
+  const crashObserved = crashed.catch((error: unknown) => error);
   const sends: string[] = [];
   const f = setup({
     replyComplete: async (req) => {
-      if (authorizedTargetOf(req) === "20003") await Promise.race([slowGate, crashed]);
+      if (authorizedTargetOf(req) === "20003") {
+        markSlowEntered();
+        await Promise.race([slowGate, crashed]);
+      }
       return inlineFinal(authorizedTargetOf(req), "reply body");
     },
   });
@@ -1075,10 +1103,12 @@ it("an own chiming intent confirmed during the crash still resumes the frozen ba
     expect(f.outbox.list({}).find((d) => d.target?.participantId === "20002")?.status).toBe(
       "confirmed",
     );
+    await slowEntered;
     const crashError = new Error("CRASH");
     crash.abort(crashError);
     rejectCrash(crashError);
     await expect(crashing).rejects.toBeTruthy();
+    expect(await crashObserved).toBe(crashError);
   } finally {
     releaseSlow();
   }

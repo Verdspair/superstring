@@ -397,6 +397,8 @@ export function useConversationEvents(
     () =>
       addConversationChangeListener((event) => {
         if (event.event !== "ready" && event.conversationId !== id) return;
+        // Runtime activity never changes timeline content: no read, cache write or watermark.
+        if (event.event === "conversation_activity_changed") return;
         const changedDuringTail =
           event.event === "conversation_changed" &&
           tailRead.current !== null &&

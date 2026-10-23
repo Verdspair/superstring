@@ -132,13 +132,18 @@ export class AgentRunRepository {
     if (conversationId) publishConversationChange(this.db, conversationId);
   }
 
-  /** Owner -> conversation fact: same mapping as CONTEXT_ROW_SELECT; no synthetic ids. */
+  /**
+   * Owner -> conversation fact for state notifications: conversation and web_turn use
+   * their existing identity; a qq_binding run uses the conversation id its host already
+   * linked (the same fact the timeline projection reads), never a re-derived binding.
+   */
   private conversationOfRun(runId: string): string | null {
     const row = this.db
       .query(
         `SELECT CASE WHEN r.owner_kind='conversation' THEN r.owner_id
         WHEN r.owner_kind='web_turn' THEN (SELECT c2.id FROM conversations c2 JOIN turns t2 ON t2.session_id=c2.source_id
-          WHERE t2.id=r.owner_id AND c2.channel='web' LIMIT 1) END AS conversationId
+          WHERE t2.id=r.owner_id AND c2.channel='web' LIMIT 1)
+        WHEN r.owner_kind='qq_binding' THEN r.conversation_id END AS conversationId
         FROM agent_runs r WHERE r.run_id=?`,
       )
       .get(runId) as { conversationId: string | null } | null;
@@ -240,7 +245,11 @@ export class AgentRunRepository {
           expired ? "expired" : "exact",
         );
     })();
-    if (input.stepNo === 1) this.notifyRunConversation(input.runId);
+    // The first step is the run's live start; a leaf/next step can be the first to make
+    // the wake's judgement-start fact true at any step number, so it owns that content
+    // notification too (span activity never carries projected state).
+    if (input.stepNo === 1 || input.phase === "leaf" || input.phase === "next")
+      this.notifyRunConversation(input.runId);
   }
 
   finishStep(

@@ -59,6 +59,8 @@ import {
 } from "../shared/contracts/agent-task";
 import { type ChatV2Event, ChatV2EventSchema } from "../shared/contracts/chat-v2";
 import {
+  type ConversationChangeEvent,
+  ConversationChangeEventSchema,
   ConversationEventsSchema,
   ConversationListSchema,
   ConversationSummarySchema,
@@ -921,21 +923,8 @@ export async function streamChatV2(
   );
 }
 
-export const ConversationChangeEventSchema = z.discriminatedUnion("event", [
-  z.strictObject({
-    event: z.literal("ready"),
-    ready: z.boolean().optional(),
-    conversationId: z.string().nullable().optional(),
-  }),
-  z.strictObject({
-    event: z.literal("conversation_changed"),
-    conversationId: z.string(),
-    seq: z.number().int().nonnegative(),
-    bindingEpoch: z.number().int().positive(),
-  }),
-]);
-
-export type ConversationChangeEvent = z.infer<typeof ConversationChangeEventSchema>;
+export type { ConversationChangeEvent };
+export { ConversationChangeEventSchema };
 
 export async function subscribeConversationChanges(
   onEvent: (event: ConversationChangeEvent) => void,
@@ -963,11 +952,14 @@ export async function subscribeConversationChanges(
           ...readyData,
         }),
       );
-    } else if (frame.event === "conversation_changed") {
+    } else if (
+      frame.event === "conversation_changed" ||
+      frame.event === "conversation_activity_changed"
+    ) {
       const data = JSON.parse(frame.data);
       onEvent(
         ConversationChangeEventSchema.parse({
-          event: "conversation_changed",
+          event: frame.event,
           ...data,
         }),
       );

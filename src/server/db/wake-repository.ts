@@ -31,6 +31,8 @@ type Row = {
   error_code: string | null;
   source_from_seq: number | null;
 };
+const SOURCE_OPPORTUNITY_CAUSES = "'direct_reply','follow_up','chiming_in'";
+
 const map = (r: Row): WakeSignal => ({
   id: r.id,
   conversationId: r.conversation_id,
@@ -151,9 +153,21 @@ export class WakeRepository {
   hasOfferedSource(conversationId: string, throughSeq: number): boolean {
     return !!this.db
       .query(
-        "SELECT 1 FROM wake_signals WHERE conversation_id=? AND through_seq=? AND cause IN('direct_reply','follow_up','chiming_in') LIMIT 1",
+        `SELECT 1 FROM wake_signals WHERE conversation_id=? AND through_seq=? AND cause IN(${SOURCE_OPPORTUNITY_CAUSES}) LIMIT 1`,
       )
       .get(conversationId, throughSeq);
+  }
+  /** Same exact-source rule as hasOfferedSource, including retries and terminal rows. */
+  hasOfferedSources(conversationId: string, throughSeqs: readonly number[]): Set<number> {
+    if (!throughSeqs.length) return new Set();
+    const rows = this.db
+      .query(
+        `SELECT DISTINCT through_seq FROM wake_signals
+        WHERE conversation_id=? AND cause IN(${SOURCE_OPPORTUNITY_CAUSES})
+          AND through_seq IN (SELECT value FROM json_each(?))`,
+      )
+      .all(conversationId, JSON.stringify(throughSeqs)) as { through_seq: number }[];
+    return new Set(rows.map((row) => row.through_seq));
   }
   /** Latest handled or pending source for one participant, including terminal failures. */
   latestParticipant(

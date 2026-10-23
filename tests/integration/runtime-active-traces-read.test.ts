@@ -221,7 +221,14 @@ describe("active conversation traces", () => {
     });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(changes).toHaveLength(1);
-    expect(changes[0]?.conversationId).toBe(f.current.id);
+    expect(changes[0]).toEqual({
+      conversationId: f.current.id,
+      seq: expect.any(Number),
+      bindingEpoch: 1,
+      kind: "activity",
+      activity: "span",
+    });
+    expect(changes.filter((change) => change.kind === "content")).toHaveLength(0);
     expect(
       f.spans.traces({ conversationId: f.current.id, status: "started", limit: 10 }, userId, at)
         .items[0]?.status,
@@ -229,6 +236,14 @@ describe("active conversation traces", () => {
     child.end("completed");
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(changes).toHaveLength(2);
+    expect(changes.at(-1)).toEqual({
+      conversationId: f.current.id,
+      seq: expect.any(Number),
+      bindingEpoch: 1,
+      kind: "activity",
+      activity: "span",
+    });
+    expect(changes.every((change) => change.kind === "activity")).toBe(true);
     expect(
       f.spans.traces({ conversationId: f.current.id, status: "started", limit: 10 }, userId, at)
         .items,

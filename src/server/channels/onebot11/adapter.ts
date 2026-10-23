@@ -901,8 +901,19 @@ export class OneBot11Adapter implements ConversationIngress {
               readQqSends(orm, scope, 1)[0]?.sentAtSeconds ?? -1,
             )
           : -1;
+      const sources = journal.oneBotRecoverySources(
+        c.id,
+        candidates.map((candidate) => candidate.event_key),
+      );
+      const offered = this.options.wakes.hasOfferedSources(
+        c.id,
+        [...sources.values()].map((source) => source.seq),
+      );
       for (const candidate of candidates) {
         if (candidate.occurred_at_seconds <= legacyBoundary) continue;
+        const source = sources.get(candidate.event_key);
+        // Coverage cannot skip ingestion while a new media reference still needs merging.
+        if (source && !source.missingMediaRefs && offered.has(source.seq)) continue;
         const event = journal.ingestOneBotEvent(candidate.event_key, binding.id);
         if (event)
           this.offer(

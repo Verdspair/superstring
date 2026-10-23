@@ -6,10 +6,15 @@ import {
   type ConversationChange,
   subscribeConversationChanges,
 } from "../../src/server/conversation/conversation-changes";
+import { projectConversationEvents } from "../../src/server/conversation/conversation-view";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { AgentTaskRepository } from "../../src/server/db/agent-task-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
-import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
+import {
+  DEFAULT_AGENT_ID,
+  DEFAULT_USER_ID,
+  ensureDefaults,
+} from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import { parseSseFrames } from "../harness/sse";
@@ -56,6 +61,15 @@ function collector(db: Parameters<typeof subscribeConversationChanges>[0]) {
   };
 }
 
+function projectedWake(h: ReturnType<typeof fixture>, wakeId: string) {
+  const found = h.journal
+    .historyBefore(h.conversationId, Number.MAX_SAFE_INTEGER, 100)
+    .items.map((item) => item.event)
+    .find((event) => event.kind === "wake" && event.source.id === wakeId);
+  if (!found) throw new Error("wake event missing");
+  return projectConversationEvents(h.db, [found])[0]!;
+}
+
 describe("persisted state changes notify the conversation hub (same seq)", () => {
   it("wake claim / complete / defer / fail publish; recover reuses fail; renew does not", async () => {
     const h = fixture();
@@ -72,7 +86,7 @@ describe("persisted state changes notify the conversation hub (same seq)", () =>
     }).wake;
     // The enqueue wake event already publishes through the journal append.
     expect(await seen.drained()).toEqual([
-      { conversationId: h.conversationId, seq: 1, bindingEpoch: 1 },
+      { conversationId: h.conversationId, seq: 1, bindingEpoch: 1, kind: "content" },
     ]);
     expect((await seen.drained()).length).toBe(0);
 
@@ -84,6 +98,7 @@ describe("persisted state changes notify the conversation hub (same seq)", () =>
       conversationId: h.conversationId,
       seq: wake.throughSeq,
       bindingEpoch: 1,
+      kind: "content",
     });
 
     // renew is lease bookkeeping only: no notification.
@@ -247,5 +262,243 @@ describe("persisted state changes notify the conversation hub (same seq)", () =>
     ]);
     controller.abort();
     expect((await reader.read()).done).toBe(true);
+  });
+
+  it("step 2 leaf still publishes content when judgmentStarted first appears", async () => {
+    const h = fixture();
+    const wakes = new WakeRepository(h.db);
+    const runs = new AgentRunRepository(h.db);
+    const seen = collector(h.db);
+    const wake = wakes.enqueueChanged({
+      conversationId: h.conversationId,
+      cause: "chiming_in",
+      dedupeKey: "w4",
+      throughSeq: 1,
+      readyAt: at,
+      priority: 50,
+      at,
+    }).wake;
+    await seen.drained();
+    runs.createRun({
+      runId: "run-late-leaf",
+      specId: "onebot.initiative.evaluate_batch",
+      specVersion: "1",
+      owner: {
+        kind: "qq_binding",
+        id: "binding",
+        userId: DEFAULT_USER_ID,
+        agentId: DEFAULT_AGENT_ID,
+      },
+      at,
+    });
+    h.journal.linkRun("run-late-leaf", h.conversationId, 1, wake.id);
+    await seen.drained();
+    runs.startStep({
+      runId: "run-late-leaf",
+      stepId: "late-step-1",
+      stepNo: 1,
+      model: "fixture",
+      phase: "generate",
+      at,
+      messages: [],
+      sources: [],
+    });
+    const first = await seen.drained();
+    expect(first.length).toBeGreaterThan(0);
+    expect(first.every((change) => change.kind === "content")).toBe(true);
+    expect(projectedWake(h, wake.id).wake?.judgmentStarted).toBe(false);
+    runs.startStep({
+      runId: "run-late-leaf",
+      stepId: "late-step-2",
+      stepNo: 2,
+      model: "fixture",
+      phase: "leaf",
+      at,
+      messages: [],
+      sources: [],
+    });
+    const second = await seen.drained();
+    expect(second).toEqual([
+      {
+        conversationId: h.conversationId,
+        seq: expect.any(Number),
+        bindingEpoch: 1,
+        kind: "content",
+      },
+    ]);
+    expect(projectedWake(h, wake.id).wake?.judgmentStarted).toBe(true);
+    seen.stop();
+  });
+
+  it("linked qq_binding evaluate_batch leaf step notifies the linked conversation", async () => {
+    const h = fixture();
+    const wakes = new WakeRepository(h.db);
+    const runs = new AgentRunRepository(h.db);
+    const wake = wakes.enqueueChanged({
+      conversationId: h.conversationId,
+      cause: "chiming_in",
+      dedupeKey: "w-linked-leaf",
+      throughSeq: 1,
+      readyAt: at,
+      priority: 50,
+      at,
+    }).wake;
+    // The only open history id for this binding is the one the run must notify.
+    const seen = collector(h.db);
+    await seen.drained();
+    runs.createRun({
+      runId: "run-linked-leaf",
+      specId: "onebot.initiative.evaluate_batch",
+      specVersion: "1",
+      owner: {
+        kind: "qq_binding",
+        id: "binding",
+        userId: DEFAULT_USER_ID,
+        agentId: DEFAULT_AGENT_ID,
+      },
+      at,
+    });
+    h.journal.linkRun("run-linked-leaf", h.conversationId, 1, wake.id);
+    await seen.drained();
+    runs.startStep({
+      runId: "run-linked-leaf",
+      stepId: "linked-leaf-step-1",
+      stepNo: 1,
+      model: "fixture",
+      phase: "generate",
+      at,
+      messages: [],
+      sources: [],
+    });
+    await seen.drained();
+    expect(projectedWake(h, wake.id).wake?.judgmentStarted).toBe(false);
+    runs.startStep({
+      runId: "run-linked-leaf",
+      stepId: "linked-leaf-step-2",
+      stepNo: 2,
+      model: "fixture",
+      phase: "leaf",
+      at,
+      messages: [],
+      sources: [],
+    });
+    // Only the linked history id owns this judgement-start content frame.
+    expect(await seen.drained()).toEqual([
+      {
+        conversationId: h.conversationId,
+        seq: expect.any(Number),
+        bindingEpoch: 1,
+        kind: "content",
+      },
+    ]);
+    expect(projectedWake(h, wake.id).wake?.judgmentStarted).toBe(true);
+    seen.stop();
+  });
+
+  it("unlinked qq_binding background memory run publishes no content", async () => {
+    const h = fixture();
+    const runs = new AgentRunRepository(h.db);
+    const seen = collector(h.db);
+    await seen.drained();
+    runs.createRun({
+      runId: "run-memory-select",
+      specId: "memory.select",
+      specVersion: "1",
+      owner: {
+        kind: "qq_binding",
+        id: "binding",
+        userId: DEFAULT_USER_ID,
+        agentId: DEFAULT_AGENT_ID,
+      },
+      at,
+    });
+    runs.setStatus("run-memory-select", "generating", at);
+    runs.startStep({
+      runId: "run-memory-select",
+      stepId: "memory-select-step",
+      stepNo: 1,
+      model: "fixture",
+      phase: "leaf",
+      at,
+      messages: [],
+      sources: [],
+    });
+    runs.finishStep("memory-select-step", "completed", at);
+    runs.setStatus("run-memory-select", "completed", at);
+    // Nothing here is projected into the timeline: the run was never linked.
+    expect(await seen.drained()).toEqual([]);
+    seen.stop();
+  });
+
+  it("an old-epoch run with an explicit conversation id never notifies the successor epoch", async () => {
+    const h = fixture();
+    const runs = new AgentRunRepository(h.db);
+    const seen = collector(h.db);
+    h.db.query("UPDATE conversations SET closed_at=? WHERE id=?").run(at, h.conversationId);
+    const successor = h.journal.ensureOneBot("binding")!;
+    expect(successor.bindingEpoch).toBe(2);
+    await seen.drained();
+    runs.createRun({
+      runId: "run-old-epoch",
+      specId: "onebot.initiative.evaluate_batch",
+      specVersion: "1",
+      owner: {
+        kind: "qq_binding",
+        id: "binding",
+        userId: DEFAULT_USER_ID,
+        agentId: DEFAULT_AGENT_ID,
+      },
+      at,
+    });
+    h.journal.linkRun("run-old-epoch", h.conversationId, 1);
+    runs.startStep({
+      runId: "run-old-epoch",
+      stepId: "old-epoch-leaf",
+      stepNo: 2,
+      model: "fixture",
+      phase: "leaf",
+      at,
+      messages: [],
+      sources: [],
+    });
+    const frames = await seen.drained();
+    expect(frames.filter((change) => change.conversationId === successor.id)).toEqual([]);
+    expect(frames.every((change) => change.conversationId === h.conversationId)).toBe(true);
+    seen.stop();
+  });
+
+  it("does not resolve another user's or agent's conversation for a qq_binding run", async () => {
+    const h = fixture();
+    const runs = new AgentRunRepository(h.db);
+    const seen = collector(h.db);
+    await seen.drained();
+    // Agent mismatch must not reach the fixture conversation.
+    runs.createRun({
+      runId: "run-foreign-agent",
+      specId: "onebot.initiative.evaluate_batch",
+      specVersion: "1",
+      owner: {
+        kind: "qq_binding",
+        id: "binding",
+        userId: DEFAULT_USER_ID,
+        agentId: "agent-foreign",
+      },
+      at,
+    });
+    // User mismatch must not reach it either: the run is not linked to any history id.
+    runs.createRun({
+      runId: "run-foreign-user",
+      specId: "memory.select",
+      specVersion: "1",
+      owner: {
+        kind: "qq_binding",
+        id: "binding",
+        userId: "user-foreign",
+        agentId: DEFAULT_AGENT_ID,
+      },
+      at,
+    });
+    expect(await seen.drained()).toEqual([]);
+    seen.stop();
   });
 });

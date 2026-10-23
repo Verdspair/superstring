@@ -1,5 +1,7 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it, spyOn } from "bun:test";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
+import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
+import { QqTaskScheduler } from "../../src/server/conversation/qq-task-scheduler";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
@@ -174,7 +176,37 @@ it("stale group recovery keeps the original recipient despite newer unrelated me
     original = h.receive("1", "20002", 20);
   h.receive("2", "20003", 10, false);
   const old = await h.staleIntent();
-  await h.runtime.botWorker.runCycle();
+  // The timer cycle is dispatch-only by design: settle the task it started, then run the
+  // same delivery pass a post-settle cycle would run (passthrough spies, no polling/timers).
+  const dispatchOnce = QqTaskScheduler.prototype.dispatchOnce;
+  const runDeliveryOnce = OutboundDelivery.prototype.runOnce;
+  let scheduler: QqTaskScheduler | undefined;
+  let delivery: OutboundDelivery | undefined;
+  const schedulerSpy = spyOn(QqTaskScheduler.prototype, "dispatchOnce").mockImplementation(
+    function (this: QqTaskScheduler) {
+      scheduler = this;
+      return dispatchOnce.call(this);
+    },
+  );
+  const deliverySpy = spyOn(OutboundDelivery.prototype, "runOnce").mockImplementation(function (
+    this: OutboundDelivery,
+    conversationId?: string,
+  ) {
+    delivery = this;
+    return runDeliveryOnce.call(this, conversationId);
+  });
+  try {
+    await h.runtime.botWorker.runCycle();
+    if (!scheduler || !delivery) throw new Error("bot settle seam not observed");
+    const settledScheduler = scheduler;
+    const settledDelivery = delivery;
+    await settledScheduler.waitForIdle();
+    await settledDelivery.runOnce();
+    await settledDelivery.waitForIdle();
+  } finally {
+    schedulerSpy.mockRestore();
+    deliverySpy.mockRestore();
+  }
   expect(h.sends).toHaveLength(1);
   // 结构化协议：正文在前，@ 段来自模型给的结构化 mention；正文不再补旧的前导空格。
   expect(h.sends[0]).toMatchObject({
