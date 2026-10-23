@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { AsyncLocalStorage } from "node:async_hooks";
+import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { RuntimeConfig } from "../../../shared/contracts";
@@ -140,7 +140,7 @@ import {
   type ConcurrentReplyFacts,
   concurrentJobsDumpValue,
   projectConcurrentReplyQuestions,
-  readConcurrentReplyFacts,
+  readConcurrentReplyFactSteps,
   readRelatedReplyDeliveries,
 } from "./concurrent-reply-context";
 import { failureCode } from "./failure-code";
@@ -703,6 +703,35 @@ interface ReadTimingScope {
 }
 const readTimingScope = new AsyncLocalStorage<ReadTimingScope>();
 
+// One preparation slice per I/O turn across Bot sources; synchronous fit commits stay inline.
+const preparationQueue: (() => void)[] = [];
+let preparationScheduled = false;
+function runPreparationSlice<T>(work: () => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    preparationQueue.push(
+      AsyncResource.bind(() => {
+        try {
+          resolve(work());
+        } catch (error) {
+          reject(error);
+        }
+      }),
+    );
+    if (!preparationScheduled) {
+      preparationScheduled = true;
+      setImmediate(advancePreparation);
+    }
+  });
+}
+function advancePreparation(): void {
+  try {
+    preparationQueue.shift()!();
+  } finally {
+    if (preparationQueue.length > 0) setImmediate(advancePreparation);
+    else preparationScheduled = false;
+  }
+}
+
 /** One authorized context owner with explicit decision/reply projections for every Bot topology. */
 export class BotContextSource {
   readonly actions: BuiltInAction[];
@@ -725,12 +754,8 @@ export class BotContextSource {
   /** 同批在飞动作各自的投影增量（token→相对基线 cost(observations) 的 units；按档取最大值）。 */
   private readonly reservations = new ReservationLedger();
   private sequence = 0;
+  private preparationVersion = 0;
   private pendingPlan?: { value: unknown; sources: SourceRef[] };
-  /**
-   * 各档最近一次并入材料的并发任务投影消息（缓存视图的就地刷新按对象身份定位替换，
-   * 不按内容猜测）；无投影的档不留条目。子会话按值继承，替换不写回父。
-   */
-  private readonly lastConcurrentJobsMessages = new Map<QqContextTier, ModelMessage>();
   private lastDecisionReplyRevision?: string;
   /** 阶段一批量评分对每个达标目标的意图（data_only 材料，不进指令协议）。 */
   private batchIntents?: { value: unknown; sources: SourceRef[] };
@@ -867,8 +892,8 @@ export class BotContextSource {
       },
       summaryEnabled:
         o.decisionTier === "reply" && this.guard.allowed(this.owner, "history_summary"),
-      assertCurrent: () => this.assertCurrent(),
-      assertSources: (sources) => this.assertSources(sources),
+      assertCurrent: () => this.assertAuthorityCurrent(),
+      assertSources: (sources) => this.assertSources(sources, false),
       now: () => this.now(),
     });
     actions.history = evidence.history;
@@ -878,8 +903,8 @@ export class BotContextSource {
     if (evidence.summary) actions.summary = evidence.summary;
     const evidenceSet = createEvidenceActionSet(actions, {
       assertSources: (sources) => {
-        this.assertCurrent();
-        this.assertSources(sources);
+        this.assertAuthorityCurrent();
+        this.assertSources(sources, false);
       },
       fit: (name, arguments_, signal) => this.actionResultFitter(name, arguments_, signal),
       budget: (kind) => this.evidenceBudget(kind),
@@ -1050,6 +1075,7 @@ export class BotContextSource {
   }
   /** Host-owned, source-bound prior work, never a system instruction or permission to send. */
   setPendingPlan(value: unknown, sources: readonly SourceRef[]): void {
+    this.preparationVersion++;
     this.assertSources(sources);
     this.pendingPlan = { value: structuredClone(value), sources: uniqueSources(sources) };
     this.views.clear();
@@ -1060,6 +1086,7 @@ export class BotContextSource {
    * 达标目标的回复 run 据此知道"这一轮各自打算说什么"，不需要再写一次意图。
    */
   setBatchIntents(value: unknown, sources: readonly SourceRef[]): void {
+    this.preparationVersion++;
     this.assertSources(sources);
     this.batchIntents = { value: structuredClone(value), sources: uniqueSources(sources) };
     this.views.clear();
@@ -1171,6 +1198,7 @@ export class BotContextSource {
   }
   /** Only a newly observed event changes the cached initial material; unchanged model steps reuse it. */
   invalidate(materialOnly = false): void {
+    this.preparationVersion++;
     this.assertCurrent();
     this.views.clear();
     if (!materialOnly) this.lastDecisionReplyRevision = undefined;
@@ -1193,6 +1221,7 @@ export class BotContextSource {
    * 回复 spec。视图按 tier 分桶缓存，换档自然另取；不新开第二 source 压低重复压缩。
    */
   setRun(spec: AgentSpec, decisionTier: QqContextTier): void {
+    this.preparationVersion++;
     this.options.spec = spec;
     this.options.decisionTier = decisionTier;
   }
@@ -1242,9 +1271,6 @@ export class BotContextSource {
         })),
       });
     }
-    // 并发任务投影消息随缓存视图按对象身份继承：子 run 的边界刷新替换同一条，不重复追加。
-    for (const [tier, message] of this.lastConcurrentJobsMessages)
-      child.lastConcurrentJobsMessages.set(tier, message);
     child.sequence = this.sequence;
     // Render bindings are immutable view material; history observations remain child-local.
     // 数组按值复制：子 run 追加失败项不写回父（retrievalFailures 是可变 run 级状态）。
@@ -1263,46 +1289,52 @@ export class BotContextSource {
     return child;
   }
   async read(input: Parameters<ConversationContextSource["read"]>[0]): Promise<ContextMaterial> {
+    const version = ++this.preparationVersion;
     const timings: ContextReadTimings = {};
     const scope: ReadTimingScope | undefined = input.onReadTimings
       ? { owner: this, timings, active: true }
       : undefined;
     const read = async () => {
       try {
-        const preludeStarted = performance.now();
-        try {
-          const conversation = this.options.journal.get(this.options.conversationId);
-          this.historyDisclosureRefs = conversation
-            ? historyReadDisclosureRefs(
-                this.options.db,
-                input.observations,
-                qqConversationScopeOfBinding({
-                  conversationId: this.options.conversationId,
-                  binding: this.options.binding,
-                  bindingEpoch: conversation.bindingEpoch,
-                }),
-                this.options.conversationId,
-              )
-            : new Map();
-          this.observations = input.observations;
-          // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
-          this.reservations.clear();
-          this.assertCurrent();
+        await runPreparationSlice(() => {
           input.signal.throwIfAborted();
-          if (!this.views.size && this.lastDecisionReplyRevision === undefined) {
+          if (version !== this.preparationVersion)
+            fail("CONTEXT_SOURCE_INVALID", "上下文准备已被更新的读取替代");
+          const preludeStarted = performance.now();
+          try {
             const conversation = this.options.journal.get(this.options.conversationId);
-            if (!conversation) fail("CONTEXT_SOURCE_INVALID", "会话已失效");
-            this.sequence = (
-              this.options.db
-                .query(
-                  "SELECT COALESCE(MAX(seq),0) AS seq FROM conversation_events WHERE conversation_id=? AND kind IN ('inbound','media_revision','outbound')",
+            this.historyDisclosureRefs = conversation
+              ? historyReadDisclosureRefs(
+                  this.options.db,
+                  input.observations,
+                  qqConversationScopeOfBinding({
+                    conversationId: this.options.conversationId,
+                    binding: this.options.binding,
+                    bindingEpoch: conversation.bindingEpoch,
+                  }),
+                  this.options.conversationId,
                 )
-                .get(conversation.id) as { seq: number }
-            ).seq;
+              : new Map();
+            this.observations = input.observations;
+            // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
+            this.reservations.clear();
+            this.assertCurrent();
+            input.signal.throwIfAborted();
+            if (!this.views.size && this.lastDecisionReplyRevision === undefined) {
+              const conversation = this.options.journal.get(this.options.conversationId);
+              if (!conversation) fail("CONTEXT_SOURCE_INVALID", "会话已失效");
+              this.sequence = (
+                this.options.db
+                  .query(
+                    "SELECT COALESCE(MAX(seq),0) AS seq FROM conversation_events WHERE conversation_id=? AND kind IN ('inbound','media_revision','outbound')",
+                  )
+                  .get(conversation.id) as { seq: number }
+              ).seq;
+            }
+          } finally {
+            timings.readPreludeMs = performance.now() - preludeStarted;
           }
-        } finally {
-          timings.readPreludeMs = performance.now() - preludeStarted;
-        }
+        });
         let view: View;
         const viewStarted = performance.now();
         try {
@@ -1310,16 +1342,20 @@ export class BotContextSource {
         } finally {
           timings.readViewMs = performance.now() - viewStarted;
         }
-        const afterViewStarted = performance.now();
-        let remainderMs: number;
-        try {
-          this.options.spec.limits.inputUnits = view.limit;
-          this.options.onRead?.(this.sequence);
-          this.assertCurrent();
-        } finally {
-          remainderMs = performance.now() - afterViewStarted;
-          timings.readRemainderMs = remainderMs;
-        }
+        const remainderMs = await runPreparationSlice(() => {
+          input.signal.throwIfAborted();
+          if (version !== this.preparationVersion)
+            fail("CONTEXT_SOURCE_INVALID", "上下文准备已被更新的读取替代");
+          const afterViewStarted = performance.now();
+          try {
+            this.options.spec.limits.inputUnits = view.limit;
+            this.options.onRead?.(this.sequence);
+            this.assertCurrent();
+          } finally {
+            timings.readRemainderMs = performance.now() - afterViewStarted;
+          }
+          return timings.readRemainderMs;
+        });
         // 决策相自动图（§7.1）：投影（可能为空/禁用）作为资料消息并入材料；来源并入统一复验。
         let decisionMedia: Awaited<ReturnType<BotContextSource["preparePhaseMedia"]>>;
         const mediaStarted = performance.now();
@@ -1788,22 +1824,37 @@ ${intent.trim()}`,
     }
   }
   assertCurrent(): void {
+    this.assertCurrentWithCandidate();
+  }
+  private assertAuthorityCurrent(): void {
+    const timings = this.readTimings();
+    this.timeReadAssertion(timings, "readAssertHostMs", () => this.options.assertCurrent());
+    this.timeReadAssertion(timings, "readAssertBudgetMs", () => {
+      for (const budget of this.modelBudgets.values()) budget.assertCurrent();
+    });
+  }
+  private assertCurrentWithCandidate(candidate?: View): void {
     const timings = this.readTimings();
     if (timings) timings.readAssertCurrentCalls = (timings.readAssertCurrentCalls ?? 0) + 1;
     this.timeReadAssertion(timings, "readAssertCurrentMs", () => {
-      this.timeReadAssertion(timings, "readAssertHostMs", () => this.options.assertCurrent());
-      this.timeReadAssertion(timings, "readAssertBudgetMs", () => {
-        for (const budget of this.modelBudgets.values()) budget.assertCurrent();
-      });
+      this.assertAuthorityCurrent();
       this.timeReadAssertion(timings, "readAssertConcurrentMs", () =>
         this.assertConcurrentContexts(
-          [...this.views.values()].flatMap((view) => view.concurrentContexts ?? []),
+          [...this.views.values(), ...(candidate ? [candidate] : [])].flatMap(
+            (view) => view.concurrentContexts ?? [],
+          ),
         ),
       );
-      const sources = this.timeReadAssertion(
-        timings,
-        "readAssertCommonBuildMs",
-        () => this.commonSources,
+      const sources = this.timeReadAssertion(timings, "readAssertCommonBuildMs", () =>
+        candidate
+          ? uniqueSources([
+              ...this.commonSources,
+              ...(candidate.material.sources ?? []),
+              ...(candidate.material.evidence ?? []).flatMap((entry) => entry.sources),
+              ...(candidate.material.summaries ?? []).flatMap((entry) => entry.sources),
+              ...(candidate.concurrentSources ?? []),
+            ])
+          : this.commonSources,
       );
       if (timings)
         timings.readAssertCommonOccurrences =
@@ -2552,6 +2603,7 @@ ${intent.trim()}`,
     timings?: ContextReadTimings,
     nextObservation?: ActionObservation,
   ): Promise<View> {
+    const version = this.preparationVersion;
     let saved = this.views.get(tier);
     const related = this.relatedReplyDeliveries();
     if (
@@ -2579,21 +2631,46 @@ ${intent.trim()}`,
     // 所有相位先更新动态事实，再用现有拟合规则决定复用或重选可裁材料。
     if (saved && !this.terminalBudgetFeedback) {
       // 先复验会话/来源现行有效，再做投影更新：过期/撤权在现读前即拒，不更新材料。
-      this.assertCurrent();
-      this.updateConcurrentProjection(tier, related);
-      const withNextFits =
-        this.costWithNext(
-          tier,
-          saved.material,
-          this.observations,
-          saved.selection.messages,
-          batchTargets,
-          nextObservation,
-        ) <= saved.limit;
-      if (withNextFits) return saved;
-      // 预留不足时尝试重选；已接受结果仍可读取，真正请求的硬上限由运行时复验。
-      if (this.fitsWithObservations(tier, {}, saved.limit)) this.views.delete(tier);
-      else if (batchTargets === undefined && nextObservation === undefined) return saved;
+      const current = saved;
+      const refresh = this.concurrentProjectionSteps(related);
+      let facts: ConcurrentReplyFacts | undefined;
+      try {
+        for (;;) {
+          const next = await runPreparationSlice(() => {
+            this.assertPreparationOwner(tier, current, version, signal);
+            return refresh.next();
+          });
+          if (next.done) {
+            facts = next.value;
+            break;
+          }
+        }
+      } finally {
+        refresh.return(undefined as never);
+      }
+      const reusable = await runPreparationSlice(() => {
+        this.assertPreparationOwner(tier, current, version, signal);
+        const candidate = this.concurrentProjection(current, facts);
+        const withNextFits =
+          this.costWithNext(
+            tier,
+            candidate.material,
+            this.observations,
+            candidate.selection.messages,
+            batchTargets,
+            nextObservation,
+          ) <= candidate.limit;
+        const keep =
+          withNextFits ||
+          (!this.fitsWithObservations(tier, {}, candidate.limit) &&
+            batchTargets === undefined &&
+            nextObservation === undefined);
+        this.assertCurrentWithCandidate(candidate);
+        this.assertPreparationOwner(tier, current, version, signal);
+        if (keep) Object.assign(current, candidate);
+        return keep;
+      });
+      if (reusable) return current;
     }
     let ceiling: number;
     const projectionStarted = performance.now();
@@ -2603,7 +2680,7 @@ ${intent.trim()}`,
       if (timings) timings.readViewDataProjectionMs = performance.now() - projectionStarted;
       throw error;
     }
-    return this.buildView(
+    const steps = this.buildViewSteps(
       tier,
       signal,
       ceiling,
@@ -2614,6 +2691,20 @@ ${intent.trim()}`,
       undefined,
       related,
     );
+    try {
+      for (;;) {
+        const next = await runPreparationSlice(() => {
+          signal.throwIfAborted();
+          if (version !== this.preparationVersion)
+            fail("CONTEXT_SOURCE_INVALID", "上下文准备已被更新的读取替代");
+          this.options.assertCurrent();
+          return steps.next();
+        });
+        if (next.done) return next.value;
+      }
+    } finally {
+      steps.return(undefined as never);
+    }
   }
   private automaticAllocation(tier: QqContextTier): boolean {
     return schemeAllocation(this.options.scheme)[tier].mode === "auto";
@@ -2629,6 +2720,32 @@ ${intent.trim()}`,
     fit?: { timeline: readonly QqContextMessage[]; limit: number; requireNextWindow: boolean },
     related = this.relatedReplyDeliveries(),
   ): View {
+    const steps = this.buildViewSteps(
+      tier,
+      signal,
+      inputLimit,
+      observations,
+      batchTargets,
+      timings,
+      nextObservation,
+      fit,
+      related,
+    );
+    let next = steps.next();
+    while (!next.done) next = steps.next();
+    return next.value;
+  }
+  private *buildViewSteps(
+    tier: QqContextTier,
+    signal: AbortSignal,
+    inputLimit: number,
+    observations: readonly ActionObservation[],
+    batchTargets?: ModelMessage,
+    timings?: ContextReadTimings,
+    nextObservation?: ActionObservation,
+    fit?: { timeline: readonly QqContextMessage[]; limit: number; requireNextWindow: boolean },
+    related = this.relatedReplyDeliveries(),
+  ): Generator<void, View, void> {
     let activeRegion:
       | "readViewDataProjectionMs"
       | "readViewSummaryMs"
@@ -2701,6 +2818,7 @@ ${intent.trim()}`,
             }),
           ],
         });
+      yield;
       let selection = qqSelectContext({ timeline, limits: price, nowSeconds });
       let quoteMessage: ModelMessage | undefined;
       let disclosedMessages: { message: ModelMessage; facts: readonly QqMessageFact[] }[] = [];
@@ -2924,6 +3042,7 @@ ${intent.trim()}`,
         });
       };
       let projection = projectionFor(selection);
+      yield;
       /**
        * 部分承载时该事实在**资料段**里的形状：保留身份、时间、关系与其它非正文片段，摘掉正文。
        *
@@ -3062,16 +3181,12 @@ ${intent.trim()}`,
         | undefined;
       // One fresh factual read in this synchronous build; changing the selected window
       // only changes whether a known question is visible, not the other jobs' proof.
-      const concurrentFacts = this.readConcurrentJobsFacts(related);
+      const concurrentFacts = yield* this.readConcurrentJobsFactSteps(related);
       const rebuildConcurrentForSelection = () => {
         concurrent = this.concurrentJobsMessage(
           concurrentFacts,
           new Set(selectedCarrierEventKeys(selection.messages)),
         );
-        if (!fit) {
-          if (concurrent === undefined) this.lastConcurrentJobsMessages.delete(tier);
-          else this.lastConcurrentJobsMessages.set(tier, concurrent.message);
-        }
       };
       const pending = (items: readonly QqSummaryPackage[]) => {
         const messages: ModelMessage[] = [];
@@ -3151,6 +3266,7 @@ ${intent.trim()}`,
         // 窗口收窄＝selection 换代：projection bundle 必须同代重建，被裁消息的事实/出站
         // 投影/承载判定不再留在资料段，成本才能真正随窗口下降（见 projectionFor 说明）。
         projection = projectionFor(selection);
+        yield;
         rebuildConcurrentForSelection();
         quoteMessage = undefined;
         disclosedMessages = [];
@@ -3177,6 +3293,7 @@ ${intent.trim()}`,
           });
         fail("CONTEXT_BUDGET_EXCEEDED", "配置窗口的原文、完整协议与后续动作余量超过模型容量");
       }
+      yield;
       // 回复档只读已提交包；新压缩在本轮提交后由后台队列执行。
       const baseline = cost(material);
       // 本群停用历史摘要：已存包与新压缩都不再进入这一轮（原文窗口照旧）。
@@ -3323,6 +3440,7 @@ ${intent.trim()}`,
           ]),
         };
       }
+      yield;
       // D2 S4b：回复展开与引用正文资料段（规格 §4.3/§4.4）。展开只在本档 view 构建时做一次：
       // 真实 load（scope fail-closed 投影）/register（同一 evidence registry，真实 runId）/
       // fits。引用段字节记账按**最终渲染实量**（qq_reply_roots 段完整序列化的 UTF-8 字节，
@@ -3661,6 +3779,7 @@ ${intent.trim()}`,
           };
         }
       }
+      yield;
       if (!fitsTarget(material)) {
         const model =
           tier === "reply" ? o.runtime.model_name : (o.spec.model ?? o.runtime.model_name);
@@ -3680,7 +3799,6 @@ ${intent.trim()}`,
         fail("CONTEXT_BUDGET_EXCEEDED", "近期窗口、水位包、协议与后续动作余量超过可用容量");
       }
       signal.throwIfAborted();
-      this.assertSources(material.sources ?? []);
       const selectedEventKeysBySpeaker = new Map<string | null, string[]>();
       for (const message of selection.messages) {
         if (message.speaker === "assistant" || message.carrierEventKey === undefined) continue;
@@ -3704,8 +3822,8 @@ ${intent.trim()}`,
         concurrentContexts: concurrent?.contexts ?? [],
         concurrentMessage: concurrent?.message,
       };
+      this.assertCurrentWithCandidate(view);
       if (!fit) this.views.set(tier, view);
-      this.assertCurrent();
       return view;
     } finally {
       if (timings) timings[activeRegion] = performance.now() - regionStarted;
@@ -3736,12 +3854,13 @@ ${intent.trim()}`,
    * 无其他任务时不产生消息。已接受的评分意图复用完整来源守卫；缺失、到期或撤权保持未知。
    * 来源与快照身份留在本 run 的视图中，供发送边界再次复验，不进入模型资料正文。
    */
-  private readConcurrentJobsFacts(
+  private *readConcurrentJobsFactSteps(
     related = this.relatedReplyDeliveries(),
-  ): ConcurrentReplyFacts | undefined {
+  ): Generator<void, ConcurrentReplyFacts | undefined, void> {
     const timings = this.readTimings();
     if (timings) timings.readConcurrentRebuildCalls = (timings.readConcurrentRebuildCalls ?? 0) + 1;
-    return this.timeReadAssertion(timings, "readConcurrentRebuildMs", () => {
+    const started = performance.now();
+    try {
       const o = this.options;
       const conversation = o.journal.get(o.conversationId);
       if (!conversation) return undefined;
@@ -3755,7 +3874,7 @@ ${intent.trim()}`,
           : o.trigger
             ? { focusFromSeq: o.trigger.seq, focusThroughSeq: o.trigger.seq }
             : {};
-      const projection = readConcurrentReplyFacts(o.db, {
+      const projection = yield* readConcurrentReplyFactSteps(o.db, {
         conversationId: o.conversationId,
         bindingEpoch: conversation.bindingEpoch,
         agentId: o.binding.agentId,
@@ -3776,7 +3895,11 @@ ${intent.trim()}`,
         },
       });
       return projection;
-    });
+    } finally {
+      if (timings)
+        timings.readConcurrentRebuildMs =
+          (timings.readConcurrentRebuildMs ?? 0) + performance.now() - started;
+    }
   }
 
   private concurrentJobsMessage(
@@ -3798,44 +3921,56 @@ ${intent.trim()}`,
     };
   }
 
-  private buildConcurrentJobsMessage(
-    visibleEventKeys: ReadonlySet<string>,
-    related = this.relatedReplyDeliveries(),
-  ) {
-    return this.concurrentJobsMessage(this.readConcurrentJobsFacts(related), visibleEventKeys);
+  private assertPreparationOwner(
+    tier: QqContextTier,
+    view: View,
+    version: number,
+    signal: AbortSignal,
+  ): void {
+    signal.throwIfAborted();
+    if (version !== this.preparationVersion || this.views.get(tier) !== view)
+      fail("CONTEXT_SOURCE_INVALID", "上下文准备已被更新的读取替代");
+    this.options.assertCurrent();
   }
 
-  /** 更新并发资料及来源身份；预算判定由 view 边界统一负责。 */
-  private updateConcurrentProjection(
-    tier: QqContextTier,
-    related?: ReturnType<typeof readRelatedReplyDeliveries>,
-  ): boolean {
-    const view = this.views.get(tier);
-    if (!view) return false;
-    const previous = this.lastConcurrentJobsMessages.get(tier);
-    const concurrent = this.buildConcurrentJobsMessage(
+  private *concurrentProjectionSteps(
+    related = this.relatedReplyDeliveries(),
+  ): Generator<void, ConcurrentReplyFacts | undefined, void> {
+    this.assertAuthorityCurrent();
+    yield;
+    const facts = yield* this.readConcurrentJobsFactSteps(related);
+    yield;
+    return facts;
+  }
+
+  private concurrentProjection(view: View, facts: ConcurrentReplyFacts | undefined): View {
+    const concurrent = this.concurrentJobsMessage(
+      facts,
       new Set(selectedCarrierEventKeys(view.selection.messages)),
-      related,
     );
+    const previous = view.concurrentMessage;
     const message = concurrent?.message;
-    view.concurrentSources = concurrent?.sources ?? [];
-    view.concurrentContexts = concurrent?.contexts ?? [];
-    view.concurrentMessage = concurrent?.message;
-    if (JSON.stringify(message) === JSON.stringify(previous)) return false;
-    if (message === undefined) this.lastConcurrentJobsMessages.delete(tier);
-    else this.lastConcurrentJobsMessages.set(tier, message);
+    const changed = JSON.stringify(message) !== JSON.stringify(previous);
     const pending = view.material.pending;
     const index = previous === undefined || pending === undefined ? -1 : pending.indexOf(previous);
-    view.material = {
-      ...view.material,
-      pending:
-        index < 0
-          ? [...(pending ?? []), ...(message === undefined ? [] : [message])]
-          : message === undefined
-            ? pending!.filter((entry) => entry !== previous)
-            : pending!.map((entry) => (entry === previous ? message : entry)),
+    const material = !changed
+      ? view.material
+      : {
+          ...view.material,
+          pending:
+            index < 0
+              ? [...(pending ?? []), ...(message === undefined ? [] : [message])]
+              : message === undefined
+                ? pending!.filter((entry) => entry !== previous)
+                : pending!.map((entry) => (entry === previous ? message : entry)),
+        };
+    return {
+      ...view,
+      material,
+      concurrentSources: concurrent?.sources ?? [],
+      concurrentContexts: concurrent?.contexts ?? [],
+      concurrentMessage: changed ? message : previous,
     };
-    return true;
   }
 
   private outboundSeqWindow(
@@ -4258,12 +4393,12 @@ ${intent.trim()}`,
         this.assertSources(change.candidate.concurrentSources ?? []);
         this.assertConcurrentContexts(change.candidate.concurrentContexts ?? []);
       }
-      for (const change of materialChanges) change.view.material = change.material;
+      for (const change of materialChanges) {
+        if ([...this.views.values()].includes(change.view)) change.view.material = change.material;
+      }
       for (const change of viewChanges) {
-        Object.assign(change.view, change.candidate);
-        const concurrent = change.candidate.concurrentMessage;
-        if (concurrent) this.lastConcurrentJobsMessages.set(change.tier, concurrent);
-        else this.lastConcurrentJobsMessages.delete(change.tier);
+        if (this.views.get(change.tier) === change.view)
+          Object.assign(change.view, change.candidate);
       }
       // 通过则覆盖自己的预留（fitter 记住上次通过的值）；失败不改预留。
       for (const [group, reservation] of reservations)

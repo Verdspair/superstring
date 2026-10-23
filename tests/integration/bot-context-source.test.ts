@@ -79,6 +79,7 @@ function setup(
     budget?: BotContextSourceOptions["budget"];
     assertBackgroundCurrent?: () => void;
     configuredQuotes?: boolean;
+    automaticAllocation?: boolean;
   } = {},
 ) {
   const h = openBusinessDb();
@@ -89,6 +90,9 @@ function setup(
   updateQqSettings(h.orm, { enabled: true, accountId: "10001", expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
     name: "context",
+    ...(input.automaticAllocation
+      ? { allocation: { judgement: { mode: "auto" as const }, reply: { mode: "auto" as const } } }
+      : {}),
     ...(input.configuredQuotes
       ? {
           messageSettings: {
@@ -410,7 +414,7 @@ const compressionRuns = (h: ReturnType<typeof setup>) =>
     .listRuns({ ownerKind: "qq_binding", ownerId: h.binding.id })
     .filter((run) => run.specId === "context.compress.events");
 
-function quoteFixture() {
+function quoteFixture(overrides: Partial<BotContextSourceOptions> = {}) {
   const h = setup({ configuredQuotes: true });
   h.runtime.p5_config.recent_turns = 1;
   h.runtime.p5_config.compression_enabled = false;
@@ -454,6 +458,7 @@ function quoteFixture() {
   const source = h.newSource({
     guard,
     gateway: { ...h.gateway, loadedContextCapacity: async () => 32768 },
+    ...overrides,
   });
   const action = {
     owner: {
@@ -3488,4 +3493,239 @@ it("reads concurrent proofs once while a synchronous build shrinks several candi
   await expect(h.source.read(readInput())).rejects.toMatchObject({
     code: "CONTEXT_SOURCE_INVALID",
   });
+});
+
+it("keeps the previous view when final candidate budget authority fails", async () => {
+  const h = setup();
+  h.seed("original window");
+  await h.source.read(readInput());
+  const source = h.source as unknown as {
+    views: Map<string, unknown>;
+    modelBudgets: Map<string, { assertCurrent(): void }>;
+    buildViewSteps(
+      tier: "reply",
+      signal: AbortSignal,
+      limit: number,
+      observations: ActionObservation[],
+    ): Generator<void, unknown, void>;
+  };
+  const previous = source.views.get("reply");
+  h.seed("candidate window");
+  source.modelBudgets.set("unrelated-fixture-budget", {
+    assertCurrent() {
+      fail("CONTEXT_SOURCE_INVALID", "candidate budget revoked");
+    },
+  });
+  const prepare = source.buildViewSteps("reply", readInput().signal, 65536, []);
+  expect(() => {
+    let next = prepare.next();
+    while (!next.done) next = prepare.next();
+  }).toThrow("candidate budget revoked");
+  expect(source.views.get("reply")).toBe(previous);
+});
+
+it("checks a newly selected revoked source before replacing the previous view", async () => {
+  const h = setup();
+  h.seed("original window");
+  await h.source.read(readInput());
+  const source = h.source as unknown as {
+    views: Map<string, unknown>;
+    buildViewSteps(
+      tier: "reply",
+      signal: AbortSignal,
+      limit: number,
+      observations: ActionObservation[],
+    ): Generator<void, unknown, void>;
+  };
+  const previous = source.views.get("reply");
+  const candidate = h.seed("candidate window");
+  const prepare = source.buildViewSteps("reply", readInput().signal, 65536, []);
+  // First step freezes the actual timeline and its source revision before yielding.
+  expect(prepare.next().done).toBe(false);
+  expect(source.views.get("reply")).toBe(previous);
+  h.db
+    .query("UPDATE qq_observation_text SET body='changed after selection' WHERE event_key=?")
+    .run(candidate);
+  expect(() => {
+    let next = prepare.next();
+    while (!next.done) next = prepare.next();
+  }).toThrow();
+  expect(source.views.get("reply")).toBe(previous);
+});
+
+describe("Bot evidence callbacks prove only their own sources", () => {
+  function evidenceFixture() {
+    const state = { valid: true, unrelatedChecks: 0, hostChecks: 0 };
+    const unrelated = { kind: "remote_document", id: "unrelated-retained", revision: "1" };
+    const h = quoteFixture({
+      resolveSource: (source) => {
+        if (source.kind !== unrelated.kind || source.id !== unrelated.id) return undefined;
+        state.unrelatedChecks++;
+        return state.valid ? "available" : "revoked";
+      },
+      assertCurrent() {
+        state.hostChecks++;
+      },
+    });
+    h.source.setPendingPlan({ kind: "unrelated material" }, [unrelated]);
+    const locator = h.source as unknown as {
+      locateHistory(
+        platformMessageId: string,
+        context: typeof h.action,
+      ): import("../../src/shared/contracts/evidence").Evidence | null;
+    };
+    return { ...h, state, locate: () => locator.locateHistory(h.quoted, h.action) };
+  }
+  it("locates and registers a quote without scanning unrelated retained material", () => {
+    const h = evidenceFixture();
+    h.state.unrelatedChecks = 0;
+    h.state.hostChecks = 0;
+    const evidence = h.locate();
+    if (!evidence) throw new Error("quoted evidence missing");
+    expect(h.source.registerEvidence("history", evidence, h.action)).toBeTruthy();
+    expect(h.state.hostChecks).toBeGreaterThan(0);
+    expect(h.state.unrelatedChecks).toBe(0);
+  });
+  it("still rejects a selected evidence revision changed before registration", () => {
+    const h = evidenceFixture();
+    const evidence = h.locate();
+    if (!evidence) throw new Error("quoted evidence missing");
+    h.db
+      .query("UPDATE qq_observation_text SET body='changed selected evidence' WHERE event_key=?")
+      .run(h.quoted);
+    expect(() => h.source.registerEvidence("history", evidence, h.action)).toThrow();
+  });
+  it("still rejects selected evidence expired before registration", () => {
+    const h = evidenceFixture();
+    const evidence = h.locate();
+    if (!evidence) throw new Error("quoted evidence missing");
+    h.db
+      .query(
+        "UPDATE qq_observation_text SET expires_at='2000-01-01T00:00:00.000Z' WHERE event_key=?",
+      )
+      .run(h.quoted);
+    expect(() => h.source.registerEvidence("history", evidence, h.action)).toThrow();
+  });
+  it("allows independent evidence but rejects unrelated revocation at full model and fitter boundaries", async () => {
+    const h = evidenceFixture();
+    h.state.valid = false;
+    const evidence = h.locate();
+    if (!evidence) throw new Error("quoted evidence missing");
+    expect(h.source.registerEvidence("history", evidence, h.action)).toBeTruthy();
+    expect(() => h.source.assertCurrent()).toThrow();
+    await expect(h.source.read(readInput())).rejects.toMatchObject({
+      code: "CONTEXT_SOURCE_INVALID",
+    });
+    await expect(
+      h.source.actionResultFitter("history.query", {}, h.action.signal),
+    ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+  });
+});
+
+it("does not let an orphaned fitter duplicate the current concurrent-jobs message", async () => {
+  const h = setup({ automaticAllocation: true });
+  h.runtime.p5_config.compression_enabled = false;
+  h.runtime.p5_config.recent_turns = 10;
+  for (let index = 0; index < 8; index++) h.seed(`OLDER-${index} ${"o".repeat(900)}`, 10 - index);
+  h.seed("CURRENT");
+  const at = new Date().toISOString();
+  h.db
+    .query(`INSERT INTO qq_conversation_tasks(id,task_key,conversation_id,binding_epoch,agent_id,task_class,cause,
+    source_from_seq,source_through_seq,status,created_at,updated_at)
+    VALUES('orphan-peer','orphan-peer',?,1,?,'ordinary','direct_reply',1,1,'pending',?,?)`)
+    .run(h.conversation.id, DEFAULT_AGENT_ID, at, at);
+  const state = h.source as unknown as {
+    views: Map<string, { selection: { messages: unknown[] } }>;
+  };
+  await h.source.read(readInput());
+  const original = state.views.get("reply");
+  if (!original) throw new Error("initial view missing");
+  const fit = await h.source.actionResultFitter("web.fetch", {}, readInput().signal, true);
+  h.source.invalidate();
+  await h.source.read(readInput());
+  const current = state.views.get("reply");
+  expect(current).not.toBe(original);
+  let lo = 0,
+    hi = 65536;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fit({ text: "r".repeat(mid) }, [])) lo = mid;
+    else hi = mid - 1;
+  }
+  expect(lo).toBeGreaterThan(0);
+  expect(fit({ text: "r".repeat(lo) }, [])).toBe(true);
+  // Candidate fitting used to update a shadow message map even though its view is orphaned.
+  expect(state.views.get("reply")).toBe(current);
+  h.db
+    .query("UPDATE qq_conversation_tasks SET cancellation_requested=1 WHERE id='orphan-peer'")
+    .run();
+  const material = await h.source.read(readInput());
+  const concurrent = (material.pending ?? [])
+    .flatMap((message) => message.content)
+    .filter((part) => part.kind === "text" && part.text.includes('"kind":"qq_concurrent_jobs"'));
+  expect(concurrent).toHaveLength(1);
+  expect(JSON.stringify(concurrent)).toContain("cancel_requested");
+});
+
+it("does not overwrite a synchronous fitter material change during cached projection preparation", async () => {
+  const h = quoteFixture();
+  const initial = await h.source.read(readInput());
+  const quote = initial.pending?.find((message) =>
+    message.content.some((part) => {
+      if (part.kind !== "text") return false;
+      try {
+        return JSON.parse(part.text).kind === "qq_reply_roots";
+      } catch {
+        return false;
+      }
+    }),
+  );
+  if (!quote) throw new Error("authentic quote missing");
+  const initialUnits = new ContextEngine().render(h.spec, initial, [], ["alice", "bob"]).units;
+  const length = Math.max(0, (h.spec.limits.inputUnits ?? 0) - initialUnits) + 1000;
+  const fit = await h.source.actionResultFitter(
+    "sticker.search",
+    { query: "hello" },
+    h.action.signal,
+  );
+  const state = h.source as unknown as {
+    views: Map<string, { material: typeof initial; selection: object }>;
+    reservations: { reserved(token: symbol | undefined, group: "bytes"): number };
+  };
+  const view = state.views.get("reply");
+  const selection = view?.selection;
+  const original = h.source["concurrentProjectionSteps"].bind(h.source);
+  const observed = h.source as unknown as { concurrentProjectionSteps: typeof original };
+  let accepted = false;
+  let reserved = 0;
+  let shrunk: typeof initial | undefined;
+  observed.concurrentProjectionSteps = function* (...args: Parameters<typeof original>) {
+    const candidate = yield* original(...args);
+    setImmediate(() => {
+      accepted = fit({ status: "ok", text: "z".repeat(length) }, []);
+      reserved = state.reservations.reserved(undefined, "bytes");
+      shrunk = view?.material;
+    });
+    // Hold dynamic facts over a real I/O boundary; material must be derived at commit time.
+    yield;
+    return candidate;
+  };
+  const after = await h.source.read(readInput());
+  expect(accepted).toBe(true);
+  expect(state.views.get("reply")).toBe(view);
+  expect(shrunk?.pending).not.toContain(quote);
+  expect(after.pending).not.toContain(quote);
+  expect(view?.material.pending).not.toContain(quote);
+  expect(reserved).toBeGreaterThan(0);
+  expect(state.reservations.reserved(undefined, "bytes")).toBe(reserved);
+  expect(view?.selection).toBe(selection);
+  const observation: ActionObservation = {
+    id: "cached-fit-result",
+    name: "sticker.search",
+    arguments: { query: "hello" },
+    value: { status: "ok", text: "z".repeat(length) },
+    sources: [],
+  };
+  const rendered = new ContextEngine().render(h.spec, after, [observation], ["alice", "bob"]);
+  expect(rendered.units).toBeLessThanOrEqual(h.spec.limits.inputUnits ?? 0);
 });

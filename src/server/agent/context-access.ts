@@ -22,7 +22,10 @@ import { qqMemberRosterSourceAccess } from "../services/qq-member-roster-sources
 import { qqMemberNameSourceAccess } from "../services/qq-member-sources";
 import { qqMemoryJobSourceAccess } from "../services/qq-memory-fact-input";
 import { qqMessageFactSourceAccess } from "../services/qq-message-fact-sources";
-import { qqOutboundFactSourceAccess } from "../services/qq-outbound-fact-sources";
+import {
+  qqOutboundFactSourceAccess,
+  qqOutboundFactSourceAccessMany,
+} from "../services/qq-outbound-fact-sources";
 import { visibleConversation } from "./conversation-access";
 
 export interface ContextPrincipal {
@@ -479,7 +482,55 @@ export function assertContextSources(options: {
       ? sourceAccess(db, source, identity, { userId: DEFAULT_USER_ID }, at)
       : options.resolveSource?.(source, identity, at);
   resolve.resolveMany = options.resolveSource?.resolveMany;
-  const states = [...resolveSourceStates(sources, resolve, owner, now)];
+  const states: (SourceAccess | undefined)[] = [];
+  for (let index = 0; index < sources.length; ) {
+    if (sources[index]!.kind === "qq_outbound_message_fact") {
+      let end = index + 1;
+      while (end < sources.length && sources[end]!.kind === "qq_outbound_message_fact") end++;
+      states.push(
+        ...qqOutboundFactSourceAccessMany(
+          db,
+          sources.slice(index, end),
+          owner,
+          { userId: DEFAULT_USER_ID },
+          now,
+        ),
+      );
+      index = end;
+      continue;
+    }
+    if (sources[index]!.kind !== "qq_observation") {
+      let end = index + 1;
+      while (
+        end < sources.length &&
+        sources[end]!.kind !== "qq_observation" &&
+        sources[end]!.kind !== "qq_outbound_message_fact"
+      )
+        end++;
+      states.push(...resolveSourceStates(sources.slice(index, end), resolve, owner, now));
+      index = end;
+      continue;
+    }
+    let end = index + 1;
+    while (end < sources.length && sources[end]!.kind === "qq_observation") end++;
+    const segment = sources.slice(index, end);
+    const rows = observationRows(
+      db,
+      segment.filter((ref) => !refCapExpired(ref, now)).map((ref) => ref.id),
+    );
+    for (const source of segment) {
+      states.push(
+        observationVerdict({
+          row: rows.get(source.id) ?? null,
+          source,
+          owner,
+          principal: { userId: DEFAULT_USER_ID },
+          now,
+        }),
+      );
+    }
+    index = end;
+  }
   const resolved = new Map(sources.map((source, index) => [source, states[index]]));
   const refs = sources.filter(
     (source) => source.kind === "memory" && resolved.get(source) === undefined,

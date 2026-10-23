@@ -33,7 +33,7 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { OneBotSendRequest } from "../../src/server/services/onebot-connection";
 import { qqOutboundFactSourceAccess } from "../../src/server/services/qq-outbound-fact-sources";
 import type { RunOwner } from "../../src/shared/contracts/agent-run";
-import type { SourceRef } from "../../src/shared/contracts/evidence";
+import type { SourceAccess, SourceRef } from "../../src/shared/contracts/evidence";
 import type { QqConversationScope, QqMessagePart } from "../../src/shared/contracts/qq-message";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
@@ -952,6 +952,338 @@ describe("outbound projection: legacy wire replay and the structured protocol st
       expect(fact.mentions).toEqual([]);
     } finally {
       h.close();
+    }
+  });
+});
+
+type AccessMany = (
+  db: ReturnType<typeof openBusinessDb>["db"],
+  refs: readonly SourceRef[],
+  owner: RunOwner,
+  principal: { userId: string },
+  now: string,
+) => (SourceAccess | undefined)[];
+
+/** Resolve the public batch entry used by the scalar-parity cases. */
+async function accessMany(): Promise<AccessMany> {
+  const mod = (await import("../../src/server/services/qq-outbound-fact-sources")) as unknown as {
+    qqOutboundFactSourceAccessMany?: AccessMany;
+  };
+  if (typeof mod.qqOutboundFactSourceAccessMany !== "function")
+    throw new Error("qqOutboundFactSourceAccessMany is unavailable");
+  return mod.qqOutboundFactSourceAccessMany;
+}
+
+describe("qqOutboundFactSourceAccessMany", () => {
+  it("matches scalar verdicts in order and leaves non-outbound refs undefined", async () => {
+    const many = await accessMany();
+    const { h, journal, outbox, conversation, commitIntent, seedFacts } = setup();
+    try {
+      const scope = liveScope(h, conversation);
+      const owner = ownerFor(scope, "conversation");
+      const first = commitIntent("many-a", [{ kind: "text", text: "a" }]);
+      seedFacts(first.id);
+      await deliver(h, journal, outbox, first.id, [{ kind: "confirmed", messageId: "-8000" }]);
+      const second = commitIntent("many-b", [{ kind: "text", text: "b" }]);
+      seedFacts(second.id);
+      await deliver(h, journal, outbox, second.id, [{ kind: "confirmed", messageId: "-8001" }]);
+      const factA = loadQqOutboundMessageFact(h, scope, "-8000", now);
+      const factB = loadQqOutboundMessageFact(h, scope, "-8001", now);
+      if (!factA || !factB) throw new Error("facts missing");
+      const refA = outboundRefOf(factA);
+      const refB = outboundRefOf(factB);
+      const refs = [
+        refA,
+        { kind: "qq_event", id: "other", revision: "1" },
+        refB,
+      ] satisfies SourceRef[];
+      const verdicts = many(h.db, refs, owner, principal, now);
+      expect(verdicts).toHaveLength(refs.length);
+      expect(verdicts[1]).toBeUndefined();
+      expect(verdicts[0]).toBe(qqOutboundFactSourceAccess(h.db, refA, owner, principal, now));
+      expect(verdicts[2]).toBe(qqOutboundFactSourceAccess(h.db, refB, owner, principal, now));
+      expect(verdicts[0]).toBe("available");
+      expect(verdicts[2]).toBe("available");
+    } finally {
+      h.close();
+    }
+  });
+
+  it("keeps expired/revoked order for the batch, including cross-owner and ambiguous binding owners", async () => {
+    const many = await accessMany();
+    const { h, journal, outbox, conversation, commitIntent, seedFacts } = setup();
+    try {
+      const intent = commitIntent("many-expiry", [{ kind: "text", text: "expiry" }]);
+      seedFacts(intent.id);
+      await deliver(h, journal, outbox, intent.id, [{ kind: "confirmed", messageId: "-8010" }]);
+      const scope = liveScope(h, conversation);
+      const owner = ownerFor(scope, "conversation");
+      const factCap = "2026-10-01T16:30:00.000000Z";
+      h.db
+        .query("UPDATE qq_outbound_message_facts SET expires_at=? WHERE intent_id=?")
+        .run(factCap, intent.id);
+      const capped = loadQqOutboundMessageFact(h, scope, "-8010", now);
+      if (!capped) throw new Error("capped fact missing");
+      const ref = outboundRefOf(capped);
+      const after = "2026-10-01T16:30:01.000000Z";
+      expect(qqOutboundFactSourceAccess(h.db, ref, owner, principal, after)).toBe("expired");
+      expect(many(h.db, [ref], owner, principal, after)).toEqual(["expired"]);
+      // The owner check precedes any window verdict.
+      expect(many(h.db, [ref], { ...owner, agentId: "other-agent" }, principal, after)).toEqual([
+        "revoked",
+      ]);
+      expect(
+        many(h.db, [ref], { ...owner, userId: "someone-else" }, { userId: "someone-else" }, after),
+      ).toEqual(["revoked"]);
+      // Two open conversations for one binding cannot exist in a valid database:
+      // uq_conversations_current_source covers (channel,source_id) WHERE closed_at IS NULL,
+      // so ownerScope's "ambiguous" branch is unreachable. The reachable "owner cannot
+      // resolve" fixture is the closed live conversation, which must revoke before the
+      // window verdict instead of surfacing expired across an unresolvable owner.
+      expect(() =>
+        h.db
+          .query(
+            "INSERT INTO conversations(id,channel,topology,source_id,agent_id,user_id,binding_epoch,created_at,updated_at,source_watermark,next_seq,closed_at) VALUES(?,'onebot11','shared',?,?,?,2,?,?,0,1,NULL)",
+          )
+          .run(crypto.randomUUID(), bindingId, DEFAULT_AGENT_ID, DEFAULT_USER_ID, now, now),
+      ).toThrow();
+      h.db.query("UPDATE conversations SET closed_at=? WHERE id=?").run(after, conversation.id);
+      expect(many(h.db, [ref], ownerFor(scope, "qq_binding"), principal, after)).toEqual([
+        "revoked",
+      ]);
+      expect(many(h.db, [ref], owner, principal, after)).toEqual(["revoked"]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("a confirmed platform sibling without a fact row still breaks the unique claim", async () => {
+    const many = await accessMany();
+    const { h, journal, outbox, conversation, commitIntent, seedFacts } = setup();
+    try {
+      const scope = liveScope(h, conversation);
+      const owner = ownerFor(scope, "conversation");
+      const withFact = commitIntent("many-sibling-a", [{ kind: "text", text: "kept" }]);
+      seedFacts(withFact.id);
+      await deliver(h, journal, outbox, withFact.id, [{ kind: "confirmed", messageId: "-8020" }]);
+      const fact = loadQqOutboundMessageFact(h, scope, "-8020", now);
+      if (!fact) throw new Error("fact missing");
+      const ref = outboundRefOf(fact);
+      expect(qqOutboundFactSourceAccess(h.db, ref, owner, principal, now)).toBe("available");
+      // The sibling is confirmed and shares the platform id but has no fact row.
+      const factless = commitIntent("many-sibling-b", [{ kind: "text", text: "no fact" }]);
+      await deliver(h, journal, outbox, factless.id, [{ kind: "confirmed", messageId: "-8020" }]);
+      expect(qqOutboundFactSourceAccess(h.db, ref, owner, principal, now)).toBe("revoked");
+      expect(many(h.db, [ref], owner, principal, now)).toEqual(["revoked"]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("reads the ledger on every call: a rewrite is revoked on the next call, never cached", async () => {
+    const many = await accessMany();
+    const { h, journal, outbox, conversation, commitIntent, seedFacts } = setup();
+    try {
+      const scope = liveScope(h, conversation);
+      const owner = ownerFor(scope, "conversation");
+      const intent = commitIntent("many-rewrite", [{ kind: "text", text: "before" }]);
+      seedFacts(intent.id);
+      await deliver(h, journal, outbox, intent.id, [{ kind: "confirmed", messageId: "-8030" }]);
+      const fact = loadQqOutboundMessageFact(h, scope, "-8030", now);
+      if (!fact) throw new Error("fact missing");
+      const ref = outboundRefOf(fact);
+      expect(many(h.db, [ref], owner, principal, now)).toEqual(["available"]);
+      const partId = partIdOf(h, intent.id, 0);
+      h.db
+        .query("UPDATE outbound_parts SET payload=? WHERE id=?")
+        .run(JSON.stringify({ text: "after" }), partId);
+      expect(qqOutboundFactSourceAccess(h.db, ref, owner, principal, now)).toBe("revoked");
+      expect(many(h.db, [ref], owner, principal, now)).toEqual(["revoked"]);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("preserves full target typing and refuses drift before expiry", async () => {
+    const many = await accessMany();
+    const { h, journal, outbox, conversation, commitIntent, seedFacts } = setup();
+    try {
+      const scope = liveScope(h, conversation);
+      const owner = ownerFor(scope, "conversation");
+      const intent = commitIntent("many-target", [{ kind: "text", text: "target" }]);
+      seedFacts(intent.id);
+      await deliver(h, journal, outbox, intent.id, [{ kind: "confirmed", messageId: "-8040" }]);
+      const fact = loadQqOutboundMessageFact(h, scope, "-8040", now);
+      if (!fact) throw new Error("fact missing");
+      const ref = outboundRefOf(fact);
+      const partId = partIdOf(h, intent.id, 0);
+      expect(many(h.db, [ref], owner, principal, now)).toEqual(["available"]);
+      const originalTarget = (
+        h.db.query("SELECT target AS target FROM outbound_intents WHERE id=?").get(intent.id) as {
+          target: string;
+        }
+      ).target;
+      // Removing authorityRevision is a real target-shape change, not merely a new string.
+      const target = JSON.parse(originalTarget) as Record<string, unknown>;
+      delete target.authorityRevision;
+      h.db
+        .query("UPDATE outbound_intents SET target=? WHERE id=?")
+        .run(JSON.stringify(target), intent.id);
+      expect(qqOutboundFactSourceAccess(h.db, ref, owner, principal, now)).toBe("revoked");
+      expect(many(h.db, [ref], owner, principal, now)).toEqual(["revoked"]);
+      // Restoring the exact target proves the batch re-reads instead of caching a verdict.
+      h.db.query("UPDATE outbound_intents SET target=? WHERE id=?").run(originalTarget, intent.id);
+      expect(many(h.db, [ref], owner, principal, now)).toEqual(["available"]);
+      // Drift plus a passed window: drift is revoked, not expired.
+      h.db
+        .query("UPDATE outbound_parts SET payload=? WHERE id=?")
+        .run(JSON.stringify({ text: "drifted" }), partId);
+      h.db
+        .query("UPDATE qq_outbound_message_facts SET expires_at=? WHERE intent_id=?")
+        .run("2026-10-01T16:10:00.000000Z", intent.id);
+      expect(many(h.db, [ref], owner, principal, "2026-10-01T16:20:00.000000Z")).toEqual([
+        "revoked",
+      ]);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe("assertContextSources outbound batch boundary", () => {
+  /** Real wire helper: two outbound facts with a resolver-decided ref between them. */
+  async function fixture() {
+    const h = setup();
+    const scope = liveScope(h.h, h.conversation);
+    const owner = ownerFor(scope, "conversation");
+    const first = h.commitIntent("intent-mid-a", [{ kind: "text", text: "a" }]);
+    h.seedFacts(first.id);
+    await deliver(h.h, h.journal, h.outbox, first.id, [{ kind: "confirmed", messageId: "-8100" }]);
+    const second = h.commitIntent("intent-mid-b", [{ kind: "text", text: "b" }]);
+    h.seedFacts(second.id);
+    await deliver(h.h, h.journal, h.outbox, second.id, [{ kind: "confirmed", messageId: "-8101" }]);
+    const factA = loadQqOutboundMessageFact(h.h, scope, "-8100", now);
+    const factB = loadQqOutboundMessageFact(h.h, scope, "-8101", now);
+    if (!factA || !factB) throw new Error("facts missing");
+    const refA = outboundRefOf(factA);
+    const refB = outboundRefOf(factB);
+    const middle: SourceRef = { kind: "remote_knowledge", id: "remote-middle", revision: "1" };
+    return { ...h, scope, owner, first, second, refA, refB, middle };
+  }
+
+  /** Records only the outbound batch's part-id binding, one entry per executed call. */
+  function recordBatchReads(db: ReturnType<typeof openBusinessDb>["db"]) {
+    const reads: string[][] = [];
+    const original = (db as unknown as { query: (sql: string) => any }).query.bind(db);
+    (db as unknown as { query: (sql: string) => any }).query = (sql: string) => {
+      const statement = original(sql);
+      if (
+        !(
+          sql.includes("p.id AS partId") && sql.includes("p.id IN (SELECT value FROM json_each(?))")
+        )
+      )
+        return statement;
+      return new Proxy(statement, {
+        get(target, property) {
+          const value = Reflect.get(target, property, target);
+          if (typeof value !== "function") return value;
+          return (...bindings: unknown[]) => {
+            if (property === "all") reads.push(JSON.parse(String(bindings[0])) as string[]);
+            return Reflect.apply(value, target, bindings);
+          };
+        },
+      });
+    };
+    return {
+      reads,
+      stop() {
+        (db as unknown as { query: (sql: string) => any }).query = original;
+      },
+    };
+  }
+
+  it("no prefetch past a resolver ref; the later segment is re-read fresh", async () => {
+    const f = await fixture();
+    const spy = recordBatchReads(f.h.db);
+    try {
+      let resolverVerdict: SourceAccess = "available";
+      let resolverCalls = 0;
+      const resolveSource = (source: SourceRef) => {
+        resolverCalls += 1;
+        return source.kind === "remote_knowledge" ? resolverVerdict : "available";
+      };
+      const sources = [f.refA, f.middle, f.refB];
+      const options = {
+        db: f.h.db,
+        sources,
+        owner: f.owner,
+        now,
+        resolveSource,
+        memoryRevisions: () => new Map<string, string>(),
+        messages: { memory: "memory changed", other: "source invalid" },
+      };
+
+      assertContextSources(options);
+      // One batch per outbound segment; no call may carry both sides of the middle ref.
+      expect(spy.reads.map((ids) => ids.length)).toEqual([1, 1]);
+      expect(spy.reads.some((ids) => ids.includes(f.refA.id) && ids.includes(f.refB.id))).toBe(
+        false,
+      );
+      expect(spy.reads.some((ids) => ids.includes(f.refA.id))).toBe(true);
+      expect(spy.reads.some((ids) => ids.includes(f.refB.id))).toBe(true);
+      // The external resolver decides only the non-direct middle ref.
+      expect(resolverCalls).toBe(1);
+
+      // Next call: the resolver revokes the middle and B's payload drifts synchronously.
+      resolverVerdict = "revoked";
+      f.h.db
+        .query("UPDATE outbound_parts SET payload=? WHERE id=?")
+        .run(JSON.stringify({ text: "drifted" }), partIdOf(f.h, f.second.id, 0));
+      spy.reads.length = 0;
+      resolverCalls = 0;
+      expect(() => assertContextSources(options)).toThrow("source invalid");
+      // B was read again in this call (fresh), still separated from A by the middle.
+      expect(spy.reads.some((ids) => ids.includes(f.refB.id))).toBe(true);
+      expect(spy.reads.some((ids) => ids.includes(f.refA.id) && ids.includes(f.refB.id))).toBe(
+        false,
+      );
+      expect(resolverCalls).toBe(1);
+    } finally {
+      spy.stop();
+      f.h.close();
+    }
+  });
+
+  it("an external resolver cannot flip a direct outbound verdict across the middle", async () => {
+    const f = await fixture();
+    try {
+      const sources = [f.refA, f.middle, f.refB];
+      let resolverCalls = 0;
+      const resolver = () => {
+        resolverCalls += 1;
+        return "available" as const;
+      };
+      const call = () =>
+        assertContextSources({
+          db: f.h.db,
+          sources,
+          owner: f.owner,
+          now,
+          resolveSource: resolver,
+          memoryRevisions: () => new Map<string, string>(),
+          messages: { memory: "memory changed", other: "source invalid" },
+        });
+      call();
+      expect(resolverCalls).toBe(1);
+      // Facts revision (authority) drifts; the resolver still answers available everywhere.
+      f.h.db
+        .query("UPDATE qq_outbound_message_facts SET revision=revision+1 WHERE intent_id=?")
+        .run(f.second.id);
+      expect(() => call()).toThrow("source invalid");
+      // The resolver is consulted only for the non-direct middle, never for outbound refs.
+      expect(resolverCalls).toBe(2);
+    } finally {
+      f.h.close();
     }
   });
 });

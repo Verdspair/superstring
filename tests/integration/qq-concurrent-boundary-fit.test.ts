@@ -345,12 +345,13 @@ describe("QQ 并发资料 READ 边界的近容量重拟合", () => {
     expect(oldMarkers.some((marker) => !pending.includes(marker))).toBe(true);
     // 同档去重：decisionTier=reply 时 fitter 对同一档只走一次 view 边界（现读一次）。
     let projectionReads = 0;
-    const originalBuild = first.source["buildConcurrentJobsMessage"].bind(first.source);
-    (first.source as unknown as Record<string, unknown>)["buildConcurrentJobsMessage"] = (
-      ...args: unknown[]
-    ) => {
+    const originalSteps = first.source["readConcurrentJobsFactSteps"].bind(first.source);
+    const observed = first.source as unknown as {
+      readConcurrentJobsFactSteps: typeof originalSteps;
+    };
+    observed.readConcurrentJobsFactSteps = function* (...args: Parameters<typeof originalSteps>) {
       projectionReads++;
-      return (originalBuild as (...a: unknown[]) => unknown)(...args);
+      return yield* originalSteps(...args);
     };
     const fit = await first.source.actionResultFitter(
       "web.fetch",

@@ -55,6 +55,8 @@ export interface QqOutboundFactPartState {
 
 export type QqOutboundFactPartKey = { partId: string } | { platformMessageId: string };
 
+type QqOutboundFactJournal = { seq: number; eventKey: string };
+
 interface OutboundFactRow {
   intentId: string;
   intentExpiresAt: string;
@@ -179,6 +181,8 @@ function validatedOutboundFactPartState(
   rows: readonly OutboundFactRow[],
   now: string | null,
   hasUniqueClaim: (platformMessageId: string) => boolean,
+  /** Batched callers pre-read the delivery journal; single callers keep the indexed query. */
+  journalOf?: (intentId: string) => QqOutboundFactJournal | null,
 ): QqOutboundFactPartState | null {
   // Never guess between two authors/parts: the lookup is only valid when it is unique.
   if (rows.length !== 1) return null;
@@ -247,11 +251,13 @@ function validatedOutboundFactPartState(
   }
   // Real delivery journal attribution: the intent's own delivery event in this
   // conversation. The generic timeline face (inbound/outbound) is not widened for this.
-  const journal = db
-    .query(`SELECT seq,event_key AS eventKey FROM conversation_events INDEXED BY ix_conversation_events_source
+  const journal: QqOutboundFactJournal | null = journalOf
+    ? journalOf(row.intentId)
+    : (db
+        .query(`SELECT seq,event_key AS eventKey FROM conversation_events INDEXED BY ix_conversation_events_source
     WHERE conversation_id=? AND kind='delivery' AND source_kind='outbound_intent' AND source_id=?
     ORDER BY seq ASC LIMIT 1`)
-    .get(scope.conversationId, row.intentId) as { seq: number; eventKey: string } | null;
+        .get(scope.conversationId, row.intentId) as QqOutboundFactJournal | null);
   if (!journal) return null;
   if (
     now !== null &&
@@ -403,6 +409,33 @@ export function qqOutboundFactConsumableCap(state: QqOutboundFactPartState): str
 }
 
 /**
+ * The single verdict rule for one already-located state: state presence, both window
+ * expiries, the ref's frozen cap, then the exact revision. Scalar and batch callers share
+ * this rule; they differ only in how the state (and its sources) were read.
+ */
+function verdictFromState(
+  source: SourceRef,
+  state: QqOutboundFactPartState | null,
+  scope: QqConversationScope,
+  now: string,
+): SourceAccess {
+  if (!state) return "revoked";
+  // The row windows and the ref's own frozen cap are authoritative for expiry: an old
+  // ref never extends when the underlying window is widened, and a passed cap reads
+  // expired before the revision recompute (same order as the accepted inbound kind).
+  if (
+    isObservationExpired(state.factExpiresAt, now) ||
+    isObservationExpired(state.intentExpiresAt, now)
+  )
+    return "expired";
+  if (source.expiresAt !== undefined) {
+    if (!parseableTime(source.expiresAt)) return "revoked";
+    if (Date.parse(source.expiresAt) <= Date.parse(now)) return "expired";
+  }
+  return qqOutboundFactSourceRevision(scope, state) === source.revision ? "available" : "revoked";
+}
+
+/**
  * Re-verify a `qq_outbound_message_fact` ref: owner authorization first (four-dimensional
  * owner, full eight-field scope), so a cross-owner never learns even the expired state
  * (R21 order). Drift between the ref and the live ledger (payload delete/rewrite,
@@ -431,20 +464,139 @@ export function qqOutboundFactSourceAccess(
   const scope = located.scope;
   if (!owner.agentId || owner.agentId !== scope.agentId) return "revoked";
   if (!evidenceScopeExists(db, { channel: "onebot11", ...scope })) return "revoked";
-  const state = visibleQqOutboundFactPartState(db, scope, { partId: source.id }, null);
-  if (!state) return "revoked";
-  // The row windows and the ref's own frozen cap are authoritative for expiry: an old
-  // ref never extends when the underlying window is widened, and a passed cap reads
-  // expired before the revision recompute (same order as the accepted inbound kind).
-  if (
-    isObservationExpired(state.factExpiresAt, now) ||
-    isObservationExpired(state.intentExpiresAt, now)
-  )
-    return "expired";
-  if (source.expiresAt !== undefined) {
-    if (!parseableTime(source.expiresAt)) return "revoked";
-    if (Date.parse(source.expiresAt) <= Date.parse(now)) return "expired";
+  // Windows, ref cap and revision are judged by the one shared rule below.
+  return verdictFromState(
+    source,
+    visibleQqOutboundFactPartState(db, scope, { partId: source.id }, null),
+    scope,
+    now,
+  );
+}
+
+/**
+ * Batch form of `qqOutboundFactSourceAccess` for adjacent refs of the same owner. It
+ * returns one verdict per input (other kinds stay `undefined`) and keeps the scalar
+ * order: owner/scope, ledger+claim+journal validation with `now=null`, fact/intent
+ * expiry, ref cap, then revision. Rows, claims and the delivery journal are read once;
+ * no verdict is retained across calls.
+ */
+export function qqOutboundFactSourceAccessMany(
+  db: Database,
+  sources: readonly SourceRef[],
+  owner: RunOwner,
+  principal: ContextPrincipal,
+  now: string,
+): (SourceAccess | undefined)[] {
+  const results: (SourceAccess | undefined)[] = sources.map(() => undefined);
+  const indexes: number[] = [];
+  for (let index = 0; index < sources.length; index++) {
+    if (sources[index]!.kind === "qq_outbound_message_fact") indexes.push(index);
   }
-  if (qqOutboundFactSourceRevision(scope, state) !== source.revision) return "revoked";
-  return "available";
+  if (!indexes.length) return results;
+  const revokeAll = (): (SourceAccess | undefined)[] => {
+    for (const index of indexes) results[index] = "revoked";
+    return results;
+  };
+  if (
+    owner.userId === undefined ||
+    owner.userId !== principal.userId ||
+    principal.userId !== DEFAULT_USER_ID
+  )
+    return revokeAll();
+  const located = ownerScope(db, owner);
+  if (located === "ambiguous" || !located) return revokeAll();
+  const scope = located.scope;
+  if (!owner.agentId || owner.agentId !== scope.agentId) return revokeAll();
+  if (!evidenceScopeExists(db, { channel: "onebot11", ...scope })) return revokeAll();
+
+  const partIds = [...new Set(indexes.map((index) => sources[index]!.id))];
+  const selectedParts = JSON.stringify(partIds);
+  const rows = db
+    .query(`SELECT p.id AS partId,p.intent_id AS intentId,p.ordinal AS partOrdinal,
+    p.kind AS partKind,p.payload AS payload,p.status AS partStatus,
+    p.platform_message_id AS platformMessageId,p.finished_at AS finishedAt,
+    i.target AS targetRaw,i.expires_at AS intentExpiresAt,
+    f.account_id AS accountId,f.group_card AS groupCard,f.personal_nickname AS personalNickname,
+    f.legacy_display_name AS legacyDisplayName,f.parts AS factParts,
+    f.revision AS factRevision,f.expires_at AS factExpiresAt
+    FROM outbound_parts p
+    CROSS JOIN outbound_intents i ON i.id=p.intent_id
+    CROSS JOIN qq_outbound_message_facts f ON f.intent_id=i.id
+    WHERE p.id IN (SELECT value FROM json_each(?)) AND i.conversation_id=?
+      AND f.account_id=? AND f.agent_id=?`)
+    .all(selectedParts, scope.conversationId, scope.accountId, scope.agentId) as OutboundFactRow[];
+  const rowsByPart = new Map<string, OutboundFactRow[]>();
+  for (const row of rows) {
+    const group = rowsByPart.get(row.partId) ?? [];
+    group.push(row);
+    rowsByPart.set(row.partId, group);
+  }
+
+  const platformIds = [
+    ...new Set(
+      rows
+        .map((row) => row.platformMessageId)
+        .filter((value): value is string => value !== null && value !== ""),
+    ),
+  ];
+  const claimCounts = new Map<string, number>();
+  if (platformIds.length) {
+    const claims = db
+      .query(`SELECT p.platform_message_id AS platformMessageId,COUNT(*) AS n
+      FROM outbound_parts p JOIN outbound_intents i ON i.id=p.intent_id
+      WHERE i.conversation_id=? AND p.status='confirmed'
+        AND p.platform_message_id IN (SELECT value FROM json_each(?))
+      GROUP BY p.platform_message_id`)
+      .all(scope.conversationId, JSON.stringify(platformIds)) as {
+      platformMessageId: string;
+      n: number;
+    }[];
+    for (const claim of claims) claimCounts.set(claim.platformMessageId, claim.n);
+  }
+
+  const intentIds = [...new Set(rows.map((row) => row.intentId))];
+  const journalByIntent = new Map<string, QqOutboundFactJournal>();
+  if (intentIds.length) {
+    // Delivery rows repeat per revision, so ask SQLite for each intent's first seq only.
+    // (conversation_id,seq) is the event primary key, so the subquery returns that row.
+    const journalRows = db
+      .query(`SELECT g.intentId AS intentId,g.seq AS seq,
+      (SELECT e.event_key FROM conversation_events e WHERE e.conversation_id=? AND e.seq=g.seq) AS eventKey
+      FROM (SELECT source_id AS intentId,MIN(seq) AS seq
+        FROM conversation_events INDEXED BY ix_conversation_events_source
+        WHERE conversation_id=? AND kind='delivery' AND source_kind='outbound_intent'
+          AND source_id IN (SELECT value FROM json_each(?))
+        GROUP BY source_id) g`)
+      .all(
+        scope.conversationId,
+        scope.conversationId,
+        JSON.stringify(intentIds),
+      ) as (QqOutboundFactJournal & { intentId: string })[];
+    for (const journal of journalRows)
+      journalByIntent.set(journal.intentId, {
+        seq: journal.seq,
+        eventKey: journal.eventKey,
+      });
+  }
+
+  const states = new Map<string, QqOutboundFactPartState | null>();
+  for (const partId of partIds) {
+    states.set(
+      partId,
+      validatedOutboundFactPartState(
+        db,
+        scope,
+        rowsByPart.get(partId) ?? [],
+        null,
+        (platformMessageId) => claimCounts.get(platformMessageId) === 1,
+        (intentId) => journalByIntent.get(intentId) ?? null,
+      ),
+    );
+  }
+
+  for (const index of indexes) {
+    const source = sources[index]!;
+    results[index] = verdictFromState(source, states.get(source.id) ?? null, scope, now);
+  }
+  return results;
 }

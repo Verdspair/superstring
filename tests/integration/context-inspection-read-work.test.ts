@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
-import { inspectContext, sourceAccess } from "../../src/server/agent/context-access";
+import {
+  assertContextSources,
+  inspectContext,
+  sourceAccess,
+} from "../../src/server/agent/context-access";
 import type { ContextReadTimings } from "../../src/server/agent/context-engine";
 import { readConcurrentReplyJobs } from "../../src/server/channels/onebot11/concurrent-reply-context";
 import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
@@ -108,9 +112,7 @@ function setup() {
     const db = business.db as unknown as { query: (sql: string) => unknown };
     const original = db.query;
     const query = original.bind(business.db);
-    // 每个 db.query 返回一个 Proxy 包装（不改动缓存语句本身的方法），命中 body 查询形状
-    // 时对 get/all 计数；恢复用原 db.query 引用（Root 实证：改写缓存语句方法会重复包装，
-    // 计数被放大 8256）。
+    // 包装 db.query 返回值，不修改缓存语句本身，避免同一语句被重复包装后放大计数。
     db.query = ((sql: string) => {
       const statement = Reflect.apply(query, business.db, [sql]) as object;
       const isBodyRead =
@@ -206,7 +208,7 @@ describe("context inspection read work (contiguous qq_observation batching)", ()
       exactMessages: stored.messages,
       result: { status: "unavailable", reason: "pending" },
     });
-    // 批量后整段一次正文读取（旧实现逐条 128 次，RED 已由 Root 实证 exit 1）。
+    // 连续引用共享一次正文读取。
     expect(executions).toBeLessThanOrEqual(1);
     // qq_speech 不批量：每个 speech ref 仍逐条走原 resolveSource ?? sourceAccess 路径。
     expect(resolvedIds).toEqual(speechRefs.map((ref) => ref.id));
@@ -523,12 +525,65 @@ describe("Bot provenance identity sets", () => {
       3132 * (timings?.readAssertCurrentCalls ?? 0),
     );
     const first = h.countObservationExecutions(() => source.assertCurrent());
-    expect(first.executions).toBe(3132);
-    // A later boundary still reads current facts, not an earlier authorization result.
+    expect(first.executions).toBe(1);
+    expect(source.commonSources).toHaveLength(3132);
+    const next = h.countObservationExecutions(() => source.assertCurrent());
+    expect(next.executions).toBe(1);
+    // recorded_at is unchanged: every boundary reads current body facts, not a cached proof.
+    const recorded = h.business.db
+      .query("SELECT recorded_at FROM qq_observation_text WHERE event_key='overlap-0'")
+      .get();
     h.business.db
       .query("UPDATE qq_observation_text SET body='changed' WHERE event_key='overlap-0'")
       .run();
-    expect(() => source.assertCurrent()).toThrow();
+    expect(
+      h.business.db
+        .query("SELECT recorded_at FROM qq_observation_text WHERE event_key='overlap-0'")
+        .get(),
+    ).toEqual(recorded);
+    const changed = h.countObservationExecutions(() => {
+      expect(() => source.assertCurrent()).toThrow();
+    });
+    expect(changed.executions).toBe(1);
+  });
+
+  it("keeps interleaved resolver order and rereads observation facts at each boundary", () => {
+    const h = setup();
+    h.seedObservation("ordered-left", "left");
+    h.seedObservation("ordered-right", "right");
+    const refs = [
+      obsRef("ordered-left", "left"),
+      { kind: "remote_document", id: "middle", revision: "1" },
+      obsRef("ordered-right", "right"),
+    ];
+    let valid = true;
+    const seen: string[] = [];
+    const verify = () =>
+      assertContextSources({
+        db: h.business.db,
+        sources: refs,
+        owner: h.owner,
+        now: NOW,
+        memoryRevisions: () => new Map(),
+        resolveSource: (ref) => {
+          seen.push(ref.id);
+          return valid ? "available" : "revoked";
+        },
+        messages: { memory: "memory changed", other: "source changed" },
+      });
+    expect(h.countObservationExecutions(verify).executions).toBe(2);
+    expect(seen).toEqual(["middle"]);
+    valid = false;
+    const revoked = h.countObservationExecutions(() => expect(verify).toThrow("source changed"));
+    expect(revoked.executions).toBe(2);
+    expect(seen).toEqual(["middle", "middle"]);
+    valid = true;
+    h.business.db
+      .query("UPDATE qq_observation_text SET body='changed' WHERE event_key='ordered-right'")
+      .run();
+    const changed = h.countObservationExecutions(() => expect(verify).toThrow("source changed"));
+    expect(changed.executions).toBe(2);
+    expect(seen).toEqual(["middle", "middle", "middle"]);
   });
 
   it("keeps the earliest expiry cap and treats different revisions as independent identities", () => {

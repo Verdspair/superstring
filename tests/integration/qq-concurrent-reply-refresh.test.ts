@@ -12,13 +12,24 @@ const message = (value: string): ModelMessage => ({
 function fixture(limit = 100) {
   const source = Object.create(BotContextSource.prototype);
   const original = message("same-state");
-  const view = { selection: { messages: [] }, material: { pending: [original] }, limit };
+  const view = {
+    selection: { messages: [] },
+    material: { pending: [original] },
+    concurrentMessage: original,
+    limit,
+  };
   let current = message("same-state");
   let fitChecks = 0;
   Object.assign(source, {
     views: new Map([["reply", view]]),
-    lastConcurrentJobsMessages: new Map([["reply", original]]),
-    buildConcurrentJobsMessage: () => ({ message: current, sources: [], contexts: [] }),
+    assertCurrent() {},
+    assertCurrentWithCandidate() {},
+    relatedReplyDeliveries: () => ({ taskIds: [], revision: "fixture", omitted: 0 }),
+    *readConcurrentJobsFactSteps() {
+      yield;
+      return undefined;
+    },
+    concurrentJobsMessage: () => ({ message: current, sources: [], contexts: [] }),
     fitsWithObservations: (_tier: string, material: typeof view.material, maximum: number) => {
       fitChecks++;
       return JSON.stringify(material).length <= maximum;
@@ -31,29 +42,39 @@ function fixture(limit = 100) {
       current = value;
     },
     checks: () => fitChecks,
+    prepare: () => source.concurrentProjection(view, undefined) as typeof view,
   };
 }
-describe("concurrent reply material projection update", () => {
-  it("keeps the existing message identity when facts have not changed and never fits twice", () => {
+describe("concurrent reply material projection preparation", () => {
+  it("keeps unchanged message identity without fitting or mutating the published view", () => {
     const f = fixture(1000);
-    // 身份不变＝零 pending 写、零 fit check（fit 只归 view() 边界）。
-    expect(f.source.updateConcurrentProjection("reply")).toBe(false);
-    expect(f.source.updateConcurrentProjection("reply")).toBe(false);
-    expect(f.view.material.pending).toHaveLength(1);
+    const original = f.view.concurrentMessage;
+    const first = f.prepare(),
+      second = f.prepare();
+    expect(first.concurrentMessage).toBe(original);
+    expect(second.concurrentMessage).toBe(original);
+    expect(first.material).toBe(f.view.material);
+    expect(f.view.material.pending[0]).toBe(original);
     expect(f.checks()).toBe(0);
     f.set(message("changed-state"));
-    expect(f.source.updateConcurrentProjection("reply")).toBe(true);
-    expect(f.view.material.pending).toHaveLength(1);
-    expect(f.view.material.pending[0]?.content[0]).toEqual({ kind: "text", text: "changed-state" });
+    const changed = f.prepare();
+    expect(changed.material.pending).toHaveLength(1);
+    expect(changed.material.pending[0]?.content[0]).toEqual({
+      kind: "text",
+      text: "changed-state",
+    });
+    expect(f.view.concurrentMessage).toBe(original);
+    expect(f.view.material.pending[0]).toBe(original);
     expect(f.checks()).toBe(0);
   });
-  it("updates facts in place without throwing; budget rejection lives at the view boundary", () => {
+  it("prepares over-budget facts without publishing; fitting belongs to the view boundary", () => {
     const f = fixture(100);
+    const original = f.view.material;
     f.set(message("larger-state-".repeat(100)));
-    // helper 只换材料不判定（零 fit check）：超限拒绝由 view() 的统一边界与运行时承担
-    // （真实 READ 级近容量覆盖见 qq-concurrent-boundary-fit.test.ts）。
-    expect(f.source.updateConcurrentProjection("reply")).toBe(true);
-    expect(f.view.material.pending[0]?.content[0].kind).toBe("text");
+    const candidate = f.prepare();
+    expect(candidate.material.pending[0]?.content[0].kind).toBe("text");
+    expect(candidate.material).not.toBe(original);
+    expect(f.view.material).toBe(original);
     expect(f.checks()).toBe(0);
   });
 });

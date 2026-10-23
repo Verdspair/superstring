@@ -280,7 +280,7 @@ const DeclaredIntentAudienceSchema = z.strictObject({
     .min(1),
 });
 
-function readDeclaredIntents(
+function* readDeclaredIntents(
   db: Database,
   input: {
     conversationId: string;
@@ -289,11 +289,15 @@ function readDeclaredIntents(
     assertSources?: (sources: readonly SourceRef[]) => void;
   },
   tasks: readonly TaskRow[],
-): {
-  intents: Map<string, ConcurrentJobDeclaredIntent[]>;
-  sources: SourceRef[];
-  contexts: ConcurrentReplyContext[];
-} {
+): Generator<
+  void,
+  {
+    intents: Map<string, ConcurrentJobDeclaredIntent[]>;
+    sources: SourceRef[];
+    contexts: ConcurrentReplyContext[];
+  },
+  void
+> {
   const result = {
     intents: new Map<string, ConcurrentJobDeclaredIntent[]>(),
     sources: [] as SourceRef[],
@@ -342,6 +346,7 @@ function readDeclaredIntents(
     expiresAt: string | null;
   }[];
   for (const row of rows) {
+    yield;
     if (
       row.status !== "exact" ||
       row.outputRecorded !== 1 ||
@@ -460,7 +465,7 @@ type TaskRow = {
   judgementDone: number;
 };
 
-export function readConcurrentReplyFacts(
+export function* readConcurrentReplyFactSteps(
   db: Database,
   input: {
     conversationId: string;
@@ -477,7 +482,7 @@ export function readConcurrentReplyFacts(
     focusThroughSeq?: number;
     assertSources?: (sources: readonly SourceRef[]) => void;
   },
-): ConcurrentReplyFacts {
+): Generator<void, ConcurrentReplyFacts, void> {
   const nowIso = new Date(Date.parse(input.now)).toISOString();
   const scope = [
     input.conversationId,
@@ -555,7 +560,7 @@ export function readConcurrentReplyFacts(
     input.conversationId,
     included.map((row) => ({ questionSeq: row.questionSeq, originEventKey: row.originEventKey })),
   );
-  const declared = readDeclaredIntents(db, input, included);
+  const declared = yield* readDeclaredIntents(db, input, included);
   const jobs: ConcurrentReplyJob[] = included.map((row) => {
     const key = eventKeys.get(row.questionSeq);
     return {
@@ -580,6 +585,17 @@ export function readConcurrentReplyFacts(
     contexts: declared.contexts,
     questionEventKeys: eventKeys,
   };
+}
+
+/** Synchronous callers drain the same preparation steps without releasing their atomic boundary. */
+export function readConcurrentReplyFacts(
+  db: Database,
+  input: Parameters<typeof readConcurrentReplyFactSteps>[1],
+): ConcurrentReplyFacts {
+  const steps = readConcurrentReplyFactSteps(db, input);
+  let next = steps.next();
+  while (!next.done) next = steps.next();
+  return next.value;
 }
 
 /** Project only question visibility; facts and their authorization were read by the caller. */
