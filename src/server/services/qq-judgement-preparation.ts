@@ -169,8 +169,9 @@ function lastInitiativeForTargets(
   }[];
   const deliveries = db
     .query(`SELECT s.kind,s.sent_at_seconds AS at,
-      json_extract(i.target,'$.participantId') AS participant_id
-    FROM outbound_intents i JOIN qq_send_log s ON s.id=i.legacy_send_id
+      metadata.participant_id AS participant_id
+    FROM outbound_intents i JOIN outbound_intent_metadata metadata ON metadata.intent_id=i.id
+    JOIN qq_send_log s ON s.id=i.legacy_send_id
     WHERE s.account_id=? AND s.conversation_kind=? AND s.peer_id=? AND s.agent_id=?
       AND s.kind IN('chiming_in','idle_topic') AND s.outcome='sent'`)
     .all(scope.accountId, scope.conversationKind, scope.peerId, scope.agentId) as {

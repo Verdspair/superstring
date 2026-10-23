@@ -127,7 +127,7 @@ function setupApi(overrides: Partial<SuperstringApi>) {
 }
 
 describe("conversation arrival instant update", () => {
-  it("triggers authoritative timeline read immediately on conversation_changed event well before 5s poll", async () => {
+  it("triggers authoritative timeline read immediately on conversation_changed event without any poll", async () => {
     vi.useFakeTimers();
     let seq = 1;
     const getEvents = vi.fn().mockImplementation(async () => ({
@@ -138,9 +138,7 @@ describe("conversation arrival instant update", () => {
 
     setupApi({ getConversationEvents: getEvents });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 5000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
 
     // Initial mount load
     await act(async () => {
@@ -169,11 +167,11 @@ describe("conversation arrival instant update", () => {
     expect(getEvents).toHaveBeenCalledTimes(2);
     expect(result.current.items.map((item) => item.seq)).toEqual([1, 2]);
 
-    // Advance the remaining time to 5000ms to verify fallback poll still functions
+    // Event-driven: without another notification no further read is issued.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(4500);
+      await vi.advanceTimersByTimeAsync(5000);
     });
-    expect(getEvents).toHaveBeenCalledTimes(3);
+    expect(getEvents).toHaveBeenCalledTimes(2);
   });
 
   it("directory directional update fetches GET /v2/conversations/:id summary without calling listConversations discover for each change", async () => {

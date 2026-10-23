@@ -1,0 +1,9 @@
+{
+  "package": "@fontsource-variable/noto-serif-sc",
+  "version": "5.3.1",
+  "license": "OFL-1.1",
+  "source": "https://registry.npmjs.org/@fontsource-variable/noto-serif-sc/-/noto-serif-sc-5.3.1.tgz",
+  "originalLicenseSHA256": "18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3",
+  "filesUnmodified": true,
+  "css": "woff2 references only; no glyph modification"
+}

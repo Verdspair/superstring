@@ -132,7 +132,7 @@ describe("Assistant workspace create regression", () => {
     expect(store.getState().feedback).toContain("已创建 Agent");
     expect(store.getState().pageEditor).not.toBeNull();
     expect(screen.queryByText("选择一个 Agent 以开始编辑。")).toBeNull();
-    expect(screen.getAllByText("新建助手").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { level: 1, name: "Agent 配置 · 新建助手" })).toBeTruthy();
   });
   it("does not fire extra queries on the create path", async () => {
     const createdId = "66666666-6666-4666-8666-666666666666";
@@ -360,5 +360,148 @@ describe("Assistant workspace create regression", () => {
     expect(store.getState().editorDraft?.description).toBe("等待期间继续输入");
     expect(store.getState().error).toBeNull();
     expect(getPersona).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Agent create ownership", () => {
+  const createdId = "66666666-6666-4666-8666-666666666666";
+  const createdAgent = () =>
+    AgentResponseSchema.parse({
+      ...agent,
+      id: createdId,
+      name: "新建助手",
+      config_version: 1,
+      created_at: "2026-10-14T00:00:00.000Z",
+      updated_at: "2026-10-14T00:00:00.000Z",
+    });
+  function setupPendingCreate() {
+    const saved = createdAgent();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const createAgent = vi.fn(async () => {
+      await gate;
+      return saved;
+    });
+    const getPersona = vi.fn(async (id: string) => ({ ...persona, agent_id: id }));
+    store.getState().resetForTests({
+      ...api,
+      getAgent: vi.fn(async (id: string) => ({ ...agent, id })),
+      getPersona,
+      createAgent,
+    });
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "basic",
+      agents: [agent],
+      editorAgentId: agent.id,
+      pageEditor: null,
+      modelNames: ["model-a"],
+      reloadMemory: vi.fn().mockResolvedValue(undefined),
+    });
+    return { createAgent, getPersona, release };
+  }
+
+  it("creates once when Create is submitted twice before the response settles", async () => {
+    const { createAgent, release } = setupPendingCreate();
+    await store.getState().editAgent("__new__");
+    store.getState().patchDraft({ name: "新建助手" });
+
+    const first = store.getState().saveCurrentSection();
+    expect(store.getState().settingsSaving).toBe(true);
+    expect(navigationBusy(store.getState())).toBe(true);
+    // 第二次提交落在同一在途锁上，不再发第二个 POST。
+    expect(await store.getState().saveCurrentSection()).toBe(false);
+    expect(createAgent).toHaveBeenCalledTimes(1);
+    // 写入期间导航被同一把锁拒绝：不会先离开、再被迟到的创建结果拉回。
+    store.getState().requestPageNavigation("chat", "hub");
+    expect(store.getState().page).toBe("settings");
+    expect(store.getState().settingsRoute).toBe("basic");
+
+    release();
+    expect(await first).toBe(true);
+    expect(createAgent).toHaveBeenCalledTimes(1);
+    expect(store.getState().editorAgentId).toBe(createdId);
+    expect(store.getState().pageEditor?.agent.id).toBe(createdId);
+    expect(store.getState().dirty).toBe(false);
+    expect(store.getState().feedback).toContain("已创建 Agent");
+    expect(store.getState().settingsSaving).toBe(false);
+    expect(navigationBusy(store.getState())).toBe(false);
+  });
+
+  it("a late create response does not overwrite a newer page, draft, or feedback", async () => {
+    const { createAgent, getPersona, release } = setupPendingCreate();
+    await store.getState().editAgent("__new__");
+    store.getState().patchDraft({ name: "新建助手" });
+    const submitDraft = store.getState().editorDraft;
+    if (!submitDraft) throw new Error("new draft missing");
+
+    const outcome = store.getState().saveCurrentSection();
+    expect(createAgent).toHaveBeenCalledTimes(1);
+    // 响应到达前另一所有者已切到新页面与新草稿；落库只能并入目录。
+    const newerDraft = { ...submitDraft, description: "新页面的草稿" };
+    store.setState({
+      page: "chat",
+      settingsView: "hub",
+      editorAgentId: agent.id,
+      editorDraft: newerDraft,
+      dirty: true,
+      feedback: "新页面提示",
+    });
+
+    release();
+    expect(await outcome).toBe(true);
+    const state = store.getState();
+    expect(state.page).toBe("chat");
+    expect(state.settingsView).toBe("hub");
+    expect(state.editorAgentId).toBe(agent.id);
+    expect(state.editorDraft).toBe(newerDraft);
+    expect(state.dirty).toBe(true);
+    expect(state.feedback).toBe("新页面提示");
+    expect(state.settingsSaving).toBe(false);
+    expect(state.agents.some((item) => item.id === createdId)).toBe(true);
+    expect(getPersona).not.toHaveBeenCalled();
+  });
+});
+
+describe("Agent switch invalid raw input ownership", () => {
+  const otherId = "77777777-7777-4777-8777-777777777777";
+  it("drops the left Agent's invalid raw inputs on a successful switch only", async () => {
+    const other = AgentResponseSchema.parse({ ...agent, id: otherId, name: "Agent B" });
+    const otherPersona = { ...persona, agent_id: otherId };
+    store.getState().resetForTests({
+      ...api,
+      getAgent: vi.fn(async (id: string) => (id === otherId ? other : { ...agent, id })),
+      getPersona: vi.fn(async (id: string) => (id === otherId ? otherPersona : persona)),
+    });
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "basic",
+      agents: [agent, other],
+      editorAgentId: agent.id,
+      pageEditor: null,
+      reloadMemory: vi.fn().mockResolvedValue(undefined),
+    });
+    const leftKey = `agent:${agent.id}:context:recent_turns`;
+    const nextKey = `agent:${otherId}:context:recent_turns`;
+    store.setState({
+      allocationInvalidInputs: { [leftKey]: "x", [nextKey]: "y", "global:knowledge": "bad" },
+    });
+
+    expect(await store.getState().editAgent(otherId)).toBe(true);
+    expect(store.getState().allocationInvalidInputs).toEqual({
+      [nextKey]: "y",
+      "global:knowledge": "bad",
+    });
+
+    // 同一助手的重读不清当前助手的非法原文。
+    expect(await store.getState().editAgent(otherId)).toBe(true);
+    expect(store.getState().allocationInvalidInputs).toEqual({
+      [nextKey]: "y",
+      "global:knowledge": "bad",
+    });
   });
 });

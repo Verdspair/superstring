@@ -34,10 +34,17 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
     refresh: toolRefresh,
   } = useToolDirectoryResource(apiClient, active);
 
-  const servers = mcpData?.servers ?? [];
+  const servers = [...(mcpData?.servers ?? [])].sort((a, b) => {
+    const rank = (row: typeof a) => (!row.config.enabled ? 2 : row.state === "connected" ? 0 : 1);
+    return rank(a) - rank(b);
+  });
   const connectedCount = servers.filter((s) => s.state === "connected").length;
-  const customSkills = (skillData?.skills ?? []).filter((s) => s.origin !== "system");
-  const mcpTools = (toolData?.tools ?? []).filter((t) => t.origin === "mcp");
+  const customSkills = (skillData?.skills ?? [])
+    .filter((s) => s.origin !== "system")
+    .sort((a, b) => Number(b.globalEnabled) - Number(a.globalEnabled));
+  const mcpTools = (toolData?.tools ?? [])
+    .filter((t) => t.origin === "mcp")
+    .sort((a, b) => Number(b.globalEnabled) - Number(a.globalEnabled));
 
   const mcpHasErrorCode = mcpData?.code !== null && mcpData?.code !== undefined;
   const mcpErrorDisplay =
@@ -57,7 +64,9 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold">{t("capabilities.external.name")}</span>
               <Badge variant="outline" className="text-xs">
-                {t("capabilities.external.connectedCount", { count: connectedCount })}
+                {mcpData
+                  ? t("capabilities.external.connectedCount", { count: connectedCount })
+                  : t("capabilities.state.unread")}
               </Badge>
             </div>
             <p className="mt-0.5 text-xs text-muted-foreground">

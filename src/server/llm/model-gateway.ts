@@ -76,6 +76,17 @@ export interface LmStudioConfig {
 /** LM Studio accepts any bearer token while `Require API token` is off. */
 export const DEFAULT_LM_STUDIO_API_KEY = "lm-studio";
 
+/**
+ * 一次已解析模型请求的来源。由路由解析结果显式带下来，绝不从 baseUrl 的主机名或模型名反推。
+ * 只用于选择用户文案；错误码、HTTP 状态、重试与降级判定都不依赖它。
+ */
+export interface ModelRouteContext {
+  readonly kind: "local" | "external";
+}
+
+const LOCAL_MODEL_ROUTE: ModelRouteContext = { kind: "local" };
+const EXTERNAL_MODEL_ROUTE: ModelRouteContext = { kind: "external" };
+
 /** Read the new project's own LM Studio settings. Never touches the old `.env`. */
 export function resolveLmStudioConfig(
   env: Record<string, string | undefined> = process.env,
@@ -241,14 +252,19 @@ function reportResolvedModel(callback: ((model: string) => void) | undefined, mo
  * null（读不出就不猜，交给调用方按"读不出 = 沉默"处理），不猜着丢掉坏的那个、留下好的。超过批量上限
  * 的整批同样读不出——截断等于替模型丢掉它叫过的调用，正文 JSON 路径对超量也是直接拒绝。
  */
-function decisionTextFromToolCalls(calls: unknown): string | null {
+function decisionTextFromToolCalls(
+  calls: unknown,
+  wireNames?: ReadonlyMap<string, string>,
+): string | null {
   if (!Array.isArray(calls) || calls.length === 0) return null;
   if (calls.length > INVOKE_BATCH_LIMIT) return null;
   const batch: { name: string; arguments: Record<string, unknown> }[] = [];
   for (const entry of calls) {
     const call = entry as { function?: { name?: unknown; arguments?: unknown } } | undefined;
-    const name = call?.function?.name;
-    if (typeof name !== "string" || name.length === 0) return null;
+    const wireName = call?.function?.name;
+    if (typeof wireName !== "string" || wireName.length === 0) return null;
+    const name = wireNames === undefined ? wireName : wireNames.get(wireName);
+    if (name === undefined) return null;
     const rawArguments = call?.function?.arguments;
     let parsed: unknown;
     if (rawArguments === undefined || rawArguments === null || rawArguments === "") parsed = {};
@@ -263,6 +279,50 @@ function decisionTextFromToolCalls(calls: unknown): string | null {
     batch.push({ name, arguments: parsed as Record<string, unknown> });
   }
   return JSON.stringify({ kind: "invoke", calls: batch });
+}
+
+/** OpenAI function names cannot contain the dots used by the host action catalog. */
+function nativeToolDeclarations(tools: readonly ModelTool[]): {
+  tools: ModelTool[];
+  wireNames: ReadonlyMap<string, string>;
+} {
+  const validName = /^[A-Za-z0-9_-]{1,64}$/;
+  const reserved = new Set(
+    tools.filter((tool) => validName.test(tool.name)).map((tool) => tool.name),
+  );
+  const wireNames = new Map<string, string>();
+  let nextAlias = 0;
+  const declarations = tools.map((tool): ModelTool => {
+    let name = tool.name;
+    if (!validName.test(name)) {
+      do {
+        name = `ss_action_${nextAlias++}`;
+      } while (reserved.has(name));
+      reserved.add(name);
+    }
+    wireNames.set(name, tool.name);
+    return name === tool.name
+      ? tool
+      : {
+          ...tool,
+          name,
+          description: `${tool.description}\nHost action: ${tool.name}. Use ${name} for native function calls; keep the host name in JSON decisions.`,
+        };
+  });
+  return { tools: declarations, wireNames };
+}
+
+/** Native calls carry the decision; any media fields still belong to the strict host parser. */
+function nativeDecisionEnvelope(decision: string, content: string | null | undefined): string {
+  if (content == null || content.trim() === "")
+    return JSON.stringify({ decision: JSON.parse(decision) });
+  try {
+    const envelope: unknown = JSON.parse(content);
+    if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) return "";
+    return JSON.stringify({ ...envelope, decision: JSON.parse(decision) });
+  } catch {
+    return "";
+  }
 }
 
 /** 读不出的调用只记一个摘要：这是诊断，不是内容。 */
@@ -314,6 +374,17 @@ const MODEL_AUTH_MESSAGE =
   "Developer → Server 设置中复制 API token，设为环境变量 LM_STUDIO_API_KEY 后重启；" +
   "或关闭 LM Studio 的 Require API token";
 
+/**
+ * 外部 provider 的鉴权文案：同一张错误码/状态表，但动作属于 provider 自己的 key，
+ * 不能把用户指向本地 LM_STUDIO_API_KEY。文案不包含服务地址或密钥本身。
+ */
+const MODEL_EXTERNAL_AUTH_MESSAGE =
+  "外部模型服务鉴权失败：服务可达但请求未获授权。请检查外部模型 provider 配置的 API key 是否有效";
+
+/** 连接失败文案同样是路由专属的：外部 provider 不是本地服务。 */
+const MODEL_EXTERNAL_UNAVAILABLE_MESSAGE =
+  "外部模型服务暂不可用：无法连接所配置的外部 provider，请检查其服务地址与网络";
+
 function isAuthRejection(status: number): boolean {
   return status === 401 || status === 403;
 }
@@ -340,9 +411,10 @@ function imageRequestLifetime(
   caller: AbortSignal | undefined,
   messages: readonly ChatMessage[],
   onRejection: (status: number, providerMessage: string) => ModelUnavailableError | null,
+  route: ModelRouteContext,
 ) {
-  if (!hasImageParts(messages)) return requestLifetime(timeoutMs, caller);
-  return requestLifetime(timeoutMs, caller, onRejection);
+  if (!hasImageParts(messages)) return requestLifetime(timeoutMs, caller, route);
+  return requestLifetime(timeoutMs, caller, route, onRejection);
 }
 
 /**
@@ -398,7 +470,10 @@ function authToken(cfg: LmStudioConfig): string {
  * Translate a transport/HTTP failure into a MODEL_* `AppError`.
  * `map_model_error`.
  */
-export function mapModelError(error: unknown): ModelUnavailableError {
+export function mapModelError(
+  error: unknown,
+  route: ModelRouteContext = LOCAL_MODEL_ROUTE,
+): ModelUnavailableError {
   if (error instanceof ModelUnavailableError) return error;
 
   const name = (error as { name?: string })?.name ?? "";
@@ -419,7 +494,12 @@ export function mapModelError(error: unknown): ModelUnavailableError {
     return withStatus(new ModelUnavailableError("MODEL_TIMEOUT", "本地模型响应超时，请重试"));
   }
   if (isAuthRejection(status ?? 0)) {
-    return withStatus(new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", MODEL_AUTH_MESSAGE));
+    return withStatus(
+      new ModelUnavailableError(
+        "MODEL_SERVICE_UNAVAILABLE",
+        route.kind === "external" ? MODEL_EXTERNAL_AUTH_MESSAGE : MODEL_AUTH_MESSAGE,
+      ),
+    );
   }
   if (status === 404 || ((status === 400 || status === 404) && /model/i.test(message))) {
     return withStatus(new ModelUnavailableError("MODEL_NOT_LOADED", "LM Studio 未加载指定模型"));
@@ -431,7 +511,10 @@ export function mapModelError(error: unknown): ModelUnavailableError {
     /ECONNREFUSED|fetch failed|Unable to connect|socket hang up/i.test(message)
   ) {
     return withStatus(
-      new ModelUnavailableError("MODEL_SERVICE_UNAVAILABLE", "本地模型服务暂不可用"),
+      new ModelUnavailableError(
+        "MODEL_SERVICE_UNAVAILABLE",
+        route.kind === "external" ? MODEL_EXTERNAL_UNAVAILABLE_MESSAGE : "本地模型服务暂不可用",
+      ),
     );
   }
   return withStatus(new ModelUnavailableError("MODEL_ERROR", "本地模型调用失败"));
@@ -577,6 +660,7 @@ export function localhostFetch(url: string | URL, init: RequestInit = {}): Promi
 function requestLifetime(
   timeoutMs: number,
   caller?: AbortSignal,
+  route: ModelRouteContext = LOCAL_MODEL_ROUTE,
   imageRejection?: (status: number, providerMessage: string) => ModelUnavailableError | null,
 ) {
   const timeout = new AbortController();
@@ -591,7 +675,7 @@ function requestLifetime(
     rethrow(error: unknown): never {
       if (caller?.aborted) throw caller.reason ?? error;
       if (error instanceof ModelUnavailableError) throw error;
-      if (timeout.signal.aborted) throw mapModelError(timeout.signal.reason);
+      if (timeout.signal.aborted) throw mapModelError(timeout.signal.reason, route);
       const status = (error as { status?: number } | null)?.status;
       if (
         imageRejection !== undefined &&
@@ -602,11 +686,11 @@ function requestLifetime(
       ) {
         const classified = imageRejection(status, providerReason(error));
         if (classified !== null) throw classified;
-        const mapped = mapModelError(error);
+        const mapped = mapModelError(error, route);
         if (isImageContentRejection(providerReason(error))) markImageContentRejection(mapped);
         throw mapped;
       }
-      throw mapModelError(error);
+      throw mapModelError(error, route);
     },
     close() {
       clearTimeout(timer);
@@ -689,8 +773,9 @@ async function requestJson(
   init: RequestInit,
   timeoutMs: number,
   signal?: AbortSignal,
+  route: ModelRouteContext = LOCAL_MODEL_ROUTE,
 ): Promise<unknown> {
-  const lifetime = requestLifetime(timeoutMs, signal);
+  const lifetime = requestLifetime(timeoutMs, signal, route);
   try {
     const response = await request(cfg, path, init, lifetime);
     return await response.json();
@@ -839,14 +924,30 @@ export function createLmStudioClient(
   } = {},
 ): ModelGateway {
   const timeoutMs = config.timeoutSeconds * 1000;
-  /** The config a given model name talks to: the local one, or a declared external provider. */
-  const routeFor = (model: string | undefined): LmStudioConfig => {
+  /**
+   * Resolve the request's config and explicit origin once. Callers that need both must use this
+   * result rather than resolving twice: the hook may read mutable provider config, and the
+   * error-wording context must describe the endpoint that actually received the request.
+   */
+  const resolveRouteFor = (
+    model: string | undefined,
+  ): {
+    readonly cfg: LmStudioConfig;
+    readonly external: ExternalModelRoute | null;
+    readonly context: ModelRouteContext;
+  } => {
     const external = model === undefined ? null : (options.externalModel?.(model) ?? null);
-    if (external === null) return config;
+    if (external === null) {
+      return { cfg: config, external: null, context: LOCAL_MODEL_ROUTE };
+    }
     return {
-      ...config,
-      baseUrl: external.baseUrl.replace(/\/+$/, ""),
-      apiKey: external.apiKey ?? config.apiKey,
+      cfg: {
+        ...config,
+        baseUrl: external.baseUrl.replace(/\/+$/, ""),
+        apiKey: external.apiKey ?? config.apiKey,
+      },
+      external,
+      context: EXTERNAL_MODEL_ROUTE,
     };
   };
 
@@ -921,7 +1022,14 @@ export function createLmStudioClient(
     const now = Date.now();
     if (loadedCache !== null && now - loadedCache.at < 5_000) return loadedCache.models;
     try {
-      const body = (await requestJson(config, "/models", { method: "GET" }, timeoutMs, signal)) as {
+      const body = (await requestJson(
+        config,
+        "/models",
+        { method: "GET" },
+        timeoutMs,
+        signal,
+        LOCAL_MODEL_ROUTE,
+      )) as {
         data?: Array<{ id?: string }>;
       };
       const models = (body.data ?? []).map((m) => String(m.id ?? "")).filter((id) => id !== "");
@@ -970,7 +1078,7 @@ export function createLmStudioClient(
       if (substitute !== null) return substitute.contextWindow;
     }
     const url = `${new URL(config.baseUrl).origin}/api/v1/models`;
-    const lifetime = requestLifetime(10_000, signal);
+    const lifetime = requestLifetime(10_000, signal, LOCAL_MODEL_ROUTE);
     try {
       // The native catalog sits on the same origin as the OpenAI-compatible
       // API and needs the same bearer token once a token is required.
@@ -1013,6 +1121,7 @@ export function createLmStudioClient(
         { method: "GET" },
         timeoutMs,
         options?.signal,
+        LOCAL_MODEL_ROUTE,
       )) as {
         data?: Array<{ id?: string }>;
       };
@@ -1094,6 +1203,8 @@ export function createLmStudioClient(
           }),
         },
         timeoutMs,
+        undefined,
+        LOCAL_MODEL_ROUTE,
       );
       return true;
     },
@@ -1106,9 +1217,11 @@ export function createLmStudioClient(
           ? await effectiveModel(requested, options.signal)
           : options.contextBudget.model;
       reportResolvedModel(options.onModelResolved, used);
-      const externalRoute = routeOfExternal(used);
+      const resolvedRoute = resolveRouteFor(used);
+      const externalRoute = resolvedRoute.external;
       const isExternal = externalRoute !== null;
-      const cfg = routeFor(used);
+      const cfg = resolvedRoute.cfg;
+      const routeContext = resolvedRoute.context;
       const key = structuredOutputKey(cfg.baseUrl, used);
       // 带预算的请求在准备钩子之前先复验一次路由当前性；复验失败＝本次请求不发出。
       options.contextBudget?.assertCurrent();
@@ -1177,6 +1290,7 @@ export function createLmStudioClient(
       // 外部模型默认允许尝试原生 tools；只有服务明确拒绝过 tools 的本进程负缓存才不再带
       // （见 tool-calling.ts）。
       const toolDeclarations = options.tools ?? [];
+      const nativeTools = nativeToolDeclarations(toolDeclarations);
       let sendTools = isExternal && toolDeclarations.length > 0 && !toolsUnavailable(key);
       // retryPolicy 路径的整次逻辑调用共享状态：剩余次数与一个共享 lifetime（定时器在第一次
       // 真正发送时启动，总时限横跨重试等待与后续发送、不因重试重置；收口 finally 关闭）。
@@ -1208,7 +1322,7 @@ export function createLmStudioClient(
           body.max_tokens = options.maxTokens;
         }
         if (withTools) {
-          body.tools = toolDeclarations.map((tool) => ({
+          body.tools = nativeTools.tools.map((tool) => ({
             type: "function",
             function: {
               name: tool.name,
@@ -1258,6 +1372,7 @@ export function createLmStudioClient(
               options.signal,
               preparedMessages,
               imageClassifier,
+              routeContext,
             );
           } else {
             if (sharedLifetime.current === null) {
@@ -1266,6 +1381,7 @@ export function createLmStudioClient(
                 options.signal,
                 preparedMessages,
                 imageClassifier,
+                routeContext,
               );
             }
             lifetime = sharedLifetime.current;
@@ -1375,27 +1491,49 @@ export function createLmStudioClient(
           console.warn("model response diagnostic write failed");
         }
       }
-      // 原生调用优先于正文：它是模型对"要做什么"最直接的表达。读不出参数的调用不算决策——
-      // 记下摘要（诊断）后按空正文处理，让严格解析照旧失败（读不出 = 沉默，不猜）。
-      const toolCalls = choice?.message?.tool_calls;
-      if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-        const decision = decisionTextFromToolCalls(toolCalls);
-        if (decision === null) {
-          console.warn(
-            `[model-tools] ${used} 的工具调用读不出参数：${summariseToolCalls(toolCalls)}`,
-          );
-          return "";
-        }
-        return decision;
-      }
+      // A readable call is not permission to execute a truncated or rejected completion.
       if (choice?.finish_reason === "length") {
         throw new ModelUnavailableError(
           "MODEL_OUTPUT_LIMIT",
           "模型达到输出上限，内容未完整生成；同请求重试沿用原预算，修改预算仅对新轮生效",
         );
       }
-      if (choice?.finish_reason != null && choice.finish_reason !== "stop") {
-        throw new ModelUnavailableError("MODEL_FINISH_UNSUPPORTED", "模型未正常完成文本回复");
+      if (
+        choice?.finish_reason != null &&
+        choice.finish_reason !== "stop" &&
+        choice.finish_reason !== "tool_calls"
+      ) {
+        throw new ModelUnavailableError(
+          "MODEL_FINISH_UNSUPPORTED",
+          "模型未正常完成文本回复",
+          choice.finish_reason,
+        );
+      }
+      const toolCalls = choice?.message?.tool_calls;
+      if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+        const decision = decisionTextFromToolCalls(
+          toolCalls,
+          toolDeclarations.length > 0 ? nativeTools.wireNames : undefined,
+        );
+        if (decision === null) {
+          console.warn(
+            `[model-tools] ${used} 的工具调用读不出参数：${summariseToolCalls(toolCalls)}`,
+          );
+          return "";
+        }
+        const properties = options.responseSchema?.properties as
+          | Record<string, unknown>
+          | undefined;
+        return properties?.decision === undefined
+          ? decision
+          : nativeDecisionEnvelope(decision, choice?.message?.content);
+      }
+      if (choice?.finish_reason === "tool_calls") {
+        throw new ModelUnavailableError(
+          "MODEL_FINISH_UNSUPPORTED",
+          "模型工具调用未完整返回",
+          choice.finish_reason,
+        );
       }
       return choice?.message?.content ?? "";
     },
@@ -1453,7 +1591,9 @@ export function createLmStudioClient(
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         });
       }
-      const cfg = routeFor(used);
+      const resolvedRoute = resolveRouteFor(used);
+      const cfg = resolvedRoute.cfg;
+      const routeContext = resolvedRoute.context;
       // 流式同闸：resolved 后回退到文字模型时不再暗发图；vision 闸按最终 messages 判定。
       assertVisionAllowed(used, preparedMessages);
       const body: Record<string, unknown> = {
@@ -1467,7 +1607,7 @@ export function createLmStudioClient(
         body.max_tokens = options.maxTokens;
       }
 
-      const streamRoute = routeOfExternal(used);
+      const streamRoute = resolvedRoute.external;
       // 发送前同守卫（fix2 前移）：guard 抛错发生在 lifetime 创建之前，不留待清理定时器。
       // retryPolicy（可选）：只在响应体开始前的获取阶段、且只对 429/503 重试；产出后不重试。
       // 策略路径整条流共用一个 lifetime，总时限从第一次真正发送起算、覆盖重试等待。
@@ -1525,6 +1665,7 @@ export function createLmStudioClient(
                 options.signal,
                 preparedMessages,
                 streamImageClassifier,
+                routeContext,
               );
             } else {
               if (streamSharedLifetime.current === null) {
@@ -1533,6 +1674,7 @@ export function createLmStudioClient(
                   options.signal,
                   preparedMessages,
                   streamImageClassifier,
+                  routeContext,
                 );
               }
               lifetime = streamSharedLifetime.current;

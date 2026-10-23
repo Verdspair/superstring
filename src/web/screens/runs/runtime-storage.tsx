@@ -115,6 +115,9 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
     request: RuntimeStorageCleanupRequest;
     result: RuntimeStorageCleanupResult;
   } | null>(null);
+  // 常挂载确认框在关闭段落期间仍读取预览；保留最近一次打开的目标快照。
+  const previewRef = useRef<typeof preview>(null);
+  const showPreview = preview ?? previewRef.current;
   const [outcome, setOutcome] = useState<{
     category: RuntimeStorageCategory;
     result: RuntimeStorageCleanupResult;
@@ -265,7 +268,9 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
     try {
       const result = await api.previewRuntimeStorageCleanup(request);
       if (writeToken.current !== token) return;
-      setPreview({ request, result });
+      const value = { request, result };
+      previewRef.current = value;
+      setPreview(value);
     } catch (cause) {
       if (writeToken.current === token) setActionError(errorText(cause));
     } finally {
@@ -278,7 +283,7 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
 
   // 确认执行的是预览时保存的目标快照，而不是此刻的勾选；取消不产生任何写入。
   const confirmCleanup = async () => {
-    const snapshot = preview;
+    const snapshot = preview ?? previewRef.current;
     if (!snapshot || busyRef.current) return;
     busyRef.current = true;
     const token = ++writeToken.current;
@@ -678,20 +683,23 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
           </div>
         </>
       )}
-      {preview && (
-        <ConfirmDialog
-          message={t(`${P}.previewLine`, {
-            "0": preview.result.removable,
-            "1": preview.result.expired,
-            "2": preview.result.protected,
-            "3": preview.result.matched,
-          })}
-          confirmLabel={t(`${P}.confirm`)}
-          busy={busy}
-          onConfirm={confirmCleanup}
-          onCancel={() => setPreview(null)}
-        />
-      )}
+      <ConfirmDialog
+        open={preview !== null}
+        message={
+          showPreview
+            ? t(`${P}.previewLine`, {
+                "0": showPreview.result.removable,
+                "1": showPreview.result.expired,
+                "2": showPreview.result.protected,
+                "3": showPreview.result.matched,
+              })
+            : ""
+        }
+        confirmLabel={t(`${P}.confirm`)}
+        busy={busy}
+        onConfirm={confirmCleanup}
+        onCancel={() => setPreview(null)}
+      />
     </section>
   );
 }

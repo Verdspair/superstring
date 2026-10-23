@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { childEnvironment, DesktopBackend, localRequest } from "../../src/desktop/backend";
+import { resolveHostLayout } from "../../src/desktop/host-layout";
 
 const roots: string[] = [];
 const hosts: DesktopBackend[] = [];
@@ -20,10 +21,14 @@ function fixture(script: string, overrides: { startupTimeoutMs?: number } = {}) 
   const logs: string[] = [];
   const exits: boolean[] = [];
   const host = new DesktopBackend({
-    executable: process.execPath,
-    args: [entry],
-    profileRoot: root,
-    resourceRoot: root,
+    layout: {
+      mode: "managed-profile",
+      executable: process.execPath,
+      args: [entry],
+      cwd: root,
+      profileRoot: root,
+      resourceRoot: root,
+    },
     log: (line) => logs.push(line),
     onExit: (expected) => exits.push(expected),
     ...overrides,
@@ -42,6 +47,17 @@ const server=http.createServer((req,res)=>{
 });
 process.stdin.resume();
 process.stdin.on('end',()=>server.close(()=>process.exit(0)));
+server.listen(0,'127.0.0.1',()=>console.log('SUPERSTRING_DESKTOP_PORT '+server.address().port));
+`;
+
+// A service that ignores stdin: only an immediate kill can stop it.
+const stubborn = `
+const http=require('node:http');
+const server=http.createServer((req,res)=>{
+ res.setHeader('content-type','application/json');
+ res.end(JSON.stringify({app:'superstring',desktop:true,state:'ready',close_action:'background',page_connections:1}));
+});
+process.stdin.resume();
 server.listen(0,'127.0.0.1',()=>console.log('SUPERSTRING_DESKTOP_PORT '+server.address().port));
 `;
 
@@ -129,5 +145,70 @@ describe("native desktop service owner", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  test("development layout injects the desktop protocol without layout roots", () => {
+    const layout = resolveHostLayout({
+      mode: "development-legacy",
+      projectRoot: path.resolve("dev"),
+    });
+    const env = childEnvironment(
+      {
+        LM_STUDIO_URL: "http://model",
+        SUPERSTRING_APP_MODE: "installed",
+        SUPERSTRING_APP_ROOT: "/stale",
+        SUPERSTRING_RESOURCE_ROOT: "/stale",
+        SUPERSTRING_DB_PATH: "/stale",
+      },
+      layout.profileRoot,
+      layout.resourceRoot,
+      "a".repeat(64),
+      layout,
+    );
+    expect(env.LM_STUDIO_URL).toBe("http://model");
+    for (const name of [
+      "SUPERSTRING_APP_MODE",
+      "SUPERSTRING_APP_ROOT",
+      "SUPERSTRING_RESOURCE_ROOT",
+      "SUPERSTRING_DB_PATH",
+    ])
+      expect(env[name]).toBeUndefined();
+    expect(env.SUPERSTRING_DESKTOP_MANAGED).toBe("1");
+    expect(env.SUPERSTRING_DESKTOP_TOKEN).toBe("a".repeat(64));
+    expect(env.SUPERSTRING_DESKTOP_AUTO_PORT).toBe("1");
+    expect(env.SUPERSTRING_DESKTOP_WINDOW_OWNED).toBe("1");
+    expect(env.SUPERSTRING_SERVE_WEB).toBe("1");
+  });
+
+  test("managed layout injects the compiled profile and resources from the layout", () => {
+    const layout = resolveHostLayout({
+      mode: "managed-profile",
+      profileRoot: path.resolve("profile"),
+      resourceRoot: path.resolve("service/resources"),
+      executable: path.resolve("service/superstring-server.exe"),
+    });
+    const env = childEnvironment({}, "/ignored", "/ignored", "b".repeat(64), layout);
+    expect(env.SUPERSTRING_APP_MODE).toBe("desktop");
+    expect(env.SUPERSTRING_DESKTOP_MANAGED).toBe("1");
+    expect(env.SUPERSTRING_APP_ROOT).toBe(layout.profileRoot);
+    expect(env.SUPERSTRING_RESOURCE_ROOT).toBe(layout.resourceRoot);
+  });
+
+  test("installed keeps userdata paths while retaining the managed request gate", () => {
+    const layout = resolveHostLayout({ mode: "installed", installRoot: path.resolve("installed") });
+    const env = childEnvironment({}, "/ignored", "/ignored", "c".repeat(64), layout);
+    expect(env.SUPERSTRING_APP_MODE).toBe("installed");
+    expect(env.SUPERSTRING_APP_ROOT).toBe(layout.appRoot);
+    expect(env.SUPERSTRING_RESOURCE_ROOT).toBeUndefined();
+    expect(env.SUPERSTRING_DESKTOP_MANAGED).toBe("1");
+  });
+
+  test("terminate is synchronous, idempotent and stops a child that ignores stdin", async () => {
+    const { host, exits } = fixture(stubborn);
+    await host.start();
+    expect(host.terminate()).toBeUndefined();
+    host.terminate();
+    await host.stop();
+    expect(exits).toEqual([true]);
   });
 });

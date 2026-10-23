@@ -259,6 +259,10 @@ const V71_SQL = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0071_context_storage_metadata.sql"),
   "utf8",
 );
+const V72_SQL = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0072_outbound_intent_metadata.sql"),
+  "utf8",
+);
 
 const ALL_MIGRATION_SQL = `${MIGRATION_SQL}\n${KNOWLEDGE_SQL}\n${READ_SQL}\n${ORGANIZATION_SQL}\n${QQ_SQL}\n${QQ_MEMORY_SOURCES_SQL}\n${QQ_OBSERVATION_TEXT_SQL}\n${QQ_MEMORY_BATCH_SQL}\n${QQ_TRANSPORT_CONFIG_SQL}\n${QQ_SCHEMES_SQL}\n${QQ_SPEECH_LOG_SQL}\n${QQ_MEDIA_NOTES_SQL}\n${QQ_SCHEME_TRIGGERS_SQL}\n${QQ_SEND_LOG_SQL}\n${QQ_SCHEME_RHYTHM_SQL}\n${QQ_CONTEXT_BUDGET_SQL}\n${QQ_SCHEME_PROMPTS_SQL}\n${QQ_MEMBERS_SQL}\n${QQ_OUTPUT_RESERVE_SQL}\n${QQ_SCHEME_STICKERS_SQL}\n${QQ_STICKERS_SQL}\n${QQ_STICKER_AUTHORIZATION_SQL}
 ${QQ_DISPATCH_SQL}
@@ -309,7 +313,8 @@ ${V67_SQL}
 ${V68_SQL}
 ${V69_SQL}
 ${V70_SQL}
-${V71_SQL}`;
+${V71_SQL}
+${V72_SQL}`;
 
 // golden column contract (docs/reference/data-model.md)
 type ColSpec = { name: string; type: string; notnull: 0 | 1; pk: 0 | 1 };
@@ -1227,8 +1232,8 @@ describe("business schema gate", () => {
     }
   });
 
-  it("uses schema 71 for storage metadata indexes", () => {
-    expect(BUSINESS_SCHEMA_VERSION).toBe(71);
+  it("uses schema 72 for compact outbound metadata", () => {
+    expect(BUSINESS_SCHEMA_VERSION).toBe(72);
   });
 
   it("initialises a fresh db and stamps user_version", () => {

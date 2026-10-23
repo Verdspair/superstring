@@ -522,8 +522,11 @@ describe("统一上下文分配真实接线", () => {
     expect(store.getState().settingsRoute).toBe("context");
     expect(store.getState().editorAgentId).toBe(AGENT_ID);
 
-    // 取消后回到目录再次选择目标：走真实 NavigationGuard 弹窗的放弃分支（workspace.discard_and_continue）。
-    fireEvent.click(screen.getByRole("button", { name: "所有 Agent" }));
+    // 取消不进入工作室：仍停在目录，无需再次点「所有 Agent」。
+    expect(screen.getByRole("heading", { name: "你的 Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "所有 Agent" })).toBeNull();
+
+    // 目录内再次选择目标：走真实 NavigationGuard 弹窗的放弃分支（workspace.discard_and_continue）。
     fireEvent.click(screen.getByRole("button", { name: "助手乙" }));
     await waitFor(() => expect(store.getState().navigationConfirmOpen).toBe(true));
     fireEvent.click(await screen.findByRole("button", { name: "放弃修改并继续" }));

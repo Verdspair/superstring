@@ -96,9 +96,7 @@ describe("conversation-initial-error-retry: initial latest failure retries lates
 
     setupApi({ getConversationEvents: getEvents });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
 
     // Initial latest load attempts and rejects
     await act(async () => {

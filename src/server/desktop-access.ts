@@ -44,7 +44,11 @@ function httpOrigin(url: URL): string {
  * requirement. It covers static files, business APIs, streams and every WebSocket upgrade alike.
  */
 export function createDesktopAccess(options: DesktopAccessOptions): DesktopAccess {
-  if (options.env.SUPERSTRING_APP_MODE !== "desktop") return () => null;
+  if (
+    options.env.SUPERSTRING_APP_MODE !== "desktop" &&
+    options.env.SUPERSTRING_DESKTOP_MANAGED !== "1"
+  )
+    return () => null;
 
   const token = options.env.SUPERSTRING_DESKTOP_TOKEN;
   if (

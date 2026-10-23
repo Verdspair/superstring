@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { renderBrandAssets } from "../../tools/desktop/build/brand-assets.mjs";
 import { prepareCaseSlot } from "../../tools/desktop/build/case-rename.mjs";
 import { buildBrand } from "../../tools/desktop/build/cross-platform/brand.mjs";
@@ -14,6 +15,7 @@ import {
   getTarget,
   macSigningPlan,
   normalizeMacSigningEnvironment,
+  serviceRootForApp,
   TARGETS,
 } from "../../tools/desktop/build/cross-platform/config.mjs";
 import { publicLicenseInventory } from "../../tools/desktop/build/cross-platform/licenses.mjs";
@@ -73,7 +75,16 @@ test("all native targets keep bundled host dependencies external to builder and 
       platform,
       arch,
     });
-    assert.deepEqual(config.files, ["package.json", "main.cjs", "preload.cjs"]);
+    assert.deepEqual(config.files, [
+      "package.json",
+      "main.cjs",
+      "preload.cjs",
+      "startup.html",
+      "appearance.css",
+      "icon.png",
+      "fonts/**/*",
+    ]);
+    assert.equal(config.directories.app, path.join("/stage", "host"));
     assert.equal(config.extraResources[0].to, "service");
     assert.equal(config.extraResources[0].from, path.join("/stage", "service"));
     assert.equal(config.electronFuses.runAsNode, false);
@@ -83,6 +94,18 @@ test("all native targets keep bundled host dependencies external to builder and 
       assert.deepEqual(target.arch, [arch]);
   }
   assert.throws(() => getTarget("linux", "ia32"), /Unsupported/);
+});
+
+test("packaged service roots follow the extraResources layout on macOS and Linux", () => {
+  assert.equal(
+    serviceRootForApp("darwin", "/Applications/Superstring.app"),
+    path.join("/Applications/Superstring.app", "Contents", "Resources", "service"),
+  );
+  assert.equal(
+    serviceRootForApp("linux", "/opt/Superstring"),
+    path.join("/opt/Superstring", "resources", "service"),
+  );
+  assert.throws(() => serviceRootForApp("win32", "C:/Superstring"), /Unsupported/);
 });
 
 test("mac release builds sign when credentials are complete and stay unsigned otherwise", () => {
@@ -167,7 +190,7 @@ test("release checksum assembly rejects partial, extra and wrong-version distrib
   }
 });
 
-test("smoke requires every real readiness check and the exact target identity", () => {
+test("smoke requires the approved direct exit and every real readiness check", () => {
   const identity = { platform: "darwin", arch: "arm64", version: "0.2.1" };
   const report = {
     ...identity,
@@ -177,15 +200,21 @@ test("smoke requires every real readiness check and the exact target identity", 
       renderer: true,
       authentication: true,
       closeStopsBackend: true,
-      gracefulStop: true,
+      gracefulStop: false,
+      directExit: true,
     },
   };
   validateSmokeReport(report, identity);
   assert.throws(() => validateSmokeReport({ ...report, arch: "x64" }, identity), /IDENTITY/);
   assert.throws(
     () =>
+      validateSmokeReport({ ...report, checks: { ...report.checks, directExit: false } }, identity),
+    /directExit/,
+  );
+  assert.throws(
+    () =>
       validateSmokeReport(
-        { ...report, checks: { ...report.checks, gracefulStop: false } },
+        { ...report, checks: { ...report.checks, gracefulStop: true } },
         identity,
       ),
     /gracefulStop/,
@@ -300,5 +329,33 @@ test("a retained backup on locked unlink keeps the new executable and never rest
   } finally {
     fs.unlinkSync = realUnlinkSync;
     fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Windows desktop bootstrap removes Aura's extra fade before windows can be created", () => {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const source = fs.readFileSync(path.join(root, "src/desktop/main.ts"), "utf8");
+  const start = source.indexOf('app.setName("Superstring")');
+  const end = source.indexOf("const argument =", start);
+  assert.ok(start >= 0 && end > start);
+  assert.ok(end < source.indexOf("new BrowserWindow("));
+  assert.ok(end < source.indexOf(".whenReady()"));
+  const bootstrap = source.slice(start, end);
+  for (const platform of ["win32", "darwin", "linux"]) {
+    const calls = [];
+    vm.runInNewContext(bootstrap, {
+      process: { platform },
+      app: {
+        setName: (name) => calls.push(["name", name]),
+        commandLine: { appendSwitch: (...args) => calls.push(["switch", ...args]) },
+      },
+      protocol: { registerSchemesAsPrivileged: () => calls.push(["protocol"]) },
+    });
+    assert.deepEqual(
+      calls,
+      platform === "win32"
+        ? [["name", "Superstring"], ["switch", "wm-window-animations-disabled"], ["protocol"]]
+        : [["name", "Superstring"], ["protocol"]],
+    );
   }
 });

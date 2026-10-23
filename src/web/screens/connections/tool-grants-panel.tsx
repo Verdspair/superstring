@@ -5,6 +5,7 @@ import { executionPolicy, type PermissionResource } from "../../../shared/contra
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
+import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
 import {
   Table,
   TableBody,
@@ -90,7 +91,7 @@ export function ToolGrantsPanel({
     <div className={embedded ? "space-y-6" : "mx-auto max-w-6xl space-y-6 px-6 py-6 lg:px-8"}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="font-semibold">{t("connections.grants.title")}</h2>
+          <h2 className="workspace-section-title">{t("connections.grants.title")}</h2>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             {t("connections.grants.description")}
           </p>
@@ -301,26 +302,38 @@ function ResourceRow({
             <div className="space-y-4 py-1">
               <fieldset className="space-y-2">
                 <legend className="text-sm font-medium">{t("connections.grants.scope")}</legend>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name={`scope-${resource.resource}`}
-                    checked={value.agentIds === null}
-                    disabled={disabled}
-                    onChange={() => onEdit({ agentIds: null })}
-                  />
-                  {t("connections.grants.scopeAll")}
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name={`scope-${resource.resource}`}
-                    checked={value.agentIds !== null}
-                    disabled={disabled}
-                    onChange={() => onEdit({ agentIds: [] })}
-                  />
-                  {t("connections.grants.scopeSelected")}
-                </label>
+                <RadioGroup
+                  value={value.agentIds === null ? "all" : "selected"}
+                  disabled={disabled}
+                  aria-label={t("connections.grants.scope")}
+                  onValueChange={(next) => {
+                    if (next === "all") onEdit({ agentIds: null });
+                    else if (next === "selected") onEdit({ agentIds: [] });
+                  }}
+                >
+                  <label
+                    htmlFor={`scope-${resource.resource}-all`}
+                    className="flex items-center gap-2 text-sm"
+                  >
+                    <RadioGroupItem
+                      id={`scope-${resource.resource}-all`}
+                      value="all"
+                      aria-label={t("connections.grants.scopeAll")}
+                    />
+                    {t("connections.grants.scopeAll")}
+                  </label>
+                  <label
+                    htmlFor={`scope-${resource.resource}-selected`}
+                    className="flex items-center gap-2 text-sm"
+                  >
+                    <RadioGroupItem
+                      id={`scope-${resource.resource}-selected`}
+                      value="selected"
+                      aria-label={t("connections.grants.scopeSelected")}
+                    />
+                    {t("connections.grants.scopeSelected")}
+                  </label>
+                </RadioGroup>
                 {value.agentIds !== null && (
                   <div className="flex flex-wrap gap-4 pl-6">
                     {agents.map((agent) => (

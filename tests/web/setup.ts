@@ -43,6 +43,15 @@ if (!globalThis.ResizeObserver) {
     disconnect() {}
   };
 }
+// document.fonts (FontFaceSet): the Agent directory render-ready lifecycle listens for
+// `loadingdone`. jsdom has no FontFaceSet; when absent, expose the standard EventTarget
+// shape with a resolved readiness promise so product code keeps using the browser API.
+if (!document.fonts) {
+  const fonts = Object.assign(new EventTarget(), {
+    ready: Promise.resolve() as unknown as Promise<FontFaceSet>,
+  });
+  Object.defineProperty(document, "fonts", { value: fonts, configurable: true });
+}
 if (!HTMLElement.prototype.scrollIntoView) HTMLElement.prototype.scrollIntoView = () => {};
 if (!HTMLElement.prototype.hasPointerCapture) HTMLElement.prototype.hasPointerCapture = () => false;
 if (!HTMLElement.prototype.setPointerCapture) HTMLElement.prototype.setPointerCapture = () => {};

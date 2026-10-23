@@ -484,7 +484,7 @@ describe("群会话顶部：控制行与身份栏分离", () => {
     const header = container.querySelector("header");
     expect(header).not.toBeNull();
     // 身份栏保留真实 h1 标题、头像入口、助手名与刷新。
-    expect(within(header as HTMLElement).getByRole("heading", { level: 1 }).textContent).toBe(
+    expect(within(header as HTMLElement).getByRole("heading", { level: 2 }).textContent).toBe(
       conversation.title,
     );
     expect(
@@ -548,7 +548,7 @@ describe("群会话顶部：控制行与身份栏分离", () => {
     ).toBeTruthy();
     expect(within(controls).getByRole("button", { name: ctrl("disable") })).toBeTruthy();
     expect(fake.listQqBindings).not.toHaveBeenCalled();
-    const header = screen.getByRole("heading", { level: 1 }).closest("header");
+    const header = screen.getByRole("heading", { level: 2 }).closest("header");
     expect(header).not.toBeNull();
     expect(
       within(header as HTMLElement).getByRole("button", { name: ui("workspace.refresh_history") }),

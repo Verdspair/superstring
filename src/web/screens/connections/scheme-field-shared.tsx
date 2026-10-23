@@ -43,15 +43,7 @@ export function SchemeFieldCard({
             : "mx-[20px] border-b border-dashed border-border px-0 pb-[8px]"
         }
       >
-        <CardTitle
-          className={
-            unframed
-              ? "text-[15px] leading-[1.5] font-bold group-data-[size=sm]/card:text-[15px]"
-              : "text-[14px] font-bold"
-          }
-        >
-          {title}
-        </CardTitle>
+        <CardTitle className={unframed ? "leading-[1.5]" : undefined}>{title}</CardTitle>
         {description && (
           <CardDescription className="text-[12px] leading-[1.5]">{t(description)}</CardDescription>
         )}

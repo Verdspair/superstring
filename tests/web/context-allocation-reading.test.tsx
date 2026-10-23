@@ -75,10 +75,8 @@ describe("ContextAllocationReading", () => {
     );
 
     // When null, inherit checkbox is checked, and effective value displays global value
-    const inheritCheckbox = screen.getByTestId(
-      "reading-knowledge-agent-inherit-checkbox",
-    ) as HTMLInputElement;
-    expect(inheritCheckbox.checked).toBe(true);
+    const inheritCheckbox = screen.getByTestId("reading-knowledge-agent-inherit-checkbox");
+    expect(inheritCheckbox.getAttribute("aria-checked")).toBe("true");
 
     const effectiveText = screen.getByTestId("reading-knowledge-agent-effective-source");
     expect(effectiveText.textContent).toContain("65536");
@@ -230,10 +228,8 @@ describe("ContextAllocationReading", () => {
       />,
     );
 
-    const inheritCheckbox = screen.getByTestId(
-      "reading-knowledge-agent-inherit-checkbox",
-    ) as HTMLInputElement;
-    expect(inheritCheckbox.checked).toBe(false);
+    const inheritCheckbox = screen.getByTestId("reading-knowledge-agent-inherit-checkbox");
+    expect(inheritCheckbox.getAttribute("aria-checked")).toBe("false");
 
     fireEvent.click(inheritCheckbox);
     expect(onInvalidInput).toHaveBeenCalledWith("knowledgeAgent", undefined);

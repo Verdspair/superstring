@@ -81,6 +81,7 @@ describe("R6 局部 bootstrap", () => {
     expect(state.agents).toEqual([]);
     expect(state.sessions).toEqual([]);
     expect(state.modelNames).toEqual(["qwen/test"]);
+    expect(state.modelStatus).toContain("LM Studio 当前报告");
     expect(state.error).toContain("Agent 暂不可用");
     expect(state.pendingOperations).toBe(0);
   });
@@ -117,13 +118,14 @@ describe("R6 局部 bootstrap", () => {
     const state = useSuperstringStore.getState();
     expect(state.status).toBe("ready");
     expect(state.error).toBeNull();
+    expect(state.modelStatus).toContain("已登记的外部模型仍可选择");
     expect(state.modelNames).toEqual(["gpt-6-luna"]);
     expect(state.externalModelNames).toEqual(["gpt-6-luna"]);
     expect(state.loadedModelNames).toEqual([]);
     expect(state.modelStatus).toContain("本地模型服务连不上");
   });
 
-  it("一个模型来源都拿不到时才把本地目录失败当成错误", async () => {
+  it("一个模型来源都拿不到时才报告模型列表加载失败", async () => {
     useSuperstringStore.setState({
       apiClient: fakeClient({
         listAgents: vi.fn().mockResolvedValue([]),
@@ -142,7 +144,8 @@ describe("R6 局部 bootstrap", () => {
 
     const state = useSuperstringStore.getState();
     expect(state.modelNames).toEqual([]);
-    expect(state.error).toContain("MODEL_SERVICE_UNAVAILABLE");
+    expect(state.error).toBeNull();
+    expect(state.modelStatus).toContain("MODEL_SERVICE_UNAVAILABLE");
     expect(state.modelStatus).toContain("模型列表加载失败");
   });
 });

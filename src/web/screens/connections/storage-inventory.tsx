@@ -4,7 +4,7 @@
 // 选择。清理先预览后确认，确认执行的是预览时冻结的请求快照；取消不产生任何写入。
 
 import { RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import type {
@@ -171,6 +171,11 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
   const [position, setPosition] = useState(0);
   const [selected, setSelected] = useState<string[]>([]);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  // 常挂载确认弹窗在关闭动画期间仍会渲染：展示数据取最近一次非空快照。
+  const cleanupView = useRef({ request: cleanupRequest, preview, result });
+  if (cleanupRequest || preview || result)
+    cleanupView.current = { request: cleanupRequest, preview, result };
+  const view = cleanupView.current;
   const [reloadTick, setReloadTick] = useState(0);
   useEffect(() => {
     // 隐式读取只填摘要与设置，不推进保留草稿基线。
@@ -645,104 +650,103 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
         </section>
       )}
 
-      {cleanupOpen && (
-        <AlertDialog
-          title={t(
-            result ? "connections.storage.cleaned" : "connections.storage.manage.previewTitle",
+      <AlertDialog
+        open={cleanupOpen}
+        title={t(
+          view.result ? "connections.storage.cleaned" : "connections.storage.manage.previewTitle",
+        )}
+        busy={saving}
+        onCancel={closeCleanup}
+      >
+        <div className="space-y-2 text-sm">
+          {saving && !view.preview && !view.result && !cleanupError && (
+            <p className="text-muted-foreground">{t("connections.common.loading")}</p>
           )}
-          busy={saving}
-          onCancel={closeCleanup}
-        >
-          <div className="space-y-2 text-sm">
-            {saving && !preview && !result && !cleanupError && (
-              <p className="text-muted-foreground">{t("connections.common.loading")}</p>
-            )}
-            {cleanupRequest && !result && (
-              <p className="text-xs text-muted-foreground">
-                {cleanupRequest.ids
-                  ? t("connections.storage.manage.scopeSelected", {
-                      "0": cleanupRequest.ids.length,
-                    })
-                  : t("connections.storage.manage.scopeCategory", {
-                      "0": t(`connections.storage.removed.${cleanupRequest.category}`),
-                    })}
-              </p>
-            )}
-            {preview && !result && (
-              <p>
-                {t("connections.storage.manage.previewLine", {
-                  "0": preview.removable,
-                  "1": preview.matched,
-                  "2": preview.expired,
-                  "3": preview.protected,
-                })}
-              </p>
-            )}
-            {result && (
-              <p>
-                {t("connections.storage.manage.resultLine", {
-                  "0": result.removed,
-                  "1": result.matched,
-                  "2": result.expired,
-                  "3": result.protected,
-                })}
-              </p>
-            )}
-            {cleanupError && (
-              <p role="alert" className="text-destructive">
-                {cleanupError}
-              </p>
-            )}
-          </div>
-          <AlertDialogFooter>
-            {result ? (
+          {view.request && !view.result && (
+            <p className="text-xs text-muted-foreground">
+              {view.request.ids
+                ? t("connections.storage.manage.scopeSelected", {
+                    "0": view.request.ids.length,
+                  })
+                : t("connections.storage.manage.scopeCategory", {
+                    "0": t(`connections.storage.removed.${view.request.category}`),
+                  })}
+            </p>
+          )}
+          {view.preview && !view.result && (
+            <p>
+              {t("connections.storage.manage.previewLine", {
+                "0": view.preview.removable,
+                "1": view.preview.matched,
+                "2": view.preview.expired,
+                "3": view.preview.protected,
+              })}
+            </p>
+          )}
+          {view.result && (
+            <p>
+              {t("connections.storage.manage.resultLine", {
+                "0": view.result.removed,
+                "1": view.result.matched,
+                "2": view.result.expired,
+                "3": view.result.protected,
+              })}
+            </p>
+          )}
+          {cleanupError && (
+            <p role="alert" className="text-destructive">
+              {cleanupError}
+            </p>
+          )}
+        </div>
+        <AlertDialogFooter>
+          {view.result ? (
+            <Button
+              tooltip={<Trans i18nKey="hints.complete.close" />}
+              type="button"
+              variant="outline"
+              data-dialog-cancel
+              onClick={closeCleanup}
+            >
+              {t("connections.close")}
+            </Button>
+          ) : (
+            <>
               <Button
-                tooltip={<Trans i18nKey="hints.complete.close" />}
+                tooltip={<Trans i18nKey="hints.complete.cancel" />}
                 type="button"
                 variant="outline"
                 data-dialog-cancel
+                disabled={saving}
                 onClick={closeCleanup}
               >
-                {t("connections.close")}
+                {t("connections.cancel")}
               </Button>
-            ) : (
-              <>
+              {cleanupError ? (
                 <Button
-                  tooltip={<Trans i18nKey="hints.complete.cancel" />}
                   type="button"
-                  variant="outline"
-                  data-dialog-cancel
-                  disabled={saving}
-                  onClick={closeCleanup}
+                  variant="destructive"
+                  disabled={saving || !view.request}
+                  tooltip={t("hints.qq.cleanupRetry")}
+                  onClick={retryCleanup}
                 >
-                  {t("connections.cancel")}
+                  {t("capabilities.retry")}
                 </Button>
-                {cleanupError ? (
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    disabled={saving || !cleanupRequest}
-                    tooltip={t("hints.qq.cleanupRetry")}
-                    onClick={retryCleanup}
-                  >
-                    {t("capabilities.retry")}
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    disabled={saving || !preview}
-                    tooltip={t("hints.qq.runCleanup")}
-                    onClick={() => void runCleanup()}
-                  >
-                    {t("connections.storage.manage.runCleanup")}
-                  </Button>
-                )}
-              </>
-            )}
-          </AlertDialogFooter>
-        </AlertDialog>
-      )}
+              ) : (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={saving || !view.preview}
+                  tooltip={t("hints.qq.runCleanup")}
+                  onClick={() => void runCleanup()}
+                >
+                  {t("connections.storage.manage.runCleanup")}
+                </Button>
+              )}
+            </>
+          )}
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   );
 }

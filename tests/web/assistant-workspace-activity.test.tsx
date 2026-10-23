@@ -1,12 +1,21 @@
 // 助手工作区 activity 门禁与新 Canonical 宿主功能回归：
 // 1. 隐藏挂载不得发起请求；激活后空目录只刷新一次；
-// 2. 200 行目录下选择计算与渲染提交在无关 store 写入前后输出一致；
+// 2. 200 行目录下选择计算与渲染提交在无关 store 写入前后输出一致，单行勾选只提交工作区与该行；
 // 3. memory-tools / knowledge-tools 路由着陆助手 access 标签；
 // 4. 空列表冷入口安全展示创建提示（采用当前 locale 的“创建 Agent”）；
 // 5. 记忆规则与每档 Bytes 上下文配额原白名单独立保存，核对 context 保持 saved baseline，不连坐提交；
 // 6. 知识库读取 4 字段整份原子保存。
 
-import { act, cleanup, fireEvent, render as renderView, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderView,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema, PersonaResponseSchema } from "../../src/shared/contracts";
@@ -19,6 +28,18 @@ import { useSuperstringStore as store } from "../../src/web/store";
 
 const render = (...[ui, options]: Parameters<typeof renderView>) =>
   renderView(ui, { wrapper: DesignSystemProvider, ...options });
+
+const checkboxRenders = vi.hoisted(() => vi.fn());
+vi.mock("../../src/web/components/ui/checkbox", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/web/components/ui/checkbox")>();
+  return {
+    ...actual,
+    Checkbox: (props: Parameters<typeof actual.Checkbox>[0]) => {
+      checkboxRenders(props["aria-label"]);
+      return <actual.Checkbox {...props} />;
+    },
+  };
+});
 
 const A = "11111111-1111-4111-8111-111111111111";
 const now = "2026-10-07T00:00:00.000Z";
@@ -133,7 +154,7 @@ describe("assistant workspace activity gating", () => {
     expect(store.getState().modelNames).toEqual(["model-a"]);
   });
 
-  it("the new-agent datalist renders each catalog model exactly once from the store snapshot", async () => {
+  it("the new-agent suggestions render each catalog model exactly once from the store snapshot", async () => {
     prepare();
     store.setState({
       editorAgentId: "__new__" as const,
@@ -148,10 +169,12 @@ describe("assistant workspace activity gating", () => {
         </Profiler>,
       );
     });
-    const options = [
-      ...(document.getElementById("new-agent-models")?.querySelectorAll("option") ?? []),
-    ];
-    expect(options.map((o) => o.getAttribute("value"))).toEqual(["model-a", "model-b"]);
+    await userEvent.click(screen.getByRole("combobox", { name: "对话模型" }));
+    const options = screen.getAllByRole("option");
+    expect(options.map((option) => option.getAttribute("data-value"))).toEqual([
+      "model-a",
+      "model-b",
+    ]);
   });
 
   it("a 200-row directory renders identically around an unrelated store write with O(1) selection", async () => {
@@ -185,6 +208,34 @@ describe("assistant workspace activity gating", () => {
     expect(screen.getAllByRole("checkbox", { checked: true })).toHaveLength(200);
     console.log(`[perf] selectAll200=${selectAllMs.toFixed(2)}ms extraCommits=${commits.length}`);
     expect(commits.length).toBe(0);
+  });
+
+  it("only renders the changed row checkbox on a single toggle", async () => {
+    prepare();
+    const many = Array.from({ length: 200 }, (_, i) => ({
+      ...agent,
+      id: `agent-${String(i).padStart(4, "0")}`,
+      name: `Agent ${i}`,
+    }));
+    store.setState({ agents: many });
+    await act(async () => {
+      render(<AssistantWorkspace />);
+    });
+    const boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(200);
+    checkboxRenders.mockClear();
+    await act(async () => {
+      fireEvent.click(boxes[7]);
+    });
+    expect(screen.getAllByRole("checkbox", { checked: true })).toEqual([boxes[7]]);
+    expect(checkboxRenders).toHaveBeenCalledTimes(1);
+    expect(checkboxRenders).toHaveBeenCalledWith(boxes[7].getAttribute("aria-label"));
+    checkboxRenders.mockClear();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "选择当前结果" }));
+    });
+    expect(screen.getAllByRole("checkbox", { checked: true })).toHaveLength(200);
+    expect(checkboxRenders).toHaveBeenCalledTimes(199);
   });
 });
 
@@ -476,6 +527,42 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     expect(store.getState().pageEditor?.agent.config_version).toBe(1);
   });
 
+  it.each([
+    ["zh-CN", ["人设表达", "模型配置", "工具权限", "资料读取"]],
+    [
+      "en",
+      ["Identity & expression", "Model configuration", "Tool permissions", "Resource reading"],
+    ],
+  ] as const)("keeps the compact tab order and reading draft in %s", async (locale, labels) => {
+    const updateAgent = vi.fn();
+    prepare({ updateAgent });
+    selectLocale(locale);
+    store.setState({
+      editorAgentId: agent.id,
+      pageEditor: newPageEditor(agent, persona),
+      settingsRoute: "memory-tools",
+    });
+    render(<AssistantWorkspace active />);
+    await act(async () => {});
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(labels);
+    expect(screen.getByRole("tab", { name: labels[3] }).getAttribute("data-state")).toBe("active");
+    act(() =>
+      store.getState().patchPageAgent("memory-tools", {
+        memory_retrieval_prompt: "reading draft stays",
+      }),
+    );
+    for (const label of [labels[0], labels[1], labels[3]]) {
+      await act(async () => {
+        fireEvent.mouseDown(screen.getByRole("tab", { name: label }), {
+          button: 0,
+          ctrlKey: false,
+        });
+      });
+      expect(screen.getByRole("tab", { name: label }).getAttribute("data-state")).toBe("active");
+    }
+    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("reading draft stays");
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
   it("hydrates a direct reading entry once and allows an explicit retry after loading fails", async () => {
     const getAgent = vi
       .fn()
@@ -500,5 +587,298 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     expect(store.getState().pageEditor?.agent.id).toBe(agent.id);
     expect(screen.getByTestId("reading-section-memory")).toBeTruthy();
     expect(client.listModels).not.toHaveBeenCalled();
+  });
+});
+
+it("keeps one Agent header and tab strip while reading actions retain their own save owners", async () => {
+  const updateAgent = vi.fn();
+  prepare({ updateAgent });
+  store.setState({
+    editorAgentId: agent.id,
+    pageEditor: newPageEditor(agent, persona),
+    settingsRoute: "memory-tools",
+  });
+  render(<AssistantWorkspace active />);
+  await act(async () => {});
+  const heading = screen.getByRole("heading", { level: 1, name: "Agent 配置 · Agent A" });
+  const header = heading.closest("header");
+  const tabs = screen.getByRole("tablist");
+  act(() =>
+    store
+      .getState()
+      .patchPageAgent("memory-tools", { memory_retrieval_prompt: "retain reading draft" }),
+  );
+  for (const name of ["人设表达", "模型配置", "工具权限", "资料读取"]) {
+    await act(async () =>
+      fireEvent.mouseDown(screen.getByRole("tab", { name }), { button: 0, ctrlKey: false }),
+    );
+    expect(screen.getByRole("heading", { level: 1, name: "Agent 配置 · Agent A" })).toBe(heading);
+    expect(heading.closest("header")).toBe(header);
+    expect(screen.getByRole("tablist")).toBe(tabs);
+    expect(screen.queryByTestId("reading-task-header")).toBeNull();
+    expect(screen.queryByRole("button", { name: "保存 Agent" }) !== null).toBe(name !== "资料读取");
+  }
+  if (!(header instanceof HTMLElement)) throw new Error("missing Agent page header");
+  expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  for (const name of ["人设表达", "模型配置", "工具权限", "资料读取"]) {
+    expect(within(header).queryByText(name)).toBeNull();
+  }
+  const help = screen.getByRole("button", { name: "了解Agent 配置 · Agent A" });
+  expect(screen.queryByText("配置此 Agent 的资料读取、人设、模型和工具权限。")).toBeNull();
+  const user = userEvent.setup();
+  await user.hover(help);
+  expect((await screen.findByRole("tooltip")).textContent).toBe(
+    "配置此 Agent 的资料读取、人设、模型和工具权限。",
+  );
+  await user.unhover(help);
+  await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+  const back = screen.getByRole("button", { name: "所有 Agent" });
+  expect(header.contains(back)).toBe(true);
+  expect(back.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByRole("button", { name: "保存记忆规则" })).toBeTruthy();
+  expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("retain reading draft");
+  expect(updateAgent).not.toHaveBeenCalled();
+});
+// 目录网格的 render-ready 生命周期：受控双帧 + 观察器/字体事件回放；主题与模式不参与。
+describe("assistant workspace directory render-ready lifecycle", () => {
+  let frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+
+  /** 只记录观察目标与断开调用，回调由测试显式触发 width/height。 */
+  class ControlledResizeObserver {
+    static instances: ControlledResizeObserver[] = [];
+    readonly observed = new Set<Element>();
+    disconnected = false;
+    private readonly callback: ResizeObserverCallback;
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+      ControlledResizeObserver.instances.push(this);
+    }
+    observe(target: Element) {
+      this.observed.add(target);
+    }
+    unobserve(target: Element) {
+      this.observed.delete(target);
+    }
+    disconnect() {
+      this.disconnected = true;
+      this.observed.clear();
+    }
+    emit(width: number, height: number) {
+      for (const target of this.observed) {
+        this.callback(
+          [{ target, contentRect: { width, height } } as unknown as ResizeObserverEntry],
+          this as unknown as ResizeObserver,
+        );
+      }
+    }
+  }
+
+  const realMutationObserver = globalThis.MutationObserver;
+  let observedRoots: Node[] = [];
+  let rootDisconnects = 0;
+
+  /** 真实 MutationObserver 行为，仅代理 observe/disconnect 以核对根节点观察与清理。 */
+  function TrackedMutationObserver(callback: MutationCallback) {
+    const observer = new realMutationObserver(callback);
+    const observe = observer.observe.bind(observer);
+    let observesRoot = false;
+    observer.observe = (target: Node, options?: MutationObserverInit) => {
+      if (target === document.documentElement) {
+        observesRoot = true;
+        observedRoots.push(target);
+      }
+      observe(target, options);
+    };
+    const disconnect = observer.disconnect.bind(observer);
+    observer.disconnect = () => {
+      if (observesRoot) rootDisconnects += 1;
+      disconnect();
+    };
+    return observer;
+  }
+
+  beforeEach(() => {
+    frames = new Map();
+    frameId = 0;
+    ControlledResizeObserver.instances = [];
+    observedRoots = [];
+    rootDisconnects = 0;
+    vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+    vi.stubGlobal("MutationObserver", TrackedMutationObserver);
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frameId += 1;
+      frames.set(frameId, callback);
+      return frameId;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (handle: number) => {
+      frames.delete(handle);
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const runFrame = () =>
+    act(async () => {
+      const due = [...frames.entries()];
+      frames.clear();
+      for (const [handle, callback] of due) callback(handle);
+    });
+
+  const directoryGrid = () => {
+    const grid = document.querySelector<HTMLDivElement>("div[data-render-ready]");
+    if (!grid) throw new Error("missing directory grid");
+    return grid;
+  };
+
+  const setRootAttribute = (name: string, value: string) =>
+    act(async () => {
+      document.documentElement.setAttribute(name, value);
+      await Promise.resolve();
+    });
+
+  it("arms ready after two frames and replays on size, font, text and locale, not theme or mode", async () => {
+    prepare();
+    await act(async () => {
+      render(<AssistantWorkspace />);
+    });
+    const grid = directoryGrid();
+    expect(grid.dataset.renderReady).toBe("false");
+    expect(frames.size).toBe(1);
+    await runFrame();
+    expect(grid.dataset.renderReady).toBe("false");
+    expect(frames.size).toBe(1);
+    await runFrame();
+    expect(grid.dataset.renderReady).toBe("true");
+    expect(frames.size).toBe(0);
+
+    // 仅宽度变化回放：首次观察只记录基线，高度变化不重新武装。
+    const resize = ControlledResizeObserver.instances[0];
+    expect(resize.observed.has(grid)).toBe(true);
+    resize.emit(720, 480);
+    await act(async () => {});
+    expect(grid.dataset.renderReady).toBe("true");
+    resize.emit(960, 480);
+    await act(async () => {});
+    expect(grid.dataset.renderReady).toBe("false");
+    await runFrame();
+    await runFrame();
+    expect(grid.dataset.renderReady).toBe("true");
+
+    for (const [name, value] of [
+      ["data-font", "cute"],
+      ["data-text-size", "large"],
+      ["lang", "en"],
+    ] as const) {
+      await setRootAttribute(name, value);
+      expect(grid.dataset.renderReady).toBe("false");
+      expect(frames.size).toBe(1);
+      await runFrame();
+      expect(grid.dataset.renderReady).toBe("false");
+      await runFrame();
+      expect(grid.dataset.renderReady).toBe("true");
+      expect(frames.size).toBe(0);
+    }
+
+    // 主题与模式只换颜色，属于同一视觉帧，不回放。
+    await act(async () => {
+      document.documentElement.setAttribute("data-theme", "blue");
+      document.documentElement.setAttribute("data-mode", "dark");
+      document.documentElement.classList.add("dark");
+      await Promise.resolve();
+    });
+    expect(grid.dataset.renderReady).toBe("true");
+    expect(frames.size).toBe(0);
+
+    // 紧凑界面沿用无动画回退：只清 ready，不排帧；回到标准尺寸再武装两帧。
+    await setRootAttribute("data-interface-size", "compact");
+    expect(grid.dataset.renderReady).toBe("false");
+    await runFrame();
+    await runFrame();
+    expect(grid.dataset.renderReady).toBe("false");
+    expect(frames.size).toBe(0);
+    await setRootAttribute("data-interface-size", "standard");
+    expect(grid.dataset.renderReady).toBe("false");
+    await runFrame();
+    await runFrame();
+    expect(grid.dataset.renderReady).toBe("true");
+  });
+
+  it("replays on fonts loadingdone and cancels frames, the root observer and the listener on unmount", async () => {
+    prepare();
+    await act(async () => {
+      render(<AssistantWorkspace />);
+    });
+    const grid = directoryGrid();
+    await runFrame();
+    await runFrame();
+    expect(grid.dataset.renderReady).toBe("true");
+    expect(observedRoots).toEqual([document.documentElement]);
+
+    await act(async () => {
+      document.fonts.dispatchEvent(new Event("loadingdone"));
+    });
+    expect(grid.dataset.renderReady).toBe("false");
+    await runFrame();
+    await runFrame();
+    expect(grid.dataset.renderReady).toBe("true");
+
+    // 待执行帧在卸载时被取消，观察器断开，字体监听移除。
+    await act(async () => {
+      document.fonts.dispatchEvent(new Event("loadingdone"));
+    });
+    expect(frames.size).toBe(1);
+    await act(async () => {
+      cleanup();
+    });
+    expect(frames.size).toBe(0);
+    expect(grid.hasAttribute("data-render-ready")).toBe(false);
+    expect(ControlledResizeObserver.instances[0].disconnected).toBe(true);
+    expect(rootDisconnects).toBe(1);
+
+    await runFrame();
+    expect(grid.hasAttribute("data-render-ready")).toBe(false);
+    await act(async () => {
+      document.fonts.dispatchEvent(new Event("loadingdone"));
+    });
+    expect(grid.hasAttribute("data-render-ready")).toBe(false);
+  });
+
+  it("parks into the studio without reads and re-arms the directory on return", async () => {
+    const client = prepare();
+    await act(async () => {
+      render(<AssistantWorkspace />);
+    });
+    const grid = directoryGrid();
+    await runFrame();
+    await runFrame();
+    expect(grid.dataset.renderReady).toBe("true");
+    expect(client.listModels).toHaveBeenCalledTimes(1);
+    expect(client.getAgent).not.toHaveBeenCalled();
+
+    await act(async () => {
+      store.setState({ editorAgentId: agent.id, pageEditor: newPageEditor(agent, persona) });
+    });
+    expect(grid.hasAttribute("data-render-ready")).toBe(false);
+    expect(ControlledResizeObserver.instances[0].disconnected).toBe(true);
+    expect(rootDisconnects).toBe(1);
+    await runFrame();
+    await runFrame();
+    expect(grid.hasAttribute("data-render-ready")).toBe(false);
+    expect(client.getAgent).not.toHaveBeenCalled();
+    expect(client.listModels).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "所有 Agent" }));
+    });
+    const returned = directoryGrid();
+    expect(returned.dataset.renderReady).toBe("false");
+    await runFrame();
+    await runFrame();
+    expect(returned.dataset.renderReady).toBe("true");
+    expect(client.getAgent).not.toHaveBeenCalled();
+    expect(client.listModels).toHaveBeenCalledTimes(1);
   });
 });

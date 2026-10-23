@@ -286,15 +286,30 @@ export function readSkillEntryResource(entry: SkillEntry, relative: string): Ski
   return readSkillResource(requireDir(entry), relative);
 }
 
-export function loadSkillCatalog(root: string): SkillCatalog {
-  let entries: Dirent[];
+/**
+ * 技能根目录的唯一可列举性判据：缺失＝空目录（引用按不存在处理），其它读取失败＝整份不可用。
+ * 全量列举与按来源复验共用这一份，避免两条路径对同一个根给出不同授权。
+ */
+function listSkillRoot(root: string): Dirent[] | undefined {
   try {
-    entries = readdirSync(root, { withFileTypes: true });
+    return readdirSync(root, { withFileTypes: true });
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT")
-      return { skills: [], problems: [] };
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
     throw new PermissionError("SKILL_CATALOG_UNAVAILABLE");
   }
+}
+
+/**
+ * 保持既有整份拒绝语义：根存在但不可列举时，连系统条目来源也必须 revoked。
+ * 只做一次目录列举，不读任何技能正文。
+ */
+export function assertSkillRootListable(root: string | undefined): void {
+  if (root !== undefined) listSkillRoot(root);
+}
+
+export function loadSkillCatalog(root: string): SkillCatalog {
+  const entries = listSkillRoot(root);
+  if (entries === undefined) return { skills: [], problems: [] };
   const skills: SkillEntry[] = [];
   const problems: { skill: string; code: string }[] = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
@@ -322,8 +337,15 @@ export function loadSkillCatalog(root: string): SkillCatalog {
  */
 export const SYSTEM_SKILL_NAMES: readonly string[] = Object.keys(SYSTEM_DOCUMENTS).sort();
 
-const systemEntries = (): SkillEntry[] =>
-  SYSTEM_SKILL_NAMES.map((name) => {
+/**
+ * 随包系统文档是构建期内联常量：同样的字节每次解析只会得到同样的元数据与哈希，因此只解析一次。
+ * 缓存不出本模块——装配目录时每次返回浅拷贝（含 metadata 浅拷贝），调用方能拿到的对象
+ * 仍与原先逐次解析时一样可改、互不影响，也不会改到缓存。
+ */
+let systemEntriesCache: readonly SkillEntry[] | undefined;
+
+const systemEntries = (): readonly SkillEntry[] =>
+  (systemEntriesCache ??= SYSTEM_SKILL_NAMES.map((name) => {
     const instructions = systemDocument(name);
     const metadata = parseMetadata(instructions);
     if (metadata.name !== name) throw new PermissionError("SKILL_DOCUMENT_INVALID");
@@ -332,10 +354,33 @@ const systemEntries = (): SkillEntry[] =>
       metadata,
       revision: createHash("sha256").update(instructions).digest("hex"),
     };
-  }).sort((a, b) => a.metadata.name.localeCompare(b.metadata.name));
+  }).sort((a, b) => a.metadata.name.localeCompare(b.metadata.name)));
+
+/** 系统条目的当前文档修订：只暴露哈希，不暴露可被调用方修改的缓存对象。 */
+export function systemSkillDocumentRevision(name: string): string | undefined {
+  return systemEntries().find((entry) => entry.metadata.name === name)?.revision;
+}
+
+/**
+ * 按名读取一个外置技能：只碰目标目录，保留 loadSkill 的全部边界检查
+ * （符号链接拒绝、realpath 包含、SKILL.md 存在、大小上限、UTF-8/NUL、目录名=声明名、字节哈希）。
+ * 名称形状先拒绝（无分隔符、不是 . / ..、不是系统保留名），避免用来源 id 拼出根外路径。
+ */
+export function loadSkillByName(root: string, name: string): SkillEntry {
+  if (
+    name.length === 0 ||
+    name === "." ||
+    name === ".." ||
+    name !== path.basename(name) ||
+    SYSTEM_SKILL_NAMES.includes(name)
+  )
+    throw new PermissionError("SKILL_FILE_INVALID");
+  return loadSkill(path.resolve(root, name));
+}
 
 export function loadMergedSkillCatalog(root?: string): SkillCatalog {
-  const skills = systemEntries();
+  // 每次装配返回新的数组与新条目对象（metadata 也浅拷贝）：缓存不外泄，调用方语义不变。
+  const skills = systemEntries().map((entry) => ({ ...entry, metadata: { ...entry.metadata } }));
   const problems: { skill: string; code: string }[] = [];
   const reserved = new Set<string>(SYSTEM_SKILL_NAMES);
   if (root !== undefined) {

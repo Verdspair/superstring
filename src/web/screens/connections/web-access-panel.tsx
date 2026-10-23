@@ -62,7 +62,7 @@ export function WebAccessPanel({ active = true }: { active?: boolean } = {}) {
     <div className="w-full min-w-0 space-y-8 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="font-semibold">{t("connections.web.title")}</h2>
+          <h2 className="workspace-section-title">{t("connections.web.title")}</h2>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             {t("connections.web.description")}
           </p>

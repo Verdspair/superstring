@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { DEV_DEFAULT_PORT, DEV_HOST } from "./src/server/dev-config";
 import { API_PROXY_KEYS } from "./src/shared/api-routes";
+import appearanceScale from "./tools/desktop/build/appearance-scale.mjs";
 
 // Share API prefixes with the static host so relative API calls never fall
 // through to Vite's SPA response. Coverage: tests/integration/dev-proxy.test.ts.
@@ -18,6 +19,12 @@ export default defineConfig({
   resolve: { alias: { "@": fileURLToPath(new URL("./src/web", import.meta.url)) } },
   root: ".",
   plugins: [react(), tailwindcss()],
+  // Vite's own PostCSS pass runs after @tailwindcss/vite (enforce: "pre"), so the
+  // plugin sees compiled utilities, not @theme/@apply source. Coverage:
+  // tests/contracts/appearance-scale.test.ts.
+  css: {
+    postcss: { plugins: [appearanceScale()] },
+  },
   build: {
     outDir: "dist/web",
   },

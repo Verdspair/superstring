@@ -1,6 +1,6 @@
 import { cn } from "cn";
 import { FolderPlus, ImagePlus, RefreshCw, SlidersHorizontal, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { AlertDialog, ConfirmDialog } from "@/components/confirmation";
@@ -70,6 +70,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
     [switchTo, setSwitchTo] = useState<string | null | undefined>(undefined),
     [annotation, setAnnotation] = useState("");
   const [disableSelected, setDisableSelected] = useState(false);
+  const disableCount = useRef(0);
   const [newCollectionDescription, setNewCollectionDescription] = useQqInput(
     "stickerNewCollectionDescription",
   );
@@ -868,7 +869,10 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
                 variant="outline"
                 disabled={s.qqStickerSaving}
                 tooltip={t("hints.library.sticker.disableSelected")}
-                onClick={() => setDisableSelected(true)}
+                onClick={() => {
+                  disableCount.current = s.qqStickerSelection.length;
+                  setDisableSelected(true);
+                }}
               >
                 {t("library.disable.selected")}
               </Button>
@@ -878,56 +882,54 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
       </Dialog>
 
       {/* 批量停用危险操作二次确认 */}
-      {disableSelected && (
-        <ConfirmDialog
-          message={t("library.assets.disable.confirm", { "0": s.qqStickerSelection.length })}
-          onCancel={() => setDisableSelected(false)}
-          onConfirm={() => {
-            return s.bulkUpdateQqStickers({ enabled: false }).then((ok) => {
-              if (ok) setDisableSelected(false);
-            });
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={disableSelected}
+        message={t("library.assets.disable.confirm", { "0": disableCount.current })}
+        onCancel={() => setDisableSelected(false)}
+        onConfirm={() => {
+          return s.bulkUpdateQqStickers({ enabled: false }).then((ok) => {
+            if (ok) setDisableSelected(false);
+          });
+        }}
+      />
 
       {/* 未保存修改切换/退出警告 */}
-      {switchTo !== undefined && (
-        <AlertDialog
-          title={t("library.unsaved.asset.changes")}
-          onCancel={() => setSwitchTo(undefined)}
-          busy={s.qqStickerSaving}
-        >
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button
-              variant="outline"
-              data-dialog-cancel
-              tooltip={t("hints.library.common.cancel")}
-              onClick={() => setSwitchTo(undefined)}
-            >
-              {t("library.cancel")}
-            </Button>
-            <Button
-              variant="outline"
-              disabled={s.qqStickerSaving}
-              tooltip={t("hints.library.sticker.discardContinue")}
-              onClick={proceed}
-            >
-              {t("library.discard.and.continue")}
-            </Button>
-            <Button
-              disabled={s.qqStickerSaving}
-              tooltip={t("hints.library.sticker.saveContinue")}
-              onClick={() =>
-                void s.saveQqStickerEditor().then((ok) => {
-                  if (ok) proceed();
-                })
-              }
-            >
-              {t("library.save.and.continue")}
-            </Button>
-          </div>
-        </AlertDialog>
-      )}
+      <AlertDialog
+        open={switchTo !== undefined}
+        title={t("library.unsaved.asset.changes")}
+        onCancel={() => setSwitchTo(undefined)}
+        busy={s.qqStickerSaving}
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            variant="outline"
+            data-dialog-cancel
+            tooltip={t("hints.library.common.cancel")}
+            onClick={() => setSwitchTo(undefined)}
+          >
+            {t("library.cancel")}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={s.qqStickerSaving}
+            tooltip={t("hints.library.sticker.discardContinue")}
+            onClick={proceed}
+          >
+            {t("library.discard.and.continue")}
+          </Button>
+          <Button
+            disabled={s.qqStickerSaving}
+            tooltip={t("hints.library.sticker.saveContinue")}
+            onClick={() =>
+              void s.saveQqStickerEditor().then((ok) => {
+                if (ok) proceed();
+              })
+            }
+          >
+            {t("library.save.and.continue")}
+          </Button>
+        </div>
+      </AlertDialog>
     </section>
   );
 }

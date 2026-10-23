@@ -5,6 +5,7 @@ import { Badge } from "./ui/badge";
 import { Checkbox } from "./ui/checkbox";
 import { FieldDescription, FieldLabel, FieldTitle, Field as FormField } from "./ui/field";
 import { Input } from "./ui/input";
+import { InputSuggestions } from "./ui/input-suggestions";
 import { NativeSelect } from "./ui/native-select";
 import { Slider } from "./ui/slider";
 import { Textarea } from "./ui/textarea";
@@ -15,6 +16,7 @@ const controls = new Set<unknown>([
   "textarea",
   "select",
   Input,
+  InputSuggestions,
   Textarea,
   NativeSelect,
   Checkbox,

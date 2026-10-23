@@ -10,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "../../components/ui/card";
+import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import { MemoryReadingRules } from "../assistants/ResourceRules";
 
@@ -257,9 +258,7 @@ export function ContextAllocationReading({
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div className="space-y-1">
-                <CardTitle className="text-base font-semibold text-foreground">
-                  {labels?.memoryTitle || "Long-Term Memory Retrieval Budgets"}
-                </CardTitle>
+                <CardTitle>{labels?.memoryTitle || "Long-Term Memory Retrieval Budgets"}</CardTitle>
                 <CardDescription className="text-xs text-muted-foreground">
                   {labels?.memoryDesc ||
                     `Maximum read bytes per retrieval tier${agentName ? ` for ${agentName}` : ""}. Applies to Web and QQ alike.`}
@@ -370,7 +369,7 @@ export function ContextAllocationReading({
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div className="space-y-1">
-                <CardTitle className="text-base font-semibold text-foreground">
+                <CardTitle>
                   {labels?.knowledgeGlobalTitle || "Global Knowledge Base Default Read Quota"}
                 </CardTitle>
                 <CardDescription className="text-xs text-muted-foreground">
@@ -464,7 +463,7 @@ export function ContextAllocationReading({
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div className="space-y-1">
-                <CardTitle className="text-base font-semibold text-foreground">
+                <CardTitle>
                   {labels?.knowledgeAgentTitle || "Assistant Knowledge Read Quota"}
                 </CardTitle>
                 <CardDescription className="text-xs text-muted-foreground">
@@ -480,14 +479,12 @@ export function ContextAllocationReading({
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center space-x-2">
-              <input
-                type="checkbox"
+              <Checkbox
                 id="reading-agent-inherit"
                 data-testid="reading-knowledge-agent-inherit-checkbox"
                 disabled={readOnly}
                 checked={isAgentInheriting}
-                onChange={(e) => handleToggleAgentInherit(e.target.checked)}
-                className="h-4 w-4 rounded border-input text-primary focus:ring-primary cursor-pointer disabled:cursor-not-allowed"
+                onCheckedChange={(value) => handleToggleAgentInherit(value === true)}
               />
               <label
                 htmlFor="reading-agent-inherit"

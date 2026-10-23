@@ -20,7 +20,6 @@ import { render } from "./helpers/render-with-providers";
 // seq counts across the whole family (global = closed-epoch offset + local).
 const ROOT = "conv-root";
 const CLOSED_EPOCH = "conv-epoch1";
-const OFFSET = 2;
 
 let originalVisibilityDesc: PropertyDescriptor | undefined;
 
@@ -132,20 +131,12 @@ afterEach(() => {
 });
 
 describe("conversation display arrival coordinates", () => {
-  it("frames on the closed physical epoch id stay out of the timeline scope while root/global-seq frames tail immediately without waiting for the 5s poll", async () => {
+  it("frames on the closed physical epoch id stay out of the timeline scope while root/global-seq frames tail immediately without any poll", async () => {
     vi.useFakeTimers();
     const calls: EventsParams[] = [];
     const getEvents = trackedGetEvents(calls, (page) => {
       if (page.direction === "latest") {
         // History root already loaded past the closed epoch offset: global seqs 3..4.
-        return Promise.resolve({
-          items: [sampleEvent(3), sampleEvent(4)],
-          nextSeq: 4,
-          hasMore: false,
-        });
-      }
-      if (page.afterSeq === OFFSET) {
-        // Periodic re-read while only the closed epoch existed: no new rows.
         return Promise.resolve({
           items: [sampleEvent(3), sampleEvent(4)],
           nextSeq: 4,
@@ -165,9 +156,7 @@ describe("conversation display arrival coordinates", () => {
     });
     setupApi({ getConversationEvents: getEvents });
 
-    const { result } = renderHook(() =>
-      useConversationEvents(ROOT, undefined, { refreshMs: 5000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents(ROOT));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10);
     });
@@ -176,7 +165,7 @@ describe("conversation display arrival coordinates", () => {
 
     // Server frames the append on the closed physical epoch row: global 4 is local 2 at
     // offset 2. The timeline is scoped to the history root, so the notification is out of
-    // scope and nothing may be fetched; the 5s periodic read is the only fallback.
+    // scope and nothing may be fetched; reconnect/visibility catch-up stays authoritative.
     await act(async () => {
       notifyConversationChange({
         event: "conversation_changed",
@@ -188,18 +177,8 @@ describe("conversation display arrival coordinates", () => {
     });
     expect(calls).toHaveLength(1);
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
-    });
-    expect(calls).toEqual([
-      { direction: "latest" },
-      // Periodic fallback re-reads the loaded range from its first loaded seq minus one,
-      // which is not the tail shape (tail = last loaded seq, limit 100).
-      { direction: "after", afterSeq: OFFSET, limit: 102 },
-    ]);
-
     // The same append projected onto the shared history root with the global seq: one
-    // incremental tail read fires immediately, without advancing the 5s poll.
+    // incremental tail read fires immediately, without any poll.
     await act(async () => {
       notifyConversationChange({
         event: "conversation_changed",
@@ -211,21 +190,9 @@ describe("conversation display arrival coordinates", () => {
     });
     expect(calls).toEqual([
       { direction: "latest" },
-      { direction: "after", afterSeq: OFFSET, limit: 102 },
       { direction: "after", afterSeq: 4, limit: 100 },
     ]);
     expect(result.current.items.map((item) => item.seq)).toEqual([3, 4, 5]);
-
-    // The 5s periodic read keeps its original contract after the tail grew.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
-    });
-    expect(calls).toEqual([
-      { direction: "latest" },
-      { direction: "after", afterSeq: OFFSET, limit: 102 },
-      { direction: "after", afterSeq: 4, limit: 100 },
-      { direction: "after", afterSeq: OFFSET, limit: 103 },
-    ]);
   });
 
   it("a summary epoch change clears and authoritatively reloads the family view; same-owner post-rebind frames tail the reloaded root scope", async () => {

@@ -3,6 +3,7 @@ import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import { textMessage } from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
+import { QQ_DECISION_ENVELOPE_SCHEMA } from "../../src/server/channels/onebot11/qq-reply-decision-contract";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import {
@@ -42,17 +43,7 @@ const spec: AgentSpec = {
  * 不接真实宿主/网关。
  */
 
-// 与 bot-host 的 QQ_DECISION_ENVELOPE_SCHEMA 同构造：决策 schema 的 oneOf 分支附加 media。
-const TEST_DECISION_ENVELOPE_SCHEMA: Record<string, unknown> = {
-  ...AGENT_DECISION_JSON_SCHEMA,
-  oneOf: ((AGENT_DECISION_JSON_SCHEMA.oneOf as Record<string, unknown>[]) ?? []).map((branch) => ({
-    ...branch,
-    properties: {
-      ...((branch.properties as Record<string, unknown>) ?? {}),
-      media: { type: "array", items: { type: "object" } },
-    },
-  })),
-};
+const TEST_DECISION_ENVELOPE_SCHEMA = QQ_DECISION_ENVELOPE_SCHEMA;
 const TEST_SCORE_ENVELOPE_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,

@@ -1048,16 +1048,8 @@ function loopbackReply(body: {
   if (properties?.text !== undefined) {
     return JSON.stringify({ text: "合成回复正文", media: [] });
   }
-  if (oneOf !== undefined) {
-    // unknown 图 envelope（oneOf 分支带 media 属性）→ envelope 应答；纯文字决策（原 oneOf）
-    // 走冻结的裸 JSON 决策协议。
-    const hasMediaBranch = oneOf.some(
-      (branch) =>
-        branch !== null &&
-        typeof branch === "object" &&
-        (branch as { properties?: { media?: unknown } }).properties?.media !== undefined,
-    );
-    return hasMediaBranch
+  if (properties?.decision !== undefined || oneOf !== undefined) {
+    return properties?.decision !== undefined
       ? JSON.stringify({
           decision: {
             kind: "final",
@@ -1274,13 +1266,18 @@ describe("raw wire 真实 HTTP 捕获（id58 字节面）", () => {
           }
         }
         expect(sawImage).toBe(true);
-        // 声明 schema/tools（三相）：判断 evaluations、决策 oneOf+media envelope、生成 text。
+        // 声明 schema/tools（三相）：判断 evaluations、决策 decision/media 信封、生成 text。
         expect(
           (schemaOf(bodies[0] ?? {})?.properties as Record<string, unknown> | undefined)
             ?.evaluations,
         ).toBeDefined();
-        const decisionSchema = schemaOf(bodies[1] ?? {}) as { oneOf?: unknown } | undefined;
-        expect(Array.isArray(decisionSchema?.oneOf)).toBe(true);
+        const decisionSchema = schemaOf(bodies[1] ?? {}) as
+          | {
+              properties?: { decision?: { oneOf?: unknown }; media?: unknown };
+            }
+          | undefined;
+        expect(Array.isArray(decisionSchema?.properties?.decision?.oneOf)).toBe(true);
+        expect(decisionSchema?.properties?.media).toBeDefined();
         // 持久面强负：wire 上合法的 data URL/b64 绝不落任何持久面。
         const persisted = persistedSurfaces(h);
         expect(persisted).not.toContain("data:image");

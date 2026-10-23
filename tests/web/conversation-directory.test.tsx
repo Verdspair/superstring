@@ -267,3 +267,33 @@ it("resolving a source publishes only the server's exact matching summary and cl
   expect(store.getState().summaryById[other.id]).toBeUndefined();
   expect(store.getState().directoryError).toBeNull();
 });
+
+it("matches agent names in search while empty queries keep every loaded entry", () => {
+  const item = {
+    ...direct,
+    id: "agent-conv",
+    sourceId: "agent-source",
+    title: "Project room",
+    agentId: "agent-1",
+  };
+  store.setState({
+    agents: [{ id: "agent-1", name: "Alpha Agent" }] as unknown as ReturnType<
+      typeof store.getState
+    >["agents"],
+  });
+  store.getState().rememberConversation(item);
+  store.setState({ currentConversationId: item.id });
+
+  render(<ConversationList />);
+  const row = () => screen.getByRole("button", { name: "Project room" });
+
+  // Empty query + channel "all" lists the entry without rebuilding haystacks.
+  expect(row()).toBeTruthy();
+  const search = screen.getByRole("textbox");
+  fireEvent.change(search, { target: { value: "alpha agent" } });
+  expect(row()).toBeTruthy();
+  fireEvent.change(search, { target: { value: "missing" } });
+  expect(screen.queryByRole("button", { name: "Project room" })).toBeNull();
+  fireEvent.change(search, { target: { value: "" } });
+  expect(row()).toBeTruthy();
+});

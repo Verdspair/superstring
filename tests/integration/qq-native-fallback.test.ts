@@ -43,16 +43,8 @@ const classifySchema = (request: ModelRequest): SchemaKind => {
   if (props.evaluations !== undefined) return "batch";
   if (props.score !== undefined && schema.oneOf === undefined) return "score";
   if (props.scoreResult !== undefined) return "score";
-  if (schema.oneOf !== undefined) {
-    // QQ 决策 envelope（QQ_DECISION_ENVELOPE_SCHEMA）把 media 加进 oneOf 每个分支的
-    // properties，不在顶层 props；按分支 properties 并集判断，plain 决策照回 plain。
-    const branches = schema.oneOf as Record<string, unknown>[];
-    const mediaInBranches = branches.some(
-      (branch) =>
-        ((branch.properties as Record<string, unknown> | undefined) ?? {}).media !== undefined,
-    );
-    return mediaInBranches ? "decision-envelope" : "decision";
-  }
+  if (props.decision !== undefined) return "decision-envelope";
+  if (schema.oneOf !== undefined) return "decision";
   if (props.text !== undefined && props.media !== undefined) return "text-envelope";
   return "other";
 };

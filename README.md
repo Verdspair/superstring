@@ -17,7 +17,7 @@ A local Agent workspace primarily for everyday companionship and chat, supportin
 
 ### 有上下文的对话工作区
 
-在同一工作区管理网页对话、QQ 群聊和私聊。选择 Agent，配置身份与模型，按需授权读取记忆和文档。模型、提示词和聊天行为都可以按自己的习惯灵活配置。会话记录、配置和导入资料保存在本机；调用外部模型服务时，仅在请求中包含所需的上下文。界面支持简体中文与 English 切换。偏好中提供雾紫、峡湾、白桦、鼠尾草、暖玫和渐变樱粉六套主题，支持浅色、深色与跟随系统；动效遵循减少动效偏好。
+在同一工作区管理网页对话、QQ 群聊和私聊。选择 Agent，配置身份与模型，按需授权读取记忆和文档。模型、提示词和聊天行为都可以按自己的习惯灵活配置。会话记录、配置和导入资料保存在本机；调用外部模型服务时，仅在请求中包含所需的上下文。界面支持简体中文与 English 切换。偏好中提供雾紫、峡湾、白桦、鼠尾草、暖玫和渐变樱粉六套主题，支持浅色、深色与跟随系统。界面与窗口动效统一并遵循减少动效偏好。启动、最小化与从任务栏还原约 225 毫秒，最大化与取消最大化约 90 毫秒，关闭窗口保持 150 毫秒；曲线与形状不变。
 
 Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、配置、长期记忆与密钥保存在本机，不提供云端数据同步服务，也不要求注册云端账号；调用已配置的模型服务商或工具服务时，仅按已授予的权限将必要的上下文与参数发送至对应端点。
 
@@ -33,7 +33,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 
 连接独立运行的 OneBot 11 WebSocket 服务（例如 NapCat），再将群或私聊绑定到 Agent 与聊天方案。
 
-新消息到达已绑定的会话时直接显示。加载聊天记录时，新消息不再等旧记录读完才显示，保持当前阅读位置不受影响。群聊顶部显示正在进行的模型任务，点开任务可查看子任务及模型输入输出详情，任务结束后会更新最终结果。
+新消息到达已绑定的会话时逐条即时显示。加载聊天记录或手动刷新时，最新消息不会因较早的读取结果而漏显示，也不会推迟到下一次刷新；查看历史时保持当前阅读位置。群聊顶部显示正在进行的模型任务，点开任务可查看子任务及模型输入输出详情，任务结束后会更新最终结果。
 
 - 可选用连续交谈或自主接话（两种模式互斥）。直接回应与冷场发起可分别配置，直接回应不要求兴趣评分，Agent 仍可保持沉默。自主接话可按消息条数（默认15±5）或经过时间（默认60±20秒）择机判定，新方案默认开启时间窗口，忙时可排队。窗口参数和待发送回复的有效期都可调整，回复有效期默认10分钟。回复失效时，可查看已记录的原因，包括发送超时、对话变化、发送条件变化或内容保留期到期；未记录原因的旧回复只提示“回复已失效”。同一批次中的回复生成完成后即可进入发送流程，不再等待其他目标生成。回复已进入发送流程时，不会再次回答同一条已处理消息。图片工具选错引用时可在本轮纠正；已失效的内容仍不可读取。运行详情同时显示最近尝试结果和失败历史。可为本会话设置多名管理员（Agent 主人），管理员的要求会被优先考虑；可在「会话与绑定」和本群配置中设置，也可从方案详情查看其使用会话。消息历史会避免同一发送的重复显示。自主接话与冷场记录只显示已开始意图判断的任务；尚未判断的等待或跳过记录不再单独展示，已判断后选择沉默的任务仍保留。无法确认判断状态的旧记录、原有消息、任务队列和技术追踪保持可见。
 - 设置主动开口门槛、安静时间、冷却、活跃时段与回复分组。自主接话评分中档（4–6，基准5）认可自然接梗与轻量回应，达标后直接承接意图，并保留合理沉默、自定义约束与状态未确认时的防重复。QQ 回复可在当前授权范围内引用消息、@ 成员或搭配表情。引用和 @ 相互独立，表情需由方案授权。
@@ -91,6 +91,7 @@ QQ 接入前置步骤与运行要求：
 - **运行内容展开与按需读取**：选中步骤的输出、输入与关联来源分区呈现且输出在最前，各条目默认收起并支持按需独立展开；打开运行详情时自动预取当前运行全部实际调用，预取完成后切换或展开不再发起网络请求（预取未完成前显示加载状态；输入、输出与来源展示仍受访问权限与保留期限制，已过保留期或已撤回内容明确标示）；区分模型生成完成与平台送达，同一送达结果不重复读取；完整技术追踪记录与关联来源保留。
 - **模型结束原因**：在运行详情中查看模型步骤，可直接查看原始 `finish_reason`、HTTP 状态码和流式 `[DONE]` 标记。多次请求分别列出，未返回原因、显式 `null`、无 HTTP 响应和历史未记录分别显示，方便排查调用失败。
 - **模型服务与编码**：在「模型服务」中可为本地（如 LM Studio）或外部模型选填文本编码（如 `cl100k_base`、`o200k_base`），未指定采用保守估算；提供参考帮助与来源链接但不自动选择；展示实际模型、容量与编码用量，保存冲突时保留草稿。
+- **模型工具调用兼容**：对工具调用的函数名与请求结构做协议兼容处理，减少因格式差异被服务拒绝的情况；遇到明确的函数调用格式异常时可在现有纠错流程内再试一次，不执行异常调用、不重复已完成的工具操作，持续异常仍明确报错。是否可用仍取决于所接入的模型与服务商。
 
 ### 记忆与知识库
 
@@ -127,7 +128,7 @@ LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务�
 
 Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口后，Superstring 自行启动的服务与相关进程一起退出。再次双击启动器即可重新启动。
 
-升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 71（已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
+升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 72（新增迁移 0055–0072；已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 源码运行
 
@@ -153,7 +154,7 @@ Windows 运行 `start.cmd`，macOS/Linux 运行 `./start.sh`。入口会构建�
 
 ### Conversations, with context
 
-Manage web conversations, QQ group chats, and private chats in one unified workspace. Select an Agent, configure its identity and model, and authorize it to access memories and documents. Configure models, prompts, and chat behavior to suit how you use the app. Conversation history, settings, and imported materials stay local; requests to external model providers include only the necessary context. The interface supports English and Simplified Chinese. Preferences offers six themes—Lavender, Fjord, Birch, Sage, Hearth, and Blossom with soft gradients—with light, dark, and system modes. Animations respect reduced-motion preferences.
+Manage web conversations, QQ group chats, and private chats in one unified workspace. Select an Agent, configure its identity and model, and authorize it to access memories and documents. Configure models, prompts, and chat behavior to suit how you use the app. Conversation history, settings, and imported materials stay local; requests to external model providers include only the necessary context. The interface supports English and Simplified Chinese. Preferences offers six themes—Lavender, Fjord, Birch, Sage, Hearth, and Blossom with soft gradients—with light, dark, and system modes. Interface and window motion is consistent and respects reduced-motion preferences: startup, minimize, and restore from the taskbar take about 225 ms; maximize and unmaximize about 90 ms; closing stays at 150 ms, with unchanged curves and shapes.
 
 Superstring runs locally on Windows, macOS, and Linux. Conversation history, configurations, long-term memory, and encryption keys stay on your machine. Superstring does not require a cloud account, nor does it provide cloud sync services. When connecting to configured model providers or tool services, it sends only authorized context and necessary parameters to the designated endpoints.
 
@@ -169,7 +170,7 @@ The current experience may not match mature commercial alternatives. Feedback is
 
 Connect a standalone OneBot 11 WebSocket service (such as NapCat), then bind a group or private chat to an Agent and a chat scheme.
 
-Incoming messages in bound conversations appear automatically. When loading chat history, fresh messages appear right away without waiting for older records to finish loading, keeping your current scroll position undisturbed. In QQ group chats, running model tasks appear above the message history; click a task to view subtasks and model inputs/outputs, and the final result updates upon completion.
+Incoming messages in bound conversations appear immediately, one by one. While chat history loads or a manual refresh runs, newer messages are not dropped by an earlier read or delayed until the next refresh; your reading position stays in place. In QQ group chats, running model tasks appear above the message history; click a task to view subtasks and model inputs/outputs, and the final result updates upon completion.
 
 - Choose continuous conversation or autonomous participation; these two modes are mutually exclusive. Direct responses and idle-topic initiation can be configured separately. Direct responses bypass interest scoring, while the Agent may still choose silence. Autonomous participation can judge when to join by message count (default 15±5) or elapsed time (default 60±20 seconds). The time window is enabled for new schemes, and opportunities can wait for available capacity. Window settings and the validity period for queued replies are adjustable; replies remain valid for 10 minutes by default. When a reply is no longer valid, the interface shows its recorded reason: delivery timeout, conversation changes, delivery conditions, or content retention expiry. Older replies without a recorded reason use a neutral label. Each completed reply in a batch can enter delivery without waiting for the other targets to finish generating. Once a reply enters the delivery flow, it will not answer the same already-handled message again. When an image tool selects an invalid reference, it can self-correct within the current turn; expired content remains unreadable. Run details display both recent attempt outcomes and failure history. You can appoint several administrators (Agent owners) for a conversation, whose requests are given priority; configure them under Conversations & bindings or Group settings, and view a scheme’s conversations from its details. Message history avoids duplicate sent messages. Autonomous-participation and idle-topic records show tasks that have started intent judgement, including decisions to remain silent. Waiting or skipped opportunities that have not been judged are no longer shown separately. Older records with unknown judgement status, messages, task queues, and technical traces remain available.
 - Set initiative thresholds, quiet periods, cooldowns, active hours, and reply grouping. Autonomous participation scoring treats middle scores (4–6, baseline 5) as natural light engagement for natural, brief conversation and carries qualified intent directly into replies, while preserving legitimate silence, custom rules, and duplicate suppression when delivery status is unconfirmed. QQ replies can quote messages, mention members, or include stickers within authorized permissions. Quotes and mentions are mutually independent; stickers require scheme authorization.
@@ -227,6 +228,7 @@ The navigation organizes seven workspace sections across three groups: **Daily**
 - **Run detail content expansion and on-demand reading**: Outputs, inputs, and associated sources of the selected step are clearly separated with outputs shown first; all rows start collapsed and expand independently. When opening run details, all real calls for the current run are prefetched; once prefetched, switching steps or expanding sections requires no additional network requests (a loading indicator displays while prefetching; viewing inputs, outputs, and sources remains subject to access authorization and retention limits, with expired or revoked content clearly marked). Distinguishes model-generated content from platform delivery confirmation, avoiding duplicate reads for the same delivery result; full technical trace records and associated sources are preserved.
 - **Model finish reasons**: Model steps in Run details directly display raw `finish_reason`, HTTP status codes, and streaming `[DONE]` markers. Multiple requests are listed separately. Missing reasons, explicit `null`, no HTTP response, and historical calls without records are shown as distinct states to help diagnose failed calls.
 - **Model services & encodings**: Configure optional text token encodings (such as `cl100k_base` or `o200k_base`) for local services (e.g. LM Studio) and external providers; unconfigured models use conservative estimation. Reference help and documentation links assist verification without auto-selection. Shows actual model, capacity, and encoding usage, while preserving unsaved drafts during save conflicts.
+- **Model tool call compatibility**: Tool calls apply protocol compatibility handling to function names and request structures, reducing rejections caused by format differences. An explicit malformed function-call finish can be retried once through the existing correction flow; rejected calls are not executed and completed tool actions are not repeated, while repeated failures remain explicit errors. Availability still depends on the connected model and provider.
 
 ### Memory and knowledge library
 
@@ -263,7 +265,7 @@ If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider
 
 On Windows, conversations and settings live under the installation's `userdata` directory; native macOS/Linux packages use system application data profiles. Closing the desktop window exits background services and processes started by Superstring. Double-click the launcher again to restart.
 
-Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 71 (the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
+Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 72 (with migrations 0055–0072; the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
 
 ### Run from source
 

@@ -23,6 +23,8 @@ export function ConversationAvatarDialog({
       conversationId={conversation.id}
       title={conversation.title}
       topology={conversation.topology}
+      channel={conversation.channel}
+      qqGroup={conversation.qqGroup}
       value={value}
       open={open}
       onOpenChange={onOpenChange}

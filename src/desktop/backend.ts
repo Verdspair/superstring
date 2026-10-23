@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { createInterface } from "node:readline";
+import type { HostLayout } from "./host-layout";
 
 export interface DesktopStatus {
   app: "superstring";
@@ -12,10 +13,7 @@ export interface DesktopStatus {
 }
 
 export interface BackendOptions {
-  executable: string;
-  args?: string[];
-  profileRoot: string;
-  resourceRoot: string;
+  layout: HostLayout;
   startupTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   log: (message: string) => void;
@@ -63,6 +61,7 @@ export function childEnvironment(
   profileRoot: string,
   resourceRoot: string,
   token: string,
+  layout?: HostLayout,
 ): NodeJS.ProcessEnv {
   const env = { ...inherited };
   // A packaged launch cannot be redirected into an unrelated database or source checkout.
@@ -73,19 +72,30 @@ export function childEnvironment(
     )
       delete env[key];
   }
-  return Object.assign(env, {
-    SUPERSTRING_APP_MODE: "desktop",
-    SUPERSTRING_DESKTOP_MANAGED: "1",
-    SUPERSTRING_DESKTOP_WINDOW_OWNED: "1",
-    SUPERSTRING_APP_ROOT: profileRoot,
-    SUPERSTRING_RESOURCE_ROOT: resourceRoot,
+  const control = {
     SUPERSTRING_DESKTOP_TOKEN: token,
     SUPERSTRING_DESKTOP_AUTO_PORT: "1",
+    SUPERSTRING_DESKTOP_WINDOW_OWNED: "1",
     SUPERSTRING_SERVE_WEB: "1",
+  } satisfies Record<string, string>;
+  // The development host leaves app and resource roots to the server's own derivation.
+  if (layout?.mode === "development-legacy")
+    return Object.assign(env, control, { SUPERSTRING_DESKTOP_MANAGED: "1" });
+  if (layout?.mode === "installed")
+    return Object.assign(env, control, {
+      SUPERSTRING_APP_MODE: "installed",
+      SUPERSTRING_APP_ROOT: layout.appRoot,
+      SUPERSTRING_DESKTOP_MANAGED: "1",
+    });
+  return Object.assign(env, control, {
+    SUPERSTRING_APP_MODE: "desktop",
+    SUPERSTRING_DESKTOP_MANAGED: "1",
+    SUPERSTRING_APP_ROOT: layout?.profileRoot ?? profileRoot,
+    SUPERSTRING_RESOURCE_ROOT: layout?.resourceRoot ?? resourceRoot,
   });
 }
 
-/** Owns precisely one child. Stop settles only after the child's database shutdown completes. */
+/** Owns precisely one child. Stop settles only after shutdown unless the outer job owns it. */
 export class DesktopBackend {
   readonly token = randomBytes(32).toString("hex");
   origin: string | null = null;
@@ -94,19 +104,22 @@ export class DesktopBackend {
   private exited: Promise<void> = Promise.resolve();
   private stopping: Promise<void> | null = null;
   private expectedExit = false;
+  private terminated = false;
   private ready = false;
 
   constructor(private readonly options: BackendOptions) {}
 
   async start(): Promise<string> {
     if (this.child || this.expectedExit) throw new Error("DESKTOP_BACKEND_ALREADY_STARTED");
-    const child = spawn(this.options.executable, this.options.args ?? [], {
-      cwd: this.options.profileRoot,
+    const launch = this.options.layout;
+    const child = spawn(launch.executable, launch.args, {
+      cwd: launch.cwd,
       env: childEnvironment(
         this.options.env ?? process.env,
-        this.options.profileRoot,
-        this.options.resourceRoot,
+        launch.profileRoot,
+        launch.resourceRoot,
         this.token,
+        this.options.layout,
       ),
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
@@ -163,7 +176,7 @@ export class DesktopBackend {
       return origin;
     } catch (error) {
       // Startup errors, including failed migrations, also shut down the child process.
-      void this.stop();
+      this.terminate();
       throw error;
     }
   }
@@ -202,6 +215,21 @@ export class DesktopBackend {
       await this.exited;
     })();
     return this.stopping;
+  }
+
+  /**
+   * Immediate ownership hand-off for the outer job owner: the exit is marked expected
+   * before stdin closes and the child is signalled. Synchronous, idempotent and never
+   * waits for the graceful shutdown the OS job already bounds.
+   */
+  terminate(): void {
+    this.expectedExit = true;
+    if (this.terminated) return;
+    this.terminated = true;
+    const child = this.child;
+    if (!child) return;
+    child.stdin.end();
+    child.kill();
   }
 
   private log(message: string): void {

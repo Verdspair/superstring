@@ -169,6 +169,7 @@ export interface SuperstringState
   conversationScope: ConversationScope;
   qqSchemeView: QqSchemeView;
   openSettingsRoute: (route: SettingsRoute) => void;
+  syncSettingsRoute: (route: SettingsRoute) => void;
   requestContextAllocation: (
     target: import("../features/context-allocation").ContextAllocationTarget,
     route?: SettingsRoute,
@@ -242,7 +243,10 @@ export interface SuperstringState
   closeAgentSettings: () => void;
   requestPageNavigation: (page: Page, settingsView?: SettingsView) => void;
   requestConversationView: (view: ConversationView, scope?: ConversationScope) => void;
-  requestAgentNavigation: (id: string | "__new__", settingsRoute?: SettingsRoute) => void;
+  requestAgentNavigation: (
+    id: string | "__new__",
+    settingsRoute?: SettingsRoute,
+  ) => Promise<boolean>;
   requestQqSchemeNavigation: (
     id: string,
     view?: QqSchemeView,
@@ -273,7 +277,13 @@ export interface SuperstringState
     patch: Partial<PersonaResponse> & { persona_intensity: number },
   ) => Promise<boolean>;
   deleteAgents: (ids: string[]) => Promise<void>;
-  refreshModels: (prefetchedProviders?: ModelProviderResponse[]) => Promise<void>;
+  /**
+   * 重新发现本地与外部模型。传入调用方自己读到的 provider 清单或读取 Promise 时直接复用，
+   * 不再发起重复 GET；被拒绝的读取按原失败结算，空清单不等于读取失败。
+   */
+  refreshModels: (
+    prefetchedProviders?: ModelProviderResponse[] | Promise<ModelProviderResponse[]>,
+  ) => Promise<void>;
   refreshCapacityPreview: (
     probeModels?: readonly [string, string | null, string | null],
   ) => Promise<void>;

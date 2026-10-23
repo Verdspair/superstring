@@ -2,6 +2,7 @@ import { AlertCircle, BookOpen, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { SkillDetailResponse } from "../../../shared/contracts/skill";
+import { CatalogItem } from "../../components/catalog-item";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
@@ -11,18 +12,11 @@ import {
   SheetHeader,
   SheetTitle,
 } from "../../components/ui/sheet";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table";
 import { useSkillsResource } from "../../services/connection-resources";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
+import { SKILL_HUMAN_LABELS } from "../../workspace/capability-catalog";
 
 export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
@@ -37,6 +31,7 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
   const [detail, setDetail] = useState<SkillDetailResponse | null>(null);
   const [error, setError] = useState("");
   const pendingDetail = useRef<ReadTask | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   // biome-ignore lint/correctness/useExhaustiveDependencies: Replacing the API cancels detail reads from the previous client.
   useEffect(() => {
     if (!active) {
@@ -95,81 +90,82 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
         </p>
       )}
       <div className="overflow-hidden rounded-xl border border-border/80 bg-card text-card-foreground">
-        <Table>
-          <TableHeader>
-            <TableRow className="bg-muted/40 hover:bg-muted/40">
-              <TableHead className="w-48 font-medium">{t("connections.skills.name")}</TableHead>
-              <TableHead className="font-medium">
-                {t("connections.skills.descriptionColumn")}
-              </TableHead>
-              <TableHead className="w-36 font-medium">{t("connections.skills.type")}</TableHead>
-              <TableHead className="w-24 text-right font-medium">
-                {t("connections.actions")}
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {(catalog?.skills ?? []).map((skill) => (
-              <TableRow
-                key={skill.name}
-                data-skill-name={skill.name}
-                data-global-enabled={skill.globalEnabled}
-                className={skill.globalEnabled ? undefined : "bg-muted/30 text-muted-foreground"}
-              >
-                <TableCell className="font-mono text-sm font-medium text-foreground">
-                  {skill.name}
-                </TableCell>
-                <TableCell className="max-w-xl whitespace-normal break-words text-sm leading-relaxed text-muted-foreground">
-                  {skill.origin === "system"
-                    ? t(`connections.components.skillSummary.${skill.name}`, {
-                        defaultValue: skill.description,
-                      })
-                    : skill.description}
-                </TableCell>
-                <TableCell>
-                  <div className="space-y-1">
-                    <Badge variant="outline">
-                      {t(
-                        skill.origin === "system"
-                          ? "connections.components.system"
-                          : "connections.skills.documentSkill",
-                      )}
-                    </Badge>
-                    {!skill.globalEnabled && (
-                      <p className="text-xs text-muted-foreground">
-                        {t("connections.components.globalOff")}
-                      </p>
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell className="text-right">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    tooltip={t("hints.extensions.skills.view")}
-                    onClick={() => open(skill.name)}
+        <div className="divide-y divide-border/60">
+          {[...(catalog?.skills ?? [])]
+            .sort((a, b) => Number(b.globalEnabled) - Number(a.globalEnabled))
+            .map((skill) => {
+              const humanKey = SKILL_HUMAN_LABELS[skill.name];
+              return (
+                <div
+                  key={skill.name}
+                  data-skill-name={skill.name}
+                  data-global-enabled={skill.globalEnabled}
+                >
+                  <CatalogItem
+                    muted={!skill.globalEnabled}
+                    open={expanded[skill.name] ?? false}
+                    onOpenChange={(next) =>
+                      setExpanded((previous) => ({ ...previous, [skill.name]: next }))
+                    }
+                    summary={
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                          {humanKey && (
+                            <span className="text-sm font-medium text-foreground">
+                              {t(humanKey)}
+                            </span>
+                          )}
+                          <span className="font-mono text-sm font-medium text-foreground">
+                            {skill.name}
+                          </span>
+                          <Badge variant="outline">
+                            {t(
+                              skill.origin === "system"
+                                ? "connections.components.system"
+                                : "connections.skills.documentSkill",
+                            )}
+                          </Badge>
+                          {!skill.globalEnabled && (
+                            <span className="text-xs text-muted-foreground">
+                              {t("connections.components.globalOff")}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    }
+                    actions={
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        tooltip={t("hints.extensions.skills.view")}
+                        onClick={() => open(skill.name)}
+                      >
+                        {t("connections.skills.view")}
+                      </Button>
+                    }
                   >
-                    {t("connections.skills.view")}
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-            {!loading && !catalog?.skills.length && (
-              <TableRow>
-                <TableCell colSpan={4} className="h-32 text-center text-muted-foreground">
-                  {t("connections.skills.empty")}
-                </TableCell>
-              </TableRow>
-            )}
-            {loading && (
-              <TableRow>
-                <TableCell colSpan={4} className="h-32 text-center text-muted-foreground">
-                  {t("connections.common.loading")}
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
+                    <p className="whitespace-normal break-words text-sm leading-relaxed">
+                      {skill.origin === "system"
+                        ? t(`connections.components.skillSummary.${skill.name}`, {
+                            defaultValue: skill.description,
+                          })
+                        : skill.description}
+                    </p>
+                  </CatalogItem>
+                </div>
+              );
+            })}
+          {!loading && !catalog?.skills.length && (
+            <div className="h-32 text-center text-sm leading-[8rem] text-muted-foreground">
+              {t("connections.skills.empty")}
+            </div>
+          )}
+          {loading && (
+            <div className="h-32 text-center text-sm leading-[8rem] text-muted-foreground">
+              {t("connections.common.loading")}
+            </div>
+          )}
+        </div>
       </div>
       {!!catalog?.problems.length && (
         <section className="space-y-2.5 rounded-xl border border-destructive/20 bg-destructive/5 p-4 text-card-foreground">

@@ -128,9 +128,7 @@ describe("conversation canonical history read contract", () => {
     });
     setupApi({ getConversationEvents: reads });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-qq-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-qq-1"));
     await settle();
     expect(result.current.items.map((row) => row.seq)).toEqual([1, 2, 3]);
     expect(reads).toHaveBeenCalledTimes(1);
@@ -199,9 +197,7 @@ describe("conversation canonical history read contract", () => {
       summaryById: { "conv-qq-1": convSummary("conv-qq-1") },
     });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-qq-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-qq-1"));
     await vi.waitFor(() => {
       expect(result.current.items).toHaveLength(5);
     });
@@ -254,9 +250,7 @@ describe("conversation canonical history read contract", () => {
       summaryById: { "conv-qq-1": convSummary("conv-qq-1") },
     });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-qq-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-qq-1"));
     await vi.waitFor(() => {
       expect(result.current.items.map((row) => row.seq)).toEqual([1, 2, 3, 4, 5]);
     });

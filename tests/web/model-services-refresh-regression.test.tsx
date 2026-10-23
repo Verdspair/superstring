@@ -1,7 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProviderResponse } from "../../src/shared/contracts/models";
 import { api, type SuperstringApi } from "../../src/web/api";
+import { selectLocale } from "../../src/web/i18n";
+import { ModelServices } from "../../src/web/screens/environment/ModelServices";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { render } from "./helpers/render-with-providers";
 
 type Catalog = Awaited<ReturnType<SuperstringApi["listModels"]>>;
 
@@ -44,7 +48,12 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+beforeEach(() => {
+  selectLocale("zh-CN");
+});
+
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
   store.getState().resetForTests();
 });
@@ -94,6 +103,55 @@ describe("model services refresh regression", () => {
     expect(store.getState().loadedModelNames).toEqual(["local"]);
     expect(store.getState().externalModelNames).toEqual([]);
     expect(store.getState().error).toBeNull();
+    expect(store.getState().modelStatus).toContain("本地模型仍可选择");
+    expect(store.getState().modelStatus).toContain("外部模型列表加载失败");
+    expect(store.getState().modelStatus).not.toContain("LM Studio 当前没有报告");
+  });
+
+  it("keeps a prefetched rejection as the original failure without a second GET", async () => {
+    const listModels = vi.fn().mockResolvedValue(catalog(["local"]));
+    const listModelProviders = vi.fn().mockResolvedValue([]);
+    store.getState().resetForTests(client({ listModels, listModelProviders }));
+
+    await store.getState().refreshModels(Promise.reject(new Error("prefetch failed")));
+
+    expect(listModelProviders).not.toHaveBeenCalled();
+    expect(store.getState().modelNames).toEqual(["local"]);
+    expect(store.getState().externalModelNames).toEqual([]);
+    expect(store.getState().error).toBeNull();
+    expect(store.getState().modelStatus).toContain("本地模型仍可选择");
+    expect(store.getState().modelStatus).toContain("prefetch failed");
+    expect(store.getState().modelStatus).toContain("外部模型列表加载失败");
+  });
+
+  it("reports the failure when the prefetched read and the local catalog both fail", async () => {
+    const listModels = vi.fn().mockRejectedValue(new Error("catalog unavailable"));
+    const listModelProviders = vi.fn().mockResolvedValue([]);
+    store.getState().resetForTests(client({ listModels, listModelProviders }));
+    store.setState({ error: "chat failed" });
+
+    await store.getState().refreshModels(Promise.reject(new Error("prefetch failed")));
+
+    expect(listModelProviders).not.toHaveBeenCalled();
+    expect(store.getState().modelNames).toEqual([]);
+    expect(store.getState().error).toBe("chat failed");
+    expect(store.getState().modelStatus).toContain("catalog unavailable");
+    expect(store.getState().modelStatus).toContain("模型列表加载失败");
+  });
+
+  it("treats a successful empty provider read as healthy, unlike a rejection", async () => {
+    const listModels = vi.fn().mockResolvedValue(catalog(["local"]));
+    const listModelProviders = vi.fn().mockResolvedValue([]);
+    store.getState().resetForTests(client({ listModels, listModelProviders }));
+
+    await store.getState().refreshModels([]);
+
+    expect(listModelProviders).not.toHaveBeenCalled();
+    expect(store.getState().externalModelNames).toEqual([]);
+    expect(store.getState().modelNames).toEqual(["local"]);
+    expect(store.getState().error).toBeNull();
+    expect(store.getState().modelStatus).toContain("LM Studio 当前报告");
+    expect(store.getState().modelStatus).not.toContain("加载失败");
   });
 
   it("ignores an old client's successful catalog after the client switches", async () => {
@@ -148,5 +206,96 @@ describe("model services refresh regression", () => {
     expect(store.getState().modelNames).toEqual(["new"]);
     expect(store.getState().error).toBeNull();
     expect(store.getState().modelStatus).not.toContain("stale catalog failure");
+  });
+
+  it("does not publish a late prefetched rejection after the API identity switches", async () => {
+    const staleCatalog = deferred<Catalog>();
+    const oldClient = client({
+      listModels: vi.fn(() => staleCatalog.promise),
+      listModelProviders: vi.fn().mockResolvedValue([]),
+    });
+    store.getState().resetForTests(oldClient);
+    const oldRefresh = store.getState().refreshModels(Promise.reject(new Error("prefetch failed")));
+
+    store.getState().resetForTests(
+      client({
+        listModels: vi.fn().mockResolvedValue(catalog(["new"])),
+        listModelProviders: vi.fn().mockResolvedValue([]),
+      }),
+    );
+    await store.getState().refreshModels();
+    expect(store.getState().modelNames).toEqual(["new"]);
+
+    staleCatalog.resolve(catalog(["stale"]));
+    await expect(oldRefresh).resolves.toBeUndefined();
+
+    expect(store.getState().modelNames).toEqual(["new"]);
+    expect(store.getState().error).toBeNull();
+    expect(store.getState().modelStatus).not.toContain("prefetch failed");
+  });
+});
+
+describe("model services provider read outcome", () => {
+  it("hands a failed provider read to discovery once, without a fake empty success", async () => {
+    const listModels = vi.fn().mockResolvedValue(catalog(["local"]));
+    const listModelProviders = vi.fn().mockRejectedValue(new Error("prefetch failed"));
+    store.getState().resetForTests(
+      client({
+        listModels,
+        listModelProviders,
+        getLocalModelEncodings: vi.fn().mockResolvedValue({ revision: "rev-1", models: [] }),
+      }),
+    );
+
+    render(<ModelServices />);
+    await waitFor(() => expect(store.getState().modelStatus).toContain("prefetch failed"));
+
+    expect(listModelProviders).toHaveBeenCalledTimes(1);
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(store.getState().modelNames).toEqual(["local"]);
+    expect(store.getState().externalModelNames).toEqual([]);
+    expect(store.getState().error).toBeNull();
+    expect(store.getState().modelStatus).toContain("本地模型仍可选择");
+    expect(store.getState().modelStatus).toContain("外部模型列表加载失败");
+    expect(store.getState().modelStatus).not.toContain("LM Studio 当前没有报告");
+  });
+
+  it("forwards the original rejected read to refreshModels from the component", async () => {
+    const listModelProviders = vi.fn(() => Promise.reject(new Error("prefetch failed")));
+    store.getState().resetForTests(
+      client({
+        listModels: vi.fn().mockResolvedValue(catalog(["local"])),
+        listModelProviders,
+        getLocalModelEncodings: vi.fn().mockResolvedValue({ revision: "rev-1", models: [] }),
+      }),
+    );
+    const forward = vi.fn().mockResolvedValue(undefined);
+    store.setState({ refreshModels: forward });
+
+    render(<ModelServices />);
+    await waitFor(() => expect(forward).toHaveBeenCalledTimes(1));
+
+    // 同一个原始拒绝实例，而不是重建的拒绝或伪装成空清单的成功。
+    const original = listModelProviders.mock.results[0]?.value;
+    expect(forward.mock.calls[0]?.[0]).toBe(original);
+    expect(forward.mock.calls[0]?.[0]).not.toEqual([]);
+  });
+
+  it("does not start discovery from a provider read that settles after unmount", async () => {
+    const pending = deferred<ModelProviderResponse[]>();
+    const listModels = vi.fn().mockResolvedValue(catalog(["local"]));
+    const listModelProviders = vi.fn(() => pending.promise);
+    store.getState().resetForTests(client({ listModels, listModelProviders }));
+
+    const { unmount } = render(<ModelServices />);
+    await waitFor(() => expect(listModelProviders).toHaveBeenCalledTimes(1));
+    unmount();
+    pending.resolve([provider(PROVIDER_A, "External", ["remote"])]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(listModels).not.toHaveBeenCalled();
+    expect(store.getState().modelNames).toEqual([]);
+    expect(store.getState().externalModelNames).toEqual([]);
   });
 });

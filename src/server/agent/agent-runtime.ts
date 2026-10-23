@@ -22,7 +22,7 @@ import { unicodeStrip } from "../../shared/contracts/code-point-string";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ExecutionMode } from "../../shared/contracts/permissions";
 import type { AgentRunRepository } from "../db/agent-run-repository";
-import { AppError } from "../errors";
+import { AppError, ModelUnavailableError } from "../errors";
 import type { ChatMessage } from "../llm/model-gateway";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
 import {
@@ -917,6 +917,8 @@ export class AgentRuntime {
         type: "started",
         ...(input.requestId ? { requestId: input.requestId } : {}),
       });
+      // 每 run 至多一次 malformed_function_call 恢复；先置位再反馈宿主，避免恢复循环。
+      let malformedFunctionRecovered = false;
       for (;;) {
         active.assertActions();
         this.checkStepBudget(active, spec);
@@ -1141,12 +1143,21 @@ export class AgentRuntime {
             () => input.context.assertSources?.(context.sources),
           );
         } catch (error) {
+          // 与 AGENT_DECISION_INVALID 同一宿主反馈入口；仅 finish_reason 原值匹配且
+          // 未用过恢复时视为可恢复，否则照原样抛出。
+          const malformedRecoverable =
+            error instanceof ModelUnavailableError &&
+            error.code === "MODEL_FINISH_UNSUPPORTED" &&
+            error.finishReason === "malformed_function_call" &&
+            !malformedFunctionRecovered;
           if (
-            error instanceof Error &&
-            (error as { code?: unknown }).code === "AGENT_DECISION_INVALID" &&
+            (malformedRecoverable ||
+              (error instanceof Error &&
+                (error as { code?: unknown }).code === "AGENT_DECISION_INVALID")) &&
             input.onDecisionInvalid &&
             !terminalDecision
           ) {
+            if (malformedRecoverable) malformedFunctionRecovered = true;
             active.signal.throwIfAborted();
             const accepted = await input.onDecisionInvalid("AGENT_DECISION_INVALID", active.signal);
             active.signal.throwIfAborted();

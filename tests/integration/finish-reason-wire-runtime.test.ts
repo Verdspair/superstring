@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
+import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
 import { inspectContext } from "../../src/server/agent/context-access";
 import { textMessage } from "../../src/server/agent/context-engine";
 import { createModelPort } from "../../src/server/agent/model-port";
@@ -13,7 +14,10 @@ afterEach(() => {
   for (const close of cleanups.splice(0)) close();
 });
 const owner = { kind: "test", id: "wire-finish", userId: DEFAULT_USER_ID };
-function setup(handler: (body: Record<string, unknown>) => Response) {
+function setup(
+  handler: (body: Record<string, unknown>) => Response,
+  actions: BuiltInAction[] = [],
+) {
   const sent: Record<string, unknown>[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -34,7 +38,7 @@ function setup(handler: (body: Record<string, unknown>) => Response) {
   );
   const h = openBusinessDb();
   const repository = new AgentRunRepository(h.db);
-  const runtime = new AgentRuntime({ repository, model: createModelPort({ gateway }) });
+  const runtime = new AgentRuntime({ repository, model: createModelPort({ gateway }), actions });
   cleanups.push(() => {
     server.stop(true);
     h.close();
@@ -174,4 +178,166 @@ test("a bodyless HTTP error retains response metadata without fabricating text",
     responses: [{ transport: "complete", httpStatus: 503, finishReasons: [] }],
   });
   expect(f.sent).toHaveLength(1);
+});
+
+const recoverySpec = {
+  id: "finish-recovery",
+  model: "fixture",
+  context: "conversation" as const,
+  availableActions: [],
+  limits: { steps: 6 },
+};
+const recoveryContext = {
+  read: async () => ({ pending: [textMessage("user", "synthetic input")] }),
+};
+function terminal(reason: string, content = '{"kind":"none"}') {
+  return Response.json({ choices: [{ finish_reason: reason, message: { content } }] });
+}
+
+test("a malformed function finish uses the host correction once and preserves the failed attempt", async () => {
+  let attempts = 0;
+  const feedback = { count: 0 };
+  const f = setup(() => terminal(++attempts === 1 ? "malformed_function_call" : "stop"));
+  const result = await f.runtime.run(recoverySpec, {
+    owner,
+    authorizedTargets: [],
+    outputMode: "buffered",
+    context: recoveryContext,
+    onDecisionInvalid: async () => {
+      feedback.count += 1;
+      return true;
+    },
+  });
+  expect(result.status).toBe("no_output");
+  expect(f.sent).toHaveLength(2);
+  expect(feedback.count).toBe(1);
+  const run = f.repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0]!;
+  expect(run.steps.map((s) => s.status)).toEqual(["failed", "completed"]);
+  expect(run.steps[0]!.errorCode).toBe("MODEL_FINISH_UNSUPPORTED");
+  const context = inspectContext(
+    f.h.db,
+    f.repository,
+    { runId: run.runId, stepId: run.steps[0]!.stepId },
+    { userId: DEFAULT_USER_ID },
+  );
+  expect(context?.result.responses?.[0]?.finishReasons).toEqual(["malformed_function_call"]);
+});
+
+test("repeated malformed function finishes cannot create an unbounded recovery loop", async () => {
+  const correction = { count: 0 };
+  const f = setup(() => terminal("malformed_function_call"));
+  await expect(
+    f.runtime.run(recoverySpec, {
+      owner,
+      authorizedTargets: [],
+      outputMode: "buffered",
+      context: recoveryContext,
+      onDecisionInvalid: async () => {
+        correction.count += 1;
+        return true;
+      },
+    }),
+  ).rejects.toMatchObject({ code: "MODEL_FINISH_UNSUPPORTED" });
+  expect(f.sent).toHaveLength(2);
+  expect(correction.count).toBe(1);
+});
+
+test.each(["content_filter", "vendor_terminal", "length"])(
+  "does not recover a %s finish as a malformed function",
+  async (reason) => {
+    const correction = { count: 0 };
+    const f = setup(() => terminal(reason));
+    await expect(
+      f.runtime.run(recoverySpec, {
+        owner,
+        authorizedTargets: [],
+        outputMode: "buffered",
+        context: recoveryContext,
+        onDecisionInvalid: async () => {
+          correction.count += 1;
+          return true;
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: reason === "length" ? "MODEL_OUTPUT_LIMIT" : "MODEL_FINISH_UNSUPPORTED",
+    });
+    expect(f.sent).toHaveLength(1);
+    expect(correction.count).toBe(0);
+  },
+);
+
+test.each(["no-host", "terminal", "cancelled", "budget"])(
+  "does not send a correction when %s blocks it",
+  async (block) => {
+    const controller = new AbortController();
+    const cancelled = new Error("synthetic cancellation");
+    const f = setup(() => terminal("malformed_function_call"));
+    await expect(
+      f.runtime.run(recoverySpec, {
+        owner,
+        authorizedTargets: [],
+        outputMode: "buffered",
+        context: recoveryContext,
+        signal: controller.signal,
+        ...(block === "terminal" ? { isTerminalDecision: () => true } : {}),
+        ...(block === "budget" ? { budget: { maxCalls: 1 } } : {}),
+        ...(block === "no-host"
+          ? {}
+          : {
+              onDecisionInvalid: async () => {
+                if (block === "cancelled") controller.abort(cancelled);
+                return true;
+              },
+            }),
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    expect(f.sent).toHaveLength(1);
+  },
+);
+
+test("a malformed decision never replays a successful action or executes its rejected body", async () => {
+  let actionCalls = 0;
+  let requests = 0;
+  const action: BuiltInAction = {
+    description: {
+      name: "fixture.read",
+      description: "Read a synthetic value",
+      capability: "fixture",
+      effect: "read",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+    execute: async () => {
+      actionCalls += 1;
+      return { value: { value: "synthetic result" }, sources: [] };
+    },
+  };
+  const invoke = JSON.stringify({
+    kind: "invoke",
+    calls: [{ name: "fixture.read", arguments: {} }],
+  });
+  const f = setup(() => {
+    requests += 1;
+    if (requests === 1) return terminal("stop", invoke);
+    if (requests === 2) return terminal("malformed_function_call", invoke);
+    return terminal("stop");
+  }, [action]);
+  const usage = { calls: 0, inputUnits: 0 };
+  await f.runtime.run(
+    { ...recoverySpec, availableActions: [action.description] },
+    {
+      owner,
+      authorizedTargets: [],
+      outputMode: "buffered",
+      context: recoveryContext,
+      usage,
+      budget: { maxCalls: 3 },
+      onDecisionInvalid: async () => true,
+    },
+  );
+  expect(f.sent).toHaveLength(3);
+  expect(usage.calls).toBe(3);
+  expect(actionCalls).toBe(1);
+  expect(JSON.stringify(f.sent[2]?.messages)).toContain("action_observation");
+  const run = f.repository.listRuns({ ownerKind: owner.kind, ownerId: owner.id })[0]!;
+  expect(run.steps.map((s) => s.status)).toEqual(["completed", "failed", "completed"]);
 });

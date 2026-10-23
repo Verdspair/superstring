@@ -220,9 +220,18 @@ describe("原生 chat gateway 多模态 wire", () => {
         { type: "text", text: "这张图属于m102，不是m101。" },
       ]);
       expect(messages[2].content).toBe("earlier");
-      expect((body.tools as Array<{ function: { name: string } }>)[0].function.name).toBe(
-        "history.read",
-      );
+      const tool = (
+        body.tools as Array<{
+          function: { name: string; description: string; parameters: unknown };
+        }>
+      )[0]!.function;
+      expect(tool.name).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+      expect(tool.description).toContain("Host action: history.read.");
+      expect(tool.parameters).toEqual({
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      });
       expect((body.response_format as { type: string }).type).toBe("json_schema");
     } finally {
       await h.dispose();

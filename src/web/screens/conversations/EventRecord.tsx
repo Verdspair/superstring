@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { Activity, ArrowUpRight, Image, MessageCircle } from "lucide-react";
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
@@ -156,6 +157,103 @@ function QqEventFactDetails({
   );
 }
 
+type EventMedia = ConversationEventView["media"][number];
+type MediaGroup = { kind: string; availability: EventMedia["availability"]; count: number };
+
+const mediaKindLabels: Record<string, string> = {
+  sticker: "workspace.sticker",
+  image: "workspace.image",
+};
+const mediaStateLabels = {
+  available: "workspace.no_media_description_available",
+  expired: "workspace.media_has_expired",
+  unavailable: "workspace.media_is_unavailable",
+} as const;
+
+function mediaKindLabel(kind: string): string {
+  return mediaKindLabels[kind] ?? "workspace.media";
+}
+
+/**
+ * 媒体摘要：只有“可用且有描述”的媒体展开成完整卡片；其余按 kind + availability 合并成一行。
+ * 无描述不推断为未启用/失败；不可用或过期时不展示旧描述。所有媒体 id 仍由来源记录保留。
+ */
+/** 按“可用且有描述”与 kind+availability 分组：可用描述进完整卡片，其余合并计数。 */
+function groupMedia(media: EventMedia[]): { readable: EventMedia[]; groups: MediaGroup[] } {
+  const readable: EventMedia[] = [];
+  const groupMap = new Map<string, MediaGroup>();
+  for (const item of media) {
+    if (item.availability === "available" && item.description) {
+      readable.push(item);
+      continue;
+    }
+    const key = `${item.kind}:${item.availability}`;
+    const group = groupMap.get(key);
+    if (group) group.count += 1;
+    else groupMap.set(key, { kind: item.kind, availability: item.availability, count: 1 });
+  }
+  return { readable, groups: [...groupMap.values()] };
+}
+
+/**
+ * 独立媒体更新行的单行摘要：不可用/过期/无描述媒体按 kind+availability 给状态；
+ * 全部可读时只给类型计数，描述仍在来源记录 details 内展开。旧描述不在此推断展示。
+ */
+function mediaCompactSummary(media: EventMedia[], t: TFunction): string {
+  const groups = new Map<
+    string,
+    { kind: string; availability: EventMedia["availability"] | null; count: number }
+  >();
+  for (const item of media) {
+    const availability =
+      item.availability === "available" && item.description ? null : item.availability;
+    const key = `${item.kind}:${availability ?? "described"}`;
+    const group = groups.get(key);
+    if (group) group.count += 1;
+    else groups.set(key, { kind: item.kind, availability, count: 1 });
+  }
+  return [...groups.values()]
+    .map((group) => {
+      const label = `${t(mediaKindLabel(group.kind))}${group.count > 1 ? ` ×${group.count}` : ""}`;
+      return group.availability === null
+        ? label
+        : `${label} · ${t(mediaStateLabels[group.availability])}`;
+    })
+    .join(" · ");
+}
+
+function MediaRecords({ media, className }: { media: EventMedia[]; className: string }) {
+  const { t } = useTranslation();
+  const { readable, groups } = groupMedia(media);
+  return (
+    <ul className={className}>
+      {readable.map((item) => (
+        <li key={item.id} className="rounded-md bg-muted/40 px-2.5 py-1.5 text-xs">
+          <div className="flex items-center gap-2">
+            <Image className="size-3.5 shrink-0" />
+            <strong>{t(mediaKindLabel(item.kind))}</strong>
+          </div>
+          <p className="mt-1 leading-relaxed">{item.description}</p>
+        </li>
+      ))}
+      {groups.map((group) => (
+        <li
+          key={`${group.kind}:${group.availability}`}
+          className="flex items-center gap-1.5 py-0.5 text-xs text-muted-foreground"
+        >
+          <Image className="size-3.5 shrink-0" />
+          <span>
+            {t(mediaKindLabel(group.kind))}
+            {group.count > 1 ? ` ×${group.count}` : ""}
+            {" · "}
+            {t(mediaStateLabels[group.availability])}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function EventRecordComponent({
   event,
   quoted,
@@ -218,64 +316,86 @@ function EventRecordComponent({
     (event.kind === "outbound" && event.deliveryStatus === "confirmed") ||
     hasConfirmedDelivery;
   const source = event.addressing.replyTo;
+  // 独立媒体更新（未并入已加载消息、无任务/送达/输出/寻址上下文）时默认紧凑单行；
+  // 任务/唤醒/输出/未知送达/被引用等非纯媒体更新不紧凑，原文与媒体记录照常展示。
+  const compactMediaRevision =
+    event.kind === "media_revision" &&
+    !event.activityId &&
+    !event.messageStatus &&
+    !event.addressing.replyTo &&
+    event.addressing.reasons.length === 0 &&
+    event.addressing.mentionIds.length === 0 &&
+    !task &&
+    !wake &&
+    !event.outputId &&
+    !event.deliveryStatus;
 
   return (
     <li
       data-timeline-key={timelineKey(event)}
       id={`source-${event.source.kind}-${event.source.id}`}
-      className={cn("flex gap-3 scroll-mt-4", !message && "text-muted-foreground")}
+      className={cn("flex gap-2.5 scroll-mt-4", !message && "text-muted-foreground")}
     >
       <div
         className={cn(
-          "mt-1 flex size-8 shrink-0 items-center justify-center rounded-lg",
+          "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md",
           message ? "bg-primary/10 text-primary" : "bg-muted",
         )}
       >
-        {message ? <MessageCircle className="size-4" /> : <Activity className="size-4" />}
+        {message ? <MessageCircle className="size-3.5" /> : <Activity className="size-3.5" />}
       </div>
       <article
         className={cn(
-          "min-w-0 flex-1 rounded-xl border p-4",
+          "min-w-0 flex-1 rounded-lg border px-3.5 py-2.5 shadow-xs",
           message ? "bg-card" : "border-dashed bg-muted/20",
         )}
       >
-        <header className="flex flex-wrap items-center justify-between gap-2 text-xs">
-          <strong className="font-medium text-foreground">
-            {event.participant?.label ??
-              t(
-                event.kind === "wake"
-                  ? "workspace.wake_activity"
-                  : event.kind === "media_revision"
-                    ? "workspace.media_understanding_update"
-                    : "workspace.run_activity",
+        <header className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 text-xs">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-1.5">
+            <strong className="font-medium text-foreground">
+              {event.participant?.label ??
+                t(
+                  event.kind === "wake"
+                    ? "workspace.wake_activity"
+                    : event.kind === "media_revision"
+                      ? "workspace.media_understanding_update"
+                      : "workspace.run_activity",
+                )}
+            </strong>
+            {event.participant &&
+              conversation.topology === "shared" &&
+              event.participant.id &&
+              event.participant.id !== event.participant.label && (
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  {event.participant.id}
+                </span>
               )}
-          </strong>
-          <time dateTime={event.occurredAt} className="text-muted-foreground">
+          </div>
+          <time dateTime={event.occurredAt} className="text-xs text-muted-foreground">
             {new Date(event.occurredAt).toLocaleString(i18n.resolvedLanguage)}
           </time>
         </header>
-        {event.participant && conversation.topology === "shared" && (
-          <p className="mt-1 font-mono text-[10px] text-muted-foreground">{event.participant.id}</p>
+        {(event.addressing.reasons.length > 0 || event.addressing.mentionIds.length > 0) && (
+          <div className="my-1.5 flex flex-wrap items-center gap-1.5">
+            {event.addressing.reasons.map((reason) => (
+              <Badge variant="secondary" key={reason} className="text-[10px]">
+                {t(reasons[reason])}
+              </Badge>
+            ))}
+            {event.addressing.mentionIds.map((id, index) => (
+              <span
+                // biome-ignore lint/suspicious/noArrayIndexKey: Mention IDs are an immutable ordered snapshot; repeated @ needs the index for a unique key.
+                key={`${id}:${index}`}
+                className="text-[11px] text-primary"
+              >
+                @{conversation.participants.find((person) => person.id === id)?.label ?? id}{" "}
+                <code>{id}</code>
+              </span>
+            ))}
+          </div>
         )}
-        <div className="my-2 flex flex-wrap items-center gap-1.5">
-          {event.addressing.reasons.map((reason) => (
-            <Badge variant="secondary" key={reason} className="text-[10px]">
-              {t(reasons[reason])}
-            </Badge>
-          ))}
-          {event.addressing.mentionIds.map((id, index) => (
-            <span
-              // biome-ignore lint/suspicious/noArrayIndexKey: Mention IDs are an immutable ordered snapshot; repeated @ needs the index for a unique key.
-              key={`${id}:${index}`}
-              className="text-[11px] text-primary"
-            >
-              @{conversation.participants.find((person) => person.id === id)?.label ?? id}{" "}
-              <code>{id}</code>
-            </span>
-          ))}
-        </div>
         {source && (
-          <div className="mb-3 rounded-md border-l-2 border-primary bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <div className="mb-2 rounded-md border-l-2 border-primary bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground">
             {t("workspace.referenced_message")}:{" "}
             {quoted ? (
               <a
@@ -290,17 +410,27 @@ function EventRecordComponent({
             )}
           </div>
         )}
-        {/* User body: preserved on inbound, never overwritten by assistant reply */}
+        {/* 独立媒体更新默认紧凑行：单行媒体状态摘要；技术细节全部收进下方原生 details。 */}
+        {compactMediaRevision && event.media.length > 0 && (
+          <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Image className="size-3.5 shrink-0" />
+            {mediaCompactSummary(event.media, t)}
+          </p>
+        )}
+        {/* User body: preserved on inbound, never overwritten by assistant reply;
+            紧凑媒体更新行只留单行摘要，原文占位与状态说明收进来源记录 details。 */}
         {event.kind !== "wake" &&
+          !compactMediaRevision &&
           (event.contentState !== "active" ? (
             <p className="text-xs text-muted-foreground">{t(unavailable[event.contentState])}</p>
           ) : (
             event.kind !== "media_revision" &&
             event.text && (
-              <p className="whitespace-pre-wrap break-words text-sm leading-7">{event.text}</p>
+              <p className="whitespace-pre-wrap break-words text-sm leading-6">{event.text}</p>
             )
           ))}
-        {event.kind === "media_revision" && (
+        {/* 非紧凑媒体更新（已有任务/送达上下文）保留原有展开说明与完整媒体记录。 */}
+        {event.kind === "media_revision" && !compactMediaRevision && (
           <p className="text-xs text-muted-foreground">
             {t(
               "workspace.the_related_message_is_not_loaded_this_record_is_a_media_understanding_u",
@@ -308,46 +438,20 @@ function EventRecordComponent({
             <code>{event.sources.find((ref) => ref.kind === "qq_event")?.id}</code>
           </p>
         )}
-        {event.media.length > 0 && (
-          <ul className="mt-3 space-y-2">
-            {event.media.map((media) => (
-              <li key={media.id} className="rounded-lg bg-muted/40 p-3 text-xs">
-                <div className="flex items-center gap-2">
-                  <Image className="size-3.5" />
-                  <strong>
-                    {t(
-                      media.kind === "sticker"
-                        ? "workspace.sticker"
-                        : media.kind === "image"
-                          ? "workspace.image"
-                          : "workspace.media",
-                    )}
-                  </strong>
-                  <code className="truncate text-muted-foreground">{media.id}</code>
-                </div>
-                <p className="mt-2 leading-relaxed">
-                  {media.description ??
-                    t(
-                      media.availability === "expired"
-                        ? "workspace.media_has_expired"
-                        : "workspace.no_media_description_available",
-                    )}
-                </p>
-              </li>
-            ))}
-          </ul>
+        {event.media.length > 0 && !compactMediaRevision && (
+          <MediaRecords media={event.media} className="mt-2 space-y-1.5" />
         )}
         {event.messageStatus === "failed" && (
-          <p className="mt-2 text-xs text-destructive">{t("workspace.generation_failed")}</p>
+          <p className="mt-1.5 text-xs text-destructive">{t("workspace.generation_failed")}</p>
         )}
         {event.messageStatus === "cancelled" && (
-          <p className="mt-2 text-xs text-muted-foreground">
+          <p className="mt-1.5 text-xs text-muted-foreground">
             {t("workspace.generation_cancelled")}
           </p>
         )}
         {/* Task / Wake section: shows authoritative task status without false '本次未发言' if delivered */}
         {wake && (
-          <div className="my-3 space-y-1 text-xs">
+          <div className="my-2 space-y-1 text-xs">
             {(() => {
               if (
                 hasConfirmedDelivery &&
@@ -390,7 +494,7 @@ function EventRecordComponent({
           </div>
         )}
         {!wake && task && (
-          <div className="my-3 space-y-1 text-xs">
+          <div className="my-2 space-y-1 text-xs">
             {statusLabel(t(taskLabels[task.status] ?? task.status))}
             {task.errorCode && <p className="text-destructive">{task.errorCode}</p>}
           </div>
@@ -399,13 +503,13 @@ function EventRecordComponent({
         {nestedDeliveryItems.map((deliv, index) => (
           <div
             key={deliv.outputId ?? `reply-${deliv.seq}-${index}`}
-            className="mt-3 space-y-2 border-t pt-3"
+            className="mt-2 space-y-1.5 border-t pt-2"
           >
             {deliv.participant &&
               (conversation.topology === "shared" || nestedDeliveryItems.length > 1) && (
                 <p className="text-xs font-medium text-foreground">
                   {deliv.participant.label}
-                  {deliv.participant.id && (
+                  {deliv.participant.id && deliv.participant.id !== deliv.participant.label && (
                     <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">
                       {deliv.participant.id}
                     </span>
@@ -416,41 +520,15 @@ function EventRecordComponent({
               <p className="text-xs text-muted-foreground">{t(unavailable[deliv.contentState])}</p>
             ) : (
               deliv.text && (
-                <p className="whitespace-pre-wrap break-words text-sm leading-7 text-foreground">
+                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
                   {deliv.text}
                 </p>
               )
             )}
             {deliv.media && deliv.media.length > 0 && (
-              <ul className="mt-2 space-y-2">
-                {deliv.media.map((media) => (
-                  <li key={media.id} className="rounded-lg bg-muted/40 p-3 text-xs">
-                    <div className="flex items-center gap-2">
-                      <Image className="size-3.5" />
-                      <strong>
-                        {t(
-                          media.kind === "sticker"
-                            ? "workspace.sticker"
-                            : media.kind === "image"
-                              ? "workspace.image"
-                              : "workspace.media",
-                        )}
-                      </strong>
-                      <code className="truncate text-muted-foreground">{media.id}</code>
-                    </div>
-                    <p className="mt-2 leading-relaxed">
-                      {media.description ??
-                        t(
-                          media.availability === "expired"
-                            ? "workspace.media_has_expired"
-                            : "workspace.no_media_description_available",
-                        )}
-                    </p>
-                  </li>
-                ))}
-              </ul>
+              <MediaRecords media={deliv.media} className="mt-1.5 space-y-1.5" />
             )}
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               {deliv.deliveryStatus && (
                 <Badge
                   variant="outline"
@@ -464,7 +542,7 @@ function EventRecordComponent({
               {deliv.runId && <RunLink runId={deliv.runId} />}
             </div>
             {deliv.outputId && (
-              <div className="mt-3">
+              <div className="mt-2">
                 <DeliveryDetails
                   key={`${deliv.outputId}:${deliv.deliveryStatus}`}
                   outputId={deliv.outputId}
@@ -476,7 +554,7 @@ function EventRecordComponent({
         ))}
         {/* Representative's own delivery status and RunLink */}
         {(event.deliveryStatus || standaloneRunId) && (
-          <div className="mt-3 flex flex-wrap items-center gap-3">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             {event.deliveryStatus && (
               <Badge
                 variant="outline"
@@ -491,7 +569,7 @@ function EventRecordComponent({
           </div>
         )}
         {event.outputId && (
-          <div className="mt-3">
+          <div className="mt-2">
             <DeliveryDetails
               key={`${event.outputId}:${event.deliveryStatus}`}
               outputId={event.outputId}
@@ -500,14 +578,50 @@ function EventRecordComponent({
           </div>
         )}
         {/* Source record details: underlying IDs preserved */}
-        <details className="mt-3 border-t pt-2 text-[10px] text-muted-foreground">
+        <details className="mt-2 border-t pt-1.5 text-[10px] text-muted-foreground">
           <summary className="cursor-pointer">{t("workspace.source_record")}</summary>
-          <p className="mt-2 break-all font-mono">
+          <p className="mt-1.5 break-all font-mono">
             {event.source.kind}:{event.source.id}
           </p>
           <p>{t("workspace.event_revision", { "0": event.seq, "1": event.source.revision })}</p>
+          {compactMediaRevision && (
+            <>
+              {event.contentState !== "active" && <p>{t(unavailable[event.contentState])}</p>}
+              <p>
+                {t(
+                  "workspace.the_related_message_is_not_loaded_this_record_is_a_media_understanding_u",
+                )}{" "}
+                <code>{event.sources.find((ref) => ref.kind === "qq_event")?.id}</code>
+              </p>
+              {event.media.length > 0 && (
+                <MediaRecords media={event.media} className="mt-1 space-y-1" />
+              )}
+            </>
+          )}
+          {event.media.length > 0 && (
+            <div className="mt-1 space-y-0.5">
+              {event.media.map((media) => (
+                <p key={media.id} className="break-all font-mono">
+                  {t(media.kind === "sticker" ? "workspace.sticker" : "workspace.media")}:{" "}
+                  <code>{media.id}</code>
+                </p>
+              ))}
+            </div>
+          )}
+          {nestedDeliveryItems.some((d) => d.media && d.media.length > 0) && (
+            <div className="mt-1 space-y-0.5">
+              {nestedDeliveryItems
+                .flatMap((d) => d.media ?? [])
+                .map((media) => (
+                  <p key={media.id} className="break-all font-mono">
+                    {t(media.kind === "sticker" ? "workspace.sticker" : "workspace.media")}:{" "}
+                    <code>{media.id}</code>
+                  </p>
+                ))}
+            </div>
+          )}
           {event.activityEvents && event.activityEvents.length > 0 && (
-            <div className="mt-2 space-y-1">
+            <div className="mt-1.5 space-y-0.5">
               {event.activityEvents.map((act) => (
                 <p
                   key={`${act.source.kind}:${act.source.id}:${act.seq}`}

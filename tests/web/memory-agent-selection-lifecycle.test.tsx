@@ -31,7 +31,7 @@ describe("memory Agent selection lifecycle", () => {
     setupLibrary();
     const page = vi.fn().mockResolvedValue(undefined);
     const policy = vi.fn().mockResolvedValue(undefined);
-    const select = vi.fn();
+    const select = vi.fn().mockResolvedValue(false);
     store.setState({
       pageEditor: null,
       editorLoading: false,
@@ -49,11 +49,12 @@ describe("memory Agent selection lifecycle", () => {
   it("does not repeatedly auto-select an Agent after a failed initial read", async () => {
     setupLibrary();
     let calls = 0;
-    const select = vi.fn(() => {
+    const select = vi.fn(async () => {
       calls++;
-      if (calls > 2) return;
+      if (calls > 2) return false;
       store.setState({ editorLoading: true });
       queueMicrotask(() => store.setState({ editorLoading: false, error: "Agent unavailable" }));
+      return false;
     });
     store.setState({ pageEditor: null, editorLoading: false, requestAgentNavigation: select });
     render(<MemoryLibrary />);

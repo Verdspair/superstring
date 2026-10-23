@@ -104,6 +104,7 @@ export function collectPackageFiles(root, appDirectory) {
     "versions/0069_query_plan_indexes.sql",
     "versions/0070_context_source_lookup.sql",
     "versions/0071_context_storage_metadata.sql",
+    "versions/0072_outbound_intent_metadata.sql",
   ]) {
     copyFile(path.join(root, "migrations", migration), path.join("migrations", migration));
   }

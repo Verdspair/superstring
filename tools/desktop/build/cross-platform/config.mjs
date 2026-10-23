@@ -1,6 +1,9 @@
 import path from "node:path";
+// One literal owner: the packaged app id is the shared desktop constant, so the
+// Windows candidate and the cross-platform builds cannot drift apart.
+import { DESKTOP_APP_ID } from "../../../../src/shared/window-motion.ts";
 
-export const APP_ID = "io.github.verdspair.superstring";
+export const APP_ID = DESKTOP_APP_ID;
 export const HOMEPAGE = "https://github.com/Verdspair/superstring";
 export const TARGETS = [
   { platform: "darwin", arch: "arm64", runner: "macos-15", extensions: ["dmg", "zip"] },
@@ -13,6 +16,17 @@ export function getTarget(platform, arch) {
   const target = TARGETS.find((item) => item.platform === platform && item.arch === arch);
   if (!target) throw new Error(`Unsupported desktop target: ${platform}-${arch}`);
   return target;
+}
+
+/**
+ * The package layout created by the extraResources entry below: the compiled service
+ * sits in a `service` directory beside app.asar. The Electron host resolves
+ * `<serviceRoot>/resources`, so callers pass this exact directory, never a probe.
+ */
+export function serviceRootForApp(platform, app) {
+  if (platform === "darwin") return path.join(app, "Contents", "Resources", "service");
+  if (platform === "linux") return path.join(app, "resources", "service");
+  throw new Error(`Unsupported desktop target: ${platform}`);
 }
 
 export function normalizeMacSigningEnvironment(env) {
@@ -58,11 +72,21 @@ export function createConfiguration({
     productName: "Superstring",
     executableName: "superstring",
     directories: {
-      app: path.join(root, "dist/desktop-host"),
+      // Generated host staging stays inside the batch stage, so no stable dist
+      // directory is ever cleaned recursively.
+      app: path.join(stage, "host"),
       buildResources: brand,
       output,
     },
-    files: ["package.json", "main.cjs", "preload.cjs"],
+    files: [
+      "package.json",
+      "main.cjs",
+      "preload.cjs",
+      "startup.html",
+      "appearance.css",
+      "icon.png",
+      "fonts/**/*",
+    ],
     extraResources: [{ from: path.join(stage, "service"), to: "service", filter: ["**/*"] }],
     asar: true,
     // Both entry points are complete bundles. The official hook also prevents

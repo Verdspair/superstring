@@ -5,7 +5,9 @@ import { ConversationHost } from "../../src/server/agent/conversation-host";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import {
   concurrentJobsDumpValue,
+  projectConcurrentReplyQuestions,
   QQ_CONCURRENT_JOBS_LIMIT,
+  readConcurrentReplyFacts,
   readConcurrentReplyJobs,
 } from "../../src/server/channels/onebot11/concurrent-reply-context";
 import { createOneBotConversationRuntime } from "../../src/server/channels/onebot11/create-runtime";
@@ -768,4 +770,157 @@ describe("concurrent reply projection (runtime boundaries)", () => {
     await f.bot.scheduler.waitForIdle();
     expect(f.counter()).toBeLessThanOrEqual(6);
   });
+});
+
+it("looks up ordinary question keys by the bounded sequence set without scanning conversation history", () => {
+  const h = cloneBusinessDb();
+  const db = h.db;
+  const originalQuery = db.query;
+  try {
+    const conversationId = conversationFor(h);
+    const foreign = conversationFor(h);
+    const insert =
+      db.query(`INSERT INTO conversation_events(conversation_id,seq,event_key,kind,source_kind,source_id,
+      source_revision,sources,addressing,occurred_at,recorded_at) VALUES(?,?,?,?,?,?,'1','[]','{}',?,?)`);
+    db.transaction(() => {
+      for (let seq = 1; seq <= 4000; seq++)
+        insert.run(
+          conversationId,
+          seq,
+          `event-${seq}`,
+          "inbound",
+          "qq_event",
+          `source-${seq}`,
+          NOW,
+          NOW,
+        );
+      insert.run(
+        conversationId,
+        4001,
+        "wrong-kind",
+        "delivery",
+        "qq_event",
+        "wrong-kind",
+        NOW,
+        NOW,
+      );
+      insert.run(
+        conversationId,
+        4002,
+        "wrong-source",
+        "inbound",
+        "qq_media",
+        "wrong-source",
+        NOW,
+        NOW,
+      );
+      insert.run(foreign, 4003, "foreign", "inbound", "qq_event", "foreign-source", NOW, NOW);
+    })();
+    for (const [id, seq] of [
+      ["ordinary-a", 3999],
+      ["ordinary-b", 3999],
+      ["bad-kind", 4001],
+      ["bad-source", 4002],
+      ["foreign-only", 4003],
+    ] as const)
+      seedTask(h, {
+        id,
+        conversationId,
+        status: "pending",
+        taskClass: "ordinary",
+        cause: "chiming_in",
+        throughSeq: seq,
+      });
+    let lookedUp = 0;
+    (db as unknown as { query: (sql: string) => unknown }).query = (sql: string) => {
+      const statement = originalQuery.call(db, sql);
+      if (!sql.includes("CROSS JOIN conversation_events e")) return statement;
+      return new Proxy(statement, {
+        get(target, key) {
+          const value = Reflect.get(target, key);
+          if (key === "all")
+            return (...bindings: unknown[]) => {
+              lookedUp++;
+              const plan = originalQuery
+                .call(db, `EXPLAIN QUERY PLAN ${sql}`)
+                .all(...(bindings as never[])) as { detail: string }[];
+              expect(
+                plan.some(({ detail }) => detail.includes("conversation_id=? AND seq=?")),
+              ).toBe(true);
+              const rows = Reflect.apply(value, target, bindings) as unknown[];
+              expect(rows).toHaveLength(1);
+              return rows;
+            };
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    };
+    const projection = reader(h, conversationId, {
+      visibleEventKeys: new Set(["source-3999", "wrong-kind", "wrong-source", "foreign-source"]),
+    });
+    expect(lookedUp).toBe(1);
+    expect(
+      projection.jobs
+        .filter((job) => job.questionSeq === 3999)
+        .map((job) => job.taskId)
+        .sort(),
+    ).toEqual(["ordinary-a", "ordinary-b"]);
+    expect(
+      projection.jobs
+        .filter(
+          (job) =>
+            job.taskId === "bad-kind" ||
+            job.taskId === "bad-source" ||
+            job.taskId === "foreign-only",
+        )
+        .every((job) => job.questionSeq === undefined),
+    ).toBe(true);
+  } finally {
+    db.query = originalQuery;
+    h.close();
+  }
+});
+it("projects question visibility repeatedly without rereading or validating facts", () => {
+  const h = cloneBusinessDb();
+  try {
+    const conversationId = conversationFor(h);
+    seedTask(h, {
+      id: "visible-job",
+      conversationId,
+      status: "pending",
+      taskClass: "ordinary",
+      cause: "chiming_in",
+      throughSeq: 7,
+    });
+    h.db
+      .query(`INSERT INTO conversation_events(conversation_id,seq,event_key,kind,source_kind,source_id,source_revision,sources,addressing,occurred_at,recorded_at)
+      VALUES(?,7,'visible-question','inbound','qq_event','visible-key','1','[]','{}',?,?)`)
+      .run(conversationId, NOW, NOW);
+    const facts = readConcurrentReplyFacts(h.db, {
+      conversationId,
+      bindingEpoch: 1,
+      agentId: DEFAULT_AGENT_ID,
+      now: NOW,
+    });
+    const original = h.db.query;
+    let reads = 0;
+    h.db.query = ((...args: Parameters<typeof original>) => {
+      reads++;
+      return original.apply(h.db, args);
+    }) as typeof original;
+    try {
+      for (const keys of [new Set(["visible-key"]), new Set<string>(), new Set(["visible-key"])]) {
+        const projection = projectConcurrentReplyQuestions(facts, keys);
+        expect(projection.jobs[0]?.questionSeq).toBe(keys.size ? 7 : undefined);
+        expect(projection.sources).toBe(facts.sources);
+        expect(projection.contexts).toBe(facts.contexts);
+      }
+      expect(reads).toBe(0);
+    } finally {
+      h.db.query = original;
+    }
+    expect(facts.jobs[0]?.questionSeq).toBe(7);
+  } finally {
+    h.close();
+  }
 });

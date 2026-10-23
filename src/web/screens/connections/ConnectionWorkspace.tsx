@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import { useSuperstringStore } from "../../store";
+import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { McpPanel } from "./mcp-panel";
 import { SkillsPanel } from "./skills-panel";
 import { ToolDirectoryPanel } from "./tool-directory-panel";
@@ -25,13 +26,11 @@ export function ConnectionWorkspace({ active = true }: { active?: boolean } = {}
       className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
       aria-label={t("workspace.extensions")}
     >
-      <header className="workspace-page-header mb-[24px]">
-        <p className="workspace-page-location">
-          {t("brand.workspace", { "0": t("workspace.extensions") })}
-        </p>
-        <h1 className="workspace-page-title">{t("workspace.extensions")}</h1>
-        <p className="workspace-page-description">{t("workspace.manage_external_extensions")}</p>
-      </header>
+      <WorkspacePageHeader
+        location={t("brand.workspace", { "0": t("workspace.extensions") })}
+        title={t("workspace.extensions")}
+        description={t("workspace.manage_external_extensions")}
+      />
       <Tabs value={tab} onValueChange={openTab} className="flex min-h-0 flex-1 flex-col gap-0">
         <div className="mb-[24px]">
           <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">

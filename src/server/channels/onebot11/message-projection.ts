@@ -207,15 +207,16 @@ export function qqSpeechCarriedByOutboundFacts(input: {
     .query(
       `SELECT i.id AS intentId,i.legacy_send_id AS speechId
       FROM outbound_intents i
+      JOIN outbound_intent_metadata metadata ON metadata.intent_id=i.id
       WHERE i.legacy_send_id IN (${unique.map(() => "?").join(",")})
         AND i.conversation_id=?
-        AND json_extract(i.target,'$.accountId')=?
-        AND json_extract(i.target,'$.conversationKind')=?
-        AND json_extract(i.target,'$.peerId')=?
-        AND json_extract(i.target,'$.agentId')=?
-        AND json_extract(i.target,'$.bindingId')=?
-        AND json_extract(i.target,'$.bindingEpoch')=?
-        AND json_extract(i.target,'$.authorityRevision')=?`,
+        AND metadata.account_id=?
+        AND metadata.conversation_kind=?
+        AND metadata.peer_id=?
+        AND metadata.agent_id=?
+        AND metadata.binding_id=?
+        AND metadata.binding_epoch=?
+        AND metadata.authority_revision=?`,
     )
     .all(
       ...unique,

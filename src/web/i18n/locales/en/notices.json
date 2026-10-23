@@ -1561,5 +1561,6 @@
   "必须在 0 <= x < 1 范围内": "Must be within 0 <= x < 1",
   "必须在 0 < x <= 1 范围内": "Must be within 0 < x <= 1",
   "必须为 0 到 3600 秒之间的正数": "Must be a positive number between 0 and 3600 seconds",
-  "必须为 1024 到 1,048,576 之间的整数，或留空": "Must be an integer between 1024 and 1,048,576, or empty"
+  "必须为 1024 到 1,048,576 之间的整数，或留空": "Must be an integer between 1024 and 1,048,576, or empty",
+  "外部模型列表加载失败：{0}；本地模型仍可选择。": "Could not load the external model list: {0}. Local models are still selectable."
 }

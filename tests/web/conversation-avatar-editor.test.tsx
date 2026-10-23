@@ -10,7 +10,9 @@ import { selectLocale } from "../../src/web/i18n";
 import { ConversationAvatar as AvatarView } from "../../src/web/screens/conversations/avatar";
 import {
   AVATAR_STYLES,
+  type AvatarIdentity,
   defaultConversationAvatar,
+  defaultGroupAvatarUrl,
 } from "../../src/web/screens/conversations/avatar-designs";
 import { AvatarEditor } from "../../src/web/screens/conversations/avatar-editor";
 import { ConversationIdentity } from "../../src/web/screens/conversations/ConversationIdentity";
@@ -64,6 +66,30 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+function identity(overrides: Partial<AvatarIdentity> = {}): AvatarIdentity {
+  return { id: conversation.id, title: conversation.title, topology: "shared", ...overrides };
+}
+function editorWithIdentity(
+  identity: AvatarIdentity,
+  value: ConversationAvatar = null,
+  save = vi.fn().mockResolvedValue(undefined),
+) {
+  const closed = vi.fn();
+  const rendered = render(
+    <AvatarEditor
+      conversationId={identity.id}
+      title={identity.title}
+      topology={identity.topology}
+      channel={identity.channel}
+      qqGroup={identity.qqGroup}
+      value={value}
+      open
+      onOpenChange={closed}
+      onSave={save}
+    />,
+  );
+  return { save, closed, ...rendered };
+}
 function editor(value: ConversationAvatar = null, save = vi.fn().mockResolvedValue(undefined)) {
   const closed = vi.fn();
   const rendered = render(
@@ -359,4 +385,130 @@ it("renders Nordic line-art defaults without generating or requesting an image",
   );
   expect(container.querySelector("svg.lucide-message-circle")).toBeTruthy();
   expect(pendingImages).toHaveLength(0);
+});
+
+it.each([
+  { number: "10000", loaded: true },
+  { number: "30003", loaded: true },
+  { number: "30003", loaded: false },
+])(
+  "uses the fixed QQ group CDN avatar for group $number (loaded=$loaded)",
+  async ({ number, loaded }) => {
+    const groupIdentity = identity({ channel: "onebot11", qqGroup: { number } });
+    const { container } = render(
+      <AvatarView conversation={groupIdentity} value={null} label="Default group" />,
+    );
+    const url = `https://p.qlogo.cn/gh/${number}/${number}/100`;
+    expect(defaultGroupAvatarUrl(groupIdentity)).toBe(url);
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("svg.lucide-users")).toBeTruthy();
+    expect(pendingImages.map((image) => image.currentSrc)).toEqual([url]);
+    await act(async () => pendingImages[0].finish(loaded));
+    if (loaded) {
+      const image = container.querySelector("img");
+      expect(image?.getAttribute("src")).toBe(url);
+      expect(image?.getAttribute("referrerpolicy")).toBe("no-referrer");
+    } else {
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.querySelector("svg.lucide-users")).toBeTruthy();
+    }
+    // Exactly one image read: no retry loop, no model/server request on the default path.
+    expect(pendingImages).toHaveLength(1);
+  },
+);
+
+it("keeps icon-only defaults without remote requests for web, private, or metadata-less conversations", () => {
+  for (const groupIdentity of [
+    identity(),
+    identity({ channel: "web" }),
+    identity({ channel: "onebot11" }),
+    identity({ channel: "web", topology: "direct" }),
+    identity({ channel: "onebot11", topology: "direct" }),
+  ]) {
+    const { container, unmount } = render(
+      <AvatarView conversation={groupIdentity} value={null} label="Default avatar" />,
+    );
+    expect(container.querySelector("svg.lucide-users, svg.lucide-message-circle")).toBeTruthy();
+    expect(container.querySelector("img")).toBeNull();
+    expect(pendingImages).toHaveLength(0);
+    unmount();
+  }
+});
+
+it("does not leak one group avatar request into another when switching groups", async () => {
+  const { container, rerender } = render(
+    <AvatarView
+      conversation={identity({ channel: "onebot11", qqGroup: { number: "10000" } })}
+      value={null}
+      label="Default group"
+    />,
+  );
+  await act(async () => pendingImages[0].finish());
+  expect(container.querySelector("img")?.getAttribute("src")).toBe(
+    defaultGroupAvatarUrl(identity({ channel: "onebot11", qqGroup: { number: "10000" } })),
+  );
+  rerender(
+    <AvatarView
+      conversation={identity({
+        id: "00000000-0000-4000-8000-000000000002",
+        channel: "onebot11",
+        qqGroup: { number: "20000" },
+      })}
+      value={null}
+      label="Default group"
+    />,
+  );
+  expect(container.querySelector("img")).toBeNull();
+  expect(pendingImages.map((image) => image.currentSrc)).toEqual([
+    defaultGroupAvatarUrl(identity({ channel: "onebot11", qqGroup: { number: "10000" } })),
+    defaultGroupAvatarUrl(identity({ channel: "onebot11", qqGroup: { number: "20000" } })),
+  ]);
+  await act(async () => pendingImages[1].finish());
+  expect(container.querySelector("img")?.getAttribute("src")).toBe(
+    defaultGroupAvatarUrl(identity({ channel: "onebot11", qqGroup: { number: "20000" } })),
+  );
+});
+
+it.each([
+  ["generated", { kind: "generated", style: "shapes", seed: "saved" }],
+  [
+    "uploaded",
+    { kind: "uploaded", url: `/v2/conversations/${conversation.id}/avatar?revision=saved` },
+  ],
+] as const)("keeps a saved %s avatar ahead of the group CDN", (_kind, value) => {
+  render(
+    <AvatarView
+      conversation={identity({ channel: "onebot11", qqGroup: { number: "30003" } })}
+      value={value}
+      label="Custom"
+    />,
+  );
+  expect(pendingImages.every((image) => !image.currentSrc.startsWith("https://p.qlogo.cn/"))).toBe(
+    true,
+  );
+});
+
+it("previews the group CDN avatar after reset and still submits null when it cannot load", async () => {
+  const group = identity({ channel: "onebot11", qqGroup: { number: "30003" } });
+  const { save } = editorWithIdentity(group, {
+    kind: "generated",
+    style: "shapes",
+    seed: "saved",
+  });
+  expect(pendingImages.map((image) => image.currentSrc)).not.toContain(
+    defaultGroupAvatarUrl(group),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
+  expect(screen.getByText("保存后恢复这个会话的默认头像。")).toBeTruthy();
+  expect(pendingImages.map((image) => image.currentSrc)).toContain(defaultGroupAvatarUrl(group));
+  await act(async () => pendingImages[pendingImages.length - 1].finish(false));
+  // The default CDN read reports only status; it never raises onImageError, so reset stays savable.
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((screen.getByRole("button", { name: "保存头像" }) as HTMLButtonElement).disabled).toBe(
+    false,
+  );
+  expect(document.querySelector("[role=dialog] svg.lucide-users")).toBeTruthy();
+  expect(save).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "保存头像" }));
+  expect(save).toHaveBeenCalledWith(null);
 });

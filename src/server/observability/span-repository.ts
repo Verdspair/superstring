@@ -299,20 +299,38 @@ export class RuntimeSpanRepository {
           ...matched.visibilityParams,
         ]
       : [...matched.filterParams, ...matched.visibilityParams];
-    const summary = this.db
-      .query(`${cte} SELECT COUNT(*) AS totalTraces,
-      COALESCE(SUM(active),0) AS activeTraces,COALESCE(SUM(failed),0) AS failedTraces,
-      COALESCE(SUM(matchedSpanCount),0) AS matchedSpans,MAX(lastActivityAt) AS lastActivityAt FROM groups`)
-      .get(...params) as Omit<RuntimeTracesPage["summary"], "now">;
     const limit = filters.limit ?? 50;
-    const groups = this.db
-      .query(`${cte} SELECT traceId,cursorId,matchedSpanCount FROM groups
-      ${filters.beforeId ? "WHERE cursorId<?" : ""} ORDER BY cursorId DESC LIMIT ?`)
-      .all(...params, ...(filters.beforeId ? [filters.beforeId] : []), limit + 1) as {
-      traceId: string;
-      cursorId: number;
-      matchedSpanCount: number;
-    }[];
+    const rows = this.db
+      .query(`${cte}, summary AS (
+        SELECT COUNT(*) AS totalTraces,COALESCE(SUM(active),0) AS activeTraces,
+          COALESCE(SUM(failed),0) AS failedTraces,COALESCE(SUM(matchedSpanCount),0) AS matchedSpans,
+          MAX(lastActivityAt) AS lastActivityAt FROM groups
+      ), page AS (
+        SELECT traceId,cursorId,matchedSpanCount FROM groups
+        ${filters.beforeId ? "WHERE cursorId<?" : ""} ORDER BY cursorId DESC LIMIT ?
+      ) SELECT summary.*,page.traceId,page.cursorId,page.matchedSpanCount
+        FROM summary LEFT JOIN page ON 1=1 ORDER BY page.cursorId DESC`)
+      .all(...params, ...(filters.beforeId ? [filters.beforeId] : []), limit + 1) as (Omit<
+      RuntimeTracesPage["summary"],
+      "now"
+    > & {
+      traceId: string | null;
+      cursorId: number | null;
+      matchedSpanCount: number | null;
+    })[];
+    const { totalTraces, activeTraces, failedTraces, matchedSpans, lastActivityAt } = rows[0];
+    const summary = { totalTraces, activeTraces, failedTraces, matchedSpans, lastActivityAt };
+    const groups = rows.flatMap((row) =>
+      row.traceId === null
+        ? []
+        : [
+            {
+              traceId: row.traceId,
+              cursorId: row.cursorId!,
+              matchedSpanCount: row.matchedSpanCount!,
+            },
+          ],
+    );
     const pageGroups = groups.slice(0, limit);
     const spansByTrace = pageGroups.length
       ? this.traceSpansForPage(

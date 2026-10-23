@@ -10,6 +10,7 @@ export function AlertDialog({
   onCancel,
   escapeCloses = true,
   busy = false,
+  open,
 }: {
   title: string;
   children: ReactNode;
@@ -17,14 +18,14 @@ export function AlertDialog({
   onCancel: () => void;
   escapeCloses?: boolean;
   busy?: boolean;
+  /** 常挂载：调用方把原条件作为 open，关闭动画期间内容由 Radix Presence 保留。 */
+  open: boolean;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
-  const [returnFocus] = useState(() =>
-    document.activeElement instanceof HTMLElement ? document.activeElement : null,
-  );
+  const returnFocus = useRef<HTMLElement | null>(null);
   return (
     <Root
-      open
+      open={open}
       onOpenChange={(open) => {
         if (!open && !busy) onCancel();
       }}
@@ -39,12 +40,14 @@ export function AlertDialog({
           if (busy || !escapeCloses) event.preventDefault();
         }}
         onOpenAutoFocus={(event) => {
+          returnFocus.current =
+            document.activeElement instanceof HTMLElement ? document.activeElement : null;
           event.preventDefault();
           contentRef.current?.querySelector<HTMLElement>("[data-dialog-cancel]")?.focus();
         }}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
-          if (returnFocus?.isConnected) returnFocus.focus();
+          if (returnFocus.current?.isConnected) returnFocus.current.focus();
         }}
       >
         <AlertDialogTitle asChild>
@@ -65,14 +68,18 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   busy = false,
+  open,
 }: {
   message: string;
   confirmLabel?: string;
   onConfirm: () => unknown;
   onCancel: () => void;
   busy?: boolean;
+  /** 常挂载：调用方把原条件作为 open，关闭动画期间内容由 Radix Presence 保留。 */
+  open: boolean;
 }) {
   const { t } = useTranslation();
+  // 常挂载后 pending/invoking 跨开合保留；只由当前调用的 finally 复位，避免新一轮打开提前放行。
   const [pending, setPending] = useState(false);
   const invoking = useRef(false);
   const confirm = async () => {
@@ -87,7 +94,7 @@ export function ConfirmDialog({
     }
   };
   return (
-    <AlertDialog title={message} onCancel={onCancel} busy={busy || pending}>
+    <AlertDialog open={open} title={message} onCancel={onCancel} busy={busy || pending}>
       <AlertDialogFooter>
         <Button
           tooltip={<Trans i18nKey="hints.complete.cancel" />}

@@ -46,6 +46,29 @@ export interface RenderedContext {
   visionCost: VisionCost;
 }
 export type ContextReadTimings = {
+  readProjectionCalls?: number;
+  readProjectionMs?: number;
+  readConcurrentRebuildCalls?: number;
+  readConcurrentRebuildMs?: number;
+  readConcurrentProofCalls?: number;
+  readConcurrentProofMs?: number;
+  readConcurrentProofOccurrences?: number;
+  readRelatedDeliveriesCalls?: number;
+  readRelatedDeliveriesMs?: number;
+  /** Per-read cumulative wall time; nested costs overlap and are not CPU totals. */
+  readAssertCurrentCalls?: number;
+  readAssertCurrentMs?: number;
+  readAssertHostMs?: number;
+  readAssertBudgetMs?: number;
+  readAssertConcurrentMs?: number;
+  readAssertCommonBuildMs?: number;
+  readAssertCommonVerifyMs?: number;
+  readAssertCommonOccurrences?: number;
+  readAssertSourcesCalls?: number;
+  readAssertSourcesMs?: number;
+  readAssertSourcesHostMs?: number;
+  readAssertSourcesVerifyMs?: number;
+  readAssertSourcesOccurrences?: number;
   readPreludeMs?: number;
   readViewMs?: number;
   readCapacityMs?: number;

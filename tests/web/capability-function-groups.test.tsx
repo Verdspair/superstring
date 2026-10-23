@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { McpStatusResponseSchema } from "../../src/shared/contracts/mcp";
 import type { PermissionsResponse } from "../../src/shared/contracts/permissions";
@@ -259,7 +259,7 @@ describe("5 Function Groups in Capabilities Workspace", () => {
     expect(getSkillMock).not.toHaveBeenCalled();
   });
 
-  it("renders QQ reply with honest skill and runtime action, navigating to qq-app-schemes", async () => {
+  it("keeps capability components collapsed until the capability trigger expands them, then navigates by its own button", async () => {
     store.setState({
       page: "settings",
       settingsView: "workspace",
@@ -268,18 +268,35 @@ describe("5 Function Groups in Capabilities Workspace", () => {
     render(<CapabilitiesWorkspace active={true} />);
     await act(async () => {});
 
-    const qqButton = screen.getByRole("button", { name: /^QQ 对话与接话/ });
-    expect(qqButton).toBeTruthy();
-    expect(screen.getByText("reply.text")).toBeTruthy();
+    const li = document.querySelector<HTMLElement>("[data-capability-id='qq-reply']")!;
+    // 折叠时组件清单不渲染，导航入口是独立按钮（无 aria-expanded）。
+    expect(screen.queryByText("reply.text")).toBeNull();
+    const navButton = within(li).getByRole("button", { name: "前往配置功能 · QQ 对话与接话" });
+    expect(navButton.hasAttribute("aria-expanded")).toBe(false);
+
+    const trigger = within(li)
+      .getAllByRole("button", { name: /QQ 对话与接话/ })
+      .find((button) => button.getAttribute("aria-expanded") === "false");
+    if (!trigger) throw new Error("missing collapsible trigger");
+    fireEvent.click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    // 展开后组件与运行时动作可见；技能/工具行仍可各自打开定义。
+    expect(await screen.findByText("reply.text")).toBeTruthy();
     expect(screen.getByText("reply.sticker")).toBeTruthy();
     expect(screen.getByText("运行时动作")).toBeTruthy();
-    expect(await screen.findByRole("button", { name: /system-qq-reply/ })).toBeTruthy();
+    const skillButton = await screen.findByRole("button", { name: /system-qq-reply/ });
+    fireEvent.click(skillButton);
+    expect(store.getState().componentTarget).toMatchObject({
+      kind: "skill",
+      id: "system-qq-reply",
+    });
 
-    fireEvent.click(qqButton);
+    fireEvent.click(navButton);
     expect(store.getState().settingsRoute).toBe("qq-app-schemes");
   });
 
-  it("renders external MCP integrations with accurate connected count and navigation", async () => {
+  it("keeps external integrations collapsed and reveals the connected count only after expanding", async () => {
     store.setState({
       page: "settings",
       settingsView: "workspace",
@@ -288,13 +305,23 @@ describe("5 Function Groups in Capabilities Workspace", () => {
     render(<CapabilitiesWorkspace active={true} />);
     await act(async () => {});
 
+    const li = document.querySelector<HTMLElement>("[data-capability-id='external-integrations']")!;
+    // 折叠时不显示已连接计数，也不显示服务清单。
+    expect(screen.queryByText("1 个已连接服务")).toBeNull();
+    expect(screen.queryByText("Search Hub")).toBeNull();
+
+    const trigger = within(li)
+      .getAllByRole("button")
+      .find((button) => button.getAttribute("aria-expanded") !== null);
+    if (!trigger) throw new Error("missing external integrations trigger");
+    fireEvent.click(trigger);
+
     expect(await screen.findByText("1 个已连接服务")).toBeTruthy();
+    const serverButton = await screen.findByRole("button", { name: /Search Hub/ });
+    expect(serverButton).toBeTruthy();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
 
-    const serverButton = await screen.findByRole("button", { name: "Search Hub" });
-    fireEvent.click(serverButton);
-    expect(store.getState().componentTarget).toMatchObject({ kind: "mcp", id: "search-server" });
-
-    fireEvent.click(screen.getByRole("button", { name: "管理 MCP 服务" }));
+    fireEvent.click(within(li).getByRole("button", { name: "管理 MCP 服务" }));
     expect(store.getState().settingsRoute).toBe("mcp-servers");
   });
 
@@ -318,9 +345,13 @@ describe("5 Function Groups in Capabilities Workspace", () => {
     fireEvent.change(searchInput, { target: { value: "Search Hub" } });
     expect(screen.getByRole("heading", { name: "外置扩展与集成" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "联网能力" })).toBeNull();
+
+    // 3. 清空搜索恢复默认折叠（组件清单重新收起）。
+    fireEvent.change(searchInput, { target: { value: "" } });
+    expect(screen.queryByText("reply.text")).toBeNull();
   });
 
-  it("renders disabled tools and skills in gray with off reason while keeping details clickable", async () => {
+  it("renders disabled tools in gray with off reason inside the expanded capability while keeping them clickable", async () => {
     store.setState({
       page: "settings",
       settingsView: "workspace",
@@ -329,12 +360,16 @@ describe("5 Function Groups in Capabilities Workspace", () => {
     render(<CapabilitiesWorkspace active={true} />);
     await act(async () => {});
 
-    // memory.read 在 fixture 中 globalEnabled: false
-    const offToolButton = await screen.findByRole("button", { name: /memory.read/ });
-    expect(offToolButton).toBeTruthy();
-    expect(offToolButton.textContent).toContain("全局已关闭");
+    const li = document.querySelector<HTMLElement>("[data-capability-id='memory-query']")!;
+    const trigger = within(li)
+      .getAllByRole("button")
+      .find((button) => button.getAttribute("aria-expanded") !== null);
+    if (!trigger) throw new Error("missing capability trigger");
+    fireEvent.click(trigger);
 
-    // 点击仍可打开定义抽屉
+    // memory.read 在 fixture 中 globalEnabled: false；置灰但仍可点击打开定义。
+    const offToolButton = await screen.findByRole("button", { name: /memory\.read/ });
+    expect(offToolButton.textContent).toContain("全局已关闭");
     fireEvent.click(offToolButton);
     expect(store.getState().componentTarget).toMatchObject({ kind: "tool", id: "memory.read" });
   });

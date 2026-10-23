@@ -10,13 +10,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { InputSuggestions } from "@/components/ui/input-suggestions";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { dirtyPages } from "@/features/agents/page-drafts";
 import { returnFromContextAllocation } from "@/features/context-allocation";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 import type { AgentResponse } from "../../../shared/contracts";
+import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { KnowledgeToolSettings, MemoryToolSettings } from "./ResourceRules";
 import { AgentToolScope, CapabilityEditor, IdentityEditor } from "./StudioEditors";
 
@@ -31,10 +34,8 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       editorDraft: state.editorDraft,
       editorLoading: state.editorLoading,
       modelNames: state.modelNames,
-      openSettingsRoute: state.openSettingsRoute,
       pageEditor: state.pageEditor,
       patchDraft: state.patchDraft,
-      pendingOperations: state.pendingOperations,
       refreshModels: state.refreshModels,
       requestAgentNavigation: state.requestAgentNavigation,
       saveAllSettingsPages: state.saveAllSettingsPages,
@@ -44,6 +45,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       settingsRoute: state.settingsRoute,
       settingsSaving: state.settingsSaving,
       settingsView: state.settingsView,
+      syncSettingsRoute: state.syncSettingsRoute,
       contextAllocationTarget: state.contextAllocationTarget,
       error: state.error,
       dirty: state.dirty,
@@ -66,6 +68,17 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
   const [selection, setSelection] = useState<string[]>([]);
   const selectedSet = useMemo(() => new Set(selection), [selection]);
   const [deleteIds, setDeleteIds] = useState<string[] | null>(null);
+  // 常挂载确认弹窗在关闭动画期间仍会渲染：名称与 id 取最近一次打开时的快照。
+  const deleteTarget = useRef<{ ids: string[]; message: string } | null>(null);
+  const requestDelete = (ids: string[]) => {
+    deleteTarget.current = {
+      ids,
+      message: t("library.agents.delete.named", {
+        "0": ids.map((id) => s.agents.find((agent) => agent.id === id)?.name ?? id).join(", "),
+      }),
+    };
+    setDeleteIds(ids);
+  };
   const initialTab =
     s.settingsRoute === "models" || s.settingsRoute === "context"
       ? "capabilities"
@@ -95,6 +108,14 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       setTab("identity");
     }
   }, [s.settingsRoute]);
+
+  // 目录选择被统一离开守卫延后时，确认后由真正落地的编辑身份打开工作室；取消不改身份，目录保持。
+  const landedEditorId = useRef(s.editorAgentId);
+  useEffect(() => {
+    if (landedEditorId.current === s.editorAgentId) return;
+    landedEditorId.current = s.editorAgentId;
+    if (active && s.settingsView === "workspace" && s.editorAgentId !== "__new__") setStudio(true);
+  }, [active, s.settingsView, s.editorAgentId]);
 
   // 冷入口目标水合：当直达 context/memory-tools/knowledge-tools 且未就绪时，水合目标助手
   // 严格核验目标 ID 存在于 s.agents 中，尊重新草稿的脏保护，并在目标切换后支持继续水合
@@ -150,22 +171,72 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       `${a.name} ${a.description} ${a.model_name}`.toLowerCase().includes(needle),
     );
   }, [s.agents, search]);
+  const directoryRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const grid = directoryRef.current;
+    if (!active || studio || !grid || visible.length === 0) return;
+    let firstFrame = 0;
+    let secondFrame = 0;
+    let width: number | undefined;
+    const replay = () => {
+      grid.dataset.renderReady = "false";
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+      if (document.documentElement.dataset.interfaceSize === "compact") return;
+      firstFrame = requestAnimationFrame(() => {
+        secondFrame = requestAnimationFrame(() => {
+          grid.dataset.renderReady = "true";
+        });
+      });
+    };
+    // Remember actual row sizes before skipping offscreen layout; never estimate heights.
+    replay();
+    const resize = new ResizeObserver(([entry]) => {
+      const nextWidth = entry?.contentRect.width;
+      if (nextWidth === undefined) return;
+      if (width !== undefined && nextWidth !== width) replay();
+      width = nextWidth;
+    });
+    resize.observe(grid);
+    const appearance = new MutationObserver(replay);
+    appearance.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-font", "data-text-size", "data-interface-size", "lang"],
+    });
+    document.fonts.addEventListener("loadingdone", replay);
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+      resize.disconnect();
+      appearance.disconnect();
+      document.fonts.removeEventListener("loadingdone", replay);
+      delete grid.dataset.renderReady;
+    };
+  }, [active, studio, visible]);
+  // modelNames is already the loaded local + external union; map it once per snapshot.
+  const modelSuggestions = useMemo(
+    () => s.modelNames.map((name) => ({ value: name })),
+    [s.modelNames],
+  );
   const select = useCallback(
     (id: string) => {
       if (s.editorLoading || s.settingsSaving) return;
-      s.requestAgentNavigation(id);
-      setStudio(true);
+      // 只在导航真正落地（或被守卫延后、随后确认落地）后进入工作室；取消留在目录。
+      void s.requestAgentNavigation(id).then((landed) => {
+        if (landed) setStudio(true);
+      });
     },
     [s.editorLoading, s.settingsSaving, s.requestAgentNavigation],
   );
+  // 行勾选只写本组件既有的 selection；稳定回调让行级 memo 在其他提交中保持不动。
+  const toggleSelected = useCallback((id: string, checked: boolean) => {
+    setSelection((ids) => (checked ? [...ids, id] : ids.filter((value) => value !== id)));
+  }, []);
   const current = s.pageEditor;
   const isNew = s.editorAgentId === "__new__";
   const dirty = dirtyPages(current).length > 0;
   const taskNavigation = (
-    <TabsList className="mb-[24px] h-auto min-h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start flex-nowrap overflow-x-auto gap-[6px] rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:rounded-[6px] [&_[role=tab]]:shrink-0 [&_[role=tab]]:flex-none [&_[role=tab]]:border-0 [&_[role=tab][data-state=active]]:border [&_[role=tab][data-state=active]]:border-border [&_[role=tab][data-state=active]]:bg-card [&_[role=tab][data-state=active]]:font-semibold [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px] [&_[role=tab]]:font-medium">
-      <TabsTrigger value="access" tooltip={t("hints.custom.agentTab.access")}>
-        {t("strict.reading.title")}
-      </TabsTrigger>
+    <TabsList className="mb-[24px] h-auto group-data-horizontal/tabs:h-auto w-fit max-w-full justify-start flex-wrap gap-[6px] rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:rounded-[6px] [&_[role=tab]]:shrink-0 [&_[role=tab]]:flex-none [&_[role=tab]]:border-0 [&_[role=tab][data-state=active]]:border [&_[role=tab][data-state=active]]:border-border [&_[role=tab][data-state=active]]:bg-card [&_[role=tab][data-state=active]]:font-semibold [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px] [&_[role=tab]]:font-medium">
       <TabsTrigger value="identity" tooltip={t("hints.custom.agentTab.identity")}>
         {t("strict.task.identity")}
       </TabsTrigger>
@@ -175,91 +246,87 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       <TabsTrigger value="tools" tooltip={t("hints.custom.agentTab.tools")}>
         {t("strict.tools.title")}
       </TabsTrigger>
+      <TabsTrigger value="access" tooltip={t("hints.custom.agentTab.access")}>
+        {t("strict.reading.title")}
+      </TabsTrigger>
     </TabsList>
   );
-  const readingTask = studio && !isNew && !!current && tab === "access";
   return (
     <div className="mx-auto h-full min-h-0 w-full max-w-[1160px] overflow-y-auto px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]">
-      {!readingTask && (
-        <header className="mb-[24px] flex flex-wrap items-start justify-between gap-[14px] border-b border-border pb-[20px]">
-          <div className="min-w-0 flex-1">
-            {studio && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="mb-2 -ml-2 w-fit"
-                tooltip={t("hints.agent.directory")}
-                onClick={() => setStudio(false)}
-              >
-                <ArrowLeft />
-                {t("library.all.assistants")}
-              </Button>
-            )}
-            <p className="workspace-page-location">
-              {t("strict.workspace")} › {t("library.assistant")}
-              {studio && current ? ` › ${current.agent.name}` : ""}
-            </p>
-            <div className="flex flex-wrap items-center gap-[12px]">
-              <h1 className="workspace-page-title">
-                {studio
-                  ? isNew
-                    ? t("library.create.assistant")
-                    : t("agent.configuration.title", { name: current?.agent.name ?? "" })
-                  : t("library.your.agents")}
-              </h1>
-              {studio && current && (
-                <span className="rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] text-muted-foreground">
-                  {t(
-                    tab === "tools"
-                      ? "strict.tools.title"
-                      : tab === "capabilities"
-                        ? "strict.task.models"
-                        : "strict.task.identity",
-                  )}
-                </span>
-              )}
-            </div>
-            <p className="workspace-page-description max-w-[680px]">
-              {t(
-                studio && !isNew && current
-                  ? "agent.configuration.hint"
-                  : "library.define.each.agent.s.identity.model.capabilities.and.resource",
-              )}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {s.contextAllocationTarget?.returnRoute &&
-              s.contextAllocationTarget.returnRoute !== s.settingsRoute && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={returnFromContextAllocation}
-                  tooltip={t("hints.agent.returnFromContextAllocation")}
-                  className="h-auto min-h-9 flex items-center gap-1.5"
+      {!studio ? (
+        <WorkspacePageHeader
+          location={t("brand.workspace", { "0": t("library.assistant") })}
+          title={t("library.your.agents")}
+          description={t("library.define.each.agent.s.identity.model.capabilities.and.resource")}
+          actions={
+            <Button
+              disabled={s.editorLoading || s.settingsSaving}
+              aria-label={t("library.create.assistant")}
+              className="max-[480px]:size-9 max-[480px]:p-0"
+              tooltip={t("hints.agent.create")}
+              onClick={() => select("__new__")}
+            >
+              <Plus />
+              <span className="max-[480px]:hidden">{t("library.create.assistant")}</span>
+            </Button>
+          }
+        />
+      ) : (
+        <WorkspacePageHeader
+          backAction={
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="relative inline-flex h-[20px] items-center gap-1 rounded text-[12.5px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary before:absolute before:-inset-y-1.5 before:inset-x-0 before:content-['']"
+                  aria-label={t("library.all.assistants")}
+                  onClick={() => setStudio(false)}
                 >
-                  <ArrowLeft className="size-4" />
-                  {t("schemes.allocation.returnTo", {
-                    "0":
-                      s.contextAllocationTarget.returnLabel ||
-                      s.contextAllocationTarget.returnRoute,
-                  })}
-                </Button>
-              )}
-            {!studio && (
+                  <ArrowLeft className="size-3.5" aria-hidden="true" />
+                  <span>{t("library.all.assistants")}</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{t("hints.agent.directory")}</TooltipContent>
+            </Tooltip>
+          }
+          location={`${t("strict.workspace")} › ${t("library.assistant")}${current ? ` › ${current.agent.name}` : ""}`}
+          title={
+            isNew
+              ? t("library.create.assistant")
+              : t("agent.configuration.title", { name: current?.agent.name ?? "" })
+          }
+          description={t(
+            !isNew && current
+              ? "agent.configuration.hint"
+              : "library.define.each.agent.s.identity.model.capabilities.and.resource",
+          )}
+          actions={
+            s.contextAllocationTarget?.returnRoute &&
+            s.contextAllocationTarget.returnRoute !== s.settingsRoute ? (
               <Button
-                disabled={s.editorLoading || s.settingsSaving}
-                tooltip={t("hints.agent.create")}
-                onClick={() => select("__new__")}
+                variant="outline"
+                size="sm"
+                onClick={returnFromContextAllocation}
+                tooltip={t("hints.agent.returnFromContextAllocation")}
+                className="h-auto min-h-9 flex items-center gap-1.5"
               >
-                <Plus />
-                {t("library.create.assistant")}
+                <ArrowLeft className="size-4" />
+                {t("schemes.allocation.returnTo", {
+                  "0":
+                    s.contextAllocationTarget.returnLabel || s.contextAllocationTarget.returnRoute,
+                })}
               </Button>
-            )}
-          </div>
-        </header>
+            ) : undefined
+          }
+        />
       )}
       {!studio ? (
         <>
+          {s.error && (
+            <p role="alert" className="mb-3 text-sm text-destructive">
+              {translateNotice(s.error)}
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative min-w-52 flex-1">
               <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
@@ -296,46 +363,29 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                 variant="destructive"
                 disabled={s.editorLoading || s.settingsSaving}
                 tooltip={t("hints.agent.deleteSelected")}
-                onClick={() => setDeleteIds(selection)}
+                onClick={() => requestDelete(selection)}
               >
                 <Trash2 />
                 {t("library.delete.selected")} · {selection.length}
               </Button>
             )}
           </div>
-          <div className="mt-[24px] grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-[16px]">
+          <div
+            ref={directoryRef}
+            className="mt-[24px] grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-[16px] [&>[data-slot=card]]:[contain-intrinsic-block-size:auto_none] data-[render-ready=true]:[&>[data-slot=card]]:[content-visibility:auto]"
+          >
             {visible.map((agent) => (
-              <Card
+              <DirectoryRow
                 key={agent.id}
-                className={`group py-[20px] transition-colors ${
-                  s.editorAgentId === agent.id
-                    ? "border-primary bg-primary/5"
-                    : "hover:border-primary/50"
-                }`}
-              >
-                <CardContent className="space-y-4">
-                  <div className="flex items-start gap-3">
-                    <DirectoryIdentity agent={agent} onOpen={select} />
-                    <Checkbox
-                      aria-label={t("library.select.value", { "0": agent.name })}
-                      disabled={s.editorLoading || s.settingsSaving}
-                      checked={selectedSet.has(agent.id)}
-                      onCheckedChange={(v) =>
-                        setSelection((ids) =>
-                          v === true ? [...ids, agent.id] : ids.filter((id) => id !== agent.id),
-                        )
-                      }
-                    />
-                  </div>
-                  <DirectoryActions
-                    agent={agent}
-                    isDefault={s.selectedNewSessionAgentId === agent.id}
-                    busy={s.editorLoading || s.settingsSaving}
-                    onOpen={select}
-                    onSetDefault={s.setNewSessionAgent}
-                  />
-                </CardContent>
-              </Card>
+                agent={agent}
+                checked={selectedSet.has(agent.id)}
+                isEditing={s.editorAgentId === agent.id}
+                isDefault={s.selectedNewSessionAgentId === agent.id}
+                busy={s.editorLoading || s.settingsSaving}
+                onOpen={select}
+                onToggle={toggleSelected}
+                onSetDefault={s.setNewSessionAgent}
+              />
             ))}
           </div>
           {visible.length === 0 && (
@@ -366,6 +416,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                 <Input
                   value={s.editorDraft.name}
                   onChange={(e) => s.patchDraft({ name: e.target.value })}
+                  disabled={s.settingsSaving}
                   required
                   maxLength={100}
                 />
@@ -374,19 +425,16 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                 <Textarea
                   value={s.editorDraft.description}
                   onChange={(e) => s.patchDraft({ description: e.target.value })}
+                  disabled={s.settingsSaving}
                 />
               </Field>
               <Field label="library.chat.model" tooltip={t("hints.agent.fieldChatModel")}>
-                <Input
-                  list="new-agent-models"
+                <InputSuggestions
+                  suggestions={modelSuggestions}
                   value={s.editorDraft.model_name}
-                  onChange={(e) => s.patchDraft({ model_name: e.target.value })}
+                  onValueChange={(value) => s.patchDraft({ model_name: value })}
+                  disabled={s.settingsSaving}
                 />
-                <datalist id="new-agent-models">
-                  {s.modelNames.map((name) => (
-                    <option key={name} value={name} />
-                  ))}
-                </datalist>
               </Field>
               <Field
                 label="library.additional.instructions"
@@ -396,11 +444,12 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                   rows={5}
                   value={s.editorDraft.additional_instructions}
                   onChange={(e) => s.patchDraft({ additional_instructions: e.target.value })}
+                  disabled={s.settingsSaving}
                 />
               </Field>
               <Button
                 type="submit"
-                disabled={s.pendingOperations > 0 || !s.editorDraft.name.trim()}
+                disabled={s.settingsSaving || !s.editorDraft.name.trim()}
                 tooltip={t("hints.agent.submitCreate")}
                 disabledReason={
                   !s.editorDraft.name.trim() ? t("hints.agent.submitCreateDisabledName") : undefined
@@ -412,84 +461,137 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
           </SettingsGroup>
         </div>
       ) : current ? (
-        <>
-          {!readingTask && (
-            <div className="mb-[20px] flex flex-wrap items-center gap-[8px]">
-              <Badge variant="outline">{current.agent.id.slice(0, 8)}</Badge>
-              <Badge variant="secondary">{current.agent.model_name}</Badge>
-              {dirty && <Badge>{t("library.unsaved.changes")}</Badge>}
-              <div className="ml-auto flex gap-2">
-                <Button
-                  variant="outline"
-                  disabled={!dirty || s.settingsSaving}
-                  tooltip={t("hints.agent.discard")}
-                  disabledReason={t("hints.agent.noChangesToDiscard")}
-                  onClick={() => s.discardSettingsPages()}
-                >
-                  {t("library.discard.changes")}
-                </Button>
-                <Button
-                  disabled={!dirty || s.settingsSaving}
-                  tooltip={t("hints.agent.saveAll")}
-                  disabledReason={t("hints.agent.noChangesToSave")}
-                  onClick={() => void s.saveAllSettingsPages()}
-                >
-                  {t("library.save.agent")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={t("library.delete.agent")}
-                  tooltip={t("hints.agent.deleteSingle")}
-                  onClick={() => setDeleteIds([current.agent.id])}
-                >
-                  <Trash2 />
-                </Button>
-              </div>
-            </div>
-          )}
-          <Tabs
-            value={tab}
-            onValueChange={(next) => {
-              setTab(next);
-              if (next === "capabilities") {
-                s.openSettingsRoute("context");
-              } else if (next === "identity") {
-                s.openSettingsRoute("identity");
-              }
-              // "access" stays in the current agent identity route domain without triggering route jump
-            }}
-            className="gap-0"
-          >
-            <MemoryToolSettings
-              active={tab === "access"}
-              navigation={taskNavigation}
-              onDirectory={() => setStudio(false)}
-            />
-            {(tab === "identity" || visitedTabs.includes("identity")) && (
-              <TabsContent value="identity" forceMount className="data-[state=inactive]:hidden">
-                <IdentityEditor />
-              </TabsContent>
-            )}
-            {(tab === "access" || visitedTabs.includes("access")) && (
-              <TabsContent value="access" forceMount className="data-[state=inactive]:hidden">
-                <div className="space-y-6">
-                  <KnowledgeToolSettings active={active && tab === "access"} />
+        <MemoryToolSettings
+          active={active && tab === "access"}
+          renderWorkspace={({ actions, content, status }) => (
+            <>
+              <div
+                data-visual="agent-workspace-toolbar"
+                className="mb-[16px] grid grid-cols-1 gap-2.5 sm:flex sm:flex-wrap sm:items-center sm:justify-between"
+              >
+                <div className="flex flex-wrap items-center gap-[8px]">
+                  <Badge variant="outline">{current.agent.id.slice(0, 8)}</Badge>
+                  <Badge
+                    variant="secondary"
+                    className="max-w-[200px] truncate"
+                    title={current.agent.model_name}
+                  >
+                    {current.agent.model_name}
+                  </Badge>
+                  <div className="grid">
+                    <div
+                      className="[grid-area:1/1]"
+                      style={{ visibility: tab === "access" ? "visible" : "hidden" }}
+                      aria-hidden={tab !== "access"}
+                      inert={tab !== "access"}
+                    >
+                      {status}
+                    </div>
+                    <div
+                      className="[grid-area:1/1]"
+                      style={{ visibility: tab !== "access" && dirty ? "visible" : "hidden" }}
+                      aria-hidden={tab === "access" || !dirty}
+                      inert={tab === "access" || !dirty}
+                    >
+                      {tab !== "access" && dirty && <Badge>{t("library.unsaved.changes")}</Badge>}
+                    </div>
+                  </div>
                 </div>
-              </TabsContent>
-            )}
-            {(tab === "capabilities" || visitedTabs.includes("capabilities")) && (
-              <TabsContent value="capabilities" forceMount className="data-[state=inactive]:hidden">
-                <CapabilityEditor active={active && tab === "capabilities"} />
-              </TabsContent>
-            )}
-            {(tab === "tools" || visitedTabs.includes("tools")) && (
-              <TabsContent value="tools" forceMount className="data-[state=inactive]:hidden">
-                <AgentToolScope agentId={current.agent.id} active={active && tab === "tools"} />
-              </TabsContent>
-            )}
-          </Tabs>
-        </>
+                <div className="grid min-w-0 max-w-full sm:ml-auto">
+                  <div
+                    className="[grid-area:1/1]"
+                    style={{ visibility: tab === "access" ? "hidden" : "visible" }}
+                    aria-hidden={tab === "access"}
+                    inert={tab === "access"}
+                  >
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!dirty || s.settingsSaving}
+                        tooltip={t("hints.agent.discard")}
+                        disabledReason={t("hints.agent.noChangesToDiscard")}
+                        onClick={() => s.discardSettingsPages()}
+                      >
+                        {t("library.discard.changes")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={!dirty || s.settingsSaving}
+                        tooltip={t("hints.agent.saveAll")}
+                        disabledReason={t("hints.agent.noChangesToSave")}
+                        onClick={() => void s.saveAllSettingsPages()}
+                      >
+                        {t("library.save.agent")}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={t("library.delete.agent")}
+                        tooltip={t("hints.agent.deleteSingle")}
+                        onClick={() => requestDelete([current.agent.id])}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  </div>
+                  <div
+                    className="[grid-area:1/1]"
+                    style={{ visibility: tab === "access" ? "visible" : "hidden" }}
+                    aria-hidden={tab !== "access"}
+                    inert={tab !== "access"}
+                  >
+                    {actions}
+                  </div>
+                </div>
+              </div>
+              <Tabs
+                value={tab}
+                onValueChange={(next) => {
+                  setTab(next);
+                  // 标签页是已落地工作区内的本地视图：只同步落点路由，不重复运行页面/Agent 离开守卫。
+                  if (next === "capabilities") {
+                    s.syncSettingsRoute("context");
+                  } else if (next === "identity") {
+                    s.syncSettingsRoute("identity");
+                  }
+                  // "access" stays in the current agent identity route domain without triggering route jump
+                }}
+                className="agent-workspace-content gap-0"
+              >
+                {taskNavigation}
+
+                {(tab === "identity" || visitedTabs.includes("identity")) && (
+                  <TabsContent value="identity" forceMount className="data-[state=inactive]:hidden">
+                    <IdentityEditor />
+                  </TabsContent>
+                )}
+                {(tab === "access" || visitedTabs.includes("access")) && (
+                  <TabsContent value="access" forceMount className="data-[state=inactive]:hidden">
+                    <div className="space-y-6">
+                      {content}
+                      <KnowledgeToolSettings active={active && tab === "access"} />
+                    </div>
+                  </TabsContent>
+                )}
+                {(tab === "capabilities" || visitedTabs.includes("capabilities")) && (
+                  <TabsContent
+                    value="capabilities"
+                    forceMount
+                    className="data-[state=inactive]:hidden"
+                  >
+                    <CapabilityEditor active={active && tab === "capabilities"} />
+                  </TabsContent>
+                )}
+                {(tab === "tools" || visitedTabs.includes("tools")) && (
+                  <TabsContent value="tools" forceMount className="data-[state=inactive]:hidden">
+                    <AgentToolScope agentId={current.agent.id} active={active && tab === "tools"} />
+                  </TabsContent>
+                )}
+              </Tabs>
+            </>
+          )}
+        />
       ) : s.agents.length === 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
           <p className="text-sm text-muted-foreground">{t("capabilities.memory.noAgent")}</p>
@@ -517,26 +619,23 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       ) : (
         <p>{t("library.select.an.agent.to.start.editing")}</p>
       )}
-      {active && deleteIds && (
-        <ConfirmDialog
-          message={t("library.agents.delete.named", {
-            "0": deleteIds
-              .map((id) => s.agents.find((agent) => agent.id === id)?.name ?? id)
-              .join(", "),
-          })}
-          onCancel={() => setDeleteIds(null)}
-          onConfirm={() => {
-            return s.deleteAgents(deleteIds).then(() => {
-              const surviving = new Set(
-                useSuperstringStore.getState().agents.map((agent) => agent.id),
-              );
-              setSelection(deleteIds.filter((id) => surviving.has(id)));
-              setDeleteIds(null);
-              if (!surviving.has(useSuperstringStore.getState().editorAgentId)) setStudio(false);
-            });
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={active && deleteIds !== null}
+        message={deleteTarget.current?.message ?? ""}
+        onCancel={() => setDeleteIds(null)}
+        onConfirm={() => {
+          const ids = deleteTarget.current?.ids;
+          if (!ids) return;
+          return s.deleteAgents(ids).then(() => {
+            const state = useSuperstringStore.getState();
+            const surviving = new Set(state.agents.map((agent) => agent.id));
+            // 单对象删除只移除被删项，不覆盖目录里已有的多选。
+            setSelection((previous) => previous.filter((id) => surviving.has(id)));
+            setDeleteIds(null);
+            if (!surviving.has(state.editorAgentId)) setStudio(false);
+          });
+        }}
+      />
     </div>
   );
 }
@@ -623,5 +722,53 @@ const DirectoryActions = memo(function DirectoryActions({
         </Button>
       </div>
     </>
+  );
+});
+
+const DirectoryRow = memo(function DirectoryRow({
+  agent,
+  checked,
+  isDefault,
+  isEditing,
+  busy,
+  onOpen,
+  onToggle,
+  onSetDefault,
+}: {
+  agent: AgentResponse;
+  checked: boolean;
+  isDefault: boolean;
+  isEditing: boolean;
+  busy: boolean;
+  onOpen: (id: string) => void;
+  onToggle: (id: string, checked: boolean) => void;
+  onSetDefault: (id: string) => void;
+}) {
+  const t = useTranslation().t;
+  return (
+    <Card
+      className={`group py-[20px] transition-colors ${
+        isEditing ? "border-primary bg-primary/5" : "hover:border-primary/50"
+      }`}
+    >
+      <CardContent className="space-y-4">
+        <div className="flex items-start gap-3">
+          <DirectoryIdentity agent={agent} onOpen={onOpen} />
+          <Checkbox
+            aria-label={t("library.select.value", { "0": agent.name })}
+            disabled={busy}
+            checked={checked}
+            onCheckedChange={(v) => onToggle(agent.id, v === true)}
+          />
+        </div>
+        <DirectoryActions
+          agent={agent}
+          isDefault={isDefault}
+          busy={busy}
+          onOpen={onOpen}
+          onSetDefault={onSetDefault}
+        />
+      </CardContent>
+    </Card>
   );
 });

@@ -1,5 +1,9 @@
 import { createBrowserStateStorage } from "../browser-state";
-import { translate } from "../i18n";
+import {
+  isCurrentModelDiscovery,
+  modelStatusText,
+  startModelDiscovery,
+} from "../features/models/model-discovery";
 import {
   loadDirectoryCache,
   loadWebChatCache,
@@ -175,38 +179,17 @@ export function createBootstrapActions(
         );
 
         // Model discovery is optional: a slow service must not block the directory or startup prewarm.
-        const modelResults = Promise.allSettled([api.listModels(), api.listModelProviders()]);
-        void modelResults.then(([catalogResult, providersResult]) => {
-          if (!isCurrent()) return;
-          const catalog = catalogResult.status === "fulfilled" ? catalogResult.value : null;
-          const providers = providersResult.status === "fulfilled" ? providersResult.value : [];
-          const local = [...new Set(catalog?.models ?? [])];
-          const external = [
-            ...new Set(providers.flatMap((provider) => provider.models.map((model) => model.name))),
-          ];
-          const reported = [...new Set([...local, ...external])];
-          const catalogFailure =
-            catalogResult.status === "rejected" ? errorText(catalogResult.reason) : null;
-          const modelFailures =
-            providersResult.status === "rejected" ? [errorText(providersResult.reason)] : [];
-          if (catalogFailure !== null && external.length === 0) modelFailures.push(catalogFailure);
-          set((state) => ({
-            error: modelFailures.length
-              ? [state.error, ...modelFailures].filter(Boolean).join("；")
-              : state.error,
-            modelNames: reported,
-            modelProviders: providers,
-            loadedModelNames: local,
-            externalModelNames: external,
-            modelStatus:
-              catalogFailure !== null
-                ? external.length
-                  ? translate("本地模型服务连不上：{0}；已登记的外部模型仍可选择。", catalogFailure)
-                  : translate("模型列表加载失败：{0}；仍可保留或手动输入模型 ID。", catalogFailure)
-                : reported.length
-                  ? translate("LM Studio 当前报告 {0} 个已加载模型。", reported.length)
-                  : translate("LM Studio 当前没有报告已加载模型；仍可保留或手动输入模型 ID。"),
-          }));
+        // Failures stay in modelStatus and never replace the shared error or a chat error.
+        const modelDiscovery = startModelDiscovery(api, api.listModels(), api.listModelProviders());
+        void modelDiscovery.result.then((discovery) => {
+          if (!isCurrentModelDiscovery(api, modelDiscovery.revision) || !isCurrent()) return;
+          set({
+            modelNames: discovery.modelNames,
+            modelProviders: discovery.providers,
+            loadedModelNames: discovery.local,
+            externalModelNames: discovery.external,
+            modelStatus: modelStatusText(discovery),
+          });
         });
         void api
           .listAgents()

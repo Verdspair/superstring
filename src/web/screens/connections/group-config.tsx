@@ -2,7 +2,7 @@
 // 原文先进 store（合法性由契约判定，非法留 rawTexts 并拦保存），blur 后才提示错误；换基础方案先预览 keep/reset。
 
 import { ChevronLeft, MessageSquare, Shield } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import type { AgentKnowledgeReadSettings } from "../../../shared/contracts/knowledge";
@@ -36,6 +36,7 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
+import { InputSuggestions } from "../../components/ui/input-suggestions";
 import { Label } from "../../components/ui/label";
 import { NativeSelect } from "../../components/ui/native-select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
@@ -95,6 +96,9 @@ const baseGroupOf = (scheme: QqSchemeResponse, group: string): Record<string, un
 
 const isCustomField = (editor: QqGroupConfigEditor, group: string, name: string) =>
   overrideOf(editor, group, name).custom || editor.rawTexts[`${group}.${name}`] !== undefined;
+
+/** 时区建议来自共享 IANA 常量；输入仍可自由写，校验与错误提示仍归本组件。 */
+const timezoneSuggestions = TIMEZONE_SUGGESTIONS.map((value) => ({ value }));
 
 /** 契约级数字原文判定（0052 两组共用）：非空且过共享 schema；0 不是 null 原图的编码。 */
 const schemaSafeParse = (group: string, name: string, raw: string): boolean => {
@@ -405,28 +409,21 @@ function TimezoneField({
       info="connections.timezoneHint"
       tooltip={t("connections.timezoneHint")}
     >
-      <div>
-        <Input
-          type="text"
-          list="group-config-timezone-suggestions"
-          data-field={`${group}.${name}`}
-          disabled={saving}
-          value={display}
-          aria-invalid={showInvalid || undefined}
-          aria-describedby={showInvalid ? errorId : undefined}
-          onFocus={() => setShowError(false)}
-          onBlur={() => setShowError(true)}
-          onChange={(e) => {
-            setShowError(false);
-            patch(group, name, e.target.value);
-          }}
-        />
-        <datalist id="group-config-timezone-suggestions">
-          {TIMEZONE_SUGGESTIONS.map((zone) => (
-            <option key={zone} value={zone} />
-          ))}
-        </datalist>
-      </div>
+      <InputSuggestions
+        type="text"
+        suggestions={timezoneSuggestions}
+        data-field={`${group}.${name}`}
+        disabled={saving}
+        value={display}
+        aria-invalid={showInvalid || undefined}
+        aria-describedby={showInvalid ? errorId : undefined}
+        onFocus={() => setShowError(false)}
+        onBlur={() => setShowError(true)}
+        onValueChange={(value) => {
+          setShowError(false);
+          patch(group, name, value);
+        }}
+      />
       <FieldState
         label={t("connections.timezone")}
         custom={custom}
@@ -1270,10 +1267,14 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
     void load();
   }, [load]);
   const [choice, setChoice] = useState<string | null>(null);
+  // 常挂载确认弹窗在关闭动画期间仍会渲染：目标方案取最近一次选择。
+  const lastChoice = useRef<string | null>(null);
+  if (choice) lastChoice.current = choice;
+  const choiceView = choice ?? lastChoice.current;
   const baseId = editor.source.base_scheme.id;
   const selected = editor.schemeId ?? baseId;
   const schemeNameOf = (id: string) => schemes.find((row) => row.id === id)?.name ?? id;
-  const choiceTarget = choice ? (schemes.find((row) => row.id === choice) ?? null) : null;
+  const choiceTarget = choiceView ? (schemes.find((row) => row.id === choiceView) ?? null) : null;
   return (
     <SchemeFieldCard
       title={t("schemes.qq.groupConfig.scheme.title")}
@@ -1327,56 +1328,54 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
           </Button>
         </p>
       )}
-      {choice && (
-        <Dialog
-          open
-          onOpenChange={(open) => {
-            if (!open) setChoice(null);
-          }}
-        >
-          <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>
-                {t("schemes.qq.groupConfig.scheme.confirmTitle", { "0": schemeNameOf(choice) })}
-              </DialogTitle>
-              <DialogDescription>
-                {t("schemes.qq.groupConfig.scheme.confirmBody")}
-              </DialogDescription>
-            </DialogHeader>
-            <SchemeSwitchPreview editor={editor} target={choiceTarget} />
-            <DialogFooter>
-              <Button
-                tooltip={<Trans i18nKey="hints.complete.cancel" />}
-                variant="outline"
-                onClick={() => setChoice(null)}
-              >
-                {t("connections.cancel")}
-              </Button>
-              <Button
-                variant="outline"
-                tooltip={t("hints.qq.schemeSwitchReset")}
-                data-switch-action="reset"
-                onClick={() => {
-                  patch(choice, "reset");
-                  setChoice(null);
-                }}
-              >
-                {t("schemes.qq.groupConfig.scheme.resetLabel")}
-              </Button>
-              <Button
-                tooltip={t("hints.qq.schemeSwitchKeep")}
-                data-switch-action="keep"
-                onClick={() => {
-                  patch(choice, "keep");
-                  setChoice(null);
-                }}
-              >
-                {t("schemes.qq.groupConfig.scheme.keepLabel")}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
+      <Dialog
+        open={choice !== null}
+        onOpenChange={(open) => {
+          if (!open) setChoice(null);
+        }}
+      >
+        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {t("schemes.qq.groupConfig.scheme.confirmTitle", {
+                "0": schemeNameOf(choiceView ?? ""),
+              })}
+            </DialogTitle>
+            <DialogDescription>{t("schemes.qq.groupConfig.scheme.confirmBody")}</DialogDescription>
+          </DialogHeader>
+          <SchemeSwitchPreview editor={editor} target={choiceTarget} />
+          <DialogFooter>
+            <Button
+              tooltip={<Trans i18nKey="hints.complete.cancel" />}
+              variant="outline"
+              onClick={() => setChoice(null)}
+            >
+              {t("connections.cancel")}
+            </Button>
+            <Button
+              variant="outline"
+              tooltip={t("hints.qq.schemeSwitchReset")}
+              data-switch-action="reset"
+              onClick={() => {
+                if (choiceView) patch(choiceView, "reset");
+                setChoice(null);
+              }}
+            >
+              {t("schemes.qq.groupConfig.scheme.resetLabel")}
+            </Button>
+            <Button
+              tooltip={t("hints.qq.schemeSwitchKeep")}
+              data-switch-action="keep"
+              onClick={() => {
+                if (choiceView) patch(choiceView, "keep");
+                setChoice(null);
+              }}
+            >
+              {t("schemes.qq.groupConfig.scheme.keepLabel")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </SchemeFieldCard>
   );
 }
@@ -2376,71 +2375,68 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           </Button>
         </footer>
       )}
-      {preview && (
-        <Dialog
-          open
-          onOpenChange={(open) => {
-            if (!open) setPreview(false);
-          }}
-        >
-          <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>{t("schemes.qq.groupConfig.previewTitle")}</DialogTitle>
-              <DialogDescription>{t("schemes.qq.groupConfig.previewNote")}</DialogDescription>
-            </DialogHeader>
-            <ChangeList changes={changes} schemeNameOf={schemeNameOf} editor={visibleEditor} />
-            <DialogFooter>
-              <Button
-                tooltip={<Trans i18nKey="hints.complete.cancel" />}
-                variant="outline"
-                onClick={() => setPreview(false)}
-              >
-                {t("connections.cancel")}
-              </Button>
-              <Button
-                disabled={saving || invalid || !dirty || conflicted}
-                tooltip={t("hints.qq.previewSaveNow")}
-                onClick={() => {
-                  setPreview(false);
-                  void state.saveQqGroupConfig();
-                }}
-              >
-                {t(isPrivate ? "qq.conversation.save" : "schemes.qq.groupConfig.save")}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
-      {resetAll && (
-        <AlertDialog
-          title={t("schemes.qq.groupConfig.resetAllTitle")}
-          busy={saving}
-          onCancel={() => setResetAll(false)}
-        >
-          <p className="text-sm">{t("schemes.qq.groupConfig.resetAllBody")}</p>
-          <div className="flex justify-end gap-2">
+      <Dialog
+        open={preview}
+        onOpenChange={(open) => {
+          if (!open) setPreview(false);
+        }}
+      >
+        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("schemes.qq.groupConfig.previewTitle")}</DialogTitle>
+            <DialogDescription>{t("schemes.qq.groupConfig.previewNote")}</DialogDescription>
+          </DialogHeader>
+          <ChangeList changes={changes} schemeNameOf={schemeNameOf} editor={visibleEditor} />
+          <DialogFooter>
             <Button
               tooltip={<Trans i18nKey="hints.complete.cancel" />}
               variant="outline"
-              data-dialog-cancel
-              disabled={saving}
-              onClick={() => setResetAll(false)}
+              onClick={() => setPreview(false)}
             >
               {t("connections.cancel")}
             </Button>
             <Button
-              disabled={saving}
-              tooltip={t("hints.qq.resetAllConfirm")}
+              disabled={saving || invalid || !dirty || conflicted}
+              tooltip={t("hints.qq.previewSaveNow")}
               onClick={() => {
-                state.patchQqGroupConfigScheme(undefined, "reset");
-                setResetAll(false);
+                setPreview(false);
+                void state.saveQqGroupConfig();
               }}
             >
-              {t("schemes.qq.groupConfig.resetAllConfirm")}
+              {t(isPrivate ? "qq.conversation.save" : "schemes.qq.groupConfig.save")}
             </Button>
-          </div>
-        </AlertDialog>
-      )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <AlertDialog
+        open={resetAll}
+        title={t("schemes.qq.groupConfig.resetAllTitle")}
+        busy={saving}
+        onCancel={() => setResetAll(false)}
+      >
+        <p className="text-sm">{t("schemes.qq.groupConfig.resetAllBody")}</p>
+        <div className="flex justify-end gap-2">
+          <Button
+            tooltip={<Trans i18nKey="hints.complete.cancel" />}
+            variant="outline"
+            data-dialog-cancel
+            disabled={saving}
+            onClick={() => setResetAll(false)}
+          >
+            {t("connections.cancel")}
+          </Button>
+          <Button
+            disabled={saving}
+            tooltip={t("hints.qq.resetAllConfirm")}
+            onClick={() => {
+              state.patchQqGroupConfigScheme(undefined, "reset");
+              setResetAll(false);
+            }}
+          >
+            {t("schemes.qq.groupConfig.resetAllConfirm")}
+          </Button>
+        </div>
+      </AlertDialog>
       {adminEditorOpen && visibleEditor && !isPrivate && (
         <BindingEditor
           conversation={{

@@ -4,7 +4,12 @@ import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createModelProvider } from "../../src/server/db/model-provider-repository";
-import { createLmStudioClient, resolveLmStudioConfig } from "../../src/server/llm/model-gateway";
+import {
+  createLmStudioClient,
+  isRetryableModelRefusal,
+  mapModelError,
+  resolveLmStudioConfig,
+} from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
 import { QQ_JUDGEMENT_RESPONSE_SCHEMA } from "../../src/server/services/qq-prompt-contract";
 import {
@@ -304,6 +309,9 @@ describe("model gateway distinguishes an auth rejection", () => {
       const completion = await capture(gateway.complete({ messages }));
       expect(completion).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE" });
       expect(completion?.message).toContain("API token");
+      // 本地路由的动作仍是设置 LM_STUDIO_API_KEY，且不能串到外部 provider 文案。
+      expect(completion?.message).toContain("LM_STUDIO_API_KEY");
+      expect(completion?.message).not.toContain("外部模型服务");
 
       const capacity = await capture(gateway.loadedContextCapacity("test/model"));
       expect(capacity).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE" });
@@ -766,7 +774,12 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
         responseSchema: AGENT_DECISION_JSON_SCHEMA,
         tools: decisionTools,
       });
-      expect(cloud.seen[0]?.tools).toEqual([{ type: "function", function: decisionTools[0] }]);
+      const advertised = (
+        cloud.seen[0]!.tools as Array<{ function: (typeof decisionTools)[number] }>
+      )[0]!.function;
+      expect(advertised.name).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+      expect(advertised.description).toContain(decisionTools[0]!.name);
+      expect(advertised.parameters).toEqual(decisionTools[0]!.parameters);
       await hosts.gateway.complete({
         messages: [],
         model: "local/model",
@@ -781,7 +794,7 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
   });
 
   it("tool_calls 映射成现有 invoke 决策：正文为空也算读到", async () => {
-    const cloud = bodyOf((_b, res) =>
+    const cloud = bodyOf((body, res) =>
       answer(res, {
         choices: [
           {
@@ -793,7 +806,7 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
                   id: "call_1",
                   type: "function",
                   function: {
-                    name: "speech.evaluate",
+                    name: (body.tools as Array<{ function: { name: string } }>)[0]!.function.name,
                     arguments: '{"targetId":"t1","observedSeq":7}',
                   },
                 },
@@ -825,14 +838,21 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
     const warnings: string[] = [];
     const original = console.warn;
     console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
-    const cloud = bodyOf((_b, res) =>
+    const cloud = bodyOf((body, res) =>
       answer(res, {
         choices: [
           {
             finish_reason: "tool_calls",
             message: {
               content: null,
-              tool_calls: [{ function: { name: "speech.evaluate", arguments: "{not json" } }],
+              tool_calls: [
+                {
+                  function: {
+                    name: (body.tools as Array<{ function: { name: string } }>)[0]!.function.name,
+                    arguments: "{not json",
+                  },
+                },
+              ],
             },
           },
         ],
@@ -905,10 +925,22 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
         },
       }));
     let toolCalls: unknown[] = callsFor(INVOKE_BATCH_LIMIT);
-    const cloud = bodyOf((_b, res) =>
+    const cloud = bodyOf((body, res) =>
       answer(res, {
         choices: [
-          { finish_reason: "tool_calls", message: { content: null, tool_calls: toolCalls } },
+          {
+            finish_reason: "tool_calls",
+            message: {
+              content: null,
+              tool_calls: toolCalls.map((call) => ({
+                ...(call as Record<string, unknown>),
+                function: {
+                  ...(call as { function: Record<string, unknown> }).function,
+                  name: (body.tools as Array<{ function: { name: string } }>)[0]!.function.name,
+                },
+              })),
+            },
+          },
         ],
       }),
     );
@@ -1153,5 +1185,136 @@ describe("runtime 不再把 per-model toolCalling 声明当成原生 tools 闸",
       else process.env.LM_STUDIO_BASE_URL = savedBaseUrl;
       await new Promise<void>((resolve) => stub.close(() => resolve()));
     }
+  });
+});
+
+// 路由来源必须显式带进共同请求生命周期，不能按 URL 主机名/模型名猜：同一个本地端口既可能被
+// 用作本地桩，也可能被外部 provider 配置指向。错误码/状态/重试语义保持不变，只换用户文案。
+describe("模型错误文案按解析出的路由来源区分", () => {
+  type Captured = { code?: string; status?: number; message?: string };
+  const capture = (pending: Promise<unknown>) =>
+    pending.then(
+      () => null,
+      (error: unknown) => error as Captured,
+    );
+  const listen = (handler: http.RequestListener) =>
+    new Promise<{ server: Server; port: number }>((resolve) => {
+      const server = http.createServer(handler);
+      server.listen(0, "127.0.0.1", () =>
+        resolve({ server, port: (server.address() as { port: number }).port }),
+      );
+    });
+  const close = (server: Server) => new Promise<void>((resolve) => server.close(() => resolve()));
+
+  const externalGateway = (baseUrl: string, apiKey: string) =>
+    createLmStudioClient(
+      {
+        // 本地地址故意不可达：外部模型不应先探测本地目录，也不该把本地地址写进错误。
+        baseUrl: "http://127.0.0.1:1/v1",
+        model: "local/model",
+        timeoutSeconds: 1,
+        apiKey: "local-only-token",
+      },
+      {
+        externalModel: (model) =>
+          model === "cloud/model" ? { baseUrl, apiKey, contextWindow: 8192 } : null,
+      },
+    );
+
+  for (const status of [401, 403] as const) {
+    it(`外部 ${status} 指向 provider 自己的 key，不指向本地环境变量`, async () => {
+      const token = "external-secret-token";
+      const stub = await listen((_req, res) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: `invalid provider key ${token}` } }));
+      });
+      const baseUrl = `http://127.0.0.1:${stub.port}/v1`;
+      try {
+        const error = await capture(
+          externalGateway(baseUrl, token).complete({ messages, model: "cloud/model" }),
+        );
+        expect(error).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE", status });
+        expect(error?.message).toContain("外部模型服务鉴权失败");
+        expect(error?.message).toContain("API key");
+        expect(error?.message).not.toContain("LM_STUDIO_API_KEY");
+        expect(error?.message).not.toContain("本地模型服务");
+        expect(error?.message).not.toContain(token);
+        expect(error?.message).not.toContain(baseUrl);
+      } finally {
+        await close(stub.server);
+      }
+    });
+  }
+
+  it("外部连接失败说外部服务不可达，不冒充本地服务", async () => {
+    const token = "external-secret-token";
+    const error = await capture(
+      externalGateway("http://127.0.0.1:1/v1", token).complete({
+        messages,
+        model: "cloud/model",
+      }),
+    );
+    expect(error?.code).toBe("MODEL_SERVICE_UNAVAILABLE");
+    expect(error?.status).toBeUndefined();
+    expect(error?.message).toContain("外部模型服务暂不可用");
+    expect(error?.message).not.toContain("本地模型服务");
+    expect(error?.message).not.toContain(token);
+    expect(error?.message).not.toContain("127.0.0.1:1");
+  });
+
+  it("外部 503 保持通用码/状态与重试资格，错误消息不夹带 token", async () => {
+    const token = "external-secret-token";
+    const stub = await listen((_req, res) => {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: `provider temporarily unavailable ${token}` } }));
+    });
+    const baseUrl = `http://127.0.0.1:${stub.port}/v1`;
+    try {
+      const error = await capture(
+        externalGateway(baseUrl, token).complete({ messages, model: "cloud/model" }),
+      );
+      // 既有映射：503 仍是 MODEL_ERROR + status 503，且只在 429/503 上允许用户重试。
+      expect(error).toMatchObject({ code: "MODEL_ERROR", status: 503 });
+      expect(isRetryableModelRefusal(error)).toBe(true);
+      expect(error?.message).not.toContain(token);
+      expect(error?.message).not.toContain(baseUrl);
+    } finally {
+      await close(stub.server);
+    }
+  });
+
+  it("本地 403 仍给 LM_STUDIO_API_KEY 动作，不串到外部文案", async () => {
+    const token = "local-secret-token";
+    const stub = await listen((_req, res) => {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "invalid local token" } }));
+    });
+    try {
+      const gateway = createLmStudioClient({
+        baseUrl: `http://127.0.0.1:${stub.port}/v1`,
+        model: "test/model",
+        timeoutSeconds: 1,
+        apiKey: token,
+      });
+      const error = await capture(gateway.complete({ messages }));
+      expect(error).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE", status: 403 });
+      expect(error?.message).toContain("LM_STUDIO_API_KEY");
+      expect(error?.message).not.toContain("外部模型服务");
+      expect(error?.message).not.toContain(token);
+    } finally {
+      await close(stub.server);
+    }
+  });
+
+  it("独立的 mapModelError 默认仍是本地路由（旧调用方兼容）", () => {
+    const auth = Object.assign(new Error("synthetic 401"), { status: 401 });
+    const local = mapModelError(auth);
+    expect(local).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE", status: 401 });
+    expect(local.message).toContain("LM_STUDIO_API_KEY");
+
+    const external = mapModelError(auth, { kind: "external" });
+    expect(external).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE", status: 401 });
+    expect(external.message).toContain("外部模型服务鉴权失败");
+    expect(external.message).not.toContain("LM_STUDIO_API_KEY");
   });
 });

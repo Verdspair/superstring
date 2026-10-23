@@ -70,7 +70,8 @@ export function DeliveryDetails({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        {open && <DeliveryEvidence outputId={outputId} conversation={conversation} />}
+        {/* Presence keeps this subtree for the measured exit; `open` still gates the read. */}
+        <DeliveryEvidence outputId={outputId} conversation={conversation} enabled={open} />
       </CollapsibleContent>
     </Collapsible>
   );
@@ -78,9 +79,11 @@ export function DeliveryDetails({
 export function DeliveryEvidence({
   outputId,
   conversation,
+  enabled = true,
 }: {
   outputId: string;
   conversation?: Pick<ConversationSummary, "participants">;
+  enabled?: boolean;
 }) {
   const { t, i18n } = useTranslation(),
     api = useSuperstringStore((s) => s.apiClient);
@@ -88,7 +91,7 @@ export function DeliveryEvidence({
     (signal: AbortSignal) => api.getDelivery(outputId, signal),
     [api, outputId],
   );
-  const { data, error, loading, refresh } = useLiveResource(read);
+  const { data, error, loading, refresh } = useLiveResource(read, { enabled });
   const partial =
     data?.parts.some((part) => part.status === "confirmed") &&
     data.parts.some((part) => part.status !== "confirmed");

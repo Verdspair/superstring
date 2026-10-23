@@ -1,0 +1,9 @@
+{
+  "package": "@fontsource/zcool-kuaile",
+  "version": "5.3.0",
+  "license": "OFL-1.1",
+  "source": "https://registry.npmjs.org/@fontsource/zcool-kuaile/-/zcool-kuaile-5.3.0.tgz",
+  "originalLicenseSHA256": "fedb735f9b624acc40c8b926a8220dc0992a9034c48a5175ebee2f9e6ea942ef",
+  "filesUnmodified": true,
+  "css": "woff2 references only; no glyph modification"
+}

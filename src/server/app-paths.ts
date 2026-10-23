@@ -427,6 +427,12 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0071_context_storage_metadata.sql",
     ),
+    outboundIntentMetadataMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0072_outbound_intent_metadata.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

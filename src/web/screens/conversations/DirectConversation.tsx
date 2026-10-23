@@ -102,28 +102,30 @@ export function DirectConversation({ active = true }: { active?: boolean }) {
         </div>
       )}
       <ChatComposer />
-      {/* 弹窗会挂到主文档之外，页签隐藏时先卸下，状态本身保留、返回消息页签再显示。 */}
-      {active && visibleDeletion && (
-        <ConfirmDialog
-          message={t("workspace.delete_this_message")}
-          confirmLabel={t("workspace.delete")}
-          onCancel={() => setDeletion(null)}
-          onConfirm={() => {
-            setDeletion(null);
-            void remove(visibleDeletion.session, visibleDeletion.message);
-          }}
-        />
-      )}
-      {active && chat.knowledgeResend?.sessionId === session && chat.knowledgeResend && (
-        <ConfirmDialog
-          message={t(
-            "workspace.document_access_has_changed_the_earlier_request_cannot_be_retried_resend",
-          )}
-          confirmLabel={t("workspace.resend_with_current_access")}
-          onCancel={cancelResend}
-          onConfirm={() => void resend()}
-        />
-      )}
+      {/* 弹窗会挂到主文档之外，常挂载由 open 控制；页签隐藏时不显示，状态本身保留。 */}
+      <ConfirmDialog
+        open={active && visibleDeletion !== null}
+        message={t("workspace.delete_this_message")}
+        confirmLabel={t("workspace.delete")}
+        onCancel={() => setDeletion(null)}
+        onConfirm={() => {
+          if (!visibleDeletion) return;
+          const target = visibleDeletion;
+          setDeletion(null);
+          void remove(target.session, target.message);
+        }}
+      />
+      <ConfirmDialog
+        open={Boolean(
+          active && chat.knowledgeResend?.sessionId === session && chat.knowledgeResend,
+        )}
+        message={t(
+          "workspace.document_access_has_changed_the_earlier_request_cannot_be_retried_resend",
+        )}
+        confirmLabel={t("workspace.resend_with_current_access")}
+        onCancel={cancelResend}
+        onConfirm={() => void resend()}
+      />
     </section>
   );
 }

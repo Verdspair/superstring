@@ -58,35 +58,26 @@ afterEach(() => {
 });
 
 describe("conversation summary refresh races", () => {
-  it("a same-conversation older read resolving last must not roll back the newer summary", async () => {
-    const id = "sum-race-older-last";
+  it("same-conversation refreshes join one read and drain newer demand before resolving", async () => {
+    const id = "sum-race-joined";
     const older = deferredSummary();
     const newer = deferredSummary();
-    const gate = [older.promise, newer.promise];
-    let call = 0;
-    store.getState().resetForTests({
-      getConversation: () => gate[call++],
-    } as unknown as SuperstringApi);
+    const getConversation = vi
+      .fn()
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    store.getState().resetForTests({ getConversation } as unknown as SuperstringApi);
 
-    // Two in-flight reads for the same conversation: the request order is older first,
-    // but the server answers the newer read before the older one settles.
     const first = store.getState().refreshConversationSummary(id);
     const second = store.getState().refreshConversationSummary(id);
-
-    newer.resolve(
-      summary(id, { lastSeq: 2, updatedAt: "2026-10-10T02:00:00Z", title: "newer-state" }),
-    );
+    expect(getConversation).toHaveBeenCalledTimes(1);
+    older.resolve(summary(id, { lastSeq: 1, title: "older-state" }));
+    await Promise.resolve();
+    expect(getConversation).toHaveBeenCalledTimes(2);
+    newer.resolve(summary(id, { lastSeq: 2, title: "newer-state" }));
+    expect(await first).toBe(true);
     expect(await second).toBe(true);
     expect(store.getState().summaryById[id]?.lastSeq).toBe(2);
-
-    older.resolve(
-      summary(id, { lastSeq: 1, updatedAt: "2026-10-10T01:00:00Z", title: "older-state" }),
-    );
-    expect(await first).toBe(true);
-
-    // The late older response must not roll back summary/updatedAt to stale values.
-    expect(store.getState().summaryById[id]?.lastSeq).toBe(2);
-    expect(store.getState().summaryById[id]?.updatedAt).toBe("2026-10-10T02:00:00Z");
     expect(store.getState().summaryById[id]?.title).toBe("newer-state");
   });
 
@@ -147,46 +138,79 @@ describe("conversation summary refresh races", () => {
     expect(store.getState().directoryIds).toEqual(expect.arrayContaining([idA, idB]));
   });
 
-  it("a visible notification burst issues exactly one bounded summary read per change (documented baseline)", async () => {
+  it("a visible notification burst joins one pending summary read and drains one fresh trailing read", async () => {
     const id = "sum-race-burst";
-    let seq = 0;
-    const getConversation = vi.fn((cid: string) => {
-      seq += 1;
-      return Promise.resolve(summary(cid, { lastSeq: seq }));
-    });
-    let sseCallback: ((event: ConversationChangeEvent) => void) | null = null;
-    const subscribe = vi.fn(async (onEvent: (event: ConversationChangeEvent) => void) => {
-      sseCallback = onEvent;
-      await new Promise<void>(() => {}); // stream stays open for the whole test
-    });
+    const first = deferredSummary();
+    const trailing = deferredSummary();
+    const getConversation = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(trailing.promise);
+    let sseCallback!: (event: ConversationChangeEvent) => void;
     store.getState().resetForTests({
       getConversation,
-      subscribeConversationChanges: subscribe,
+      subscribeConversationChanges: async (onEvent: (event: ConversationChangeEvent) => void) => {
+        sseCallback = onEvent;
+        await new Promise<void>(() => {});
+      },
     } as unknown as SuperstringApi);
-
     const cleanup = startConversationChanges(store.getState().apiClient);
     try {
-      await vi.waitFor(() => expect(sseCallback).toBeTruthy());
-      await sseCallback!({ event: "ready", ready: true });
-
-      // Baseline (current source, no coalescing): every visible conversation_changed
-      // notification triggers exactly one bounded getConversation read for that id.
-      for (let i = 1; i <= 5; i += 1) {
-        await sseCallback!({
-          event: "conversation_changed",
-          conversationId: id,
-          seq: i,
-          bindingEpoch: 1,
-        });
+      sseCallback({ event: "ready", ready: true });
+      for (let seq = 1; seq <= 5; seq += 1) {
+        sseCallback({ event: "conversation_changed", conversationId: id, seq, bindingEpoch: 1 });
       }
-      await vi.waitFor(() => expect(getConversation).toHaveBeenCalledTimes(5));
-      expect(getConversation.mock.calls.every((callArgs) => callArgs[0] === id)).toBe(true);
-
-      // Each read applies its own server answer; the final state carries the highest seq.
-      await vi.waitFor(() => expect(store.getState().summaryById[id]?.lastSeq).toBe(5));
+      expect(getConversation).toHaveBeenCalledTimes(1);
+      first.resolve(summary(id, { lastSeq: 1 }));
+      await Promise.resolve();
+      expect(getConversation).toHaveBeenCalledTimes(2);
+      trailing.resolve(summary(id, { lastSeq: 5 }));
+      await Promise.resolve();
+      expect(store.getState().summaryById[id]?.lastSeq).toBe(5);
+      expect(getConversation).toHaveBeenCalledTimes(2);
     } finally {
       cleanup();
     }
+  });
+
+  it("a failed read still drains queued demand and later independent refresh can recover", async () => {
+    const id = "sum-race-failure-drain";
+    const first = deferredSummary();
+    const getConversation = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(summary(id, { lastSeq: 2 }))
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(summary(id, { lastSeq: 3 }));
+    store.getState().resetForTests({ getConversation } as unknown as SuperstringApi);
+    const pending = store.getState().refreshConversationSummary(id);
+    const joined = store.getState().refreshConversationSummary(id);
+    expect(getConversation).toHaveBeenCalledTimes(1);
+    first.reject(new Error("first read failed"));
+    expect(await pending).toBe(true);
+    expect(await joined).toBe(true);
+    expect(store.getState().summaryById[id]?.lastSeq).toBe(2);
+    expect(await store.getState().refreshConversationSummary(id)).toBe(false);
+    expect(await store.getState().refreshConversationSummary(id)).toBe(true);
+    expect(store.getState().summaryById[id]?.lastSeq).toBe(3);
+  });
+
+  it("a client switch starts an independent owner and an old dirty cycle cannot follow it", async () => {
+    const id = "sum-race-client-owner";
+    const old = deferredSummary();
+    const oldRead = vi.fn().mockReturnValue(old.promise);
+    const freshRead = vi.fn().mockResolvedValue(summary(id, { title: "new-client" }));
+    store.getState().resetForTests({ getConversation: oldRead } as unknown as SuperstringApi);
+    const pending = store.getState().refreshConversationSummary(id);
+    const joined = store.getState().refreshConversationSummary(id);
+    store.setState({ apiClient: { ...store.getState().apiClient, getConversation: freshRead } });
+    expect(await store.getState().refreshConversationSummary(id)).toBe(true);
+    old.resolve(summary(id, { title: "old-client" }));
+    expect(await pending).toBe(true);
+    expect(await joined).toBe(true);
+    expect(oldRead).toHaveBeenCalledTimes(1);
+    expect(freshRead).toHaveBeenCalledTimes(1);
+    expect(store.getState().summaryById[id]?.title).toBe("new-client");
   });
 
   it("an in-flight read must not write to store after resetForTests or API client switch", async () => {

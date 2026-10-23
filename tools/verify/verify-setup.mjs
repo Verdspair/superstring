@@ -435,6 +435,12 @@ try {
           installRoot,
           "app/resources/migrations/versions/0071_context_storage_metadata.sql",
         ),
+      ) &&
+      fs.existsSync(
+        path.join(
+          installRoot,
+          "app/resources/migrations/versions/0072_outbound_intent_metadata.sql",
+        ),
       ),
   );
   // The R1 probe is a development surface and must never reach a release package.

@@ -93,6 +93,11 @@ export function TaskLedger({
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [approving, setApproving] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // 常挂载审批框在关闭段落期间仍渲染；保留最近一次打开的内容快照，避免详情先被清空。
+  const approvalSnapshot = useRef<{
+    name: string;
+    argumentsText: string | null;
+  } | null>(null);
   const pending = useRef<ReadTask | null>(null);
   const pendingDetail = useRef<ReadTask | null>(null);
   const mutation = useRef(false);
@@ -397,6 +402,10 @@ export function TaskLedger({
     }
   };
   const waiting = detail?.calls.find((entry) => entry.status === "waiting_approval");
+  const approval =
+    detail && waiting?.approvalRevision
+      ? { name: waiting.name, argumentsText: waiting.argumentsPreview.text ?? null }
+      : approvalSnapshot.current;
   return (
     <div className="space-y-6 px-4 py-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -655,7 +664,14 @@ export function TaskLedger({
                           : t("hints.investigation.tasks.saving")
                       }
                       tooltip={t("hints.investigation.tasks.reviewApproval")}
-                      onClick={() => setApproving(true)}
+                      onClick={() => {
+                        if (!detail || !waiting?.approvalRevision) return;
+                        approvalSnapshot.current = {
+                          name: waiting.name,
+                          argumentsText: waiting.argumentsPreview.text ?? null,
+                        };
+                        setApproving(true);
+                      }}
                     >
                       {t("connections.tasks.reviewApproval")}
                     </Button>
@@ -666,63 +682,61 @@ export function TaskLedger({
           )}
         </SheetContent>
       </Sheet>
-      {active && approving && detail && waiting?.approvalRevision && (
-        <AlertDialog
-          title={t("connections.tasks.approvalTitle")}
-          onCancel={() => setApproving(false)}
-          busy={saving}
-        >
-          <div className="space-y-3 text-sm">
-            <p>{t("connections.tasks.approvalHint")}</p>
-            <dl className="space-y-1">
-              <div className="flex justify-between gap-3">
-                <dt className="text-muted-foreground">{t("connections.tasks.tool")}</dt>
-                <dd className="font-mono">{waiting.name}</dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-muted-foreground">{t("connections.tasks.arguments")}</dt>
-                <dd className="max-w-80 truncate font-mono text-xs">
-                  {waiting.argumentsPreview.text ?? t("connections.tasks.unavailable")}
-                </dd>
-              </div>
-            </dl>
-            <p className="text-xs text-muted-foreground">{t("connections.tasks.ticketHint")}</p>
-          </div>
-          {error && (
-            <p role="alert" className="text-sm text-destructive">
-              {error}
-            </p>
-          )}
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button
-              variant="outline"
-              disabled={saving}
-              disabledReason={t("hints.investigation.tasks.saving")}
-              data-dialog-cancel
-              tooltip={t("hints.investigation.tasks.reject")}
-              onClick={() => void decide(false)}
-            >
-              {t("connections.tasks.reject")}
-            </Button>
-            <Button
-              disabled={saving}
-              disabledReason={t("hints.investigation.tasks.saving")}
-              tooltip={t("hints.investigation.tasks.approve")}
-              onClick={() => void decide(true)}
-            >
-              {t("connections.tasks.approveOnce")}
-            </Button>
-          </div>
-        </AlertDialog>
-      )}
-      {active && cancelling && (
-        <ConfirmDialog
-          message={t("connections.tasks.cancelConfirm")}
-          busy={saving}
-          onCancel={() => setCancelling(false)}
-          onConfirm={() => void cancel()}
-        />
-      )}
+      <AlertDialog
+        open={active && approving && Boolean(detail && waiting?.approvalRevision)}
+        title={t("connections.tasks.approvalTitle")}
+        onCancel={() => setApproving(false)}
+        busy={saving}
+      >
+        <div className="space-y-3 text-sm">
+          <p>{t("connections.tasks.approvalHint")}</p>
+          <dl className="space-y-1">
+            <div className="flex justify-between gap-3">
+              <dt className="text-muted-foreground">{t("connections.tasks.tool")}</dt>
+              <dd className="font-mono">{approval?.name}</dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-muted-foreground">{t("connections.tasks.arguments")}</dt>
+              <dd className="max-w-80 truncate font-mono text-xs">
+                {approval?.argumentsText ?? t("connections.tasks.unavailable")}
+              </dd>
+            </div>
+          </dl>
+          <p className="text-xs text-muted-foreground">{t("connections.tasks.ticketHint")}</p>
+        </div>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button
+            variant="outline"
+            disabled={saving}
+            disabledReason={t("hints.investigation.tasks.saving")}
+            data-dialog-cancel
+            tooltip={t("hints.investigation.tasks.reject")}
+            onClick={() => void decide(false)}
+          >
+            {t("connections.tasks.reject")}
+          </Button>
+          <Button
+            disabled={saving}
+            disabledReason={t("hints.investigation.tasks.saving")}
+            tooltip={t("hints.investigation.tasks.approve")}
+            onClick={() => void decide(true)}
+          >
+            {t("connections.tasks.approveOnce")}
+          </Button>
+        </div>
+      </AlertDialog>
+      <ConfirmDialog
+        open={active && cancelling}
+        message={t("connections.tasks.cancelConfirm")}
+        busy={saving}
+        onCancel={() => setCancelling(false)}
+        onConfirm={() => void cancel()}
+      />
     </div>
   );
 }

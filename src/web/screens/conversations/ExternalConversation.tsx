@@ -152,7 +152,7 @@ export function ExternalConversation({
         <section
           ref={scroll.viewport}
           hidden={!active}
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:px-7"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:px-6"
           role="tabpanel"
           aria-label={t("workspace.message_history")}
           // biome-ignore lint/a11y/noNoninteractiveTabindex: The native history viewport supports Home, End and scrolling.
@@ -194,14 +194,14 @@ export function ExternalConversation({
                 tooltip={<Trans i18nKey="hints.complete.loadMore" />}
                 variant="outline"
                 size="sm"
-                className="mb-5 w-full"
+                className="mb-3 w-full"
                 disabled={history.loading}
                 onClick={() => void history.loadMore()}
               >
                 {t("workspace.load_earlier_history")}
               </Button>
             )}
-            <ol className="space-y-6">
+            <ol className="space-y-3.5">
               {rows.map((event) => (
                 <EventRecord
                   key={timelineKey(event)}
@@ -236,7 +236,7 @@ export function ExternalConversation({
         </span>
       </div>
       {active && (
-        <footer className="shrink-0 border-t px-5 py-3 text-center text-[11px] text-muted-foreground">
+        <footer className="shrink-0 border-t px-4 py-2 text-center text-[11px] text-muted-foreground">
           {t("workspace.messages_arrive_through_the_connected_bot_continue_the_conversation_in_t")}
         </footer>
       )}

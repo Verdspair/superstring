@@ -165,6 +165,23 @@ export class OutboundIntentRepository {
         .all(...args) as { id: string }[]
     ).map((r) => this.get(r.id)!);
   }
+  /** Terminal rows still missing a legacy receipt; no target or part payload is read here. */
+  legacyProjectionCandidates(): Array<{ id: string; attempted: number }> {
+    return this.db
+      .query(`WITH projected AS MATERIALIZED (
+        SELECT id FROM outbound_intents INDEXED BY ix_outbound_legacy_send_conversation
+        WHERE legacy_send_id IS NOT NULL AND legacy_send_id<>''
+      )
+      SELECT m.intent_id AS id,
+        EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=m.intent_id
+          AND p.attempted_at IS NOT NULL AND p.attempted_at<>'') AS attempted
+      FROM outbound_intent_metadata m
+      WHERE m.status NOT IN ('planned','delivering')
+        AND m.intent_id NOT IN (SELECT id FROM projected)
+      ORDER BY m.created_at,m.output_ordinal`)
+      .all() as Array<{ id: string; attempted: number }>;
+  }
+  // Parent-row triggers project compact query metadata in this same transaction.
   commit(input: {
     id?: string;
     runId: string;
@@ -436,7 +453,7 @@ export class OutboundIntentRepository {
     return this.db.transaction(() => {
       const rows = this.db
         .query(
-          "SELECT id FROM outbound_intents WHERE expires_at<=? AND status IN('planned','delivering')",
+          "SELECT intent_id AS id FROM outbound_intent_metadata WHERE expires_at<=? AND status IN('planned','delivering')",
         )
         .all(at) as { id: string }[];
       for (const row of rows) {
@@ -456,7 +473,7 @@ export class OutboundIntentRepository {
       }
       return this.db
         .query(
-          "UPDATE outbound_parts SET payload=NULL WHERE payload IS NOT NULL AND intent_id IN(SELECT id FROM outbound_intents WHERE expires_at<=?)",
+          "UPDATE outbound_parts SET payload=NULL WHERE payload IS NOT NULL AND intent_id IN(SELECT intent_id FROM outbound_intent_metadata WHERE expires_at<=?)",
         )
         .run(at).changes;
     })();

@@ -15,13 +15,12 @@ function Example() {
       <button type="button" onClick={() => setOpen(true)}>
         打开确认
       </button>
-      {open && (
-        <ConfirmDialog
-          message="确认操作？"
-          onCancel={() => setOpen(false)}
-          onConfirm={() => setOpen(false)}
-        />
-      )}
+      <ConfirmDialog
+        open={open}
+        message="确认操作？"
+        onCancel={() => setOpen(false)}
+        onConfirm={() => setOpen(false)}
+      />
     </>
   );
 }

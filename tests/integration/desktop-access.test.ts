@@ -38,6 +38,17 @@ describe("managed desktop access", () => {
     }
   });
 
+  it("protects the installed Electron host without changing installed userdata layout", () => {
+    for (const mode of [undefined, "installed"]) {
+      const access = gate({ ...managed, SUPERSTRING_APP_MODE: mode });
+      expect(access(request("/agents"))?.status).toBe(403);
+      expect(access(request("/agents", { [DESKTOP_ACCESS_HEADER]: TOKEN }))).toBeNull();
+    }
+    expect(() =>
+      gate({ SUPERSTRING_APP_MODE: "installed", SUPERSTRING_DESKTOP_MANAGED: "1" }),
+    ).toThrow("DESKTOP_ACCESS_CONFIGURATION_INVALID");
+  });
+
   it("refuses to start a new desktop mode with missing or malformed managed credentials", () => {
     for (const overrides of [
       { SUPERSTRING_DESKTOP_MANAGED: undefined },

@@ -17,7 +17,7 @@ const bun = process.env.SUPERSTRING_BUN_EXE ?? resolveProjectBun(root);
 // Bun 的测试过滤参数按子串匹配路径，目录参数会连带命中 artifacts 下的历史快照；
 // 这里显式递归收集两个常规测试根下的 Bun 标准测试后缀（bun test 默认识别
 // *.test.{js|jsx|ts|tsx|mjs|cjs|mts|cts}，本树实际只用其中一部分），跳过 artifacts
-// 与 node_modules，加上桌面端两个既有显式文件，以绝对路径作过滤，保证只匹配真实测试文件。
+// 与 node_modules，加上桌面端宿主、安全、布局与窗口状态的显式文件，以绝对路径作过滤，保证只匹配真实测试文件。
 function collectBunTestFiles(dir) {
   const found = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -45,6 +45,8 @@ const bunTestFiles = [
   ...collectBunTestFiles(resolve(root, "tests/contracts")),
   resolve(root, "tests/desktop/backend.test.ts"),
   resolve(root, "tests/desktop/security.test.ts"),
+  resolve(root, "tests/desktop/host-layout.test.ts"),
+  resolve(root, "tests/desktop/window-state.test.ts"),
 ];
 
 const checks = [

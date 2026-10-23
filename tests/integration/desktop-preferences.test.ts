@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
 import { installDesktopPreferences } from "../../src/desktop/preferences";
+import { INTERFACE_SIZE_STORAGE_KEY, TEXT_SIZE_STORAGE_KEY } from "../../src/shared/appearance";
 import {
+  CLOSE_ANIMATION_STORAGE_KEY,
   DESKTOP_PREFERENCES_BOOTSTRAP_FAILED,
   DESKTOP_PREFERENCES_LOAD,
   DESKTOP_PREFERENCES_SAVE,
@@ -50,11 +52,13 @@ async function fixture(profileDirectory = directory()) {
   const event = { sender: contents, senderFrame: frame } as unknown as IpcMainInvokeEvent;
   const errors: string[] = [];
   const bootstrapErrors: string[] = [];
+  const presentations: unknown[] = [];
   const dispose = await installDesktopPreferences({
     ipcMain,
     profileDirectory,
     webContents: () => owned,
     origin: () => origin,
+    onChange: (snapshot) => presentations.push(structuredClone(snapshot)),
     onError: (code) => {
       errors.push(code);
     },
@@ -70,6 +74,7 @@ async function fixture(profileDirectory = directory()) {
     event,
     errors,
     bootstrapErrors,
+    presentations,
     dispose,
     handlers,
     call(name: string, ...args: unknown[]) {
@@ -95,18 +100,24 @@ async function fixture(profileDirectory = directory()) {
 }
 
 describe("desktop profile preference IPC", () => {
-  it("persists the five raw values across a new port and process store, without crossing profiles", async () => {
+  it("persists the nine raw values across a new port and process store, without crossing profiles", async () => {
     const first = await fixture();
     const ciphertext = "YWFhYWFhYWFhYWFhYWFhYQ==:YmJiYmJiYmJiYmJiYmJiYg==";
     const values = {
       "superstring-appearance": "jade",
       "superstring-appearance-mode": "dark",
+      "superstring-appearance-font": "elegant",
+      [TEXT_SIZE_STORAGE_KEY]: "large",
+      [INTERFACE_SIZE_STORAGE_KEY]: "compact",
       "superstring-locale": "en",
       "superstring-session": ciphertext,
       "superstring-agent": `${ciphertext}${"x".repeat(32_000)}`,
+      [CLOSE_ANIMATION_STORAGE_KEY]: "off",
     };
+    expect(first.presentations).toEqual([{}]);
     for (const [key, value] of Object.entries(values))
       first.call(DESKTOP_PREFERENCES_SAVE, key, value);
+    expect(first.presentations.at(-1)).toEqual(values);
     first.dispose();
 
     const restarted = await fixture(first.profileDirectory);
@@ -186,11 +197,84 @@ describe("desktop profile preference IPC", () => {
 
   it("preserves explicit removal as a tombstone and disposes all IPC handlers", async () => {
     const current = await fixture();
+    // The font key joins the whitelist: permitted, saved, and still schema-checked.
+    current.call(DESKTOP_PREFERENCES_SAVE, "superstring-appearance-font", "cute");
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      "superstring-appearance-font": "cute",
+    });
+    expect(() =>
+      current.call(DESKTOP_PREFERENCES_SAVE, "superstring-appearance-font", "not-a-font"),
+    ).toThrow("DESKTOP_PREFERENCES_WRITE_FAILED");
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      "superstring-appearance-font": "cute",
+    });
+    current.call(DESKTOP_PREFERENCES_SAVE, "superstring-appearance-font", null);
     current.call(DESKTOP_PREFERENCES_SAVE, "superstring-agent", "ciphertext");
     current.call(DESKTOP_PREFERENCES_SAVE, "superstring-agent", null);
-    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({ "superstring-agent": null });
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      "superstring-appearance-font": null,
+      "superstring-agent": null,
+    });
     current.dispose();
     expect(current.handlers.size).toBe(0);
+  });
+
+  it("round-trips both size keys and rejects ids outside the approved enums", async () => {
+    const current = await fixture();
+    current.call(DESKTOP_PREFERENCES_SAVE, TEXT_SIZE_STORAGE_KEY, "small");
+    current.call(DESKTOP_PREFERENCES_SAVE, INTERFACE_SIZE_STORAGE_KEY, "comfortable");
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      [TEXT_SIZE_STORAGE_KEY]: "small",
+      [INTERFACE_SIZE_STORAGE_KEY]: "comfortable",
+    });
+    for (const [key, value] of [
+      [TEXT_SIZE_STORAGE_KEY, "huge"],
+      [TEXT_SIZE_STORAGE_KEY, "normal"],
+      [INTERFACE_SIZE_STORAGE_KEY, "spacious"],
+    ]) {
+      expect(() => current.call(DESKTOP_PREFERENCES_SAVE, key, value)).toThrow(
+        "DESKTOP_PREFERENCES_WRITE_FAILED",
+      );
+    }
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      [TEXT_SIZE_STORAGE_KEY]: "small",
+      [INTERFACE_SIZE_STORAGE_KEY]: "comfortable",
+    });
+    current.call(DESKTOP_PREFERENCES_SAVE, TEXT_SIZE_STORAGE_KEY, null);
+    current.call(DESKTOP_PREFERENCES_SAVE, INTERFACE_SIZE_STORAGE_KEY, "standard");
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      [TEXT_SIZE_STORAGE_KEY]: null,
+      [INTERFACE_SIZE_STORAGE_KEY]: "standard",
+    });
+  });
+
+  it("accepts only the close fold's on/off tombstone and rejects booleans or arbitrary strings", async () => {
+    const current = await fixture();
+    current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, "off");
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      [CLOSE_ANIMATION_STORAGE_KEY]: "off",
+    });
+    current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, "on");
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      [CLOSE_ANIMATION_STORAGE_KEY]: "on",
+    });
+    for (const value of [true, false, 1, {}]) {
+      expect(() =>
+        current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, value),
+      ).toThrow("DESKTOP_PREFERENCE_INVALID");
+    }
+    for (const value of ["true", "false", "garbage", ""]) {
+      expect(() =>
+        current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, value),
+      ).toThrow("DESKTOP_PREFERENCES_WRITE_FAILED");
+    }
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      [CLOSE_ANIMATION_STORAGE_KEY]: "on",
+    });
+    current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, null);
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      [CLOSE_ANIMATION_STORAGE_KEY]: null,
+    });
   });
 
   it("accepts only a trusted zero-argument bootstrap-failure signal", async () => {

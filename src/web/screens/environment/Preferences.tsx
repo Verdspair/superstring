@@ -4,13 +4,28 @@ import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import {
   type AppearanceMode,
+  FONT_STORAGE_KEY,
+  FONTS,
+  type FontId,
+  INTERFACE_SIZE_STORAGE_KEY,
+  INTERFACE_SIZES,
+  type InterfaceSizeId,
   MODE_STORAGE_KEY,
   MODES,
+  readFont,
+  readInterfaceSize,
   readMode,
+  readTextSize,
   readTheme,
   SELECTABLE_THEMES,
+  selectFont,
+  selectInterfaceSize,
   selectMode,
+  selectTextSize,
   selectTheme,
+  TEXT_SIZE_STORAGE_KEY,
+  TEXT_SIZES,
+  type TextSizeId,
   THEME_STORAGE_KEY,
   type ThemeId,
 } from "@/appearance";
@@ -18,10 +33,36 @@ import { ConfirmDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
 import { SettingsGroup, SettingsRow } from "@/components/settings-group";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { broadcastAppearance, isDesktopMode, requestDesktopExit } from "@/desktop-lifecycle";
+import { persistDesktopPreference } from "@/desktop-preferences";
 import { selectLocale, useLocale } from "@/i18n";
 import { useSuperstringStore } from "@/store";
+import {
+  CLOSE_ANIMATION_STORAGE_KEY,
+  isCloseAnimationEnabled,
+} from "../../../shared/desktop-preferences";
+
+/** The desktop host applies this on close; missing or unreadable values keep the animation. */
+function readCloseAnimation(): boolean {
+  try {
+    return isCloseAnimationEnabled(localStorage.getItem(CLOSE_ANIMATION_STORAGE_KEY));
+  } catch {
+    return true;
+  }
+}
+
+function selectCloseAnimation(enabled: boolean): boolean {
+  const value = enabled ? "on" : "off";
+  try {
+    localStorage.setItem(CLOSE_ANIMATION_STORAGE_KEY, value);
+    void persistDesktopPreference(CLOSE_ANIMATION_STORAGE_KEY, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function Preferences({ active = true }: { active?: boolean } = {}) {
   const t = useTranslation().t,
@@ -31,6 +72,10 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
     );
   const [theme, setTheme] = useState(readTheme),
     [mode, setMode] = useState(readMode),
+    [font, setFont] = useState(readFont),
+    [textSize, setTextSize] = useState(readTextSize),
+    [interfaceSize, setInterfaceSize] = useState(readInterfaceSize),
+    [closeAnimation, setCloseAnimation] = useState(readCloseAnimation),
     [notice, setNotice] = useState(""),
     [exit, setExit] = useState(false);
   const desktop = isDesktopMode();
@@ -41,9 +86,21 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
 
   useEffect(() => {
     const sync = (event: StorageEvent) => {
-      if (event.key === THEME_STORAGE_KEY || event.key === MODE_STORAGE_KEY || event.key === null) {
+      if (
+        event.key === THEME_STORAGE_KEY ||
+        event.key === MODE_STORAGE_KEY ||
+        event.key === FONT_STORAGE_KEY ||
+        event.key === TEXT_SIZE_STORAGE_KEY ||
+        event.key === INTERFACE_SIZE_STORAGE_KEY ||
+        event.key === CLOSE_ANIMATION_STORAGE_KEY ||
+        event.key === null
+      ) {
         setTheme(readTheme());
         setMode(readMode());
+        setFont(readFont());
+        setTextSize(readTextSize());
+        setInterfaceSize(readInterfaceSize());
+        setCloseAnimation(readCloseAnimation());
       }
     };
     window.addEventListener("storage", sync);
@@ -61,6 +118,12 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
     const saved = selectMode(value);
     setMode(value);
     broadcastAppearance({ theme, mode: value });
+    setNotice(saved ? "" : t("library.appearance.applied.but.could.not.be.saved.in.this"));
+  };
+
+  const chooseFont = (value: FontId) => {
+    const saved = selectFont(value);
+    setFont(value);
     setNotice(saved ? "" : t("library.appearance.applied.but.could.not.be.saved.in.this"));
   };
 
@@ -139,6 +202,82 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
         </div>
 
         <div className="p-4 sm:p-5 space-y-3">
+          <Field label="library.font" tooltip={t("hints.system.font")}>
+            <NativeSelect
+              value={font}
+              onChange={(event) => chooseFont(event.target.value as FontId)}
+              className="w-full sm:max-w-xs"
+            >
+              {FONTS.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {t(`preferences.font.${item.id}`)}
+                </option>
+              ))}
+            </NativeSelect>
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="preferences.textSize.label" tooltip={t("preferences.textSize.hint")}>
+              <NativeSelect
+                value={textSize}
+                onChange={(event) => {
+                  const value = event.target.value as TextSizeId;
+                  const saved = selectTextSize(value);
+                  setTextSize(value);
+                  setNotice(
+                    saved ? "" : t("library.appearance.applied.but.could.not.be.saved.in.this"),
+                  );
+                }}
+              >
+                {TEXT_SIZES.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {t(`preferences.textSize.${item.id}`)}
+                  </option>
+                ))}
+              </NativeSelect>
+            </Field>
+            <Field
+              label="preferences.interfaceSize.label"
+              tooltip={t("preferences.interfaceSize.hint")}
+            >
+              <NativeSelect
+                value={interfaceSize}
+                onChange={(event) => {
+                  const value = event.target.value as InterfaceSizeId;
+                  const saved = selectInterfaceSize(value);
+                  setInterfaceSize(value);
+                  setNotice(
+                    saved ? "" : t("library.appearance.applied.but.could.not.be.saved.in.this"),
+                  );
+                }}
+              >
+                {INTERFACE_SIZES.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {t(`preferences.interfaceSize.${item.id}`)}
+                  </option>
+                ))}
+              </NativeSelect>
+            </Field>
+          </div>
+          <figure
+            className="space-y-3 rounded-lg border bg-muted/20 p-3 text-base leading-relaxed"
+            aria-label={t("library.font.preview")}
+          >
+            <p>山海之间，灵感自来 · The quick brown fox 0123456789</p>
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <Input
+                readOnly
+                value={t("preferences.sizePreview.input")}
+                aria-label={t("preferences.sizePreview.input")}
+                className="min-w-0 flex-1"
+              />
+              <Button type="button" disabled tooltip={t("preferences.sizePreview.hint")}>
+                {t("preferences.sizePreview.button")}
+              </Button>
+            </div>
+          </figure>
+        </div>
+
+        <div className="p-4 sm:p-5 space-y-3">
           <h3 className="text-sm font-medium text-foreground">{t("library.theme.color")}</h3>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {SELECTABLE_THEMES.map((item) => {
@@ -173,6 +312,25 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
           title={t("library.desktop.behavior")}
           description={t("library.desktop.behavior.description")}
         >
+          <div className="p-4 sm:p-5">
+            <Field label="preferences.closeAnimation.label" info="preferences.closeAnimation.hint">
+              <NativeSelect
+                value={closeAnimation ? "on" : "off"}
+                onChange={(event) => {
+                  const enabled = event.target.value === "on";
+                  const saved = selectCloseAnimation(enabled);
+                  setCloseAnimation(enabled);
+                  setNotice(
+                    saved ? "" : t("library.appearance.applied.but.could.not.be.saved.in.this"),
+                  );
+                }}
+                className="w-full sm:max-w-xs"
+              >
+                <option value="on">{t("preferences.closeAnimation.animated")}</option>
+                <option value="off">{t("preferences.closeAnimation.immediate")}</option>
+              </NativeSelect>
+            </Field>
+          </div>
           <SettingsRow
             description={t("library.window.close.exits.superstring")}
             action={
@@ -189,20 +347,19 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
         </SettingsGroup>
       )}
 
-      {exit && (
-        <ConfirmDialog
-          message={t("library.quit.superstring.completely")}
-          onCancel={() => setExit(false)}
-          onConfirm={() => {
-            setNotice(
-              requestDesktopExit()
-                ? t("library.quit.requested")
-                : t("library.cannot.reach.the.desktop.service.right.now.try.again"),
-            );
-            setExit(false);
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={exit}
+        message={t("library.quit.superstring.completely")}
+        onCancel={() => setExit(false)}
+        onConfirm={() => {
+          setNotice(
+            requestDesktopExit()
+              ? t("library.quit.requested")
+              : t("library.cannot.reach.the.desktop.service.right.now.try.again"),
+          );
+          setExit(false);
+        }}
+      />
     </div>
   );
 }

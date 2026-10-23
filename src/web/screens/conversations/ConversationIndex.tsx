@@ -10,7 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ConversationSummary } from "../../../shared/contracts/conversation";
@@ -54,6 +54,10 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
   const [avatarId, setAvatarId] = useState<string | null>(null);
   const management = useDirectoryManagement();
   const header = useRef<HTMLHeadingElement>(null);
+  // 常挂载删除确认在关闭动画期间仍会渲染：目标取最近一次点击删除的行。
+  const lastDeleting = useRef<ConversationSummary | null>(null);
+  const deleting = management.deleting ?? lastDeleting.current;
+  const deletingQq = deleting?.channel === "onebot11";
   const [groupRenaming, setGroupRenaming] = useState(false);
   const [groupNotice, setGroupNotice] = useState("");
   const groupEditing =
@@ -83,16 +87,23 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
   const deleteBusy = useSuperstringStore((s) =>
     sessionBusy(s, management.deleting?.sourceId ?? ""),
   );
+  // Agent names are looked up per row on every render; one identity-stable map
+  // keeps the filter/haystack work linear and skips it entirely when idle.
+  const agentNames = useMemo(
+    () => new Map(agents.map((agent) => [agent.id, agent.name])),
+    [agents],
+  );
+  const needle = query.trim().toLocaleLowerCase();
   const rows = ids
     .map((id) => summaries[id])
     .filter(Boolean)
-    .filter(
-      (item) =>
-        (channel === "all" || item.channel === channel) &&
-        `${item.title} ${agents.find((agent) => agent.id === item.agentId)?.name ?? ""} ${item.participants.map((p) => p.label).join(" ")}`
-          .toLocaleLowerCase()
-          .includes(query.trim().toLocaleLowerCase()),
-    );
+    .filter((item) => {
+      if (channel !== "all" && item.channel !== channel) return false;
+      if (!needle) return true;
+      return `${item.title} ${agentNames.get(item.agentId) ?? ""} ${item.participants.map((p) => p.label).join(" ")}`
+        .toLocaleLowerCase()
+        .includes(needle);
+    });
   const choose = async (id: string) => {
     await select(id);
     if (
@@ -106,42 +117,41 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
       className="flex h-full min-h-0 flex-col bg-muted/20"
       aria-label={t("workspace.conversation_index")}
     >
-      <header className="space-y-4 border-b px-4 pb-4 pt-6">
+      <header className="space-y-3 border-b px-4 py-3.5">
+        <h2
+          ref={header}
+          tabIndex={-1}
+          className="sr-only outline-none focus:not-sr-only focus:rounded focus:outline-2 focus:outline-primary"
+        >
+          {t("workspace.conversations")}
+        </h2>
         <div className="flex items-center justify-between gap-2">
-          <div>
-            <p className="workspace-page-location">
-              {t("brand.workspace", { "0": t("workspace.conversations") })}
-            </p>
-            <h2 ref={header} tabIndex={-1} className="workspace-page-title outline-none">
-              {t("workspace.conversations")}
-            </h2>
-          </div>
+          <InputGroup className="flex-1">
+            <InputGroupAddon>
+              <Search />
+            </InputGroupAddon>
+            <InputGroupInput
+              aria-label={t("workspace.search_loaded_conversations")}
+              placeholder={t("workspace.search_loaded_conversations")}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {query && (
+              <InputGroupAddon align="inline-end">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  tooltip={t("hints.conversation.clearSearch")}
+                  aria-label={t("workspace.clear_search")}
+                  onClick={() => setQuery("")}
+                >
+                  <X />
+                </Button>
+              </InputGroupAddon>
+            )}
+          </InputGroup>
           <ConversationEntryButton />
         </div>
-        <InputGroup>
-          <InputGroupAddon>
-            <Search />
-          </InputGroupAddon>
-          <InputGroupInput
-            aria-label={t("workspace.search_loaded_conversations")}
-            placeholder={t("workspace.search_loaded_conversations")}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          {query && (
-            <InputGroupAddon align="inline-end">
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                tooltip={t("hints.conversation.clearSearch")}
-                aria-label={t("workspace.clear_search")}
-                onClick={() => setQuery("")}
-              >
-                <X />
-              </Button>
-            </InputGroupAddon>
-          )}
-        </InputGroup>
         <Tabs value={channel} onValueChange={setChannel}>
           <TabsList className="w-full" aria-label={t("workspace.conversation_channels")}>
             <TabsTrigger
@@ -201,7 +211,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
             key={item.id}
             item={item}
             selected={item.id === current}
-            agentName={agents.find((agent) => agent.id === item.agentId)?.name}
+            agentName={agentNames.get(item.agentId)}
             disabled={management.busy}
             onSelect={() => void choose(item.id)}
             onRename={() => {
@@ -209,7 +219,10 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
               management.rename(item);
             }}
             onRefresh={() => void management.refresh(item)}
-            onDelete={() => management.remove(item)}
+            onDelete={() => {
+              lastDeleting.current = item;
+              management.remove(item);
+            }}
             onConfigure={() => useSuperstringStore.getState().openQqGroupConfig(item.sourceId)}
             onAvatar={() => setAvatarId(item.id)}
           />
@@ -325,53 +338,56 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
           }}
         />
       )}
-      {management.deleting && (
-        <AlertDialog
-          title={t(management.isQq ? "qq.conversation.removeTitle" : "workspace.delete_chat")}
-          busy={management.busy}
-          onCancel={management.cancel}
-        >
-          <p className="text-sm">
-            {t(
-              management.isQq
-                ? "qq.conversation.removeHint"
-                : "workspace.delete_and_all_its_messages_this_cannot_be_undone",
-              { "0": management.deleting.title, name: management.deleting.title },
-            )}
-          </p>
-          {management.notice && (
-            <p role="alert" className="text-sm text-destructive">
-              {translateNotice(management.notice)}
+      <AlertDialog
+        open={management.deleting !== null}
+        title={t(deletingQq ? "qq.conversation.removeTitle" : "workspace.delete_chat")}
+        busy={management.busy}
+        onCancel={management.cancel}
+      >
+        {deleting && (
+          <>
+            <p className="text-sm">
+              {t(
+                deletingQq
+                  ? "qq.conversation.removeHint"
+                  : "workspace.delete_and_all_its_messages_this_cannot_be_undone",
+                { "0": deleting.title, name: deleting.title },
+              )}
             </p>
-          )}
-          <div className="flex justify-end gap-2">
-            <Button
-              tooltip={<Trans i18nKey="hints.complete.cancel" />}
-              variant="outline"
-              data-dialog-cancel
-              disabled={management.busy}
-              onClick={management.cancel}
-            >
-              {t("workspace.cancel")}
-            </Button>
-            <Button
-              tooltip={<Trans i18nKey="hints.complete.delete" />}
-              variant="destructive"
-              disabled={management.busy || deleteBusy}
-              onClick={() =>
-                void management.confirmDelete()?.then(() => {
-                  if (!useSuperstringStore.getState().summaryById[management.deleting?.id ?? ""])
-                    header.current?.focus();
-                })
-              }
-            >
-              {management.busy
-                ? t("workspace.deleting")
-                : t(management.isQq ? "qq.conversation.remove" : "workspace.delete")}
-            </Button>
-          </div>
-        </AlertDialog>
-      )}
+            {management.notice && (
+              <p role="alert" className="text-sm text-destructive">
+                {translateNotice(management.notice)}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.cancel" />}
+                variant="outline"
+                data-dialog-cancel
+                disabled={management.busy}
+                onClick={management.cancel}
+              >
+                {t("workspace.cancel")}
+              </Button>
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.delete" />}
+                variant="destructive"
+                disabled={management.busy || deleteBusy}
+                onClick={() =>
+                  void management.confirmDelete()?.then(() => {
+                    if (!useSuperstringStore.getState().summaryById[deleting.id])
+                      header.current?.focus();
+                  })
+                }
+              >
+                {management.busy
+                  ? t("workspace.deleting")
+                  : t(deletingQq ? "qq.conversation.remove" : "workspace.delete")}
+              </Button>
+            </div>
+          </>
+        )}
+      </AlertDialog>
     </section>
   );
 }

@@ -477,7 +477,7 @@ export class AgentRunRepository {
 
   expireContexts(now = new Date().toISOString()): number {
     const handles = this.db
-      .query(`SELECT s.run_id,s.step_id FROM context_snapshots c
+      .query(`SELECT s.run_id,s.step_id FROM context_snapshots c INDEXED BY ix_context_snapshot_storage_metadata
       JOIN agent_steps s ON s.step_id=c.step_id WHERE c.status='exact' AND c.expires_at<=?`)
       .all(now) as { run_id: string; step_id: string }[];
     this.db.transaction(() => {

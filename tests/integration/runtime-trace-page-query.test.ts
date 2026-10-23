@@ -79,8 +79,8 @@ describe("runtime trace page query", () => {
     const { db, counts } = countQueries(h.db);
     const repository = new RuntimeSpanRepository(db);
     const page = repository.traces({ stage: "wake", limit: 100 }, DEFAULT_USER_ID);
-    expect(counts.statements).toBe(3);
-    expect(counts.rows).toBe(401);
+    expect(counts.statements).toBe(2);
+    expect(counts.rows).toBe(400);
     expect(page.items).toHaveLength(100);
     expect(page.hasMore).toBe(false);
     expect(page.summary).toMatchObject({ totalTraces: 100, failedTraces: 10, matchedSpans: 100 });
@@ -104,7 +104,7 @@ describe("runtime trace page query", () => {
 
     counts.statements = 0;
     const empty = repository.traces({ q: "not-present", limit: 100 }, DEFAULT_USER_ID);
-    expect(counts.statements).toBe(2);
+    expect(counts.statements).toBe(1);
     expect(empty.items).toEqual([]);
     expect(empty.hasMore).toBe(false);
     expect(empty.summary).toMatchObject({ totalTraces: 0, matchedSpans: 0 });

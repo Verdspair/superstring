@@ -55,7 +55,10 @@ export function createDirectoryActions(
 > {
   let activeRead = 0;
   let nextSummaryToken = 0;
-  const activeSummaryTokens = new Map<string, number>();
+  const activeSummaryReads = new Map<
+    string,
+    { api: SuperstringState["apiClient"]; token: number; dirty: boolean; promise: Promise<boolean> }
+  >();
   const activeResolveTokens = new Map<string, number>();
 
   return {
@@ -102,28 +105,53 @@ export function createDirectoryActions(
         if (activeResolveTokens.get(key) === token) activeResolveTokens.delete(key);
       }
     },
-    refreshConversationSummary: async (id: string) => {
+    refreshConversationSummary: (id: string) => {
       const capturedApi = get().apiClient;
-      const token = ++nextSummaryToken;
-      activeSummaryTokens.set(id, token);
-      const initialSummary = get().summaryById[id];
-      try {
-        const summary = await capturedApi.getConversation(id);
-        if (
-          get().apiClient === capturedApi &&
-          activeSummaryTokens.get(id) === token &&
-          get().summaryById[id] === initialSummary
-        ) {
-          get().rememberConversation(summary);
-        }
-        return true;
-      } catch {
-        return false;
-      } finally {
-        if (activeSummaryTokens.get(id) === token) {
-          activeSummaryTokens.delete(id);
-        }
+      const active = activeSummaryReads.get(id);
+      if (active?.api === capturedApi) {
+        active.dirty = true;
+        return active.promise;
       }
+      let resolve!: (success: boolean) => void;
+      const read = {
+        api: capturedApi,
+        token: ++nextSummaryToken,
+        dirty: false,
+        promise: new Promise<boolean>((done) => {
+          resolve = done;
+        }),
+      };
+      activeSummaryReads.set(id, read);
+      void (async () => {
+        let success = false;
+        try {
+          do {
+            read.dirty = false;
+            const initialSummary = get().summaryById[id];
+            try {
+              const summary = await capturedApi.getConversation(id);
+              success = true;
+              if (
+                get().apiClient === capturedApi &&
+                activeSummaryReads.get(id)?.token === read.token &&
+                get().summaryById[id] === initialSummary
+              ) {
+                get().rememberConversation(summary);
+              }
+            } catch {
+              success = false;
+            }
+          } while (
+            read.dirty &&
+            get().apiClient === capturedApi &&
+            activeSummaryReads.get(id)?.token === read.token
+          );
+        } finally {
+          if (activeSummaryReads.get(id)?.token === read.token) activeSummaryReads.delete(id);
+          resolve(success);
+        }
+      })();
+      return read.promise;
     },
     loadConversations: async (mode = "refresh") => {
       const more = mode === "more";

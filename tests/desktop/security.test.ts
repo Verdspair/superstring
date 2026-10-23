@@ -43,17 +43,23 @@ describe("desktop session boundary", () => {
       session,
       () => ({ origin, token: "host-credential" }),
       () => contents,
+      "superstring://startup/",
     );
     const headers = (changes: Partial<Electron.OnBeforeSendHeadersListenerDetails>) => {
       let result: Record<string, string | string[]> = {};
       const details = {
+        id: 1,
+        method: "GET",
+        referrer: "",
+        timestamp: 0,
+        initiatorOrigin: origin,
         webContentsId: 7,
         url: `${origin}/agents`,
         resourceType: "xhr",
-        frame: { url: origin },
+        frame: { url: origin } as Electron.WebFrameMain,
         requestHeaders: { "x-SUPERSTRING-desktop": "forged" },
         ...changes,
-      } as Electron.OnBeforeSendHeadersListenerDetails;
+      } satisfies Electron.OnBeforeSendHeadersListenerDetails;
       if (!listener) throw new Error("not installed");
       listener(details, (response) => {
         result = response.requestHeaders ?? {};
@@ -83,6 +89,32 @@ describe("desktop session boundary", () => {
         frame: { url: "about:blank" } as Electron.WebFrameMain,
       }),
     ).toEqual({ "X-Superstring-Desktop": "host-credential" });
+    currentUrl = "superstring://startup/";
+    expect(
+      headers({
+        resourceType: "mainFrame",
+        frame: { url: currentUrl } as Electron.WebFrameMain,
+        initiatorOrigin: "superstring://startup",
+      }),
+    ).toEqual({ "X-Superstring-Desktop": "host-credential" });
+    expect(
+      headers({
+        resourceType: "xhr",
+        frame: { url: currentUrl } as Electron.WebFrameMain,
+        initiatorOrigin: "superstring://startup",
+      }),
+    ).toEqual({});
+    expect(
+      headers({
+        resourceType: "mainFrame",
+        frame: { url: currentUrl } as Electron.WebFrameMain,
+        initiatorOrigin: "https://outside.example",
+      }),
+    ).toEqual({});
+    currentUrl = "superstring://other/";
+    expect(
+      headers({ resourceType: "mainFrame", frame: null, initiatorOrigin: "superstring://startup" }),
+    ).toEqual({});
     currentUrl = "https://outside.example/";
     expect(headers({ resourceType: "mainFrame", frame: null })).toEqual({});
   });

@@ -59,7 +59,7 @@ afterEach(() => {
 });
 
 describe("conversation unchanged authoritative refresh", () => {
-  it("revalidates all loaded rows every five seconds without republishing or rewriting equal content", async () => {
+  it("does not poll and revalidates equal loaded rows only after a matching change", async () => {
     const read = vi.fn<SuperstringApi["getConversationEvents"]>().mockImplementation(async () => ({
       items: Array.from({ length: 100 }, (_, index) => event(index + 1)),
       nextSeq: 100,
@@ -76,6 +76,15 @@ describe("conversation unchanged authoritative refresh", () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-1",
+        seq: 100,
+        bindingEpoch: 1,
+      });
     });
     expect(read).toHaveBeenCalledTimes(2);
     expect(read.mock.calls[1]?.[1]).toMatchObject({
@@ -156,7 +165,12 @@ describe("conversation unchanged authoritative refresh", () => {
     const latestRow = result.current.items[1];
     beforeChange.mockClear();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-1",
+        seq: 10,
+        bindingEpoch: 1,
+      });
     });
     expect(read.mock.calls[2]?.[1]).toMatchObject({ direction: "after", afterSeq: 0 });
     expect(result.current.items.map((row) => [row.seq, row.text])).toEqual([

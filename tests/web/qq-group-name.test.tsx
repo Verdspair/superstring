@@ -53,7 +53,7 @@ it("QQ群默认显示QQ群名与独立群号：目录卡片与顶部 Identity �
   unmount();
 
   render(<ConversationIdentity conversation={item} agentName="智能助手" />);
-  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("同事群");
+  expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("同事群");
   expect(screen.getByText("123456789")).toBeTruthy();
   expect(screen.getByText("智能助手")).toBeTruthy();
 });

@@ -512,7 +512,7 @@ export function ContextAllocationAuxiliary({
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div className="space-y-1">
-                <CardTitle className="text-base font-semibold text-foreground flex items-center justify-between">
+                <CardTitle className="flex items-center justify-between">
                   <span>
                     {labels["agentSectionTitle"] || "Assistant Auxiliary Tasks (P5)"}
                     {agentName ? ` - ${agentName}` : ""}
@@ -562,7 +562,7 @@ export function ContextAllocationAuxiliary({
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div className="space-y-1">
-                <CardTitle className="text-base font-semibold text-foreground">
+                <CardTitle>
                   {labels["globalSectionTitle"] || "Global Auxiliary Tasks (Organization)"}
                 </CardTitle>
                 <CardDescription className="text-xs text-muted-foreground">

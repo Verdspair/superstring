@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSuperstringStore } from "@/store";
+import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { KnowledgeLibrary } from "./KnowledgeLibrary";
 import { MemoryLibrary } from "./MemoryLibrary";
 import { StickerLibrary } from "./StickerLibrary";
@@ -43,9 +44,14 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
       previousTab.current = tab;
     }
   }, [tab]);
+  // 只有当前可见面板走入场动效；已访问面板仍常挂载，草稿与滚动位置不受影响。
   const panel = (name: "knowledge" | "memory" | "stickers", child: React.ReactNode) =>
     visited.includes(name) || tab === name ? (
-      <div hidden={tab !== name} data-workspace-scroll={name}>
+      <div
+        hidden={tab !== name}
+        data-workspace-scroll={name}
+        className={tab === name ? "panel-enter" : undefined}
+      >
         {child}
       </div>
     ) : null;
@@ -54,18 +60,17 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
       ref={workspaceScroll}
       data-testid="library-workspace-scroll"
       onScroll={(event) => scrollPositions.current.set(tab, event.currentTarget.scrollTop)}
-      className="mx-auto h-full min-h-0 w-full max-w-[1160px] space-y-[24px] overflow-y-auto px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
+      className="mx-auto h-full min-h-0 w-full max-w-[1160px] overflow-y-auto px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
     >
-      <header className="workspace-page-header space-y-[6px]">
-        <p className="workspace-page-location">
-          {t("brand.workspace", { "0": t("library.materials") })}
-        </p>
-        <h1 className="workspace-page-title">{t("library.library")}</h1>
-        <p className="workspace-page-description">
-          {t("library.documents.provide.knowledge.memories.preserve.experience.and.assets.enrich")}
-        </p>
-      </header>
+      <WorkspacePageHeader
+        location={t("brand.workspace", { "0": t("library.materials") })}
+        title={t("library.library")}
+        description={t(
+          "library.documents.provide.knowledge.memories.preserve.experience.and.assets.enrich",
+        )}
+      />
       <Tabs
+        className="mb-[24px]"
         value={tab}
         onValueChange={(value) =>
           navigate(

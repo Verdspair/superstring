@@ -121,13 +121,13 @@ describe("system capability directory", () => {
       "system-capabilities",
     );
     for (const [name, route] of rows) {
-      fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${name}`) }));
+      fireEvent.click(screen.getByRole("button", { name: `前往配置功能 · ${name}` }));
       expect(store.getState().settingsRoute).toBe(route);
       expect(screen.getByRole("button", { name: "返回系统能力" })).toBeTruthy();
       await act(async () => {
         store.getState().openSettingsRoute("system-capabilities");
       });
-      expect(screen.getByRole("button", { name: new RegExp(`^${name}`) })).toBeTruthy();
+      expect(screen.getByRole("button", { name: `前往配置功能 · ${name}` })).toBeTruthy();
     }
   });
 

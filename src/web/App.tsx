@@ -1,3 +1,4 @@
+import { motion, useReducedMotion } from "motion/react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -10,6 +11,7 @@ import {
 import { BrandLogo } from "./design-system/BrandLogo";
 import { DesignSystemProvider } from "./design-system/Providers";
 
+import { getDesktopHost } from "./desktop-host";
 import { useLocale } from "./i18n";
 import { startConversationChanges } from "./services/conversation-changes";
 import { startChunkPreload } from "./state/preload-orchestrator";
@@ -32,12 +34,26 @@ const Preferences = lazy(WORKSPACE_LOADERS.preferences);
 
 function Waiting({ bootstrap = false }: { bootstrap?: boolean }) {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
+  const motionSkipped =
+    shouldReduceMotion || (bootstrap && getDesktopHost()?.motionManaged === true);
   return (
     <div
       role="status"
-      className="flex h-full min-h-64 flex-col items-center justify-center gap-3 p-8 text-center"
+      className="flex h-full min-h-64 flex-col items-center justify-center gap-3 p-8 text-center select-none"
     >
-      <BrandLogo className="size-12 text-primary" />
+      <motion.div
+        initial={motionSkipped ? false : { scale: 0.88, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ type: "spring", stiffness: 260, damping: 18, mass: 0.85 }}
+        className="relative flex items-center justify-center"
+      >
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -inset-3 rounded-full bg-primary/10 blur-md dark:bg-primary/15"
+        />
+        <BrandLogo className="relative size-12 text-primary drop-shadow-[0_2px_8px_rgba(0,0,0,0.06)] dark:drop-shadow-[0_2px_12px_rgba(0,0,0,0.35)]" />
+      </motion.div>
       <strong className="text-xl tracking-tight">{t("brand.name")}</strong>
       <p className="text-sm text-muted-foreground">
         {t(bootstrap ? "workspace.loading_local_workspace" : "workspace.reading")}
@@ -45,8 +61,31 @@ function Waiting({ bootstrap = false }: { bootstrap?: boolean }) {
     </div>
   );
 }
+function WorkspaceReady({ active }: { active: boolean }) {
+  useEffect(() => {
+    if (!active) return;
+    const host = getDesktopHost();
+    if (!host?.motionManaged) return;
+    let frame = 0;
+    let remaining = 2;
+    const step = () => {
+      remaining -= 1;
+      if (remaining > 0) {
+        frame = requestAnimationFrame(step);
+        return;
+      }
+      void host.notifyWorkspaceReady().catch(() => console.warn("DESKTOP_WORKSPACE_READY_FAILED"));
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [active]);
+  return null;
+}
+
 function Application() {
   const { t } = useTranslation();
+  const shouldReduceMotion = useReducedMotion();
+  const [motionSettled, setMotionSettled] = useState(false);
   // Keep persisted language changes in sync across windows in every workspace.
   useLocale();
   const status = useSuperstringStore((s) => s.status);
@@ -169,95 +208,125 @@ function Application() {
       </div>
     );
 
+  const motionSkipped = shouldReduceMotion || getDesktopHost()?.motionManaged === true;
   return (
-    <WorkspaceShell>
-      {(visitedSpaces.has("conversations") || isConversations) && (
-        <div hidden={!isConversations} className={isConversations ? "h-full" : "hidden"}>
-          <Suspense fallback={<Waiting />}>
-            <ConversationWorkspace active={isConversations} />
-          </Suspense>
-        </div>
-      )}
-      {(visitedSpaces.has("assistants") || isAssistants) && (
-        <div hidden={!isAssistants} className={isAssistants ? "h-full" : "hidden"}>
-          <Suspense fallback={<Waiting />}>
-            <AssistantWorkspace active={isAssistants} />
-          </Suspense>
-        </div>
-      )}
-      {(visitedSpaces.has("capabilities") || isCapabilities) && (
-        <div hidden={!isCapabilities} className={isCapabilities ? "h-full" : "hidden"}>
-          <Suspense fallback={<Waiting />}>
-            <CapabilitiesWorkspace active={isCapabilities} />
-          </Suspense>
-        </div>
-      )}
-      {(visitedSpaces.has("schemes") || isSchemes) && (
-        <div hidden={!isSchemes} className={isSchemes ? "h-full" : "hidden"}>
-          <Suspense fallback={<Waiting />}>
-            <SchemesWorkspace active={isSchemes} />
-          </Suspense>
-        </div>
-      )}
-      {(visitedSpaces.has("library") || isLibrary) && (
-        <div hidden={!isLibrary} className={isLibrary ? "h-full" : "hidden"}>
-          <Suspense fallback={<Waiting />}>
-            <LibraryWorkspace active={isLibrary} />
-          </Suspense>
-        </div>
-      )}
-      {(visitedSpaces.has("connections") || isConnections) && (
-        <div hidden={!isConnections} className={isConnections ? "h-full" : "hidden"}>
-          <Suspense fallback={<Waiting />}>
-            <ConnectionWorkspace active={isConnections} />
-          </Suspense>
-        </div>
-      )}
-      {(visitedSpaces.has("models") || isModels) && (
-        <div hidden={!isModels} className={isModels ? "h-full" : "hidden"}>
-          <Suspense fallback={<Waiting />}>
-            <ModelServices active={isModels} />
-          </Suspense>
-        </div>
-      )}
-      {(visitedSpaces.has("preferences") || isPreferences) && (
-        <Sheet
-          open={isPreferences}
-          onOpenChange={(next) => {
-            if (!next) closePreferences();
-          }}
-        >
-          <SheetContent
-            side="right"
-            showCloseButton
-            className="flex h-full w-full flex-col gap-0 p-0 sm:max-w-xl md:max-w-2xl"
-            onCloseAutoFocus={(e) => {
-              const target = [
-                lastFocusRef.current,
-                document.getElementById("workspace-navigation-trigger"),
-                document.getElementById("workspace-search-trigger"),
-              ].find((el): el is HTMLElement => Boolean(el?.isConnected));
-              if (target) {
-                e.preventDefault();
-                target.focus();
-              }
+    <motion.div
+      data-slot="workspace-root-motion"
+      initial={motionSkipped ? false : { scale: 0.82, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{
+        type: "spring",
+        stiffness: 260,
+        damping: 18,
+        mass: 0.85,
+      }}
+      onAnimationComplete={() => setMotionSettled(true)}
+      style={motionSettled || shouldReduceMotion ? { transform: "none" } : undefined}
+      className="h-svh min-h-0 w-full"
+    >
+      <WorkspaceShell>
+        {(visitedSpaces.has("conversations") || isConversations) && (
+          <div
+            hidden={!isConversations}
+            className={isConversations ? "h-full panel-enter" : "hidden"}
+          >
+            <Suspense fallback={<Waiting />}>
+              <ConversationWorkspace active={isConversations} />
+              <WorkspaceReady active={isConversations} />
+            </Suspense>
+          </div>
+        )}
+        {(visitedSpaces.has("assistants") || isAssistants) && (
+          <div hidden={!isAssistants} className={isAssistants ? "h-full panel-enter" : "hidden"}>
+            <Suspense fallback={<Waiting />}>
+              <AssistantWorkspace active={isAssistants} />
+              <WorkspaceReady active={isAssistants} />
+            </Suspense>
+          </div>
+        )}
+        {(visitedSpaces.has("capabilities") || isCapabilities) && (
+          <div
+            hidden={!isCapabilities}
+            className={isCapabilities ? "h-full panel-enter" : "hidden"}
+          >
+            <Suspense fallback={<Waiting />}>
+              <CapabilitiesWorkspace active={isCapabilities} />
+              <WorkspaceReady active={isCapabilities} />
+            </Suspense>
+          </div>
+        )}
+        {(visitedSpaces.has("schemes") || isSchemes) && (
+          <div hidden={!isSchemes} className={isSchemes ? "h-full panel-enter" : "hidden"}>
+            <Suspense fallback={<Waiting />}>
+              <SchemesWorkspace active={isSchemes} />
+              <WorkspaceReady active={isSchemes} />
+            </Suspense>
+          </div>
+        )}
+        {(visitedSpaces.has("library") || isLibrary) && (
+          <div hidden={!isLibrary} className={isLibrary ? "h-full panel-enter" : "hidden"}>
+            <Suspense fallback={<Waiting />}>
+              <LibraryWorkspace active={isLibrary} />
+              <WorkspaceReady active={isLibrary} />
+            </Suspense>
+          </div>
+        )}
+        {(visitedSpaces.has("connections") || isConnections) && (
+          <div hidden={!isConnections} className={isConnections ? "h-full panel-enter" : "hidden"}>
+            <Suspense fallback={<Waiting />}>
+              <ConnectionWorkspace active={isConnections} />
+              <WorkspaceReady active={isConnections} />
+            </Suspense>
+          </div>
+        )}
+        {(visitedSpaces.has("models") || isModels) && (
+          <div hidden={!isModels} className={isModels ? "h-full panel-enter" : "hidden"}>
+            <Suspense fallback={<Waiting />}>
+              <ModelServices active={isModels} />
+              <WorkspaceReady active={isModels} />
+            </Suspense>
+          </div>
+        )}
+        {(visitedSpaces.has("preferences") || isPreferences) && (
+          <Sheet
+            open={isPreferences}
+            onOpenChange={(next) => {
+              if (!next) closePreferences();
             }}
           >
-            <SheetHeader className="sr-only">
-              <SheetTitle>{t("library.preferences")}</SheetTitle>
-              <SheetDescription>
-                {t("library.language.color.and.desktop.behavior.changes.apply.immediately")}
-              </SheetDescription>
-            </SheetHeader>
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <Suspense fallback={<Waiting />}>
-                <Preferences active={isPreferences} />
-              </Suspense>
-            </div>
-          </SheetContent>
-        </Sheet>
-      )}
-    </WorkspaceShell>
+            <SheetContent
+              side="right"
+              showCloseButton
+              className="flex h-full w-full flex-col gap-0 p-0 sm:max-w-xl md:max-w-2xl"
+              onCloseAutoFocus={(e) => {
+                const target = [
+                  lastFocusRef.current,
+                  document.getElementById("workspace-navigation-trigger"),
+                  document.getElementById("workspace-search-trigger"),
+                ].find((el): el is HTMLElement => Boolean(el?.isConnected));
+                if (target) {
+                  e.preventDefault();
+                  target.focus();
+                }
+              }}
+            >
+              <SheetHeader className="sr-only">
+                <SheetTitle>{t("library.preferences")}</SheetTitle>
+                <SheetDescription>
+                  {t("library.language.color.and.desktop.behavior.changes.apply.immediately")}
+                </SheetDescription>
+              </SheetHeader>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <Suspense fallback={<Waiting />}>
+                  <Preferences active={isPreferences} />
+                  <WorkspaceReady active={isPreferences} />
+                </Suspense>
+              </div>
+            </SheetContent>
+          </Sheet>
+        )}
+      </WorkspaceShell>
+    </motion.div>
   );
 }
 export default function App() {

@@ -403,11 +403,11 @@ describe("the window applies to new rows only", () => {
       );
       expect(mediaNoteRow(h.orm, "evt_new", 1)!.expiresAt).toBe(stamp(NOW_SECONDS, 30));
       expect(
-        qqMemberLabels(h.orm, {
-          accountId: "10001",
-          conversationKind: "group",
-          peerId: "30003",
-        }).get("20002"),
+        qqMemberLabels(
+          h.orm,
+          { accountId: "10001", conversationKind: "group", peerId: "30003" },
+          fixedIso(NOW_SECONDS + 60),
+        ).get("20002"),
       ).toBe("群友");
 
       // Speech written without an explicit window — the default must be the stored one.

@@ -1,5 +1,5 @@
 import { Cpu, Save, Undo2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { ConfirmDialog } from "@/components/confirmation";
@@ -7,12 +7,19 @@ import { Field } from "@/components/form-field";
 import { SettingsGroup } from "@/components/settings-group";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { InputSuggestions } from "@/components/ui/input-suggestions";
 import { dirtyPages } from "@/features/agents/page-drafts";
 import { translateNotice } from "@/i18n";
 import type { AgentDraft } from "@/state/types";
 import { useSuperstringStore } from "@/store";
 
-export function AgentModelPurpose({ active = true }: { active?: boolean } = {}) {
+export function AgentModelPurpose({
+  active = true,
+  embedded = false,
+}: {
+  active?: boolean;
+  embedded?: boolean;
+} = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       pageEditor: state.pageEditor,
@@ -32,6 +39,7 @@ export function AgentModelPurpose({ active = true }: { active?: boolean } = {}) 
   );
   const { t } = useTranslation();
   const [confirmDefault, setConfirmDefault] = useState(false);
+  const applyTarget = useRef<string | null>(null);
 
   useEffect(() => {
     if (active) void s.loadOrganization();
@@ -59,44 +67,45 @@ export function AgentModelPurpose({ active = true }: { active?: boolean } = {}) 
     ["context_compression_model_name", "library.context.compression.model"],
   ] as const;
 
+  const modelSuggestions = s.modelNames.map((name) => ({
+    value: name,
+    label: name,
+    description: s.loadedModelNames.includes(name)
+      ? t("library.loaded")
+      : s.externalModelNames.includes(name)
+        ? t("library.external")
+        : undefined,
+  }));
+
   return (
     <div className="space-y-6">
       <SettingsGroup
         title={t("library.model.roles")}
         description={t("library.choose.a.model.for.each.task.manage.connections.in")}
         icon={Cpu}
+        className={embedded ? "[&>div:first-child]:px-0" : undefined}
+        containerClassName={
+          embedded ? "bg-transparent border-0 divide-y-0 rounded-none shadow-none" : undefined
+        }
       >
         {modelFields.map(([key, label]) => (
-          <div key={key} className="p-4 sm:p-5">
+          <div key={key} className={embedded ? "py-2 px-0" : "p-4 sm:p-5"}>
             <Field label={label} tooltip={t("hints.agent.fieldModelName")}>
-              <Input
-                list={`agent-model-${key}`}
+              <InputSuggestions
+                suggestions={modelSuggestions}
                 value={d[key] ?? ""}
                 placeholder={key === "model_name" ? undefined : t("library.unset")}
-                onChange={(e) =>
+                onValueChange={(value) =>
                   s.patchPageAgent("models", {
-                    [key]: key === "model_name" ? e.target.value : e.target.value || null,
+                    [key]: key === "model_name" ? value : value || null,
                   } as Partial<AgentDraft>)
                 }
               />
-              <datalist id={`agent-model-${key}`}>
-                {[...new Set([d[key], ...s.modelNames])]
-                  .filter((name): name is string => !!name)
-                  .map((name) => (
-                    <option key={name} value={name}>
-                      {s.loadedModelNames.includes(name)
-                        ? t("library.loaded")
-                        : s.externalModelNames.includes(name)
-                          ? t("library.external")
-                          : name}
-                    </option>
-                  ))}
-              </datalist>
             </Field>
           </div>
         ))}
 
-        <div className="p-4 sm:p-5">
+        <div className={embedded ? "py-2 px-0" : "p-4 sm:p-5"}>
           <Field label="library.temperature" tooltip={t("hints.agent.fieldTemperature")}>
             <Input
               type="number"
@@ -109,7 +118,13 @@ export function AgentModelPurpose({ active = true }: { active?: boolean } = {}) 
           </Field>
         </div>
 
-        <div className="space-y-4 bg-muted/15 p-4 sm:p-5">
+        <div
+          className={
+            embedded
+              ? "space-y-4 rounded-[10px] border border-border bg-muted/15 p-4 sm:p-5 mt-2"
+              : "space-y-4 bg-muted/15 p-4 sm:p-5"
+          }
+        >
           <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
@@ -117,7 +132,10 @@ export function AgentModelPurpose({ active = true }: { active?: boolean } = {}) 
               disabled={!defaultModel || alreadyDefault || s.settingsSaving}
               tooltip={t("hints.agent.defaults")}
               disabledReason={t("hints.agent.defaultsDisabled")}
-              onClick={() => setConfirmDefault(true)}
+              onClick={() => {
+                applyTarget.current = defaultModel ?? null;
+                setConfirmDefault(true);
+              }}
             >
               {t("library.models.apply.default", { "0": defaultModel ?? t("library.unset") })}
             </Button>
@@ -161,17 +179,21 @@ export function AgentModelPurpose({ active = true }: { active?: boolean } = {}) 
         </div>
       </SettingsGroup>
 
-      {confirmDefault && defaultModel && (
-        <ConfirmDialog
-          message={t("library.models.apply.confirm", { "0": editor.agent.name, "1": defaultModel })}
-          onCancel={() => setConfirmDefault(false)}
-          onConfirm={() => {
-            return s.applyDefaultModelToAgent(defaultModel).then((ok) => {
-              if (ok) setConfirmDefault(false);
-            });
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={confirmDefault && Boolean(defaultModel)}
+        message={t("library.models.apply.confirm", {
+          "0": editor.agent.name,
+          "1": defaultModel ?? applyTarget.current ?? t("library.unset"),
+        })}
+        onCancel={() => setConfirmDefault(false)}
+        onConfirm={() => {
+          const target = defaultModel ?? applyTarget.current;
+          if (!target) return;
+          return s.applyDefaultModelToAgent(target).then((ok) => {
+            if (ok) setConfirmDefault(false);
+          });
+        }}
+      />
     </div>
   );
 }

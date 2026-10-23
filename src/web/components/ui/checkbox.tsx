@@ -18,9 +18,11 @@ function Checkbox({
       )}
       {...props}
     >
+      {/* Persistent Indicator avoids Presence unmount churn per checkbox state flip. */}
       <CheckboxPrimitive.Indicator
         data-slot="checkbox-indicator"
-        className="grid place-content-center text-current transition-none [&>svg]:size-3.5"
+        forceMount
+        className="grid place-content-center text-current transition-none [&>svg]:size-3.5 data-unchecked:hidden"
       >
         <CheckIcon />
       </CheckboxPrimitive.Indicator>

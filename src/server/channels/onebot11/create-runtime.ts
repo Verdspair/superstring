@@ -687,11 +687,11 @@ export function createOneBotConversationRuntime(options: {
     },
     resolveExistingRunAndOutbox(_transaction, task) {
       const intents = db
-        .query(`SELECT i.status,i.target FROM outbound_intents i
+        .query(`SELECT i.status FROM outbound_intent_metadata i
         JOIN agent_runs r ON r.run_id=i.run_id
         WHERE i.conversation_id=? AND i.source_through_seq=? AND i.speech_kind=?
           AND r.conversation_id=i.conversation_id
-          AND r.observed_seq=COALESCE(json_extract(i.target,'$.observedThroughSeq'),i.source_through_seq)
+          AND r.observed_seq=COALESCE(i.observed_through_seq,i.source_through_seq)
           AND r.observed_seq>=i.source_through_seq
           AND (i.run_id=? OR (? IS NOT NULL AND r.wake_id=?))`)
         .all(
@@ -703,7 +703,6 @@ export function createOneBotConversationRuntime(options: {
           task.originWakeId,
         ) as {
         status: string;
-        target: string;
       }[];
       if (task.cause === "chiming_in" && task.judgementDone === 1 && task.originWakeId) {
         const judgement = db

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { SettingsGroup, SettingsRow } from "../../components/settings-group";
 import { Button } from "../../components/ui/button";
-import { Input } from "../../components/ui/input";
+import { InputSuggestions } from "../../components/ui/input-suggestions";
 import { NativeSelect } from "../../components/ui/native-select";
 import { knowledgeModelDirty, organizationDirty } from "../../features/knowledge/types";
 import { translateNotice } from "../../i18n";
@@ -19,7 +19,6 @@ export function ModelDefaults({
 } = {}) {
   const { t } = useTranslation();
   const instanceId = useId();
-  const catalogId = `${instanceId}-model-catalog`;
   const defaultModelId = `${instanceId}-organization-model`;
   const knowledgeModelId = `${instanceId}-knowledge-model`;
   const state = useSuperstringStore(
@@ -41,6 +40,7 @@ export function ModelDefaults({
     })),
   );
   const { loadOrganization, loadKnowledgeModel, organizationEditor: editor } = state;
+  const modelSuggestions = state.modelNames.map((name) => ({ value: name }));
   useEffect(() => {
     if (!active) return;
     if (scope === "organization") void loadOrganization();
@@ -49,12 +49,6 @@ export function ModelDefaults({
 
   return (
     <div className="w-full space-y-6">
-      <datalist id={catalogId}>
-        {state.modelNames.map((name) => (
-          <option key={name} value={name} />
-        ))}
-      </datalist>
-
       {scope === "organization" && (
         <SettingsGroup
           title={t("models.sharedDefaults")}
@@ -74,14 +68,14 @@ export function ModelDefaults({
                 }
                 description={t("models.purpose.organization.hint")}
               >
-                <Input
+                <InputSuggestions
                   id={defaultModelId}
-                  list={catalogId}
+                  suggestions={modelSuggestions}
                   value={editor.modelName ?? ""}
                   placeholder={t("models.followDefault")}
                   disabled={state.settingsSaving || state.organizationLoading}
                   aria-label={t("models.purpose.organization")}
-                  onChange={(e) => state.patchOrganization(e.target.value || null)}
+                  onValueChange={(value) => state.patchOrganization(value || null)}
                   className="w-full sm:w-64 sm:min-w-56"
                 />
               </SettingsRow>
@@ -150,16 +144,16 @@ export function ModelDefaults({
               </label>
             }
           >
-            <Input
+            <InputSuggestions
               id={knowledgeModelId}
-              list={catalogId}
+              suggestions={modelSuggestions}
               value={state.knowledgeModelEditor?.modelName ?? ""}
               disabled={
                 !state.knowledgeModelEditor || state.knowledgeModelLoading || state.settingsSaving
               }
               placeholder={t("models.followDefault")}
               aria-label={t("models.knowledgeModel")}
-              onChange={(event) => state.patchKnowledgeModel(event.target.value || null)}
+              onValueChange={(value) => state.patchKnowledgeModel(value || null)}
               className="w-full sm:w-64 sm:min-w-56"
             />
           </SettingsRow>

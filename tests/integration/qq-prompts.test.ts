@@ -57,8 +57,8 @@ describe("editable QQ prompt storage and HTTP", () => {
       .map((t) => getTableConfig(t).name)
       .sort();
     expect(actual).toEqual([...BUSINESS_TABLE_NAMES].sort());
-    // 0070 adds the derived context source lookup to the existing business tables.
-    expect(actual).toHaveLength(77);
+    // 0072 adds compact outbound metadata to the existing business tables.
+    expect(actual).toHaveLength(78);
   });
   it("upgrades an existing v18 scheme with editable output defaults and preserved revision", () => {
     const db = new Database(":memory:");

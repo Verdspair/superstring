@@ -1,5 +1,5 @@
 import { Globe, Menu, Search, X } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -27,6 +27,7 @@ import {
   SheetTrigger,
 } from "../components/ui/sheet";
 import { BrandLogo } from "../design-system/BrandLogo";
+import { isDesktopHost } from "../desktop-host";
 import { broadcastAppearance } from "../desktop-lifecycle";
 import { useIsMobile } from "../hooks/use-mobile";
 import { selectLocale, useLocale } from "../i18n";
@@ -39,6 +40,7 @@ import { WorkspaceCommand } from "./WorkspaceCommand";
 export function WorkspaceShell({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const mobile = useIsMobile();
+  const desktopHost = isDesktopHost();
   const locale = useLocale();
   const [theme, setTheme] = useState(readTheme);
   const [mode, setMode] = useState(readMode);
@@ -96,6 +98,16 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
       <Sheet open={menu} onOpenChange={setMenu}>
         <header
           data-slot="app-header"
+          data-desktop-host={desktopHost ? "true" : undefined}
+          style={
+            desktopHost
+              ? ({
+                  minHeight:
+                    "max(56px, calc(env(titlebar-area-height, 36px) / var(--app-interface-scale, 1)))",
+                  paddingRight: "calc(148px / var(--app-interface-scale, 1))",
+                } as CSSProperties)
+              : undefined
+          }
           className="sticky top-0 z-40 flex min-h-[56px] shrink-0 flex-wrap items-center justify-between gap-[10px] border-b border-border bg-[var(--header-background)] px-[20px] py-[8px] backdrop-blur-[16px] max-[480px]:px-[12px]"
         >
           <div className="flex shrink-0 items-center gap-[10px]">

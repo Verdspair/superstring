@@ -207,6 +207,10 @@ export function BindingEditor({
   const hasInvalidAntiSpam = rawMinMessages !== undefined || rawWindowSeconds !== undefined;
   const saving = state.qqAccessSaving;
   const [preview, setPreview] = useState<SchemeChangePreview | null>(null);
+  // 常挂载确认弹窗在关闭动画期间仍会渲染：目标取最近一次预览快照。
+  const previewRef = useRef<SchemeChangePreview | null>(null);
+  if (preview) previewRef.current = preview;
+  const previewView = preview ?? previewRef.current;
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const clearChoice = () =>
@@ -338,7 +342,7 @@ export function BindingEditor({
               {conversation.kind === "group" ? "Q" : "P"}
             </div>
             <div className="space-y-0.5 min-w-0">
-              <SheetTitle className="text-lg font-semibold tracking-tight text-foreground">
+              <SheetTitle className="tracking-tight text-foreground">
                 {t(conversation.kind === "group" ? "connections.group" : "connections.privateChat")}{" "}
                 {conversation.peer_id}
               </SheetTitle>
@@ -931,26 +935,26 @@ export function BindingEditor({
               </SchemeFieldCard>
             </>
           )}
-          {preview && (
-            <Dialog
-              open
-              onOpenChange={(open) => {
-                if (!open) setPreview(null);
-              }}
-            >
-              <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg rounded-xl">
-                <DialogHeader>
-                  <DialogTitle className="text-base font-semibold tracking-tight">
-                    {t("schemes.qq.groupConfig.scheme.confirmTitle", {
-                      "0": preview.schemeName,
-                    })}
-                  </DialogTitle>
-                  <DialogDescription className="text-xs text-muted-foreground leading-relaxed">
-                    {t("schemes.qq.groupConfig.scheme.confirmBody")}
-                  </DialogDescription>
-                </DialogHeader>
+          <Dialog
+            open={preview !== null}
+            onOpenChange={(open) => {
+              if (!open) setPreview(null);
+            }}
+          >
+            <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg rounded-xl">
+              <DialogHeader>
+                <DialogTitle className="tracking-tight">
+                  {t("schemes.qq.groupConfig.scheme.confirmTitle", {
+                    "0": previewView?.schemeName ?? "",
+                  })}
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground leading-relaxed">
+                  {t("schemes.qq.groupConfig.scheme.confirmBody")}
+                </DialogDescription>
+              </DialogHeader>
+              {previewView && (
                 <ul className="divide-y divide-border/60 rounded-lg border border-border/70 bg-muted/20 p-2 text-sm">
-                  {preview.rows.map((row) => (
+                  {previewView.rows.map((row) => (
                     <li
                       key={row.key}
                       className="flex flex-wrap items-center justify-between gap-2 py-2 px-1 text-xs"
@@ -962,39 +966,39 @@ export function BindingEditor({
                     </li>
                   ))}
                 </ul>
-                <DialogFooter className="gap-2 sm:gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-lg"
-                    tooltip={t("hints.qq.previewCancel")}
-                    onClick={() => setPreview(null)}
-                  >
-                    {t("connections.cancel")}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-lg"
-                    disabled={saving}
-                    tooltip={t("hints.qq.schemeChangeReset")}
-                    onClick={() => confirmSchemeChange("reset")}
-                  >
-                    {t("schemes.qq.groupConfig.scheme.resetLabel")}
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="h-8 rounded-lg"
-                    disabled={saving}
-                    tooltip={t("hints.qq.schemeChangeKeep")}
-                    onClick={() => confirmSchemeChange("keep")}
-                  >
-                    {t("schemes.qq.groupConfig.scheme.keepLabel")}
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          )}
+              )}
+              <DialogFooter className="gap-2 sm:gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 rounded-lg"
+                  tooltip={t("hints.qq.previewCancel")}
+                  onClick={() => setPreview(null)}
+                >
+                  {t("connections.cancel")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 rounded-lg"
+                  disabled={saving}
+                  tooltip={t("hints.qq.schemeChangeReset")}
+                  onClick={() => confirmSchemeChange("reset")}
+                >
+                  {t("schemes.qq.groupConfig.scheme.resetLabel")}
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-8 rounded-lg"
+                  disabled={saving}
+                  tooltip={t("hints.qq.schemeChangeKeep")}
+                  onClick={() => confirmSchemeChange("keep")}
+                >
+                  {t("schemes.qq.groupConfig.scheme.keepLabel")}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </SheetContent>
     </Sheet>

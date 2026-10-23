@@ -29,6 +29,7 @@ import {
   schemeRowsOf,
 } from "../../workspace/scheme-catalog";
 import type { SettingsRoute } from "../../workspace/settings-routes";
+import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { QqGroupConfigPage } from "./group-config";
 import { QqConnectionTab } from "./qq-app-management";
 import { SchemeBindingsView } from "./scheme-bindings";
@@ -713,45 +714,43 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
       className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
       aria-label={t("workspace.schemes")}
     >
-      <header className="workspace-page-header mb-[24px]">
-        <p className="workspace-page-location">
-          {t("brand.workspace", { "0": t("workspace.schemes") })}
-        </p>
-        <h1 className="workspace-page-title">{t("workspace.schemes")}</h1>
-        <p className="workspace-page-description">{t("schemes.subtitle")}</p>
-        <div className="mt-4">
-          <Tabs value={primarySection} onValueChange={handleSectionChange}>
-            <TabsList
-              aria-label={t("schemes.workspace.navigation")}
-              className="h-auto group-data-horizontal/tabs:h-auto w-full sm:w-fit max-w-full flex-wrap justify-start gap-[6px] rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-[32px] [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-none [&_[role=tab]]:max-w-full [&_[role=tab]]:whitespace-normal [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]"
+      <WorkspacePageHeader
+        location={t("brand.workspace", { "0": t("workspace.schemes") })}
+        title={t("workspace.schemes")}
+        description={t("schemes.subtitle")}
+      />
+      <div className="mb-[24px]">
+        <Tabs value={primarySection} onValueChange={handleSectionChange}>
+          <TabsList
+            aria-label={t("schemes.workspace.navigation")}
+            className="h-auto group-data-horizontal/tabs:h-auto w-full sm:w-fit max-w-full flex-wrap justify-start gap-[6px] rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-[32px] [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-none [&_[role=tab]]:max-w-full [&_[role=tab]]:whitespace-normal [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]"
+          >
+            <TabsTrigger
+              value="schemes"
+              disabled={busy}
+              onClick={() => {
+                if (primarySection === "schemes" && activePane !== "list")
+                  handleSectionChange("schemes");
+              }}
             >
-              <TabsTrigger
-                value="schemes"
-                disabled={busy}
-                onClick={() => {
-                  if (primarySection === "schemes" && activePane !== "list")
-                    handleSectionChange("schemes");
-                }}
-              >
-                {t("schemes.workspace.schemes")}
-              </TabsTrigger>
-              <TabsTrigger
-                value="bindings"
-                disabled={busy}
-                onClick={() => {
-                  if (primarySection === "bindings" && activePane === "group")
-                    handleSectionChange("bindings");
-                }}
-              >
-                {t("schemes.workspace.bindings")}
-              </TabsTrigger>
-              <TabsTrigger value="settings" disabled={busy}>
-                {t("schemes.workspace.settings")}
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-        </div>
-      </header>
+              {t("schemes.workspace.schemes")}
+            </TabsTrigger>
+            <TabsTrigger
+              value="bindings"
+              disabled={busy}
+              onClick={() => {
+                if (primarySection === "bindings" && activePane === "group")
+                  handleSectionChange("bindings");
+              }}
+            >
+              {t("schemes.workspace.bindings")}
+            </TabsTrigger>
+            <TabsTrigger value="settings" disabled={busy}>
+              {t("schemes.workspace.settings")}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
 
       {renderedPanes.has("list") && (
         <div

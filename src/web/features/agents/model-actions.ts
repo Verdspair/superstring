@@ -2,9 +2,26 @@ import type { SuperstringApi } from "../../api";
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
+import {
+  isCurrentModelDiscovery,
+  modelStatusText,
+  startModelDiscovery,
+} from "../models/model-discovery";
 
 type Capacity = Awaited<ReturnType<SuperstringApi["getModelCapacity"]>>;
 type CapacityLabel = "聊天" | "上下文压缩";
+type CapacityKey = {
+  apiClient: SuperstringApi;
+  agentId: string | "__new__";
+  token: object | undefined;
+  models: readonly [string, string | null];
+};
+const sameCapacityKey = (a: CapacityKey, b: CapacityKey) =>
+  a.apiClient === b.apiClient &&
+  a.agentId === b.agentId &&
+  a.token === b.token &&
+  a.models[0] === b.models[0] &&
+  a.models[1] === b.models[1];
 export function createModelActions(
   set: StoreSet,
   get: StoreGet,
@@ -14,11 +31,11 @@ export function createModelActions(
 > {
   let capacityRequest = 0;
   let cached: {
-    matches: () => boolean;
+    key: CapacityKey;
     results: Array<readonly [CapacityLabel, Capacity]>;
   } | null = null;
-  const recalculateCapacityPreview = () => {
-    if (!cached?.matches()) return;
+  let inFlight: { key: CapacityKey; promise: Promise<void> } | null = null;
+  const applyCapacityResults = (results: Array<readonly [CapacityLabel, Capacity]>) => {
     const state = get();
     const p5 =
       state.settingsView === "workspace" && state.pageEditor
@@ -27,7 +44,7 @@ export function createModelActions(
     if (!p5) return;
     const lines: string[] = [];
     let chatContextCapacity: number | null = null;
-    for (const [label, result] of cached.results) {
+    for (const [label, result] of results) {
       if (label === "聊天") chatContextCapacity = result.context_length;
       if (result.status === "unavailable") {
         lines.push(msg("{0}：未加载／容量未知（{1}）", msg(label), result.error_code));
@@ -60,92 +77,103 @@ export function createModelActions(
     }
     set({ capacityPreview: lines.join("\n"), chatContextCapacity });
   };
+  const recalculateCapacityPreview = () => {
+    if (!cached) return;
+    const state = get();
+    if (
+      state.apiClient !== cached.key.apiClient ||
+      state.editorAgentId !== cached.key.agentId ||
+      state.pageEditor?.token !== cached.key.token
+    )
+      return;
+    applyCapacityResults(cached.results);
+  };
   return {
     recalculateCapacityPreview,
     refreshModels: async (prefetchedProviders) => {
       const api = get().apiClient;
-      try {
-        // 外部模型 API（0032）：登记过的外部模型名与本地模型并列出现在每个选择器里。取不到外部
-        // 清单不是错误——本地列表照旧可用，只是少了几项可选项。
-        // 若调用方已预取 provider 清单（如 ModelServices 初始读取/主动刷新），直接复用，避免重复 GET /models/providers。
-        const catalogPromise = api.listModels();
-        const providersPromise =
-          prefetchedProviders !== undefined
-            ? Promise.resolve(prefetchedProviders)
-            : api.listModelProviders().catch(() => []);
-        const [catalog, providers] = await Promise.all([catalogPromise, providersPromise]);
-        if (get().apiClient !== api) return;
-        const local = [...new Set(catalog.models)];
-        const external = providers.flatMap((provider) =>
-          provider.models.map((model) => model.name),
-        );
-        const modelNames = [...new Set([...local, ...external])];
-        const parts = [
-          local.length
-            ? msg("LM Studio 当前报告 {0} 个已加载模型。", local.length)
-            : msg("LM Studio 当前没有报告已加载模型；仍可保留或手动输入模型 ID。"),
-        ];
-        if (external.length) parts.push(msg("另有 {0} 个来自外部模型 API。", external.length));
-        set({
-          modelNames,
-          loadedModelNames: local,
-          externalModelNames: [...new Set(external)],
-          modelStatus: parts.join(" "),
-          error: null,
-        });
-      } catch (error) {
-        if (get().apiClient !== api) return;
-        set({
-          modelStatus: msg("模型列表加载失败：{0}；仍可保留或手动输入模型 ID。", errorText(error)),
-        });
-      }
+      // 外部模型 API（0032）：登记过的外部模型名与本地模型并列出现在每个选择器里。
+      // 两个来源独立结算：任一来源失败不能丢掉另一来源已拿到的可用模型。调用方已预取
+      // provider 清单或读取（如 ModelServices 初始读取/主动刷新）时直接复用，避免重复 GET。
+      const discovery = startModelDiscovery(
+        api,
+        api.listModels(),
+        prefetchedProviders === undefined
+          ? api.listModelProviders()
+          : Promise.resolve(prefetchedProviders),
+      );
+      const result = await discovery.result;
+      if (!isCurrentModelDiscovery(api, discovery.revision) || get().apiClient !== api) return;
+      set({
+        modelNames: result.modelNames,
+        loadedModelNames: result.local,
+        externalModelNames: result.external,
+        modelStatus: modelStatusText(result, { includeExternalCount: true }),
+      });
     },
     refreshCapacityPreview: async (probeModels) => {
-      const draft = get().editorDraft;
+      const state = get();
+      const draft = state.editorDraft;
       if (!draft) return;
+      // Keep the public tuple shape; the retired retrieval slot is never probed.
+      const chatModel = probeModels?.[0] ?? draft.model_name;
+      const compressionModel = probeModels ? probeModels[2] : draft.context_compression_model_name;
+      const key: CapacityKey = {
+        apiClient: state.apiClient,
+        agentId: state.editorAgentId,
+        token: state.pageEditor?.token,
+        models: [chatModel, compressionModel ?? null],
+      };
+      // Same editor identity: reuse the successful read. Parking the tab or changing route is not
+      // a freshness boundary; agent/API/model identity changes are.
+      if (cached && sameCapacityKey(cached.key, key)) {
+        applyCapacityResults(cached.results);
+        return;
+      }
+      if (inFlight && sameCapacityKey(inFlight.key, key)) return inFlight.promise;
       const request = ++capacityRequest;
-      const { editorAgentId, pageEditor, apiClient, settingsView, settingsRoute, page } = get();
       const matches = () =>
         request === capacityRequest &&
-        get().editorAgentId === editorAgentId &&
-        get().pageEditor?.token === pageEditor?.token &&
-        get().apiClient === apiClient &&
-        get().settingsView === settingsView &&
-        get().settingsRoute === settingsRoute &&
-        get().page === page;
-      cached = null;
+        get().apiClient === key.apiClient &&
+        get().editorAgentId === key.agentId &&
+        get().pageEditor?.token === key.token;
       set({
         chatContextCapacity: null,
         capacityPreview: msg("正在刷新容量预览…"),
       });
-      // Keep the public tuple shape; the retired retrieval slot is never probed.
-      const chatModel = probeModels?.[0] ?? draft.model_name;
-      const compressionModel = probeModels ? probeModels[2] : draft.context_compression_model_name;
       const models = [
         ["聊天", chatModel],
         ["上下文压缩", compressionModel ?? chatModel],
       ] as const;
-      const cache = new Map<string, Capacity>();
-      const results: Array<readonly [CapacityLabel, Capacity]> = [];
-      try {
-        for (const [label, name] of models) {
-          let result = cache.get(name);
-          if (!result) {
-            result = await apiClient.getModelCapacity(name);
-            if (!matches()) return;
-            cache.set(name, result);
+      const probe = (async () => {
+        const cache = new Map<string, Capacity>();
+        const results: Array<readonly [CapacityLabel, Capacity]> = [];
+        try {
+          for (const [label, name] of models) {
+            let result = cache.get(name);
+            if (!result) {
+              result = await key.apiClient.getModelCapacity(name);
+              if (!matches()) return;
+              cache.set(name, result);
+            }
+            results.push([label, result]);
           }
-          results.push([label, result]);
+          if (!matches()) return;
+          cached = { key, results };
+          // Budget edits during a probe are applied to the result, never captured stale values.
+          applyCapacityResults(results);
+        } catch (error) {
+          if (!matches()) return;
+          set({
+            capacityPreview: msg("容量预览不可用：{0}；未修改配置或加载模型。", errorText(error)),
+          });
         }
-        if (!matches()) return;
-        cached = { matches, results };
-        // Budget edits during a probe are applied to the result, never captured stale values.
-        recalculateCapacityPreview();
-      } catch (error) {
-        if (!matches()) return;
-        set({
-          capacityPreview: msg("容量预览不可用：{0}；未修改配置或加载模型。", errorText(error)),
-        });
+      })();
+      inFlight = { key, promise: probe };
+      try {
+        await probe;
+      } finally {
+        if (inFlight?.promise === probe) inFlight = null;
       }
     },
   };

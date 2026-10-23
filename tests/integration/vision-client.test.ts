@@ -518,3 +518,105 @@ it("reaches the local model service directly despite a dead HTTP_PROXY", async (
     `data:image/png;base64,${Buffer.from([7, 8, 9]).toString("base64")}`,
   );
 });
+
+// Provider URLs may point at a local port, so error guidance follows the resolved route,
+// not the hostname. Exercise the vision transport as well as the shared mapper.
+describe("vision transport maps errors by the resolved route", () => {
+  type Captured = { code?: string; status?: number; message?: string };
+  const capture = (pending: Promise<unknown>) =>
+    pending.then(
+      () => null,
+      (error: unknown) => error as Captured,
+    );
+  const externalRoute = (model: string) =>
+    model === "cloud/vision"
+      ? { baseUrl: "https://external.provider.example/v1", apiKey: "external-secret-token" }
+      : null;
+
+  for (const status of [401, 403] as const) {
+    it(`sends an external ${status} rejection to the provider's own key, not the local env`, async () => {
+      const seen: { url: string; authorization: string }[] = [];
+      const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+        const headers = init?.headers as Record<string, string>;
+        seen.push({ url: String(url), authorization: headers.authorization });
+        return new Response("invalid provider key", { status });
+      }) as unknown as typeof fetch;
+      const client = createLmStudioVisionClient(
+        { ...config, apiKey: "local-only-token" },
+        fetchImpl,
+        { externalModel: externalRoute },
+      );
+      const failure = await capture(
+        client.annotate({ model: "cloud/vision", prompt: "p", images: [] }),
+      );
+      // 实际传输走外部地址与外部 key；本地 token 没有出站。
+      expect(seen).toEqual([
+        {
+          url: "https://external.provider.example/v1/chat/completions",
+          authorization: "Bearer external-secret-token",
+        },
+      ]);
+      expect(failure).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE", status });
+      expect(failure?.message).toContain("外部模型服务鉴权失败");
+      expect(failure?.message).toContain("API key");
+      expect(failure?.message).not.toContain("LM_STUDIO_API_KEY");
+      expect(failure?.message).not.toContain("external-secret-token");
+    });
+  }
+
+  it("reports an external connection failure as the external service, not the local one", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("fetch failed");
+    }) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient(
+      { ...config, apiKey: "local-only-token" },
+      fetchImpl,
+      { externalModel: externalRoute },
+    );
+    const failure = await capture(
+      client.annotate({ model: "cloud/vision", prompt: "p", images: [] }),
+    );
+    expect(failure?.code).toBe("MODEL_SERVICE_UNAVAILABLE");
+    expect(failure?.status).toBeUndefined();
+    expect(failure?.message).toContain("外部模型服务暂不可用");
+    expect(failure?.message).not.toContain("本地模型服务");
+    expect(failure?.message).not.toContain("external-secret-token");
+  });
+
+  it("keeps an external 503 generic with its status and without the provider key", async () => {
+    const fetchImpl = (async () =>
+      new Response('{"error":{"message":"upstream temporarily unavailable"}}', {
+        status: 503,
+      })) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient(
+      { ...config, apiKey: "local-only-token" },
+      fetchImpl,
+      { externalModel: externalRoute },
+    );
+    const failure = await capture(
+      client.annotate({ model: "cloud/vision", prompt: "p", images: [] }),
+    );
+    // 既有映射：503 仍是 MODEL_ERROR + status 503（只换文案的晚补不改码/状态）。
+    expect(failure).toMatchObject({ code: "MODEL_ERROR", status: 503 });
+    expect(failure?.message).not.toContain("external-secret-token");
+  });
+
+  it("keeps an undeclared model on the local route and local auth guidance", async () => {
+    const seen: string[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      seen.push(String(url));
+      return new Response("denied", { status: 401 });
+    }) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient({ ...config, apiKey: "local-secret" }, fetchImpl, {
+      externalModel: externalRoute,
+    });
+    const failure = await capture(
+      client.annotate({ model: "local/vision", prompt: "p", images: [] }),
+    );
+    // 钩子在，但该模型没被声明：仍走本地地址与本地鉴权动作。
+    expect(seen).toEqual([`${config.baseUrl}/chat/completions`]);
+    expect(failure).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE", status: 401 });
+    expect(failure?.message).toContain("LM_STUDIO_API_KEY");
+    expect(failure?.message).not.toContain("外部模型服务");
+  });
+});

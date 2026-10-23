@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { projectConversationEvent } from "../../src/server/conversation/conversation-view";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import {
   DEFAULT_AGENT_ID,
@@ -145,6 +146,87 @@ describe("conversation history pagination over rebinding epochs", () => {
     });
   });
 
+  it("latest page keeps normal messages visible when stale undescribed media revisions crowd older seqs", () => {
+    const h = setup();
+    const epoch = h.addEpoch(DEFAULT_AGENT_ID, 150);
+    const insertRevision = h.db.prepare(
+      `INSERT INTO conversation_events(conversation_id,seq,event_key,kind,source_kind,source_id,source_revision,sources,addressing,occurred_at,recorded_at)
+       VALUES(?,?,?,?,'qq_media',?,?,'[]','{}',?,?)`,
+    );
+    const at = h.at;
+    // Real backfill shape: every stored media revision carries its parent inbound row
+    // (seq 1..150 here) and its note row; 97 of them are the initial undescribed state
+    // (attempts=0, note=NULL) that produced the crowded latest page.
+    for (let i = 0; i < 97; i++)
+      insertRevision.run(
+        epoch.id,
+        151 + i,
+        `media-empty-${i}`,
+        "media_revision",
+        `note-empty-${i}`,
+        "0",
+        at,
+        at,
+      );
+    // Legacy shape kept visible: 0 attempts WITH a stored note is a real revision.
+    insertRevision.run(epoch.id, 248, "media-note-0", "media_revision", "note-legacy", "0", at, at);
+    // A consumed attempt (attempts>0, no note) is a meaningful failure: still visible.
+    insertRevision.run(epoch.id, 249, "media-fail", "media_revision", "note-fail", "1", at, at);
+    h.db
+      .query(
+        "INSERT INTO qq_events(event_key,account_id,conversation_kind,peer_id,agent_id,message_id,occurred_at_seconds,speaker_kind,speaker_id,recorded_at) VALUES('evt-page','90001','group','30003',?,'msg-page',0,'member','10001',?)",
+      )
+      .run(DEFAULT_AGENT_ID, at);
+    for (let i = 0; i < 97; i++)
+      h.db
+        .query(
+          "INSERT INTO qq_media_notes(id,event_key,segment_index,segment_kind,source_ref,note,note_model,attempts,expires_at,recorded_at,updated_at) VALUES(?,?,?,'image','ref',NULL,NULL,0,'2099-01-01T00:00:00.000Z',?,?)",
+        )
+        .run(`note-empty-${i}`, "evt-page", i, at, at);
+    for (const [id, note, attempts, segment] of [
+      ["note-legacy", "旧描述", 0, 97],
+      ["note-fail", null, 1, 98],
+    ] as const)
+      h.db
+        .query(
+          "INSERT INTO qq_media_notes(id,event_key,segment_index,segment_kind,source_ref,note,note_model,attempts,expires_at,recorded_at,updated_at) VALUES(?,?,?,'image','ref',?,? ,?,'2099-01-01T00:00:00.000Z',?,?)",
+        )
+        .run(id, "evt-page", segment, note, note === null ? null : "fixture", attempts, at, at);
+    h.db.query("UPDATE conversations SET next_seq=250 WHERE id=?").run(epoch.id);
+    // Raw rows stay stored; the display page skips exactly the 97 non-update rows.
+    expect(
+      (
+        h.db
+          .query("SELECT COUNT(*) AS n FROM conversation_events WHERE conversation_id=?")
+          .get(epoch.id) as { n: number }
+      ).n,
+    ).toBe(249);
+    const latest = h.journal.historyBefore(epoch.id, Number.MAX_SAFE_INTEGER, 100);
+    expect(h.seqs(latest)).toEqual([...Array.from({ length: 98 }, (_, i) => 53 + i), 248, 249]);
+    expect(latest.hasMore).toBe(true);
+    // Cursor arithmetic stays canonical: the strict boundary page keeps its exact rows.
+    expect(h.seqs(h.journal.historyBefore(epoch.id, 200, 100))).toEqual(
+      Array.from({ length: 100 }, (_, i) => 51 + i),
+    );
+    const forward = h.journal.historyAfter(epoch.id, 190, 100);
+    expect(h.seqs(forward)).toEqual([248, 249]);
+    expect(forward.hasMore).toBe(false);
+    // Eligibility follows the note's CURRENT state, not a frozen snapshot: describing
+    // note-empty-0 through the legacy write path re-admits its rev-0 row immediately.
+    h.db
+      .query("UPDATE qq_media_notes SET note='补上了',note_model='fixture' WHERE id='note-empty-0'")
+      .run();
+    expect(h.seqs(h.journal.historyAfter(epoch.id, 150, 100))).toEqual([151, 248, 249]);
+    // Execution reads are untouched: eventsAfter still yields every raw row in order.
+    expect(h.journal.eventsAfter(epoch.id, 245).items.map((e) => e.seq)).toEqual([
+      246, 247, 248, 249,
+    ]);
+    // Watermarks stay put; reading never acks or resequences.
+    expect(
+      h.db.query("SELECT next_seq,consumed_seq FROM conversations WHERE id=?").get(epoch.id),
+    ).toEqual({ next_seq: 250, consumed_seq: 0 });
+  });
+
   it("keeps history reads cursor-only: closed epochs reject appends and reads never ack", () => {
     const h = setup();
     const old = h.addEpoch(DEFAULT_AGENT_ID, 3);
@@ -172,5 +254,224 @@ describe("conversation history pagination over rebinding epochs", () => {
     ]);
     // Execution still uses local seq on the current epoch, never a global cursor.
     expect(h.journal.eventsAfter(current.id).items.map((e) => e.seq)).toEqual([1, 2]);
+  });
+
+  it("keeps raw media revisions eligible by current revision state, independent of expiry", () => {
+    const h = setup();
+    const epoch = h.addEpoch(DEFAULT_AGENT_ID, 3);
+    const insertRevision = h.db.prepare(
+      `INSERT INTO conversation_events(conversation_id,seq,event_key,kind,source_kind,source_id,source_revision,sources,addressing,occurred_at,recorded_at)
+       VALUES(?,?,?,?,'qq_media',?,?,'[]','{}',?,?)`,
+    );
+    const at = h.at;
+    h.db
+      .query(
+        "INSERT INTO qq_events(event_key,account_id,conversation_kind,peer_id,agent_id,message_id,occurred_at_seconds,speaker_kind,speaker_id,recorded_at) VALUES('evt-boundary','90001','group','30003',?,'msg-boundary',0,'member','10001',?)",
+      )
+      .run(DEFAULT_AGENT_ID, at);
+    // note-purged has no qq_media_notes row any more (its revision row predates the purge);
+    // note-expired keeps a current revision whose note TTL already lapsed; note-alpha is
+    // still at the initial 0-attempt state. attempts stays inside the schema 0..2 check and
+    // note_model satisfies the "note NULL OR note_model NOT NULL" constraint.
+    const insertNote = h.db.prepare(
+      "INSERT INTO qq_media_notes(id,event_key,segment_index,segment_kind,source_ref,note,note_model,attempts,expires_at,recorded_at,updated_at) VALUES(?,?,?,'image','ref',?,?,?,?,?,?)",
+    );
+    insertNote.run(
+      "note-expired",
+      "evt-boundary",
+      0,
+      "过期描述",
+      "fixture",
+      1,
+      "2020-01-01T00:00:00.000Z",
+      at,
+      at,
+    );
+    insertNote.run(
+      "note-alpha",
+      "evt-boundary",
+      1,
+      null,
+      null,
+      0,
+      "2099-01-01T00:00:00.000Z",
+      at,
+      at,
+    );
+    insertRevision.run(
+      epoch.id,
+      4,
+      "media:note-purged:1",
+      "media_revision",
+      "note-purged",
+      "1",
+      at,
+      at,
+    );
+    insertRevision.run(
+      epoch.id,
+      5,
+      "media:note-expired:1",
+      "media_revision",
+      "note-expired",
+      "1",
+      at,
+      at,
+    );
+    insertRevision.run(
+      epoch.id,
+      6,
+      "media:note-alpha:0",
+      "media_revision",
+      "note-alpha",
+      "0",
+      at,
+      at,
+    );
+    h.db.query("UPDATE conversations SET next_seq=7 WHERE id=?").run(epoch.id);
+    // Purged note and expired note: both raw rows stay display-eligible, and only the
+    // 0-attempt/no-note revision is hidden.
+    const latest = h.journal.historyBefore(epoch.id, Number.MAX_SAFE_INTEGER, 100);
+    expect(h.seqs(latest)).toEqual([1, 2, 3, 4, 5]);
+    expect(latest.hasMore).toBe(false);
+    expect(
+      (
+        h.db
+          .query("SELECT COUNT(*) AS n FROM conversation_events WHERE conversation_id=?")
+          .get(epoch.id) as { n: number }
+      ).n,
+    ).toBe(6);
+    expect(h.journal.eventsAfter(epoch.id, 3).items.map((e) => e.seq)).toEqual([4, 5, 6]);
+    expect(
+      h.db.query("SELECT next_seq,consumed_seq FROM conversations WHERE id=?").get(epoch.id),
+    ).toEqual({ next_seq: 7, consumed_seq: 0 });
+    // Projection resolves the same raw rows against the live note table: the purged note
+    // and the expired current note both report expiry while history keeps listing them.
+    const projAt = "2026-10-22T00:00:00.000Z";
+    const event = (seq: number) => h.journal.eventsAfter(epoch.id, seq - 1).items[0]!;
+    expect(projectConversationEvent(h.db, event(4), projAt).contentState).toBe("expired");
+    expect(projectConversationEvent(h.db, event(5), projAt)).toMatchObject({
+      contentState: "expired",
+      text: null,
+    });
+    // The stored 0-attempt row has no display fact until the note is described: the same
+    // revision re-admits in place, and the projection turns active with the note text.
+    expect(projectConversationEvent(h.db, event(6), projAt)).toMatchObject({
+      contentState: "unavailable",
+      text: null,
+    });
+    h.db
+      .query("UPDATE qq_media_notes SET note='补充描述',note_model='fixture' WHERE id='note-alpha'")
+      .run();
+    expect(h.seqs(h.journal.historyAfter(epoch.id, 5, 100))).toEqual([6]);
+    expect(projectConversationEvent(h.db, event(6), projAt)).toMatchObject({
+      contentState: "active",
+      text: "补充描述",
+    });
+    // A consumed attempt supersedes rev 0: the stale row hides, the rev-1 row matching the
+    // note's actual current revision takes its place, and the stale row projects unavailable.
+    h.db.query("UPDATE qq_media_notes SET note='读后描述',attempts=1 WHERE id='note-alpha'").run();
+    insertRevision.run(
+      epoch.id,
+      7,
+      "media:note-alpha:1",
+      "media_revision",
+      "note-alpha",
+      "1",
+      at,
+      at,
+    );
+    h.db.query("UPDATE conversations SET next_seq=8 WHERE id=?").run(epoch.id);
+    expect(h.seqs(h.journal.historyAfter(epoch.id, 5, 100))).toEqual([7]);
+    expect(projectConversationEvent(h.db, event(6), projAt).contentState).toBe("unavailable");
+    expect(projectConversationEvent(h.db, event(7), projAt)).toMatchObject({
+      contentState: "active",
+      text: "读后描述",
+    });
+    // Raw retention is untouched by the display filter: every revision row and watermark
+    // stays exactly as written.
+    expect(
+      (
+        h.db
+          .query("SELECT COUNT(*) AS n FROM conversation_events WHERE conversation_id=?")
+          .get(epoch.id) as { n: number }
+      ).n,
+    ).toBe(7);
+    expect(h.journal.eventsAfter(epoch.id, 3).items.map((e) => e.seq)).toEqual([4, 5, 6, 7]);
+    expect(
+      h.db.query("SELECT next_seq,consumed_seq FROM conversations WHERE id=?").get(epoch.id),
+    ).toEqual({ next_seq: 8, consumed_seq: 0 });
+  });
+
+  it("preserves offset cursors when hidden initial media sits in an older sealed epoch", () => {
+    const h = setup();
+    const first = h.addEpoch(DEFAULT_AGENT_ID, 3);
+    const insertRevision = h.db.prepare(
+      `INSERT INTO conversation_events(conversation_id,seq,event_key,kind,source_kind,source_id,source_revision,sources,addressing,occurred_at,recorded_at)
+       VALUES(?,?,?,?,'qq_media',?,'0','[]','{}',?,?)`,
+    );
+    const at = h.at;
+    // Initial undescribed media (attempts=0, note=NULL) in the oldest epoch: display-hidden
+    // but still counting toward every later cursor's offset.
+    insertRevision.run(first.id, 4, "media-init", "media_revision", "note-init", at, at);
+    h.db
+      .query(
+        "INSERT INTO qq_events(event_key,account_id,conversation_kind,peer_id,agent_id,message_id,occurred_at_seconds,speaker_kind,speaker_id,recorded_at) VALUES('evt-offset','90001','group','30003',?,'msg-offset',0,'member','10001',?)",
+      )
+      .run(DEFAULT_AGENT_ID, at);
+    h.db
+      .query(
+        "INSERT INTO qq_media_notes(id,event_key,segment_index,segment_kind,source_ref,note,note_model,attempts,expires_at,recorded_at,updated_at) VALUES('note-init','evt-offset',0,'image','ref',NULL,NULL,0,'2099-01-01T00:00:00.000Z',?,?)",
+      )
+      .run(at, at);
+    h.db.query("UPDATE conversations SET next_seq=5 WHERE id=?").run(first.id);
+    const second = h.addEpoch(DEFAULT_AGENT_ID, 2);
+    const third = h.addEpoch(DEFAULT_AGENT_ID, 1);
+    // Global seqs: first 1..4 (4 hidden), second 5..6, third 7. Backward from the newest
+    // epoch still honors the hidden row's offset: no gap and no shift.
+    const before = h.journal.historyBefore(third.id, Number.MAX_SAFE_INTEGER, 100);
+    expect(h.seqs(before)).toEqual([1, 2, 3, 5, 6, 7]);
+    expect(before.hasMore).toBe(false);
+    expect(before.items.map((item) => item.event.conversationId)).toEqual([
+      first.id,
+      first.id,
+      first.id,
+      second.id,
+      second.id,
+      third.id,
+    ]);
+    expect(JSON.stringify(before)).not.toContain("media-init");
+    expect(
+      (
+        h.db
+          .query("SELECT COUNT(*) AS n FROM conversation_events WHERE conversation_id=?")
+          .get(first.id) as { n: number }
+      ).n,
+    ).toBe(4);
+    // Forward: a cursor inside the hidden gap keeps the strict boundary and hasMore truth.
+    const fromInside = h.journal.historyAfter(second.id, 2, 2);
+    expect(h.seqs(fromInside)).toEqual([3, 5]);
+    expect(fromInside.hasMore).toBe(true);
+    expect(h.seqs(h.journal.historyAfter(second.id, 4, 2))).toEqual([5, 6]);
+    expect(h.journal.historyAfter(second.id, 4, 2).hasMore).toBe(true);
+    expect(h.seqs(h.journal.historyAfter(second.id, 6, 2))).toEqual([7]);
+    expect(h.journal.historyAfter(second.id, 6, 2).hasMore).toBe(false);
+    // Backward strict boundary across the hidden row from the newest epoch.
+    const across = h.journal.historyBefore(third.id, 7, 3);
+    expect(h.seqs(across)).toEqual([3, 5, 6]);
+    expect(across.hasMore).toBe(true);
+    expect(h.seqs(h.journal.historyBefore(third.id, across.firstSeq, 3))).toEqual([1, 2]);
+    expect(h.seqs(h.journal.historyBefore(third.id, 8, 100))).toEqual([1, 2, 3, 5, 6, 7]);
+    // Execution reads are untouched by the display filter in both epochs.
+    expect(h.journal.eventsAfter(first.id, 2).items.map((e) => e.seq)).toEqual([3, 4]);
+    expect(h.journal.eventsAfter(second.id, 0).items.map((e) => e.seq)).toEqual([1, 2]);
+    // Watermarks stay put across the family; reading never acks or resequences.
+    expect(
+      h.db.query("SELECT id,next_seq,consumed_seq FROM conversations ORDER BY binding_epoch").all(),
+    ).toEqual([
+      { id: first.id, next_seq: 5, consumed_seq: 0 },
+      { id: second.id, next_seq: 3, consumed_seq: 0 },
+      { id: third.id, next_seq: 2, consumed_seq: 0 },
+    ]);
   });
 });

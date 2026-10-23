@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { FuseState, FuseV1Options, FuseVersion, getCurrentFuseWire } from "@electron/fuses";
+import { serviceRootForApp } from "./config.mjs";
 import { preserveSmokeEvidence } from "./runtime-tools.mjs";
 import { validateSmokeReport } from "./smoke-contract.mjs";
 
@@ -20,6 +21,15 @@ const executable =
   process.platform === "darwin"
     ? path.join(app, "Contents/MacOS/superstring")
     : path.join(app, "superstring");
+// The packaged host takes the service root explicitly. It is the `service` directory
+// beside app.asar that createConfiguration's extraResources entry produces; nothing
+// is searched for and no default path is substituted.
+const serviceRoot = serviceRootForApp(process.platform, app);
+if (
+  !fs.existsSync(path.join(serviceRoot, "resource-manifest.json")) ||
+  !fs.existsSync(path.join(serviceRoot, "superstring-server"))
+)
+  throw new Error(`SMOKE_SERVICE_ROOT_INCOMPLETE:${serviceRoot}`);
 function run(file, args, diagnostics) {
   const started = performance.now();
   const result = spawnSync(file, args, { stdio: "inherit", timeout: 120_000 });
@@ -50,16 +60,20 @@ if (identity.release && process.platform === "darwin" && identity.macSigning ===
 }
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "Superstring smoke 测试 "));
 const report = path.join(temporary, "report.json");
-let stopped = false;
+let verified = false;
 try {
   run(
     executable,
-    [`--desktop-smoke-report=${report}`, `--desktop-profile=${path.join(temporary, "profile")}`],
+    [
+      `--desktop-smoke-report=${report}`,
+      `--desktop-profile=${path.join(temporary, "profile")}`,
+      `--desktop-service-root=${serviceRoot}`,
+    ],
     path.join(directory, "smoke-process.json"),
   );
   const result = JSON.parse(fs.readFileSync(report, "utf8"));
   validateSmokeReport(result, identity);
-  stopped = true;
+  verified = true;
 } catch (error) {
   console.error(`Smoke failed; isolated profile retained at ${temporary}`);
   const logfile = path.join(temporary, "profile/logs/desktop.log");
@@ -72,6 +86,7 @@ try {
   // Only diagnostics from this synthetic profile are uploaded, never its DB,
   // preferences or a real user's profile. Preserve success logs before cleanup.
   preserveSmokeEvidence(temporary, directory);
-  // Remove only the synthetic profile whose service confirmed it has stopped.
-  if (stopped) fs.rmSync(temporary, { recursive: true, force: true });
+  // Remove only the synthetic profile after the host exited and its report passed.
+  // closeStopsBackend is the host's own claim; process exit itself is observed by run().
+  if (verified) fs.rmSync(temporary, { recursive: true, force: true });
 }

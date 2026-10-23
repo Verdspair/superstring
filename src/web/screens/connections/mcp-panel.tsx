@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { McpServerConfig, McpServerStatus } from "../../../shared/contracts/mcp";
 import { executionPolicy } from "../../../shared/contracts/permissions";
 import type { ToolDirectoryEntry } from "../../../shared/contracts/tool-directory";
+import { CatalogItem } from "../../components/catalog-item";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
@@ -18,14 +19,6 @@ import {
   SheetHeader,
   SheetTitle,
 } from "../../components/ui/sheet";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table";
 import { Textarea } from "../../components/ui/textarea";
 import {
   draftOf,
@@ -60,6 +53,14 @@ const problemKeys: Record<McpDraftProblem, string> = {
   numbers: "connections.mcp.problem.numbers",
 };
 
+// 连接组序：connected 优先，enabled(含 pending/error) 次之，config.enabled=false 最后；
+// 复制数组后稳定排序，error 不并入 disabled 置灰组。
+function serverRank(row: McpServerStatus): 0 | 1 | 2 {
+  if (row.state === "connected") return 0;
+  if (row.config.enabled) return 1;
+  return 2;
+}
+
 export function McpPanel({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const apiClient = useSuperstringStore((s) => s.apiClient);
@@ -85,6 +86,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
     null,
   );
   const [removing, setRemoving] = useState<string | null>(null);
+  const lastRemoving = useRef<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
   const mutation = useRef(false);
   const editorBaseline = useRef<McpServerDraft | null>(null);
@@ -127,6 +129,8 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
     return () => toolRead.current?.cancel();
   }, [active, detail, apiClient]);
 
+  const modulePaused = policy ? !executionPolicy(policy).modules.mcp : false;
+  const orderedServers = [...(status?.servers ?? [])].sort((a, b) => serverRank(a) - serverRank(b));
   const servers = (status?.servers ?? []).map((row) => row.config);
   const save = async (next: McpServerConfig[]) => {
     if (!status || loading || mutation.current) return;
@@ -154,7 +158,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
     <div className="w-full space-y-6 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="font-semibold">{t("connections.mcp.title")}</h2>
+          <h2 className="workspace-section-title">{t("connections.mcp.title")}</h2>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
             {t("connections.mcp.description")}
           </p>
@@ -224,50 +228,37 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
           {notice}
         </p>
       )}
-      <div className="overflow-hidden rounded-lg border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("connections.mcp.name")}</TableHead>
-              <TableHead>{t("connections.mcp.transport")}</TableHead>
-              <TableHead>{t("connections.mcp.stateColumn")}</TableHead>
-              <TableHead>{t("connections.mcp.toolsColumn")}</TableHead>
-              <TableHead className="text-right">{t("connections.actions")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {(status?.servers ?? []).map((row) => {
-              const badge = stateBadge[row.state] ?? stateBadge.pending;
-              return (
-                <TableRow
-                  key={row.config.id}
-                  className={
-                    !row.config.enabled || (policy && !executionPolicy(policy).modules.mcp)
-                      ? "bg-muted/30 text-muted-foreground"
-                      : undefined
-                  }
-                >
-                  <TableCell className="font-medium">
-                    {row.config.name}
-                    <span className="ml-2 font-mono text-xs text-muted-foreground">
-                      {row.config.id}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {t(`connections.mcp.transport.${row.config.transport}`)}
-                  </TableCell>
-                  <TableCell>
+      <div className="divide-y divide-border rounded-lg border">
+        {orderedServers.map((row) => {
+          const badge = stateBadge[row.state] ?? stateBadge.pending;
+          const dimmed = modulePaused || !row.config.enabled;
+          return (
+            <div key={row.config.id} data-server-id={row.config.id}>
+              <CatalogItem
+                muted={dimmed}
+                summary={
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{row.config.name}</span>
+                    <span className="font-mono text-xs text-muted-foreground">{row.config.id}</span>
                     <Badge variant={badge.variant}>{t(badge.key)}</Badge>
                     {row.code && (
-                      <span className="ml-2 font-mono text-xs text-destructive">{row.code}</span>
+                      <span className="font-mono text-xs text-destructive">{row.code}</span>
                     )}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {row.tools.length
-                      ? t("connections.mcp.tools", { "0": row.tools.length })
-                      : t("connections.mcp.noTools")}
-                  </TableCell>
-                  <TableCell className="text-right">
+                    <span className="text-xs text-muted-foreground">
+                      {t(`connections.mcp.transport.${row.config.transport}`)}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {row.tools.length
+                        ? t("connections.mcp.tools", { "0": row.tools.length })
+                        : t("connections.mcp.noTools")}
+                    </span>
+                    {modulePaused && (
+                      <span className="text-xs text-destructive">{t("connections.paused")}</span>
+                    )}
+                  </span>
+                }
+                actions={
+                  <>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -289,26 +280,36 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                     >
                       {t("connections.manage")}
                     </Button>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-            {!loading && !status?.servers.length && (
-              <TableRow>
-                <TableCell colSpan={5} className="h-32 text-center text-muted-foreground">
-                  {t("connections.mcp.empty")}
-                </TableCell>
-              </TableRow>
-            )}
-            {loading && (
-              <TableRow>
-                <TableCell colSpan={5} className="h-32 text-center text-muted-foreground">
-                  {t("connections.common.loading")}
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
+                  </>
+                }
+              >
+                <p className="text-sm text-muted-foreground">
+                  {t(`connections.mcp.transport.${row.config.transport}`)}
+                </p>
+                {row.code && (
+                  <p role="alert" className="font-mono text-sm text-destructive">
+                    {row.code}
+                  </p>
+                )}
+                {modulePaused && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("connections.grants.modulePaused")}
+                  </p>
+                )}
+              </CatalogItem>
+            </div>
+          );
+        })}
+        {!loading && !status?.servers.length && (
+          <p className="flex h-32 items-center justify-center text-center text-muted-foreground">
+            {t("connections.mcp.empty")}
+          </p>
+        )}
+        {loading && (
+          <p className="flex h-32 items-center justify-center text-center text-muted-foreground">
+            {t("connections.common.loading")}
+          </p>
+        )}
       </div>
 
       <Sheet
@@ -561,7 +562,10 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                     variant="ghost"
                     tooltip={t("hints.extensions.mcp.delete")}
                     disabled={busy !== ""}
-                    onClick={() => setRemoving(editor.originalId)}
+                    onClick={() => {
+                      lastRemoving.current = editor.originalId;
+                      setRemoving(editor.originalId);
+                    }}
                   >
                     <Trash2 />
                     {t("connections.mcp.delete")}
@@ -588,28 +592,28 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
           )}
         </SheetContent>
       </Sheet>
-      {active && discarding && (
-        <ConfirmDialog
-          message={t("models.discardConfirm")}
-          onCancel={() => setDiscarding(false)}
-          onConfirm={() => {
-            setDiscarding(false);
-            setEditor(null);
-          }}
-        />
-      )}
-      {active && removing && (
-        <ConfirmDialog
-          busy={busy === "save"}
-          message={t("connections.mcp.deleteConfirm", { "0": removing })}
-          onCancel={() => setRemoving(null)}
-          onConfirm={() => {
-            const target = removing;
-            setRemoving(null);
-            void save(removeServer(servers, target));
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={active && discarding}
+        message={t("models.discardConfirm")}
+        onCancel={() => setDiscarding(false)}
+        onConfirm={() => {
+          setDiscarding(false);
+          setEditor(null);
+        }}
+      />
+      <ConfirmDialog
+        open={active && removing !== null}
+        busy={busy === "save"}
+        message={t("connections.mcp.deleteConfirm", {
+          "0": removing ?? lastRemoving.current ?? "",
+        })}
+        onCancel={() => setRemoving(null)}
+        onConfirm={() => {
+          const target = removing ?? lastRemoving.current;
+          setRemoving(null);
+          if (target) void save(removeServer(servers, target));
+        }}
+      />
     </div>
   );
 }

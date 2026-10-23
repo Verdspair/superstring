@@ -183,14 +183,19 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     () => execution().loop.readBatch,
     qqGroupGuard,
   );
-  // 权限优先；本群能力其次（停用即时生效）；会话证据在技能与外部注入解析器之前，用持久存储复验。
-  const resolveDomainSource: ModuleSourceResolver = (source, owner, at) =>
-    qqExecutionModuleSourceAccess(
+  const resolveExecutionModuleSource: ModuleSourceResolver = (source, owner) => {
+    if (source.kind !== "execution_module") return undefined;
+    const snapshot = permissions.snapshot();
+    return qqExecutionModuleSourceAccess(
       source,
       owner,
-      permissions.snapshot().revision,
-      execution().modules.qqMembers,
-    ) ??
+      snapshot.revision,
+      executionPolicy(snapshot.policy).modules.qqMembers,
+    );
+  };
+  // 权限优先；本群能力其次（停用即时生效）；会话证据在技能与外部注入解析器之前，用持久存储复验。
+  const resolveDomainSource: ModuleSourceResolver = (source, owner, at) =>
+    resolveExecutionModuleSource(source, owner, at) ??
     qqGroupGuard.sourceAccess(source, owner) ??
     permissions.sourceAccess(source, owner) ??
     conversationEvidenceSourceAccess(business, source, owner, at) ??
@@ -501,12 +506,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       conversationJournal: journal,
       modules,
       resolveSource: (source, owner, at) =>
-        qqExecutionModuleSourceAccess(
-          source,
-          owner,
-          permissions.snapshot().revision,
-          execution().modules.qqMembers,
-        ) ??
+        resolveExecutionModuleSource(source, owner, at) ??
         skillSourceAccess(options.skillRoot, source) ??
         options.resolveSource?.(source, owner, at),
       qqTransportKeyPath: options.qqTransportKeyPath,

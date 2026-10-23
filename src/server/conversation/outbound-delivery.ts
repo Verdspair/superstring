@@ -113,10 +113,18 @@ export class OutboundDelivery {
   }
   private revision(id: string): void {
     const { repository, journal } = this.options;
-    const row = repository.row(id)!;
-    const d = repository.get(id)!;
+    const row = repository.db
+      .query(
+        "SELECT conversation_id,run_id,expires_at FROM outbound_intent_metadata WHERE intent_id=?",
+      )
+      .get(id) as { conversation_id: string; run_id: string; expires_at: string };
     if (journal.row(row.conversation_id)?.closed_at) return;
-    const revision = JSON.stringify(d.parts.map((p) => [p.status, p.platformMessageId]));
+    const parts = repository.db
+      .query(
+        "SELECT status,platform_message_id FROM outbound_parts WHERE intent_id=? ORDER BY ordinal",
+      )
+      .all(id) as { status: string; platform_message_id: string | null }[];
+    const revision = JSON.stringify(parts.map((part) => [part.status, part.platform_message_id]));
     journal.append({
       conversationId: row.conversation_id,
       eventKey: `delivery:${id}:${revision}`,
@@ -194,12 +202,10 @@ export class OutboundDelivery {
     const { repository } = this.options;
     return repository.db.transaction(() => {
       const count = repository.recover(this.now());
-      for (const delivery of repository.list({})) {
-        const row = repository.row(delivery.id)!;
-        if (!row.legacy_send_id && !["planned", "delivering"].includes(row.status)) {
-          this.projectLegacy(row.id);
-          this.revision(row.id);
-        }
+      for (const candidate of repository.legacyProjectionCandidates()) {
+        if (candidate.attempted) this.projectLegacy(candidate.id);
+        // Unattempted terminal rows still receive their original idempotent journal revision.
+        this.revision(candidate.id);
       }
       return count;
     })();

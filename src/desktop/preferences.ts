@@ -1,7 +1,14 @@
 import path from "node:path";
 import type { IpcMain, IpcMainInvokeEvent, WebContents } from "electron";
-import { MODE_IDS, THEME_IDS } from "../shared/appearance";
 import {
+  FONT_IDS,
+  INTERFACE_SIZE_IDS,
+  MODE_IDS,
+  TEXT_SIZE_IDS,
+  THEME_IDS,
+} from "../shared/appearance";
+import {
+  CLOSE_ANIMATION_STORAGE_KEY,
   DESKTOP_PREFERENCE_KEYS,
   DESKTOP_PREFERENCES_BOOTSTRAP_FAILED,
   DESKTOP_PREFERENCES_LOAD,
@@ -22,6 +29,7 @@ export interface DesktopPreferencesOptions {
   origin: () => string | null;
   onError?: (code: DesktopPreferencesError) => void;
   onLocaleChange?: (locale: "zh-CN" | "en" | null) => void;
+  onChange?: (snapshot: DesktopPreferenceSnapshot) => void;
   onBootstrapError?: (code: "DESKTOP_PREFERENCES_BOOTSTRAP_FAILED") => void;
 }
 
@@ -61,15 +69,19 @@ export async function installDesktopPreferences(
     name: "desktop-preferences",
     accessPropertiesByDotNotation: false,
     clearInvalidConfig: false,
-    rootSchema: { additionalProperties: false },
     schema: {
       "superstring-appearance": nullableEnum(THEME_IDS),
       "superstring-appearance-mode": nullableEnum(MODE_IDS),
+      "superstring-appearance-font": nullableEnum(FONT_IDS),
+      "superstring-appearance-text-size": nullableEnum(TEXT_SIZE_IDS),
+      "superstring-appearance-interface-size": nullableEnum(INTERFACE_SIZE_IDS),
       "superstring-locale": nullableEnum(["zh-CN", "en"]),
       "superstring-session": { type: ["string", "null"] },
       "superstring-agent": { type: ["string", "null"] },
+      [CLOSE_ANIMATION_STORAGE_KEY]: nullableEnum(["on", "off"]),
     },
   });
+  options.onChange?.(store.store);
   const storedLocale = store.get("superstring-locale");
   if (storedLocale === "zh-CN" || storedLocale === "en") options.onLocaleChange?.(storedLocale);
   const fail = (code: DesktopPreferencesError): never => {
@@ -103,6 +115,7 @@ export async function installDesktopPreferences(
     try {
       // A stored null is a tombstone. On another port it must clear an older local value.
       store.set(key, value);
+      options.onChange?.(store.store);
       if (key === "superstring-locale") options.onLocaleChange?.(value as "zh-CN" | "en" | null);
     } catch {
       return fail("DESKTOP_PREFERENCES_WRITE_FAILED");

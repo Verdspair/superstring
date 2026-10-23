@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { RuntimeConfig } from "../../../shared/contracts";
@@ -136,8 +137,10 @@ import { estimateTokens } from "../../services/token-estimate";
 import { type BotCompressionJob, createBotCompressionJob } from "./background-compression";
 import {
   type ConcurrentReplyContext,
+  type ConcurrentReplyFacts,
   concurrentJobsDumpValue,
-  readConcurrentReplyJobs,
+  projectConcurrentReplyQuestions,
+  readConcurrentReplyFacts,
   readRelatedReplyDeliveries,
 } from "./concurrent-reply-context";
 import { failureCode } from "./failure-code";
@@ -690,6 +693,13 @@ export function assertBotContextSources(
   });
 }
 
+interface ReadTimingScope {
+  owner: BotContextSource;
+  timings: ContextReadTimings;
+  active: boolean;
+}
+const readTimingScope = new AsyncLocalStorage<ReadTimingScope>();
+
 /** One authorized context owner with explicit decision/reply projections for every Bot topology. */
 export class BotContextSource {
   readonly actions: BuiltInAction[];
@@ -1021,7 +1031,7 @@ export class BotContextSource {
   }
   /** QQ common-source occurrences, kept separate from sticker.search carrier provenance. */
   get commonSources(): SourceRef[] {
-    return [
+    return uniqueSources([
       ...[...this.views.values()].flatMap((view) => [
         ...(view.material.sources ?? []),
         ...(view.concurrentSources ?? []),
@@ -1033,7 +1043,7 @@ export class BotContextSource {
         .flatMap((observation) => observation.sources),
       ...(this.pendingPlan?.sources ?? []),
       ...(this.batchIntents?.sources ?? []),
-    ];
+    ]);
   }
   /** Host-owned, source-bound prior work, never a system instruction or permission to send. */
   setPendingPlan(value: unknown, sources: readonly SourceRef[]): void {
@@ -1128,21 +1138,25 @@ export class BotContextSource {
       qqContextLimits(context, "judgement").windowMinutes,
       qqContextLimits(context, "reply").windowMinutes,
     );
-    return readRelatedReplyDeliveries(o.db, {
-      conversationId: o.conversationId,
-      bindingId: o.binding.id,
-      bindingEpoch: conversation.bindingEpoch,
-      agentId: o.binding.agentId,
-      accountId: o.binding.accountId,
-      conversationKind: o.binding.kind,
-      peerId: o.binding.peerId,
-      authorityRevision: o.binding.authorityRevision,
-      since: new Date(Date.parse(this.now()) - minutes * 60000 - 1000).toISOString(),
-      now: this.now(),
-      participantIds: o.targets().map((target) => target.speakerId),
-      ownTaskId: o.ownTaskId,
-      ownRunId: this.runId,
-    });
+    const timings = this.readTimings();
+    if (timings) timings.readRelatedDeliveriesCalls = (timings.readRelatedDeliveriesCalls ?? 0) + 1;
+    return this.timeReadAssertion(timings, "readRelatedDeliveriesMs", () =>
+      readRelatedReplyDeliveries(o.db, {
+        conversationId: o.conversationId,
+        bindingId: o.binding.id,
+        bindingEpoch: conversation.bindingEpoch,
+        agentId: o.binding.agentId,
+        accountId: o.binding.accountId,
+        conversationKind: o.binding.kind,
+        peerId: o.binding.peerId,
+        authorityRevision: o.binding.authorityRevision,
+        since: new Date(Date.parse(this.now()) - minutes * 60000 - 1000).toISOString(),
+        now: this.now(),
+        participantIds: o.targets().map((target) => target.speakerId),
+        ownTaskId: o.ownTaskId,
+        ownRunId: this.runId,
+      }),
+    );
   }
   /** Compare only related outbox facts against the latest model-visible material. */
   relatedRepliesChanged(): boolean {
@@ -1247,84 +1261,91 @@ export class BotContextSource {
   }
   async read(input: Parameters<ConversationContextSource["read"]>[0]): Promise<ContextMaterial> {
     const timings: ContextReadTimings = {};
-    try {
-      const preludeStarted = performance.now();
+    const scope: ReadTimingScope | undefined = input.onReadTimings
+      ? { owner: this, timings, active: true }
+      : undefined;
+    const read = async () => {
       try {
-        const conversation = this.options.journal.get(this.options.conversationId);
-        this.historyDisclosureRefs = conversation
-          ? historyReadDisclosureRefs(
-              this.options.db,
-              input.observations,
-              qqConversationScopeOfBinding({
-                conversationId: this.options.conversationId,
-                binding: this.options.binding,
-                bindingEpoch: conversation.bindingEpoch,
-              }),
-              this.options.conversationId,
-            )
-          : new Map();
-        this.observations = input.observations;
-        // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
-        this.reservations.clear();
-        this.assertCurrent();
-        input.signal.throwIfAborted();
-        if (!this.views.size && this.lastDecisionReplyRevision === undefined) {
+        const preludeStarted = performance.now();
+        try {
           const conversation = this.options.journal.get(this.options.conversationId);
-          if (!conversation) fail("CONTEXT_SOURCE_INVALID", "会话已失效");
-          this.sequence = (
-            this.options.db
-              .query(
-                "SELECT COALESCE(MAX(seq),0) AS seq FROM conversation_events WHERE conversation_id=? AND kind IN ('inbound','media_revision','outbound')",
+          this.historyDisclosureRefs = conversation
+            ? historyReadDisclosureRefs(
+                this.options.db,
+                input.observations,
+                qqConversationScopeOfBinding({
+                  conversationId: this.options.conversationId,
+                  binding: this.options.binding,
+                  bindingEpoch: conversation.bindingEpoch,
+                }),
+                this.options.conversationId,
               )
-              .get(conversation.id) as { seq: number }
-          ).seq;
+            : new Map();
+          this.observations = input.observations;
+          // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
+          this.reservations.clear();
+          this.assertCurrent();
+          input.signal.throwIfAborted();
+          if (!this.views.size && this.lastDecisionReplyRevision === undefined) {
+            const conversation = this.options.journal.get(this.options.conversationId);
+            if (!conversation) fail("CONTEXT_SOURCE_INVALID", "会话已失效");
+            this.sequence = (
+              this.options.db
+                .query(
+                  "SELECT COALESCE(MAX(seq),0) AS seq FROM conversation_events WHERE conversation_id=? AND kind IN ('inbound','media_revision','outbound')",
+                )
+                .get(conversation.id) as { seq: number }
+            ).seq;
+          }
+        } finally {
+          timings.readPreludeMs = performance.now() - preludeStarted;
+        }
+        let view: View;
+        const viewStarted = performance.now();
+        try {
+          view = await this.view(this.options.decisionTier, input.signal, undefined, timings);
+        } finally {
+          timings.readViewMs = performance.now() - viewStarted;
+        }
+        const afterViewStarted = performance.now();
+        let remainderMs: number;
+        try {
+          this.options.spec.limits.inputUnits = view.limit;
+          this.options.onRead?.(this.sequence);
+          this.assertCurrent();
+        } finally {
+          remainderMs = performance.now() - afterViewStarted;
+          timings.readRemainderMs = remainderMs;
+        }
+        // 决策相自动图（§7.1）：投影（可能为空/禁用）作为资料消息并入材料；来源并入统一复验。
+        let decisionMedia: Awaited<ReturnType<BotContextSource["preparePhaseMedia"]>>;
+        const mediaStarted = performance.now();
+        try {
+          decisionMedia = await this.preparePhaseMedia("decision", input.signal);
+        } finally {
+          timings.readDecisionMediaMs = performance.now() - mediaStarted;
+        }
+        const assemblyStarted = performance.now();
+        try {
+          this.lastDecisionReplyRevision = view.relatedReplyRevision;
+          if (decisionMedia) {
+            this.assertSources(decisionMedia.sources);
+            return this.withPendingPlan({
+              ...view.material,
+              pending: [...(view.material.pending ?? []), ...decisionMedia.messages],
+              sources: uniqueSources([...(view.material.sources ?? []), ...decisionMedia.sources]),
+            });
+          }
+          return this.withPendingPlan(view.material);
+        } finally {
+          timings.readRemainderMs = remainderMs + performance.now() - assemblyStarted;
         }
       } finally {
-        timings.readPreludeMs = performance.now() - preludeStarted;
+        if (scope) scope.active = false;
+        input.onReadTimings?.(timings);
       }
-      let view: View;
-      const viewStarted = performance.now();
-      try {
-        view = await this.view(this.options.decisionTier, input.signal, undefined, timings);
-      } finally {
-        timings.readViewMs = performance.now() - viewStarted;
-      }
-      const afterViewStarted = performance.now();
-      let remainderMs: number;
-      try {
-        this.options.spec.limits.inputUnits = view.limit;
-        this.options.onRead?.(this.sequence);
-        this.assertCurrent();
-      } finally {
-        remainderMs = performance.now() - afterViewStarted;
-        timings.readRemainderMs = remainderMs;
-      }
-      // 决策相自动图（§7.1）：投影（可能为空/禁用）作为资料消息并入材料；来源并入统一复验。
-      let decisionMedia: Awaited<ReturnType<BotContextSource["preparePhaseMedia"]>>;
-      const mediaStarted = performance.now();
-      try {
-        decisionMedia = await this.preparePhaseMedia("decision", input.signal);
-      } finally {
-        timings.readDecisionMediaMs = performance.now() - mediaStarted;
-      }
-      const assemblyStarted = performance.now();
-      try {
-        this.lastDecisionReplyRevision = view.relatedReplyRevision;
-        if (decisionMedia) {
-          this.assertSources(decisionMedia.sources);
-          return this.withPendingPlan({
-            ...view.material,
-            pending: [...(view.material.pending ?? []), ...decisionMedia.messages],
-            sources: uniqueSources([...(view.material.sources ?? []), ...decisionMedia.sources]),
-          });
-        }
-        return this.withPendingPlan(view.material);
-      } finally {
-        timings.readRemainderMs = remainderMs + performance.now() - assemblyStarted;
-      }
-    } finally {
-      input.onReadTimings?.(timings);
-    }
+    };
+    return scope ? readTimingScope.run(scope, read) : read();
   }
   async prepareGeneration(
     draft: Extract<OutputDraft, { kind: "generate" }>,
@@ -1746,13 +1767,48 @@ ${intent.trim()}`,
     // 图片能否真正进入 wire 由宿主在发送边界经 imageResolver 决定，本层不伪造字节。
     return [...systems, ...rendered.messages.slice(1)];
   }
+  private readTimings(): ContextReadTimings | undefined {
+    const scope = readTimingScope.getStore();
+    return scope?.active && scope.owner === this ? scope.timings : undefined;
+  }
+  private timeReadAssertion<T>(
+    timings: ContextReadTimings | undefined,
+    key: keyof ContextReadTimings,
+    work: () => T,
+  ): T {
+    if (!timings) return work();
+    const started = performance.now();
+    try {
+      return work();
+    } finally {
+      timings[key] = (timings[key] ?? 0) + performance.now() - started;
+    }
+  }
   assertCurrent(): void {
-    this.options.assertCurrent();
-    for (const budget of this.modelBudgets.values()) budget.assertCurrent();
-    this.assertConcurrentContexts(
-      [...this.views.values()].flatMap((view) => view.concurrentContexts ?? []),
-    );
-    assertBotContextSources(this.options, this.owner, this.commonSources);
+    const timings = this.readTimings();
+    if (timings) timings.readAssertCurrentCalls = (timings.readAssertCurrentCalls ?? 0) + 1;
+    this.timeReadAssertion(timings, "readAssertCurrentMs", () => {
+      this.timeReadAssertion(timings, "readAssertHostMs", () => this.options.assertCurrent());
+      this.timeReadAssertion(timings, "readAssertBudgetMs", () => {
+        for (const budget of this.modelBudgets.values()) budget.assertCurrent();
+      });
+      this.timeReadAssertion(timings, "readAssertConcurrentMs", () =>
+        this.assertConcurrentContexts(
+          [...this.views.values()].flatMap((view) => view.concurrentContexts ?? []),
+        ),
+      );
+      const sources = this.timeReadAssertion(
+        timings,
+        "readAssertCommonBuildMs",
+        () => this.commonSources,
+      );
+      if (timings)
+        timings.readAssertCommonOccurrences =
+          (timings.readAssertCommonOccurrences ?? 0) + sources.length;
+      this.timeReadAssertion(timings, "readAssertCommonVerifyMs", () =>
+        assertBotContextSources(this.options, this.owner, sources),
+      );
+    });
   }
   private assertConcurrentContexts(contexts: readonly ConcurrentReplyContext[]): void {
     if (contexts.length > 0) {
@@ -2088,8 +2144,21 @@ ${intent.trim()}`,
     };
   }
   assertSources(sources: readonly SourceRef[], hostCheck = true): void {
-    if (hostCheck) this.options.assertCurrent();
-    assertBotContextSources(this.options, this.owner, sources);
+    const timings = this.readTimings();
+    if (timings) {
+      timings.readAssertSourcesCalls = (timings.readAssertSourcesCalls ?? 0) + 1;
+      timings.readAssertSourcesOccurrences =
+        (timings.readAssertSourcesOccurrences ?? 0) + sources.length;
+    }
+    this.timeReadAssertion(timings, "readAssertSourcesMs", () => {
+      if (hostCheck)
+        this.timeReadAssertion(timings, "readAssertSourcesHostMs", () =>
+          this.options.assertCurrent(),
+        );
+      this.timeReadAssertion(timings, "readAssertSourcesVerifyMs", () =>
+        assertBotContextSources(this.options, this.owner, sources),
+      );
+    });
   }
   private now(): string {
     return this.options.now?.() ?? new Date().toISOString();
@@ -2688,163 +2757,168 @@ ${intent.trim()}`,
        * 以 facts 形态留在资料段里，成本不随窗口下降，本可装下的装配被打死。
        */
       const projectionFor = (sel: QqContextSelection) => {
-        const factEventKeys = new Set(selectedCarrierEventKeys(sel.messages));
-        const selectedIntentIds = new Set<string>();
-        const selectedSpeechIds = new Set<string>();
-        for (const message of sel.messages) {
-          for (const source of message.sources ?? []) {
-            if (source.kind === "outbound_intent") selectedIntentIds.add(source.id);
-            else if (source.kind === "qq_speech") selectedSpeechIds.add(source.id);
+        const readTimings = this.readTimings();
+        if (readTimings)
+          readTimings.readProjectionCalls = (readTimings.readProjectionCalls ?? 0) + 1;
+        return this.timeReadAssertion(readTimings, "readProjectionMs", () => {
+          const factEventKeys = new Set(selectedCarrierEventKeys(sel.messages));
+          const selectedIntentIds = new Set<string>();
+          const selectedSpeechIds = new Set<string>();
+          for (const message of sel.messages) {
+            for (const source of message.sources ?? []) {
+              if (source.kind === "outbound_intent") selectedIntentIds.add(source.id);
+              else if (source.kind === "qq_speech") selectedSpeechIds.add(source.id);
+            }
           }
-        }
-        /**
-         * 本档窗口（回复档分钟/条数、共享预算）内**已确认**的助手出站 part 事实（T04 Step3）。
-         *
-         * 只有进入窗口的才投影：窗口条数/分钟之外的出站原话不因这次接线被整段拉进资料段
-         * （引用展开里「窗口外按明确 ID 补」那条路仍归 `load`/`loadState` 回落，不受此裁剪影响）。
-         * 未确认（unknown/failed/not_sent/stale）与本 scope 外的一律不在候选里，也拿不到事实：
-         * loader 自身仍按 confirmed 台账、唯一认领、intent target 六维 + 当前 authorityRevision、
-         * 真实 delivery journal 归属与双期限帽再判一次，这里不替代它的 fail-closed。
-         */
-        const outboundWindowFloor =
-          nowSeconds - Math.max(windows.judgement.windowMinutes, shared.windowMinutes) * 60 - 1;
-        /**
-         * 候选范围＝**本档窗口能证明在场的出站意图**，按 journal 稳定 seq 取（§4.3「不扩成
-         * 通用历史预载」）。seq 上界取窗口消息的真实最大 seq（`outboundSeqWindow`，与窗口同
-         * 一次读冻结）；seq 下界不裁——助手的 delivery 事件合法地早于窗口最早一条入站消息
-         * （群友回复的正是它），「哪一段时间」由下面对投影事实 `occurredAtSeconds`（真实
-         * finishedAt）的时间裁剪把关，不靠 SQL 解析时间串，避免刻度/格式漂移。
-         */
-        const outboundSeqWindow = factsScope
-          ? this.outboundSeqWindow(o.conversationId, sel.messages)
-          : null;
-        // 投影 + 意图身份一次算完：只有真正投影成功的 part 才进事实段，其 intent 才算
-        // 「正文已由 facts 承载」（loader 拒掉的候选不得让时间线正文消失）。
-        const outboundProjected =
-          factsScope &&
-          outboundSeqWindow &&
-          (selectedIntentIds.size > 0 || selectedSpeechIds.size > 0)
-            ? confirmedOutboundPartCandidates(
-                o.db,
-                factsScope,
-                outboundSeqWindow,
-                fetchLimit * 4,
-              ).flatMap((candidate) => {
-                if (
-                  !selectedIntentIds.has(candidate.intentId) &&
-                  (candidate.legacySendId === null ||
-                    !selectedSpeechIds.has(candidate.legacySendId))
-                )
-                  return [];
-                // Use the loader's exact timestamp rule to skip old candidates before reading
-                // their payloads. The original loader and final fact-window check still apply.
-                const occurredAtSeconds =
-                  candidate.finishedAt === null
-                    ? NaN
-                    : Math.floor(Date.parse(candidate.finishedAt) / 1000);
-                if (
-                  !Number.isFinite(occurredAtSeconds) ||
-                  occurredAtSeconds < sinceSeconds ||
-                  occurredAtSeconds <= outboundWindowFloor
-                )
-                  return [];
-                const fact = loadQqOutboundMessageFact(
+          /**
+           * 本档窗口（回复档分钟/条数、共享预算）内**已确认**的助手出站 part 事实（T04 Step3）。
+           *
+           * 只有进入窗口的才投影：窗口条数/分钟之外的出站原话不因这次接线被整段拉进资料段
+           * （引用展开里「窗口外按明确 ID 补」那条路仍归 `load`/`loadState` 回落，不受此裁剪影响）。
+           * 未确认（unknown/failed/not_sent/stale）与本 scope 外的一律不在候选里，也拿不到事实：
+           * loader 自身仍按 confirmed 台账、唯一认领、intent target 六维 + 当前 authorityRevision、
+           * 真实 delivery journal 归属与双期限帽再判一次，这里不替代它的 fail-closed。
+           */
+          const outboundWindowFloor =
+            nowSeconds - Math.max(windows.judgement.windowMinutes, shared.windowMinutes) * 60 - 1;
+          /**
+           * 候选范围＝**本档窗口能证明在场的出站意图**，按 journal 稳定 seq 取（§4.3「不扩成
+           * 通用历史预载」）。seq 上界取窗口消息的真实最大 seq（`outboundSeqWindow`，与窗口同
+           * 一次读冻结）；seq 下界不裁——助手的 delivery 事件合法地早于窗口最早一条入站消息
+           * （群友回复的正是它），「哪一段时间」由下面对投影事实 `occurredAtSeconds`（真实
+           * finishedAt）的时间裁剪把关，不靠 SQL 解析时间串，避免刻度/格式漂移。
+           */
+          const outboundSeqWindow = factsScope
+            ? this.outboundSeqWindow(o.conversationId, sel.messages)
+            : null;
+          // 投影 + 意图身份一次算完：只有真正投影成功的 part 才进事实段，其 intent 才算
+          // 「正文已由 facts 承载」（loader 拒掉的候选不得让时间线正文消失）。
+          const outboundProjected =
+            factsScope &&
+            outboundSeqWindow &&
+            (selectedIntentIds.size > 0 || selectedSpeechIds.size > 0)
+              ? confirmedOutboundPartCandidates(
+                  o.db,
+                  factsScope,
+                  outboundSeqWindow,
+                  fetchLimit * 4,
+                ).flatMap((candidate) => {
+                  if (
+                    !selectedIntentIds.has(candidate.intentId) &&
+                    (candidate.legacySendId === null ||
+                      !selectedSpeechIds.has(candidate.legacySendId))
+                  )
+                    return [];
+                  // Use the loader's exact timestamp rule to skip old candidates before reading
+                  // their payloads. The original loader and final fact-window check still apply.
+                  const occurredAtSeconds =
+                    candidate.finishedAt === null
+                      ? NaN
+                      : Math.floor(Date.parse(candidate.finishedAt) / 1000);
+                  if (
+                    !Number.isFinite(occurredAtSeconds) ||
+                    occurredAtSeconds < sinceSeconds ||
+                    occurredAtSeconds <= outboundWindowFloor
+                  )
+                    return [];
+                  const fact = loadQqOutboundMessageFact(
+                    { db: o.db, orm: o.orm },
+                    factsScope,
+                    candidate.platformMessageId,
+                    readAt,
+                  );
+                  if (!fact) return [];
+                  if (
+                    fact.occurredAtSeconds < sinceSeconds ||
+                    fact.occurredAtSeconds <= outboundWindowFloor
+                  )
+                    return [];
+                  return [{ intentId: candidate.intentId, fact }];
+                })
+              : [];
+          const outboundFacts = outboundProjected.map((entry) => entry.fact);
+          const projectedFacts = [
+            ...(factsScope && factEventKeys.size > 0
+              ? projectQqMessageFacts(
                   { db: o.db, orm: o.orm },
                   factsScope,
-                  candidate.platformMessageId,
+                  [...factEventKeys],
                   readAt,
-                );
-                if (!fact) return [];
-                if (
-                  fact.occurredAtSeconds < sinceSeconds ||
-                  fact.occurredAtSeconds <= outboundWindowFloor
                 )
-                  return [];
-                return [{ intentId: candidate.intentId, fact }];
-              })
-            : [];
-        const outboundFacts = outboundProjected.map((entry) => entry.fact);
-        const projectedFacts = [
-          ...(factsScope && factEventKeys.size > 0
-            ? projectQqMessageFacts(
-                { db: o.db, orm: o.orm },
-                factsScope,
-                [...factEventKeys],
-                readAt,
-              )
-            : []),
-          ...outboundFacts,
-        ];
-        const projectedFactKeys = new Set(projectedFacts.map((f) => f.id));
-        // 时间线正文去重用的真实意图身份：哪些 outbound_intent 已在 facts 资料段承载正文。
-        // 来自同一次投影（不按正文文本猜，也不给 QqMessageFact 加工字段）。
-        const projectedOutboundIntentIds = new Set(
-          outboundProjected.map((entry) => entry.intentId),
-        );
-        /**
-         * 已确认出站件的**旧**时间线正文（`qq_speech` source）由 facts 资料段唯一承载后才剥离。
-         *
-         * 精确身份，不按内容/时刻猜：发送通路把一次发送的 `qq_send_log` 行 id 直接交给
-         * `recordQqSpeech` 当 `qq_speech_log.id`（同一事务、同一 id），而
-         * `outbound_intents.legacy_send_id` 指向同一行——所以 `speech.id === legacy_send_id`
-         * 就是「这条旧 speech 正文属于哪个出站意图」的确切关联（§4.3「同一消息最多供一次正文」）。
-         *
-         * 两条硬约束：
-         *   * **只在全部已确认文本部件都真的进了本档 facts 时才剥**。旧 speech 正文是这些部件
-         *     正文的换行拼接；只要有一个部件未确认/无平台 ID/是贴图/被 loader 拒/超窗口/已过期，
-         *     拼接里就仍有只此一份可读的字——那一条 speech 保持原样，并且该意图的事实段只留
-         *     身份与关系、**不再重复正文**（否则会出现「speech 一份 + 已选部件一份」两处正文）。
-         *   * `partialSpeechSince` 那种带 `outbound_intent` source 的行（非 confirmed 意图）照旧：
-         *     它没有 facts 可承载，正文永不由 facts 段提供。
-         * 未映射的独立旧 speech（无 `legacy_send_id`、或非本 scope/纪元）原文字保留，不删、不
-         * 预载整段历史、不迁旧 ID。
-         */
-        const speechFactsCarrying = (() => {
-          const ids = sel.messages.flatMap((message) =>
-            (message.sources ?? [])
-              .filter((source) => source.kind === "qq_speech")
-              .map((source) => source.id),
+              : []),
+            ...outboundFacts,
+          ];
+          const projectedFactKeys = new Set(projectedFacts.map((f) => f.id));
+          // 时间线正文去重用的真实意图身份：哪些 outbound_intent 已在 facts 资料段承载正文。
+          // 来自同一次投影（不按正文文本猜，也不给 QqMessageFact 加工字段）。
+          const projectedOutboundIntentIds = new Set(
+            outboundProjected.map((entry) => entry.intentId),
           );
-          const empty = {
-            fullyCarriedSpeechIds: new Set<string>(),
-            partlyCarriedSpeechIds: new Set<string>(),
-            partlyCarriedPartIds: new Set<string>(),
-          };
-          if (ids.length === 0 || !factsScope) return empty;
-          return qqSpeechCarriedByOutboundFacts({
-            speechSourceIds: ids,
-            // 平台 ID → **part id**。只有带真实平台 ID 的事实能作为「这个部件已在 facts 段承载」
-            // 的证据；没有平台 ID 的事实无法与部件对上，不进这张表。value 存 part id（=
-            // `QqMessageFact.id` = `outbound_parts.id`），helper 据此要求「同一个部件」而不是
-            // 「同一条线上消息 ID」——后者可能由别的部件的事实满足。
-            projectedByPlatformMessageId: new Map(
-              outboundFacts.flatMap((fact) =>
-                fact.platformMessageId === null
-                  ? []
-                  : ([[fact.platformMessageId, fact.id]] as [string, string][]),
+          /**
+           * 已确认出站件的**旧**时间线正文（`qq_speech` source）由 facts 资料段唯一承载后才剥离。
+           *
+           * 精确身份，不按内容/时刻猜：发送通路把一次发送的 `qq_send_log` 行 id 直接交给
+           * `recordQqSpeech` 当 `qq_speech_log.id`（同一事务、同一 id），而
+           * `outbound_intents.legacy_send_id` 指向同一行——所以 `speech.id === legacy_send_id`
+           * 就是「这条旧 speech 正文属于哪个出站意图」的确切关联（§4.3「同一消息最多供一次正文」）。
+           *
+           * 两条硬约束：
+           *   * **只在全部已确认文本部件都真的进了本档 facts 时才剥**。旧 speech 正文是这些部件
+           *     正文的换行拼接；只要有一个部件未确认/无平台 ID/是贴图/被 loader 拒/超窗口/已过期，
+           *     拼接里就仍有只此一份可读的字——那一条 speech 保持原样，并且该意图的事实段只留
+           *     身份与关系、**不再重复正文**（否则会出现「speech 一份 + 已选部件一份」两处正文）。
+           *   * `partialSpeechSince` 那种带 `outbound_intent` source 的行（非 confirmed 意图）照旧：
+           *     它没有 facts 可承载，正文永不由 facts 段提供。
+           * 未映射的独立旧 speech（无 `legacy_send_id`、或非本 scope/纪元）原文字保留，不删、不
+           * 预载整段历史、不迁旧 ID。
+           */
+          const speechFactsCarrying = (() => {
+            const ids = sel.messages.flatMap((message) =>
+              (message.sources ?? [])
+                .filter((source) => source.kind === "qq_speech")
+                .map((source) => source.id),
+            );
+            const empty = {
+              fullyCarriedSpeechIds: new Set<string>(),
+              partlyCarriedSpeechIds: new Set<string>(),
+              partlyCarriedPartIds: new Set<string>(),
+            };
+            if (ids.length === 0 || !factsScope) return empty;
+            return qqSpeechCarriedByOutboundFacts({
+              speechSourceIds: ids,
+              // 平台 ID → **part id**。只有带真实平台 ID 的事实能作为「这个部件已在 facts 段承载」
+              // 的证据；没有平台 ID 的事实无法与部件对上，不进这张表。value 存 part id（=
+              // `QqMessageFact.id` = `outbound_parts.id`），helper 据此要求「同一个部件」而不是
+              // 「同一条线上消息 ID」——后者可能由别的部件的事实满足。
+              projectedByPlatformMessageId: new Map(
+                outboundFacts.flatMap((fact) =>
+                  fact.platformMessageId === null
+                    ? []
+                    : ([[fact.platformMessageId, fact.id]] as [string, string][]),
+                ),
               ),
-            ),
-            store: { db: o.db, orm: o.orm },
-            scope: factsScope,
-            now: readAt,
-          });
-        })();
-        /**
-         * 「部分承载」的出站件：其旧 speech 正文仍须作为唯一来源，所以事实段**只去掉正文**，
-         * 身份／完整时间／@与引用关系／其它片段一律保留——不把整条事实删掉（那会让「这条消息
-         * 是谁在什么时候说的、引用了谁」凭空消失），也不谎称正文已完整。
-         *
-         * part 身份直接取自上面 helper 已定位过的同一批意图（`partlyCarriedPartIds`），不在这里
-         * 另跑一条缺 conversation 约束的重复 SQL；仍然只按精确 id 匹配，不按正文/时刻猜。
-         */
-        return {
-          outboundFacts,
-          projectedFacts,
-          projectedFactKeys,
-          projectedOutboundIntentIds,
-          speechFactsCarrying,
-          partlyCarriedPartIds: speechFactsCarrying.partlyCarriedPartIds,
-        };
+              store: { db: o.db, orm: o.orm },
+              scope: factsScope,
+              now: readAt,
+            });
+          })();
+          /**
+           * 「部分承载」的出站件：其旧 speech 正文仍须作为唯一来源，所以事实段**只去掉正文**，
+           * 身份／完整时间／@与引用关系／其它片段一律保留——不把整条事实删掉（那会让「这条消息
+           * 是谁在什么时候说的、引用了谁」凭空消失），也不谎称正文已完整。
+           *
+           * part 身份直接取自上面 helper 已定位过的同一批意图（`partlyCarriedPartIds`），不在这里
+           * 另跑一条缺 conversation 约束的重复 SQL；仍然只按精确 id 匹配，不按正文/时刻猜。
+           */
+          return {
+            outboundFacts,
+            projectedFacts,
+            projectedFactKeys,
+            projectedOutboundIntentIds,
+            speechFactsCarrying,
+            partlyCarriedPartIds: speechFactsCarrying.partlyCarriedPartIds,
+          };
+        });
       };
       let projection = projectionFor(selection);
       /**
@@ -2983,10 +3057,13 @@ ${intent.trim()}`,
             contexts: readonly ConcurrentReplyContext[];
           }
         | undefined;
+      // One fresh factual read in this synchronous build; changing the selected window
+      // only changes whether a known question is visible, not the other jobs' proof.
+      const concurrentFacts = this.readConcurrentJobsFacts(related);
       const rebuildConcurrentForSelection = () => {
-        concurrent = this.buildConcurrentJobsMessage(
+        concurrent = this.concurrentJobsMessage(
+          concurrentFacts,
           new Set(selectedCarrierEventKeys(selection.messages)),
-          related,
         );
         if (!fit) {
           if (concurrent === undefined) this.lastConcurrentJobsMessages.delete(tier);
@@ -3656,9 +3733,52 @@ ${intent.trim()}`,
    * 无其他任务时不产生消息。已接受的评分意图复用完整来源守卫；缺失、到期或撤权保持未知。
    * 来源与快照身份留在本 run 的视图中，供发送边界再次复验，不进入模型资料正文。
    */
-  private buildConcurrentJobsMessage(
-    visibleEventKeys: ReadonlySet<string>,
+  private readConcurrentJobsFacts(
     related = this.relatedReplyDeliveries(),
+  ): ConcurrentReplyFacts | undefined {
+    const timings = this.readTimings();
+    if (timings) timings.readConcurrentRebuildCalls = (timings.readConcurrentRebuildCalls ?? 0) + 1;
+    return this.timeReadAssertion(timings, "readConcurrentRebuildMs", () => {
+      const o = this.options;
+      const conversation = o.journal.get(o.conversationId);
+      if (!conversation) return undefined;
+      // 已知重叠冲突的优先范围：自主批次取冻结窗口，direct 取触发问题本身。
+      const focus =
+        o.sourceFromSeq !== undefined
+          ? {
+              focusFromSeq: o.sourceFromSeq + 1,
+              ...(o.trigger ? { focusThroughSeq: o.trigger.seq } : {}),
+            }
+          : o.trigger
+            ? { focusFromSeq: o.trigger.seq, focusThroughSeq: o.trigger.seq }
+            : {};
+      const projection = readConcurrentReplyFacts(o.db, {
+        conversationId: o.conversationId,
+        bindingEpoch: conversation.bindingEpoch,
+        agentId: o.binding.agentId,
+        now: this.now(),
+        ...(o.ownTaskId === undefined ? {} : { ownTaskId: o.ownTaskId }),
+        ...focus,
+        relatedTaskIds: related.taskIds,
+        omittedRelatedReplies: related.omitted,
+        assertSources: (sources) => {
+          if (timings) {
+            timings.readConcurrentProofCalls = (timings.readConcurrentProofCalls ?? 0) + 1;
+            timings.readConcurrentProofOccurrences =
+              (timings.readConcurrentProofOccurrences ?? 0) + sources.length;
+          }
+          this.timeReadAssertion(timings, "readConcurrentProofMs", () =>
+            assertBotContextSources(o, this.owner, sources),
+          );
+        },
+      });
+      return projection;
+    });
+  }
+
+  private concurrentJobsMessage(
+    facts: ConcurrentReplyFacts | undefined,
+    visibleEventKeys: ReadonlySet<string>,
   ):
     | {
         message: ModelMessage;
@@ -3666,37 +3786,20 @@ ${intent.trim()}`,
         contexts: readonly ConcurrentReplyContext[];
       }
     | undefined {
-    const o = this.options;
-    const conversation = o.journal.get(o.conversationId);
-    if (!conversation) return undefined;
-    // 已知重叠冲突的优先范围：自主批次取冻结窗口，direct 取触发问题本身。
-    const focus =
-      o.sourceFromSeq !== undefined
-        ? {
-            focusFromSeq: o.sourceFromSeq + 1,
-            ...(o.trigger ? { focusThroughSeq: o.trigger.seq } : {}),
-          }
-        : o.trigger
-          ? { focusFromSeq: o.trigger.seq, focusThroughSeq: o.trigger.seq }
-          : {};
-    const projection = readConcurrentReplyJobs(o.db, {
-      conversationId: o.conversationId,
-      bindingEpoch: conversation.bindingEpoch,
-      agentId: o.binding.agentId,
-      now: this.now(),
-      ...(o.ownTaskId === undefined ? {} : { ownTaskId: o.ownTaskId }),
-      ...focus,
-      visibleEventKeys,
-      relatedTaskIds: related.taskIds,
-      omittedRelatedReplies: related.omitted,
-      assertSources: (sources) => assertBotContextSources(o, this.owner, sources),
-    });
-    if (projection.jobs.length === 0) return undefined;
+    if (!facts || facts.jobs.length === 0) return undefined;
+    const projection = projectConcurrentReplyQuestions(facts, visibleEventKeys);
     return {
       message: textMessage("user", contextDumps(concurrentJobsDumpValue(projection))),
       sources: projection.sources,
       contexts: projection.contexts,
     };
+  }
+
+  private buildConcurrentJobsMessage(
+    visibleEventKeys: ReadonlySet<string>,
+    related = this.relatedReplyDeliveries(),
+  ) {
+    return this.concurrentJobsMessage(this.readConcurrentJobsFacts(related), visibleEventKeys);
   }
 
   /** 更新并发资料及来源身份；预算判定由 view 边界统一负责。 */

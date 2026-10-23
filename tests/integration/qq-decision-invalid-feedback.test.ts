@@ -12,6 +12,7 @@ import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { WakeRepository } from "../../src/server/db/wake-repository";
+import { ModelUnavailableError } from "../../src/server/errors";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { recordInbound } from "../../src/server/services/qq-intake";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
@@ -245,6 +246,61 @@ describe("QQ invalid decision feedback", () => {
     };
     const f = setup(model, true);
     expect(f.receive("95202", "autonomous empty decision then correction").kind).toBe("recorded");
+    expect(await f.bot.scheduler.dispatchOnce()).toBe(true);
+    await f.bot.scheduler.waitForIdle();
+    await f.bot.delivery.waitForIdle();
+    expect(decisions).toBe(2);
+    expect(tasks(f.h.db)[0]).toMatchObject({ status: "completed", error_code: null });
+    expect(f.h.db.query("SELECT speech_kind,status FROM outbound_intents").all()).toEqual([
+      { speech_kind: "chiming_in", status: "confirmed" },
+    ]);
+    expect(f.sends).toHaveLength(1);
+  });
+  it("recovers a malformed function decision after autonomous scoring without duplicate delivery", async () => {
+    let decisions = 0;
+    const model: ModelPort = {
+      complete: async (request) => {
+        const schema = request.responseSchema as { properties?: Record<string, unknown> };
+        if (schema.properties?.evaluations) {
+          let targets: { targetId: string }[] = [];
+          for (const message of request.messages)
+            for (const part of message.content) {
+              if (part.kind !== "text") continue;
+              try {
+                const value = JSON.parse(part.text) as {
+                  kind?: string;
+                  targets?: { targetId: string }[];
+                };
+                if (value.kind === "qq_batch_targets") targets = value.targets ?? [];
+              } catch {}
+            }
+          return JSON.stringify({
+            evaluations: targets.map((target) => ({
+              targetId: target.targetId,
+              score: 10,
+              intent: "synthetic participation",
+              sourceSeqs: [],
+            })),
+          });
+        }
+        decisions += 1;
+        if (decisions === 1)
+          throw new ModelUnavailableError(
+            "MODEL_FINISH_UNSUPPORTED",
+            "synthetic malformed decision",
+            "malformed_function_call",
+          );
+        return textContribution(authorizedTarget(request));
+      },
+      async *streamText() {
+        yield "";
+      },
+      completeMultimodal: async () => "",
+    };
+    const f = setup(model, true);
+    expect(f.receive("95204", "autonomous malformed function then correction").kind).toBe(
+      "recorded",
+    );
     expect(await f.bot.scheduler.dispatchOnce()).toBe(true);
     await f.bot.scheduler.waitForIdle();
     await f.bot.delivery.waitForIdle();

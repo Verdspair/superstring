@@ -36,6 +36,8 @@ type AvatarEditorProps = {
   conversationId: string;
   title: string;
   topology: "direct" | "shared";
+  channel?: "web" | "onebot11";
+  qqGroup?: { number: string };
   value: AvatarAsset;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -62,13 +64,15 @@ function AvatarEditorForm({
   conversationId,
   title,
   topology,
+  channel,
+  qqGroup,
   value,
   onOpenChange,
   onSave,
   onBusyChange,
 }: AvatarEditorProps & { onBusyChange: (value: boolean) => void }) {
   const { t, i18n } = useTranslation();
-  const identity: AvatarIdentity = { id: conversationId, title, topology };
+  const identity: AvatarIdentity = { id: conversationId, title, topology, channel, qqGroup };
   const fallback = defaultConversationAvatar(identity);
   const [initial] = useState(value);
   const [draft, setDraft] = useState<AvatarAsset>(value);

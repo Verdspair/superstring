@@ -6,6 +6,7 @@ import type {
 } from "../../src/shared/contracts/conversation";
 import { api, type SuperstringApi } from "../../src/web/api";
 import { ExternalConversation as ConversationTimeline } from "../../src/web/screens/conversations/ExternalConversation";
+import { notifyConversationChange } from "../../src/web/services/conversation-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { render } from "./helpers/render-with-providers";
 
@@ -203,6 +204,15 @@ it("continues pagination while blurred, pauses only when hidden, and revalidates
   expect(events.mock.calls[0][1]).toEqual({ direction: "latest" });
   await act(async () => {
     await vi.advanceTimersByTimeAsync(5000);
+  });
+  expect(events).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    notifyConversationChange({
+      event: "conversation_changed",
+      conversationId: "bot",
+      seq: 202,
+      bindingEpoch: 1,
+    });
   });
   expect(events).toHaveBeenCalledTimes(2);
   expect(screen.getByText("message-201")).toBeTruthy();

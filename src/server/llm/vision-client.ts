@@ -132,6 +132,7 @@ export function createLmStudioVisionClient(
       }
       const external = options.externalModel?.(request.model) ?? null;
       const routed = routeFor(request.model);
+      const routeContext = { kind: external === null ? "local" : "external" } as const;
       const key = structuredOutputKey(routed.baseUrl, request.model);
       // 默认走 localhostFetch：本地模型服务不经过 HTTP 代理（与网关同一条规则）。
       const sendFetch = fetchImpl ?? localhostFetch;
@@ -168,7 +169,7 @@ export function createLmStudioVisionClient(
             : undefined;
         } catch (error) {
           if (request.signal?.aborted) throw request.signal.reason ?? error;
-          if (runSignal?.aborted) throw mapModelError(runSignal.reason ?? error);
+          if (runSignal?.aborted) throw mapModelError(runSignal.reason ?? error, routeContext);
           throw error;
         }
         if (!admitted) {
@@ -182,7 +183,7 @@ export function createLmStudioVisionClient(
         try {
           if (signalForAttempt.aborted) {
             if (request.signal?.aborted) throw request.signal.reason ?? signalForAttempt.reason;
-            throw mapModelError(signalForAttempt.reason);
+            throw mapModelError(signalForAttempt.reason, routeContext);
           }
           attempted = true;
           const response = await sendFetch(`${routed.baseUrl}/chat/completions`, {
@@ -198,7 +199,7 @@ export function createLmStudioVisionClient(
             console.warn(
               `[vision] ${request.model} 调用失败（${Date.now() - startedAt}ms）：${describeError(error)}`,
             );
-            throw mapModelError(error);
+            throw mapModelError(error, routeContext);
           });
           // 状态码在 4xx 抛错之前捕获：尝试级元数据要能带上失败响应的真实 HTTP 状态。
           httpStatus = response.status;
@@ -209,7 +210,7 @@ export function createLmStudioVisionClient(
             );
             const error = new Error(`vision call failed: ${response.status}`);
             (error as { status?: number }).status = response.status;
-            throw mapModelError(error);
+            throw mapModelError(error, routeContext);
           }
           const raw = await response.text().catch(() => "");
           try {
@@ -227,7 +228,7 @@ export function createLmStudioVisionClient(
             console.warn(
               `[vision] ${request.model} 响应不是 JSON（${Date.now() - startedAt}ms）：${summariseBody(raw)}`,
             );
-            throw mapModelError(new SyntaxError("vision response was not JSON"));
+            throw mapModelError(new SyntaxError("vision response was not JSON"), routeContext);
           }
         } catch (error) {
           // 尝试落定（失败路径）：网络失败、4xx、JSON 解析失败都算一次真实发送尝试。
@@ -255,7 +256,7 @@ export function createLmStudioVisionClient(
               await abortableDelay(retryPolicy.retryDelayMs, startRequestTimeout());
             } catch (delayError) {
               if (request.signal?.aborted) throw request.signal.reason ?? delayError;
-              throw mapModelError(delayError);
+              throw mapModelError(delayError, routeContext);
             }
             request.onRetry?.();
           }

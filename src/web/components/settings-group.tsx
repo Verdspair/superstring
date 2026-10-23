@@ -28,7 +28,7 @@ export function SettingsGroup({
             {title && (
               <div className="flex items-center gap-2">
                 {Icon && <Icon className="size-4 shrink-0 text-muted-foreground" />}
-                <h2 className="text-[15px] font-bold tracking-tight text-foreground">{title}</h2>
+                <h2 className="workspace-section-title text-foreground">{title}</h2>
               </div>
             )}
             {description && (

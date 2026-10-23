@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { executionPolicy } from "../../../shared/contracts/permissions";
+import { CatalogItem } from "../../components/catalog-item";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -37,6 +38,7 @@ import {
   SKILL_HUMAN_LABELS,
   TOOL_HUMAN_LABELS,
 } from "../../workspace/capability-catalog";
+import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { ExecutionSettings } from "../runs/execution-settings";
 import { CapabilityPolicyPanel } from "./capability-policy-panel";
 import { ExternalIntegrationsCard } from "./external-components";
@@ -101,6 +103,7 @@ function CapabilityDirectory({
     })),
   );
   const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   const tools = useToolDirectoryResource(apiClient, active && !hidden);
   const skills = useSkillsResource(apiClient, active && !hidden);
@@ -204,16 +207,11 @@ function CapabilityDirectory({
       style={hidden ? { display: "none" } : undefined}
       aria-label={t("workspace.capabilities")}
     >
-      <header className="workspace-page-header mb-[24px]">
-        <p className="workspace-page-location">
-          {t("brand.workspace", { "0": t("workspace.capabilities") })}
-        </p>
-        <h1 className="workspace-page-title">{t("workspace.capabilities")}</h1>
-        <p className="workspace-page-description">{t("capabilities.directory.description")}</p>
-        <p className="mt-[6px] text-[12.5px] leading-[1.55] text-muted-foreground">
-          {t("capabilities.factNote")}
-        </p>
-      </header>
+      <WorkspacePageHeader
+        location={t("brand.workspace", { "0": t("workspace.capabilities") })}
+        title={t("workspace.capabilities")}
+        description={t("capabilities.directory.description")}
+      />
       <div className="border-b px-4 py-3">
         <div className="relative max-w-md">
           <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
@@ -226,6 +224,9 @@ function CapabilityDirectory({
           />
         </div>
       </div>
+      <p className="px-4 pt-3 text-xs leading-relaxed text-muted-foreground">
+        {t("capabilities.factNote")}
+      </p>
       {s.permissionError && (
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
           <p role="alert" className="text-sm text-destructive">
@@ -269,62 +270,58 @@ function CapabilityDirectory({
             {matchingGroups.map((group) => (
               <section key={group.id} className="space-y-3">
                 <div className="border-b pb-1">
-                  <h2 className="text-sm font-semibold tracking-tight text-foreground">
-                    {t(group.titleKey)}
-                  </h2>
+                  <h2 className="workspace-section-title text-foreground">{t(group.titleKey)}</h2>
                   <p className="text-xs text-muted-foreground">{t(group.descriptionKey)}</p>
                 </div>
-                <ul className="grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-[16px]">
+                <ul className="divide-y divide-border rounded-[10px] border border-border bg-card">
                   {group.entries.map((entry) => {
-                    if (entry.id === "external-integrations") {
-                      return (
-                        <li
-                          key={entry.id}
-                          className="rounded-[10px] border border-border bg-card p-[20px]"
-                        >
-                          <ExternalIntegrationsCard active={active && !hidden} />
-                        </li>
-                      );
-                    }
+                    const external = entry.id === "external-integrations";
                     const fact = capabilityFact(entry, s.permissionEditor);
                     return (
-                      <li
-                        key={entry.id}
-                        className="flex flex-col rounded-[10px] border border-border bg-card p-[20px]"
-                      >
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={() => s.openSettingsRoute(entry.route)}
-                              className="flex w-full flex-wrap items-start gap-x-[12px] gap-y-[6px] rounded-[6px] text-left transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-primary"
-                            >
-                              <entry.icon className="size-4 shrink-0 text-muted-foreground" />
-                              <span className="min-w-0 flex-1">
+                      <li key={entry.id} data-capability-id={entry.id} className="min-w-0 p-3">
+                        <CatalogItem
+                          open={query.trim() ? true : (expanded[entry.id] ?? false)}
+                          onOpenChange={(open) =>
+                            setExpanded((previous) => ({ ...previous, [entry.id]: open }))
+                          }
+                          summary={
+                            <span className="flex min-w-0 items-start gap-3">
+                              <entry.icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                              <span className="min-w-0">
                                 <span className="flex flex-wrap items-center gap-2">
                                   <span className="text-sm font-medium">{t(entry.nameKey)}</span>
                                   <Badge
                                     variant={fact.kind === "on" ? "secondary" : "outline"}
-                                    className="h-auto max-w-full whitespace-normal break-words text-left"
+                                    className="h-auto whitespace-normal"
                                   >
                                     {t(FACT_KEYS[fact.kind])}
                                   </Badge>
                                 </span>
-                                <span className="mt-0.5 block text-xs text-muted-foreground">
+                                <span className="mt-1 block text-xs text-muted-foreground">
                                   {t(entry.descriptionKey)}
                                 </span>
                               </span>
-                              <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-primary max-[480px]:w-full max-[480px]:justify-end">
-                                <span>{t("connections.components.primaryConfig")}</span>
-                                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-                              </span>
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent>{t("strict.hints.capabilityOpen")}</TooltipContent>
-                        </Tooltip>
-                        <div className="mt-[16px] border-t border-border pt-[12px]">
-                          <SystemComponents entry={entry} active={active && !hidden} />
-                        </div>
+                            </span>
+                          }
+                          actions={
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`${t("connections.components.primaryConfig")} · ${t(entry.nameKey)}`}
+                              tooltip={t("strict.hints.capabilityOpen")}
+                              onClick={() => s.openSettingsRoute(entry.route)}
+                            >
+                              {t("connections.components.primaryConfig")}
+                              <ChevronRight className="size-4" />
+                            </Button>
+                          }
+                        >
+                          {external ? (
+                            <ExternalIntegrationsCard active={active && !hidden} />
+                          ) : (
+                            <SystemComponents entry={entry} active={active && !hidden} />
+                          )}
+                        </CatalogItem>
                       </li>
                     );
                   })}
@@ -548,7 +545,7 @@ function AgentScopedDetail({
       ) : ready ? (
         <Card className="min-w-0 border">
           <CardHeader>
-            <CardTitle className="text-base font-semibold text-foreground flex items-center gap-2">
+            <CardTitle className="text-foreground flex items-center gap-2">
               <entry.icon className="size-4 text-primary" />
               <span>{t(entry.nameKey)}</span>
             </CardTitle>

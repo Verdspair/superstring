@@ -38,12 +38,19 @@
 
 以下功能属于 main 源码更新，未重发 v0.4.0-alpha-2 安装包。
 
+- **消息即时显示**：新消息到达已绑定会话时逐条即时显示。补读历史或手动刷新期间收到的新消息会继续显示，不会因较早的读取结果而漏显示，也不会推迟到下一次刷新；阅读位置保持不变。
+
+- **工作区布局与字体**：管理工作区统一标题、操作区和主标签的起始位置，窄屏按钮不会挤压标题；用途说明收进可悬停、聚焦或点击查看的帮助提示，错误与权限限制仍直接显示。偏好设置新增“典雅衬线”和“可爱圆润”两套中英文字体方案，保留当前默认字体；字体随程序提供，可离线使用，代码和技术标识保持等宽显示。
+- **群头像与 Agent 页面布局**：没有自定义头像的 QQ 群会话自动显示群头像，读取失败时显示群聊图标；手动上传和生成头像仍优先。Agent 四个配置标签共用标题和操作区布局，切换资料读取时标签栏不再上下移动，检索规则、上下文预算和知识读取继续分别保存。
+- **能力与扩展目录**：能力目录、MCP 服务、技能和工具改用紧凑列表，介绍与组件明细默认收起，配置和查看入口保持可见。启用项目靠前、禁用项目靠后淡化显示但仍可查看，连接失败单独提示；内置工具与技能提供中英文名称和简短介绍，第三方原文与技术名称保留。Agent 配置的资料读取放在标签栏最后，窄屏换行显示，不再使用栏内滚动。
+- **模型调用兼容与异常处理**：工具调用会对函数名与请求结构做协议兼容处理，减少格式差异导致的拒绝；QQ 决策遇到明确的函数调用格式异常时，可通过现有纠错流程再尝试一次；不执行异常调用、不重复已完成的工具操作，仍受原有步骤、调用额度与取消限制。持续异常、内容过滤和输出上限仍明确报错。该兼容处理不保证每个模型与服务商组合都能完成工具调用。
+
 - **QQ会话添加与独立配置**：对话列表的“新建／添加”直达网页对话、QQ群聊和QQ私聊；添加时可原地新建并选中方案。群聊、私聊共用会话配置页，支持跟随方案或保存当前会话与Agent的独立策略；私聊不显示群专属成员、能力停用及按发言人拆分设置。群号与对方QQ号分开标识，私聊不能绑定机器人自身账号。添加成功即显示在对话列表，没有消息也可打开空会话。
 - **QQ会话移除**：群聊和私聊菜单均可移除会话并解除绑定。Agent、方案与QQ平台消息不删除，本机历史按原保留规则保留但不再由旧入口访问；运行中任务或未知发送结果会阻止移除。
 - **Agent导航与共享滚动条**：Agent详情突出当前配置对象，左上返回保留未保存草稿；会话列表边界更清晰。原生与组件滚动条统一，绑定列表刷新保留行并暂时禁用操作，读取失败明确提示。
 
 - **导航与方案工作区**：七个工作区入口按日常、应用和系统分组，底部提供偏好与搜索；主导航和会话列表可拖动细线调整宽度。方案、会话与绑定、QQ 设置共用一个工作区，可查看方案的使用会话、管理绑定并进入本群配置。
-- **主题、间距与滚动**：提供五套精选北欧配色与渐变樱粉，支持浅色、深色及跟随系统。移除装饰性阴影，调整文字、控件和内容分组间距，保留焦点与选中提示；修复 QQ 设置长内容被裁切、无法滚动的问题。统一界面动效，并遵循减少动效偏好。
+- **主题、间距与滚动**：提供五套精选北欧配色与渐变樱粉，支持浅色、深色及跟随系统。移除装饰性阴影，调整文字、控件和内容分组间距，保留焦点与选中提示；修复 QQ 设置长内容被裁切、无法滚动的问题。统一界面动效并遵循减少动效偏好；关闭窗口以外的过渡略微加快：启动、最小化与从任务栏还原 250→225 毫秒，最大化与取消最大化 100→90 毫秒，常见界面过渡约缩短一成；关闭窗口保持 150 毫秒，曲线与形状不变。
 - **调用与唤醒重试**：系统能力执行设置可配置模型与受信任只读工具的调用重试，默认共 3 次尝试（含首次）、间隔 2 秒，仅对明确的 HTTP 429／503 拒收重试；不盲目重放写操作、超时或结果未知的请求。QQ 设置可单独配置唤醒失败重试，默认共 3 次尝试（含首次）、间隔 15 秒。
 
 - **自主文字与表情回复**：Agent 可选择纯文字、单张表情或图文组合。只发文字时无需额外声明不用表情。方案可设置较少使用、平衡选择或积极考虑三档表情倾向，默认平衡；群聊与私聊均可在会话配置中覆盖。这是软倾向，不是发送比例或次数限制。
@@ -65,7 +72,7 @@
 - **输出、输入与来源独立收起与展开**：选中步骤的输出、输入与关联来源分区呈现且输出在最前，各条目默认收起，支持按需独立展开查看完整保留内容。
 - **详情预取与按需读取**：运行详情加载时自动预取当前运行的全部实际调用并在内存中共享；预取完成后，切换步骤、视图或展开内容不再发起网络请求（预取未完成前仍显示加载状态；输入、输出与来源展示仍受访问权限与保留期限制，已过保留期或已撤回内容明确标示）；区分模型生成内容与平台送达状态，同一送达结果不重复读取；完整技术追踪记录与关联来源保留。步骤详情直接展示原始 `finish_reason`、HTTP 状态码和流式 `[DONE]` 标记，多次请求分别列出，未返回原因、显式 `null`、无 HTTP 响应和历史未记录分别显示，方便排查调用失败。
 - **自主任务记录精简**：自主接话与冷场任务在实际开始意图判断后显示，包括判定保持沉默的结果。不再单独展示尚未开始判断的等待或跳过记录；判断状态不明的旧记录、原有消息、直接回应、连续会话、失败取消及原始任务队列与审计保持可见。
-- 当前源码数据库结构为 71；旧安装包仍为 54。更新前完整备份，回退时恢复匹配的升级前数据与程序。
+- 当前源码数据库结构为 72（新增迁移 0055–0072）；旧安装包仍为 54。更新前完整备份，回退时恢复匹配的升级前数据与程序。
 
 ---
 
@@ -105,12 +112,19 @@ Fully exit the application and back up your data directory before updating. The 
 
 These features are source updates on main. The v0.4.0-alpha-2 packages have not been reissued.
 
+- **Immediate messages**: New messages appear one by one as they arrive in bound conversations. Messages received while older history loads or a manual refresh runs are still shown, are not dropped by an earlier read, and do not wait for the next refresh; your reading position stays in place.
+
+- **Workspace layout and fonts**: Management workspaces align their headers, actions, and primary tabs; narrow-screen actions no longer squeeze titles. Page introductions move into help available by hover, focus, or click, while errors and permission limits stay visible. Preferences adds coordinated Chinese and Latin Elegant serif and Playful rounded font styles alongside the existing default. Fonts ship with the application for offline use; code and technical identifiers remain monospace.
+- **Group avatars and Agent layout**: QQ group conversations without a custom avatar automatically show the group picture, falling back to the group icon if it cannot load. Uploaded and generated avatars still take precedence. All four Agent tabs share the same header and action-area layout, keeping the tab strip steady when switching to Resource reading; retrieval rules, context budgets, and knowledge access still save separately.
+- **Capability and extension directories**: Capabilities, MCP services, skills, and tools use compact lists with descriptions and component details collapsed by default. Configuration and inspection actions stay visible. Enabled items appear first; disabled items move down and remain inspectable, while connection failures stay distinct. Built-in tools and skills have Chinese and English labels and short descriptions; third-party text and technical names remain unchanged. Resource reading is the last Agent tab, and narrow layouts wrap without an inner scrollbar.
+- **Model call compatibility and error handling**: Tool calls apply protocol compatibility handling to function names and request structures, reducing rejections caused by format differences. QQ decisions can use the existing correction flow once after an explicit malformed function-call finish. Rejected calls are not executed, completed tool actions are not repeated, and existing step, call-budget, and cancellation limits still apply. Repeated failures, content filtering, and output limits remain explicit errors. This adaptation does not guarantee that every model and provider combination can complete tool calls.
+
 - **QQ conversation setup and per-conversation policy**: New / add in the conversation list opens web, QQ group, or QQ private chat setup; create and select a scheme in place. Groups and private chats share one policy editor with scheme inheritance and overrides for the conversation and Agent. Private chats omit group-only member, capability-disable, and speaker-splitting settings. Group and contact numbers are clearly distinguished, and private self-bindings are rejected. Added conversations appear immediately and open even without messages.
 - **QQ conversation removal**: Group and private chat menus remove the conversation and its binding. Agents, schemes, and QQ messages remain; local history retains its existing lifetime but is inaccessible through the old entry. Active work or unknown send outcomes block removal.
 - **Agent navigation and shared scrollbars**: Agent details identify the configuration target and offer an upper-left return without dropping drafts. Conversation boundaries are clearer. Native and component scrollbars share one style; binding refresh retains disabled rows and reports failed reads clearly.
 
 - **Navigation and the scheme workspace**: Seven workspace sections are grouped under Daily, Apps, and System, with Preferences and search at the bottom. Resize the navigation and conversation list by dragging their divider lines. Schemes, Conversations & bindings, and QQ settings share one workspace for viewing scheme usage, managing bindings, and opening group settings.
-- **Themes, spacing, and scrolling**: Choose five curated Nordic palettes or Blossom with soft gradients, in light, dark, or system mode. Decorative shadows are removed and spacing between text, controls, and content groups is adjusted, while focus and selection indicators remain. Fixed clipped, unscrollable long content in QQ settings. Interface animations are consistent and respect reduced-motion preferences.
+- **Themes, spacing, and scrolling**: Choose five curated Nordic palettes or Blossom with soft gradients, in light, dark, or system mode. Decorative shadows are removed and spacing between text, controls, and content groups is adjusted, while focus and selection indicators remain. Fixed clipped, unscrollable long content in QQ settings. Interface animations are consistent and respect reduced-motion preferences. Transitions other than closing are slightly faster: startup, minimize, and restore from the taskbar go from 250 to 225 ms, maximize and unmaximize from 100 to 90 ms, and common interface transitions are about 10% shorter. Closing stays at 150 ms, with unchanged curves and shapes.
 - **Call and wake retries**: System capabilities execution settings offer retries for model calls and trusted read-only tools, defaulting to 3 attempts including the first, with a 2-second delay. Only explicit HTTP 429/503 rejections are retried; writes, timeouts, and requests with unknown outcomes are not blindly replayed. QQ settings have separate wake retry controls, defaulting to 3 attempts including the first, with a 15-second delay.
 
 - **Independent text and sticker replies**: The Agent can choose text, one sticker, or a combination. Text-only replies need no extra sticker opt-out. Schemes offer low, medium, or high sticker-use guidance, defaulting to medium; groups and private chats can override it in conversation settings. This is a soft preference, not a sending ratio or count limit.
@@ -132,7 +146,7 @@ These features are source updates on main. The v0.4.0-alpha-2 packages have not 
 - **Independent output, input, and source expansion**: Outputs, inputs, and associated sources of the selected step are clearly separated with outputs shown first; all rows start collapsed and expand independently to display preserved content.
 - **Run detail prefetch and on-demand reading**: When opening run details, all real calls for the current run are prefetched and shared in memory; once prefetched, switching between overview and trace, toggling steps, or expanding sections requires no additional network requests (a loading indicator is displayed while prefetching is in progress; viewing inputs, outputs, and sources remains subject to access authorization and retention limits, with expired or revoked content clearly marked). Distinguishes model-generated content from platform delivery confirmation, avoiding duplicate reads for the same delivery result; full technical trace records and associated sources are preserved. Steps directly display raw `finish_reason`, HTTP status codes, and streaming `[DONE]` markers; multiple requests are listed separately, with missing reasons, explicit `null`, no HTTP response, and historical calls without records shown as distinct states to help diagnose failed calls.
 - **Autonomous task records**: Autonomous-participation and idle-topic tasks appear once intent judgement has actually started, including decisions to remain silent. Waiting or skipped opportunities that have not yet started judgement are no longer shown separately. Older records with unknown judgement status, original messages, direct responses, continuous conversations, failures, cancellations, and full task queues and audits remain available.
-- Current source uses schema 71; existing packages still use schema 54. Make a full backup before updating, and restore matching pre-upgrade data and executables when rolling back.
+- Current source uses schema 72 with migrations 0055–0072; existing packages still use schema 54. Make a full backup before updating, and restore matching pre-upgrade data and executables when rolling back.
 
 ---
 

@@ -3387,3 +3387,105 @@ it("keeps every tier unchanged when quote fitting fails on a later tier", async 
   expect(after.pending).toContain(quoteBefore);
   expect(after.pending).toEqual(before.pending);
 });
+it("reads concurrent proofs once while a synchronous build shrinks several candidate windows", async () => {
+  const h = setup({ tokenBudget: 16384 });
+  h.runtime.p5_config.compression_enabled = false;
+  h.runtime.p5_config.recent_turns = 32;
+  h.gateway.loadedContextCapacity = async () => 18000;
+  for (let i = 0; i < 20; i++) h.seed(`old ${"x".repeat(480)}`, 1);
+  const key = h.seed("newest question");
+  const focus = h.db
+    .query("SELECT seq FROM conversation_events WHERE conversation_id=? AND source_id=?")
+    .get(h.conversation.id, key) as { seq: number };
+  const at = new Date().toISOString();
+  const body = h.db
+    .query("SELECT body,expires_at FROM qq_observation_text WHERE event_key=?")
+    .get(key) as { body: string; expires_at: string };
+  const source = {
+    kind: "qq_observation",
+    id: key,
+    revision: createHash("sha256").update(body.body).digest("hex"),
+    expiresAt: body.expires_at,
+  };
+  for (let i = 0; i < 4; i++) {
+    const wake = `proof-wake-${i}`,
+      task = `proof-task-${i}`,
+      runId = `proof-run-${i}`,
+      stepId = `proof-step-${i}`;
+    h.db
+      .query(`INSERT INTO wake_signals(id,conversation_id,cause,through_seq,dedupe_key,ready_at,priority,status,created_at)
+      VALUES(?,?,'chiming_in',?,?,?,50,'completed',?)`)
+      .run(wake, h.conversation.id, focus.seq, wake, at, at);
+    h.db
+      .query(`INSERT INTO qq_conversation_tasks(id,task_key,conversation_id,binding_epoch,agent_id,task_class,cause,source_from_seq,source_through_seq,status,judgement_done,origin_wake_id,created_at,updated_at)
+      VALUES(?,?,?,1,?,'ordinary','chiming_in',1,?,'pending',1,?,?,?)`)
+      .run(task, task, h.conversation.id, DEFAULT_AGENT_ID, focus.seq, wake, at, at);
+    h.runs.createRun({
+      runId,
+      specId: "onebot.initiative.evaluate_batch",
+      specVersion: "1",
+      owner: {
+        kind: "qq_binding",
+        id: h.binding.id,
+        agentId: DEFAULT_AGENT_ID,
+        userId: DEFAULT_USER_ID,
+      },
+      at,
+    });
+    h.db
+      .query("UPDATE agent_runs SET conversation_id=?,wake_id=?,observed_seq=? WHERE run_id=?")
+      .run(h.conversation.id, wake, focus.seq, runId);
+    h.runs.startStep({
+      runId,
+      stepId,
+      stepNo: 1,
+      model: "fixture",
+      phase: "leaf",
+      at,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              kind: "text",
+              text: JSON.stringify({
+                kind: "qq_batch_targets",
+                trust: "data_only",
+                sourceSeqs: [focus.seq],
+                targets: [{ targetId: "20002", speakerId: "20002", sourceSeqs: [focus.seq] }],
+              }),
+            },
+          ],
+        },
+      ],
+      sources: [source],
+    });
+    h.runs.finishStep(stepId, "completed", at, {
+      output: {
+        format: "text",
+        complete: true,
+        text: JSON.stringify({
+          evaluations: [
+            { targetId: "20002", score: 8, intent: "synthetic", sourceSeqs: [focus.seq] },
+          ],
+        }),
+      },
+    });
+    h.runs.setStatus(runId, "completed", at);
+  }
+  let report: Record<string, number> = {};
+  const material = await h.source.read({
+    ...readInput(),
+    onReadTimings: (value: Record<string, number>) => {
+      report = { ...value };
+    },
+  });
+  expect(report.readProjectionCalls).toBeGreaterThan(1);
+  expect(report.readConcurrentRebuildCalls).toBe(1);
+  expect(report.readConcurrentProofCalls).toBe(4);
+  expect(JSON.stringify(material.pending)).toContain("newest question");
+  h.runs.redactContext({ runId: "proof-run-0", stepId: "proof-step-0" }, "revoked");
+  await expect(h.source.read(readInput())).rejects.toMatchObject({
+    code: "CONTEXT_SOURCE_INVALID",
+  });
+});

@@ -116,9 +116,7 @@ describe("focus and blur regression tests", () => {
     });
     setupApi({ getConversationEvents: events });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 10000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
 
     await act(async () => {
       await Promise.resolve();

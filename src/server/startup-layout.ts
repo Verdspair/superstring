@@ -109,6 +109,7 @@ export function loadStartupLayout(env: Record<string, string | undefined>) {
     readFileSync(paths.queryPlanIndexesMigration, "utf8"),
     readFileSync(paths.contextSourceLookupMigration, "utf8"),
     readFileSync(paths.storageMetadataMigration, "utf8"),
+    readFileSync(paths.outboundIntentMetadataMigration, "utf8"),
   ] as const;
   if (businessMigrationSql.some((sql) => !sql.trim())) throw new Error("EMPTY_MIGRATION_RESOURCE");
   if (env.SUPERSTRING_SERVE_WEB === "1") readFileSync(path.join(paths.webDir, "index.html"));

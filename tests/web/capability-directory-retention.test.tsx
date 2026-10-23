@@ -91,7 +91,7 @@ describe("system capability directory retention", () => {
     scrollContainer.scrollTop = 120;
 
     // 3. Open one capability detail
-    const webButton = screen.getByRole("button", { name: /^联网/ });
+    const webButton = screen.getByRole("button", { name: "前往配置功能 · 联网" });
     fireEvent.click(webButton);
     await act(async () => {});
 

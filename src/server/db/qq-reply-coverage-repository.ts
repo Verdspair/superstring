@@ -24,18 +24,18 @@ export function confirmedQqReplyCovers(
 ): boolean {
   const rows = db
     .query(`SELECT w.through_seq AS origin_through, w.cause AS origin_cause
-      FROM outbound_intents i
+      FROM outbound_intent_metadata i
       LEFT JOIN agent_runs ar ON ar.run_id=i.run_id AND ar.conversation_id=i.conversation_id
       LEFT JOIN wake_signals w ON w.id=ar.wake_id AND w.conversation_id=i.conversation_id
       WHERE i.conversation_id=? AND i.source_through_seq>=? AND i.status='confirmed'
-        AND (json_extract(i.target,'$.participantId') IS NULL OR json_extract(i.target,'$.participantId')=?)
-        AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id
+        AND (i.participant_id IS NULL OR i.participant_id=?)
+        AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.intent_id
           AND p.attempted_at IS NOT NULL AND p.status='confirmed')
-        AND (? IS NULL OR (json_extract(i.target,'$.accountId')=?
-          AND json_extract(i.target,'$.bindingId')=?
-          AND json_extract(i.target,'$.bindingEpoch')=?
-          AND json_extract(i.target,'$.agentId')=?))
-        AND (?=0 OR json_extract(i.target,'$.participantId') IS NULL)`)
+        AND (? IS NULL OR (i.account_id=?
+          AND i.binding_id=?
+          AND i.binding_epoch=?
+          AND i.agent_id=?))
+        AND (?=0 OR i.participant_id IS NULL)`)
     .all(
       input.conversationId,
       input.sourceSeq,
@@ -68,29 +68,37 @@ export function readConfirmedQqDirectReply(
   intentId: string,
 ): ConfirmedQqDirectReply | null {
   const row = db
-    .query(`SELECT i.id,i.conversation_id,i.source_through_seq,i.target
-      FROM outbound_intents i
+    .query(`SELECT i.intent_id AS id,i.conversation_id,i.source_through_seq,
+        i.account_id AS accountId,i.binding_id AS bindingId,i.binding_epoch AS bindingEpoch,i.agent_id AS agentId
+      FROM outbound_intent_metadata i
       JOIN agent_runs r ON r.run_id=i.run_id AND r.conversation_id=i.conversation_id
-      WHERE i.id=? AND i.status='confirmed' AND i.speech_kind='direct_reply'
+      WHERE i.intent_id=? AND i.status='confirmed' AND i.speech_kind='direct_reply'
         AND r.owner_kind='conversation' AND r.owner_id=i.conversation_id
-        AND r.agent_id=json_extract(i.target,'$.agentId')
-        AND r.observed_seq=COALESCE(json_extract(i.target,'$.observedThroughSeq'),i.source_through_seq)
+        AND r.agent_id=+i.agent_id
+        AND r.observed_seq=COALESCE(i.observed_through_seq,i.source_through_seq)
         AND r.observed_seq>=i.source_through_seq
-        AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id
+        AND EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.intent_id
           AND p.attempted_at IS NOT NULL AND p.status='confirmed')
-        AND NOT EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.id AND p.status<>'confirmed')`)
+        AND NOT EXISTS(SELECT 1 FROM outbound_parts p WHERE p.intent_id=i.intent_id AND p.status<>'confirmed')`)
     .get(intentId) as {
     id: string;
     conversation_id: string;
     source_through_seq: number;
-    target: string;
+    accountId: unknown;
+    bindingId: unknown;
+    bindingEpoch: unknown;
+    agentId: unknown;
   } | null;
   if (!row) return null;
+  const original = db.query("SELECT target FROM outbound_intents WHERE id=?").get(intentId) as {
+    target: string;
+  } | null;
+  if (!original) return null;
   let target: Record<string, unknown>;
   try {
-    const parsed: unknown = JSON.parse(row.target);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    target = parsed as Record<string, unknown>;
+    const value: unknown = JSON.parse(original.target);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    target = value as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -129,9 +137,9 @@ export function readRunningQqChimingTasksSupersededBy(
       FROM qq_conversation_tasks
       WHERE conversation_id=? AND status='running' AND cancellation_requested=0
         AND task_class='ordinary' AND cause='chiming_in' AND source_through_seq<?
-        AND NOT EXISTS(SELECT 1 FROM outbound_intents i
+        AND NOT EXISTS(SELECT 1 FROM outbound_intent_metadata i
           WHERE i.conversation_id=qq_conversation_tasks.conversation_id
-            AND json_extract(i.target,'$.qqTaskId')=qq_conversation_tasks.id)`)
+            AND i.qq_task_id=qq_conversation_tasks.id)`)
     .all(reply.conversationId, reply.sourceThroughSeq) as {
     id: string;
     task_key: string;

@@ -94,7 +94,9 @@ describe("confirmation and contextual information", () => {
         }),
     );
     const cancel = vi.fn();
-    render(<ConfirmDialog message="Remove this provider?" onConfirm={confirm} onCancel={cancel} />);
+    render(
+      <ConfirmDialog open message="Remove this provider?" onConfirm={confirm} onCancel={cancel} />,
+    );
     const dialog = screen.getByRole("alertdialog", { name: "Remove this provider?" });
     const cancelButton = within(dialog).getByRole("button", { name: i18n.t("connections.cancel") });
     const confirmButton = within(dialog).getByRole("button", {

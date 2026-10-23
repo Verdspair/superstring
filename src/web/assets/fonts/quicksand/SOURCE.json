@@ -1,0 +1,9 @@
+{
+  "package": "@fontsource-variable/quicksand",
+  "version": "5.3.0",
+  "license": "OFL-1.1",
+  "source": "https://registry.npmjs.org/@fontsource-variable/quicksand/-/quicksand-5.3.0.tgz",
+  "originalLicenseSHA256": "f44e4e5dd4655efc07bc9a843a3d2448e45d2e389960b5c44be83d079bb28ae7",
+  "filesUnmodified": true,
+  "css": "woff2 references only; no glyph modification"
+}

@@ -372,7 +372,7 @@ describe("skills panel", () => {
       );
       expect(screen.getByText("broken")).toBeTruthy();
       expect(screen.getByText("SKILL_DOCUMENT_INVALID")).toBeTruthy();
-      expect(screen.getByRole("columnheader", { name: labels.type })).toBeTruthy();
+      expect(document.querySelector("[data-skill-name=demo]")).not.toBeNull();
       expect(screen.getByText(labels.document)).toBeTruthy();
       expect(screen.getByText(labels.boundary, { exact: false })).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: labels.view }));
@@ -455,7 +455,10 @@ describe("skills panel", () => {
       },
       <SkillsPanel />,
     );
-    expect(within(screen.getByRole("table")).getByText(description).textContent).toBe(description);
+    const skillRow = screen.getByText("demo").closest<HTMLElement>("[data-skill-name]")!;
+    expect(within(skillRow).queryByText(description)).toBeNull();
+    fireEvent.click(within(skillRow).getByRole("button", { name: /demo/ }));
+    expect(within(skillRow).getByText(description).textContent).toBe(description);
     fireEvent.click(screen.getByRole("button", { name: "查看" }));
     await act(async () => {});
     const dialog = screen.getByRole("dialog");

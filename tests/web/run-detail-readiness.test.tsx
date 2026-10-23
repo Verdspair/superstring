@@ -633,3 +633,84 @@ describe("readable run overview preserves technical details", () => {
     );
   });
 });
+
+function sixTraceDetails(runId: string): RuntimeTraceDetail[] {
+  return [1, 2, 3, 4, 5, 6].map((n) => {
+    const detail = makeTraceDetail(runId, `model-${n}`);
+    const traceId = String(n).repeat(32);
+    return {
+      ...detail,
+      trace: { ...detail.trace, traceId },
+      items: detail.items.map((item) => ({ ...item, traceId })),
+    };
+  });
+}
+
+describe("bounded parallel trace waterfall reads", () => {
+  it("reads waterfalls in order with at most four concurrent requests and no duplicates", async () => {
+    const details = sixTraceDetails("run-parallel");
+    const byId = new Map(details.map((detail) => [detail.trace.traceId, detail]));
+    const pending: (() => void)[] = [];
+    let active = 0;
+    let maxActive = 0;
+    const getRuntimeWaterfall = vi.fn((traceId: string) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      return new Promise<RuntimeTraceDetail>((resolve) => {
+        pending.push(() => {
+          active -= 1;
+          resolve(byId.get(traceId)!);
+        });
+      });
+    });
+    const client = {
+      ...api,
+      getRun: vi.fn().mockResolvedValue(zeroStepRun("run-parallel")),
+      listRuntimeTraces: vi.fn().mockResolvedValue(tracesPage(details)),
+      getRuntimeWaterfall,
+      inspectRunContext: vi.fn(),
+    };
+    store.getState().resetForTests(client);
+
+    render(<RunWorkspace runId="run-parallel" />);
+
+    // First chunk starts; the remaining two wait for it to settle.
+    await waitFor(() => expect(getRuntimeWaterfall).toHaveBeenCalledTimes(4));
+    expect(maxActive).toBe(4);
+    await act(async () => {
+      for (const done of pending.splice(0)) done();
+    });
+
+    await waitFor(() => expect(getRuntimeWaterfall).toHaveBeenCalledTimes(6));
+    await act(async () => {
+      for (const done of pending.splice(0)) done();
+    });
+
+    expect(maxActive).toBe(4);
+    expect(new Set(getRuntimeWaterfall.mock.calls.map(([traceId]) => traceId)).size).toBe(6);
+  });
+
+  it("stops launching new waterfall chunks after the first failure", async () => {
+    const details = sixTraceDetails("run-waterfall-failure");
+    const getRuntimeWaterfall = vi.fn((traceId: string) => {
+      if (traceId === details[0].trace.traceId) {
+        return Promise.reject(new Error("HTTP 503: waterfall unavailable"));
+      }
+      return Promise.resolve(details.find((detail) => detail.trace.traceId === traceId)!);
+    });
+    const client = {
+      ...api,
+      getRun: vi.fn().mockResolvedValue(zeroStepRun("run-waterfall-failure")),
+      listRuntimeTraces: vi.fn().mockResolvedValue(tracesPage(details)),
+      getRuntimeWaterfall,
+      inspectRunContext: vi.fn(),
+    };
+    store.getState().resetForTests(client);
+
+    render(<RunWorkspace runId="run-waterfall-failure" />);
+
+    expect(await screen.findByText("HTTP 503: waterfall unavailable")).toBeTruthy();
+    // Only the first chunk was launched; the second chunk never starts.
+    expect(getRuntimeWaterfall).toHaveBeenCalledTimes(4);
+  });
+});

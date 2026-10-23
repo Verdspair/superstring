@@ -9,6 +9,7 @@ import { QqTaskExecutionSnapshotSchema } from "../../../shared/contracts/qq-task
 import { QQ_CONVERSATION_TASK_LIMIT_DEFAULTS } from "../../../shared/contracts/qq-task-limits";
 import { AppError } from "../../errors";
 import { parseQqBatchJudgement } from "../../services/qq-prompt-contract";
+import { uniqueSources } from "../../services/source-refs";
 
 /** 同会话、纪元与 Agent 的其他任务事实；重叠范围优先，省略冲突明确计数。
  * 已接受的评分意图仅从精确关联的受保护首步读取，并复验完整来源。原文、推理和工具参数不出投影。
@@ -49,25 +50,25 @@ export function readRelatedReplyDeliveries(
 } {
   const rows = db
     .query(`WITH matching AS MATERIALIZED (
-      SELECT i.id,i.status,i.target,i.created_at,i.output_ordinal
-      FROM outbound_intents i
+      SELECT i.intent_id AS id,i.status,i.qq_task_id AS taskId,i.created_at,i.output_ordinal
+      FROM outbound_intent_metadata i
       WHERE i.conversation_id=? AND i.created_at>=? AND julianday(i.expires_at)>julianday(?)
-        AND json_extract(i.target,'$.bindingId')=?
-        AND json_extract(i.target,'$.bindingEpoch')=?
-        AND json_extract(i.target,'$.agentId')=?
-        AND json_extract(i.target,'$.accountId')=?
-        AND json_extract(i.target,'$.conversationKind')=?
-        AND json_extract(i.target,'$.peerId')=?
-        AND json_extract(i.target,'$.authorityRevision')=?
-        AND (? IS NULL OR json_extract(i.target,'$.qqTaskId') IS NOT ?)
+        AND i.binding_id=?
+        AND i.binding_epoch=?
+        AND i.agent_id=?
+        AND i.account_id=?
+        AND i.conversation_kind=?
+        AND i.peer_id=?
+        AND i.authority_revision=?
+        AND (? IS NULL OR i.qq_task_id IS NOT ?)
         AND (? IS NULL OR i.run_id<>?)
-        AND (json_extract(i.target,'$.participantId') IS NULL
+        AND (i.participant_id IS NULL
           OR EXISTS(SELECT 1 FROM json_each(?) a WHERE a.value IS NULL
-            OR a.value=json_extract(i.target,'$.participantId')))
+            OR a.value=i.participant_id))
     ), candidates AS MATERIALIZED (
       SELECT * FROM matching ORDER BY created_at DESC,output_ordinal DESC,id DESC
       LIMIT ${QQ_CONCURRENT_JOBS_LIMIT}
-    ) SELECT i.id,i.status,json_extract(i.target,'$.qqTaskId') AS taskId,
+    ) SELECT i.id,i.status,i.taskId,
       (SELECT COUNT(*) FROM matching) AS total,
       (SELECT MAX(e.seq) FROM conversation_events e INDEXED BY ix_conversation_events_source
         WHERE e.source_kind='outbound_intent' AND e.source_id=i.id
@@ -153,6 +154,11 @@ export type ConcurrentReplyProjection = {
   contexts: ConcurrentReplyContext[];
 };
 
+export type ConcurrentReplyFacts = ConcurrentReplyProjection & {
+  /** Internal identity used only to project a selected window's visible questions. */
+  questionEventKeys: ReadonlyMap<number, string>;
+};
+
 const ACTIVE_WHERE = `WHERE t.conversation_id=? AND t.binding_epoch=? AND t.agent_id=?
        AND t.status IN ('pending','running')
        AND t.id<>COALESCE(?, '')
@@ -196,16 +202,16 @@ function readReplyFacts(
   if (taskIds.length === 0) return new Map();
   const rows = db
     .query(
-      `SELECT json_extract(i.target,'$.qqTaskId') AS taskId,
+      `SELECT i.qq_task_id AS taskId,
         SUM(CASE WHEN p.status='confirmed' THEN 1 ELSE 0 END) AS confirmedParts,
         SUM(CASE WHEN p.status='unknown' THEN 1 ELSE 0 END) AS unknownParts,
         COUNT(p.id) AS parts,
         SUM(CASE WHEN i.status IN ('planned','delivering') OR p.status IN ('planned','sending')
           THEN 1 ELSE 0 END) AS plannedRows
-      FROM outbound_intents i LEFT JOIN outbound_parts p ON p.intent_id=i.id
+      FROM outbound_intent_metadata i LEFT JOIN outbound_parts p ON p.intent_id=i.intent_id
       WHERE i.conversation_id=?
-        AND json_extract(i.target,'$.qqTaskId') IN (SELECT value FROM json_each(?))
-      GROUP BY i.id`,
+        AND i.qq_task_id IN (SELECT value FROM json_each(?))
+      GROUP BY i.intent_id`,
     )
     .all(conversationId, JSON.stringify(taskIds)) as {
     taskId: string | null;
@@ -238,11 +244,12 @@ function questionEventKeys(
   if (missing.length === 0) return keys;
   const rows = db
     .query(
-      `SELECT seq,source_id FROM conversation_events
-       WHERE conversation_id=? AND kind='inbound' AND source_kind='qq_event'
-         AND seq IN (SELECT value FROM json_each(?))`,
+      `SELECT e.seq,e.source_id FROM json_each(?) requested
+       CROSS JOIN conversation_events e
+       WHERE e.conversation_id=? AND e.seq=requested.value
+         AND e.kind='inbound' AND e.source_kind='qq_event'`,
     )
-    .all(conversationId, JSON.stringify([...new Set(missing)])) as {
+    .all(JSON.stringify([...new Set(missing)]), conversationId) as {
     seq: number;
     source_id: string;
   }[];
@@ -453,7 +460,7 @@ type TaskRow = {
   judgementDone: number;
 };
 
-export function readConcurrentReplyJobs(
+export function readConcurrentReplyFacts(
   db: Database,
   input: {
     conversationId: string;
@@ -468,11 +475,9 @@ export function readConcurrentReplyJobs(
     /** 当前任务冻结输入范围；与它相交的其他任务＝已知重叠冲突，SQL 内优先保留。 */
     focusFromSeq?: number;
     focusThroughSeq?: number;
-    /** 当前档时间线可见消息的真实事件键集合；questionSeq 只对可见问题给出。 */
-    visibleEventKeys: ReadonlySet<string>;
     assertSources?: (sources: readonly SourceRef[]) => void;
   },
-): ConcurrentReplyProjection {
+): ConcurrentReplyFacts {
   const nowIso = new Date(Date.parse(input.now)).toISOString();
   const scope = [
     input.conversationId,
@@ -561,9 +566,7 @@ export function readConcurrentReplyJobs(
         row.cancelRequested === 1 && (row.status === "running" || row.status === "pending")
           ? "cancel_requested"
           : (row.status as ConcurrentReplyJob["status"]),
-      ...(key !== undefined && input.visibleEventKeys.has(key)
-        ? { questionSeq: row.questionSeq }
-        : {}),
+      ...(key !== undefined ? { questionSeq: row.questionSeq } : {}),
       ...(replyFacts.has(row.id) ? { reply: replyFacts.get(row.id)! } : {}),
       ...(declared.intents.get(row.id) ? { declaredIntents: declared.intents.get(row.id)! } : {}),
     };
@@ -573,9 +576,40 @@ export function readConcurrentReplyJobs(
     totalActive,
     omittedOverlapping,
     ...(input.omittedRelatedReplies ? { omittedRelatedReplies: input.omittedRelatedReplies } : {}),
-    sources: declared.sources,
+    sources: uniqueSources(declared.sources),
     contexts: declared.contexts,
+    questionEventKeys: eventKeys,
   };
+}
+
+/** Project only question visibility; facts and their authorization were read by the caller. */
+export function projectConcurrentReplyQuestions(
+  facts: ConcurrentReplyFacts,
+  visibleEventKeys: ReadonlySet<string>,
+): ConcurrentReplyProjection {
+  const { questionEventKeys, ...projection } = facts;
+  return {
+    ...projection,
+    jobs: facts.jobs.map((job) => {
+      if (
+        job.questionSeq === undefined ||
+        visibleEventKeys.has(questionEventKeys.get(job.questionSeq) ?? "")
+      )
+        return job;
+      const { questionSeq: _, ...hidden } = job;
+      return hidden;
+    }),
+  };
+}
+
+export function readConcurrentReplyJobs(
+  db: Database,
+  input: Parameters<typeof readConcurrentReplyFacts>[1] & { visibleEventKeys: ReadonlySet<string> },
+): ConcurrentReplyProjection {
+  return projectConcurrentReplyQuestions(
+    readConcurrentReplyFacts(db, input),
+    input.visibleEventKeys,
+  );
 }
 
 /** data_only 投影值；guidance 是固定字面量，prompt 前缀稳定（不按任务内容变化）。 */

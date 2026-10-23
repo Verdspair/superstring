@@ -1,6 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DesktopPreferenceSnapshot } from "../../src/shared/desktop-preferences";
-import { selectMode, selectTheme } from "../../src/web/appearance";
+import {
+  FONT_STORAGE_KEY,
+  INTERFACE_SIZE_STORAGE_KEY,
+  TEXT_SIZE_STORAGE_KEY,
+} from "../../src/shared/appearance";
+import {
+  CLOSE_ANIMATION_STORAGE_KEY,
+  DESKTOP_PREFERENCE_KEYS,
+  type DesktopPreferenceSnapshot,
+  isCloseAnimationEnabled,
+} from "../../src/shared/desktop-preferences";
+import {
+  selectFont,
+  selectInterfaceSize,
+  selectMode,
+  selectTextSize,
+  selectTheme,
+} from "../../src/web/appearance";
 import { bootstrapWebApplication } from "../../src/web/bootstrap";
 import { createBrowserStateStorage } from "../../src/web/browser-state";
 import {
@@ -60,6 +76,139 @@ describe("desktop preference bootstrap and mutations", () => {
     expect(localStorage.getItem("unrelated-token")).toBe("never sent");
   });
 
+  it("restores, tombstones and adopts the font across the nine-key whitelist", async () => {
+    // The font rides the same bridge: the whitelist grew by the font, both size axes and
+    // the close fold, and nothing else may join it.
+    expect(DESKTOP_PREFERENCE_KEYS).toEqual([
+      "superstring-appearance",
+      "superstring-appearance-mode",
+      FONT_STORAGE_KEY,
+      TEXT_SIZE_STORAGE_KEY,
+      INTERFACE_SIZE_STORAGE_KEY,
+      "superstring-locale",
+      "superstring-session",
+      "superstring-agent",
+      CLOSE_ANIMATION_STORAGE_KEY,
+    ]);
+    localStorage.setItem(FONT_STORAGE_KEY, "cute");
+    const adopt = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({ "superstring-locale": "en" }),
+      save: adopt,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(localStorage.getItem(FONT_STORAGE_KEY)).toBe("cute");
+    expect(adopt.mock.calls).toEqual([[FONT_STORAGE_KEY, "cute"]]);
+
+    // A desktop tombstone clears an older browser choice instead of re-saving it.
+    const tombstone = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({ "superstring-locale": "en", [FONT_STORAGE_KEY]: null }),
+      save: tombstone,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(localStorage.getItem(FONT_STORAGE_KEY)).toBeNull();
+    expect(tombstone).not.toHaveBeenCalled();
+
+    // The saved desktop value wins over the browser value and is never echoed back.
+    const canonical = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({ "superstring-locale": "en", [FONT_STORAGE_KEY]: "elegant" }),
+      save: canonical,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(localStorage.getItem(FONT_STORAGE_KEY)).toBe("elegant");
+    expect(canonical).not.toHaveBeenCalled();
+  });
+
+  it("keeps the close fold enabled unless the stored value is exactly off", async () => {
+    expect(isCloseAnimationEnabled(undefined)).toBe(true);
+    expect(isCloseAnimationEnabled(null)).toBe(true);
+    expect(isCloseAnimationEnabled("on")).toBe(true);
+    expect(isCloseAnimationEnabled("off")).toBe(false);
+    expect(isCloseAnimationEnabled("true")).toBe(true);
+
+    // A browser-only choice is adopted once, so an existing profile keeps its stored rule.
+    localStorage.setItem(CLOSE_ANIMATION_STORAGE_KEY, "off");
+    const adopt = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({}),
+      save: adopt,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(adopt.mock.calls).toEqual([[CLOSE_ANIMATION_STORAGE_KEY, "off"]]);
+
+    // A desktop tombstone clears the older browser choice instead of re-saving it.
+    const tombstone = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({ [CLOSE_ANIMATION_STORAGE_KEY]: null }),
+      save: tombstone,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(localStorage.getItem(CLOSE_ANIMATION_STORAGE_KEY)).toBeNull();
+    expect(tombstone).not.toHaveBeenCalled();
+
+    // The saved desktop value wins over the browser value and is never echoed back.
+    const canonical = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({ [CLOSE_ANIMATION_STORAGE_KEY]: "on" }),
+      save: canonical,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(localStorage.getItem(CLOSE_ANIMATION_STORAGE_KEY)).toBe("on");
+    expect(canonical).not.toHaveBeenCalled();
+  });
+
+  it("adopts, tombstones and keeps both size axes inside the desktop whitelist", async () => {
+    localStorage.setItem(TEXT_SIZE_STORAGE_KEY, "large");
+    localStorage.setItem(INTERFACE_SIZE_STORAGE_KEY, "compact");
+    localStorage.setItem("unrelated-token", "never sent");
+    const adopt = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({ "superstring-locale": "zh-CN" }),
+      save: adopt,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    // Adoption walks the whitelist in order, so both size axes follow the font key.
+    expect(adopt.mock.calls).toEqual([
+      [TEXT_SIZE_STORAGE_KEY, "large"],
+      [INTERFACE_SIZE_STORAGE_KEY, "compact"],
+    ]);
+    expect(localStorage.getItem("unrelated-token")).toBe("never sent");
+
+    // A desktop tombstone clears an older browser size choice instead of re-saving it.
+    const tombstone = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({ "superstring-locale": "zh-CN", [TEXT_SIZE_STORAGE_KEY]: null }),
+      save: tombstone,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(localStorage.getItem(TEXT_SIZE_STORAGE_KEY)).toBeNull();
+    expect(tombstone.mock.calls).toEqual([[INTERFACE_SIZE_STORAGE_KEY, "compact"]]);
+
+    // The saved desktop size wins over the browser value and is never echoed back.
+    const canonical = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({
+        "superstring-locale": "zh-CN",
+        [INTERFACE_SIZE_STORAGE_KEY]: "comfortable",
+      }),
+      save: canonical,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(localStorage.getItem(INTERFACE_SIZE_STORAGE_KEY)).toBe("comfortable");
+    expect(canonical).not.toHaveBeenCalled();
+  });
+
   it("forwards appearance, locale and encrypted IDs without sending plaintext IDs or their key", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     window.superstringPreferences = {
@@ -69,6 +218,9 @@ describe("desktop preference bootstrap and mutations", () => {
     };
     selectTheme("jade");
     selectMode("dark");
+    selectFont("elegant");
+    selectTextSize("large");
+    selectInterfaceSize("compact");
     selectLocale("en");
     const config = {
       secret: "abcdefghijklmnopqrstuvwxyzABCDEFGH1234567890-_",
@@ -80,6 +232,9 @@ describe("desktop preference bootstrap and mutations", () => {
     const calls = Object.fromEntries(save.mock.calls);
     expect(calls["superstring-appearance"]).toBe("jade");
     expect(calls["superstring-appearance-mode"]).toBe("dark");
+    expect(calls[FONT_STORAGE_KEY]).toBe("elegant");
+    expect(calls[TEXT_SIZE_STORAGE_KEY]).toBe("large");
+    expect(calls[INTERFACE_SIZE_STORAGE_KEY]).toBe("compact");
     expect(calls["superstring-locale"]).toBe("en");
     for (const key of Object.values(config.storage_keys)) {
       expect(calls[key]).toBe(localStorage.getItem(key));
@@ -90,7 +245,7 @@ describe("desktop preference bootstrap and mutations", () => {
     expect(JSON.stringify(save.mock.calls)).not.toContain(config.secret);
     expect(await storage.read(config.storage_keys.session)).toBe("session-uuid");
     await storage.write(config.storage_keys.agent, null);
-    expect(save).toHaveBeenCalledTimes(5);
+    expect(save).toHaveBeenCalledTimes(8);
   });
 
   it("keeps normal web launches unchanged and never forwards unrelated keys", async () => {

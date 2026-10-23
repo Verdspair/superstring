@@ -257,10 +257,11 @@ function appStaticFallback(app: Hono, root: string): void {
       return new Response(injectDesktopMeta(html), {
         headers: {
           "content-type": contentType,
-          ...(layout?.paths.mode === "desktop"
+          ...(process.env.SUPERSTRING_DESKTOP_MANAGED === "1"
             ? {
                 "content-security-policy": [
                   "default-src 'self'",
+                  "font-src 'self' data:",
                   "script-src 'self'",
                   "style-src 'self' 'unsafe-inline'",
                   "img-src 'self' data: blob: https: http:",

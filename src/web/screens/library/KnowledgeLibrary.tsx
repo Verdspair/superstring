@@ -50,6 +50,13 @@ import { JobRunLink } from "../runs/RunEntry";
 /** 搜索输入防抖常量（250ms），避免高频击键请求风暴与网络竞态 */
 const KNOWLEDGE_SEARCH_DEBOUNCE_MS = 250;
 
+type KnowledgeDeleteTarget = {
+  kind: "document" | "category";
+  id: string;
+  name: string;
+  revision: number;
+};
+
 export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
@@ -79,13 +86,15 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
   );
   const t = useTranslation().t;
   const [selected, setSelected] = useState<string[]>([]);
-  const [deleting, setDeleting] = useState<{
-      kind: "document" | "category";
-      id: string;
-      name: string;
-      revision: number;
-    } | null>(null),
-    [moveTo, setMoveTo] = useState("default");
+  const [deleting, setDeleting] = useState<KnowledgeDeleteTarget | null>(null);
+  const [moveTo, setMoveTo] = useState("default");
+  // 常挂载确认弹窗在关闭动画期间仍会渲染：目标取最近一次打开时的快照。
+  const lastDeleting = useRef<KnowledgeDeleteTarget | null>(null);
+  const requestDelete = (target: KnowledgeDeleteTarget) => {
+    lastDeleting.current = target;
+    setDeleting(target);
+  };
+  const deleteTarget = deleting ?? lastDeleting.current;
   useEffect(() => {
     // 挂载只发一次稳定读取：预热在途则接管那一次读取，预热已就绪则静默做一次权威刷新。
     if (active) void s.loadKnowledge(undefined, { quiet: true });
@@ -274,7 +283,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
                     setMoveTo(
                       s.knowledgeCategories.find((item) => item.id !== activeCategory.id)?.id ?? "",
                     );
-                    setDeleting({ kind: "category", ...activeCategory });
+                    requestDelete({ kind: "category", ...activeCategory });
                   }}
                 >
                   {t("library.delete.category")}
@@ -433,7 +442,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
                     tooltip={t("hints.library.knowledge.docDelete")}
                     aria-label={t("library.delete.value", { "0": doc.name })}
                     onClick={() =>
-                      setDeleting({
+                      requestDelete({
                         kind: "document",
                         id: doc.id,
                         name: doc.name,
@@ -495,69 +504,73 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
         </div>
       )}
       <KnowledgeEditorPanel />
-      {deleting && (
-        <AlertDialog
-          title={t("library.delete.value.2", { "0": deleting.name })}
-          onCancel={() => setDeleting(null)}
-          busy={s.knowledgeBusy}
-        >
-          <p className="text-sm text-muted-foreground">
-            {t(
-              deleting.kind === "category"
-                ? "library.documents.in.this.category.will.move.to.the.selected"
-                : "library.the.document.and.its.grants.will.be.deleted.this",
+      <AlertDialog
+        open={deleting !== null}
+        title={t("library.delete.value.2", { "0": deleteTarget?.name ?? "" })}
+        onCancel={() => setDeleting(null)}
+        busy={s.knowledgeBusy}
+      >
+        {deleteTarget && (
+          <>
+            <p className="text-sm text-muted-foreground">
+              {t(
+                deleteTarget.kind === "category"
+                  ? "library.documents.in.this.category.will.move.to.the.selected"
+                  : "library.the.document.and.its.grants.will.be.deleted.this",
+              )}
+            </p>
+            {deleteTarget.kind === "category" && (
+              <Field
+                label="library.move.documents.to"
+                tooltip={t("hints.library.knowledge.moveDocsToField")}
+              >
+                <NativeSelect value={moveTo} onChange={(e) => setMoveTo(e.target.value)}>
+                  {s.knowledgeCategories
+                    .filter((c) => c.id !== deleteTarget.id)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                </NativeSelect>
+              </Field>
             )}
-          </p>
-          {deleting.kind === "category" && (
-            <Field
-              label="library.move.documents.to"
-              tooltip={t("hints.library.knowledge.moveDocsToField")}
-            >
-              <NativeSelect value={moveTo} onChange={(e) => setMoveTo(e.target.value)}>
-                {s.knowledgeCategories
-                  .filter((c) => c.id !== deleting.id)
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-              </NativeSelect>
-            </Field>
-          )}
-          <div className="flex justify-end gap-2">
-            <Button
-              variant="outline"
-              data-dialog-cancel
-              tooltip={t("hints.library.common.cancel")}
-              onClick={() => setDeleting(null)}
-            >
-              {t("library.cancel")}
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={s.knowledgeBusy}
-              tooltip={t("hints.library.knowledge.confirmDelete")}
-              onClick={() => {
-                void s
-                  .deleteKnowledgeItem(
-                    deleting.kind,
-                    deleting.id,
-                    deleting.revision,
-                    deleting.kind === "category" ? moveTo : undefined,
-                  )
-                  .then((ok) => {
-                    if (ok) {
-                      setDeleting(null);
-                      setSelected((ids) => ids.filter((id) => id !== deleting.id));
-                    }
-                  });
-              }}
-            >
-              {t("library.confirm.delete")}
-            </Button>
-          </div>
-        </AlertDialog>
-      )}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                data-dialog-cancel
+                tooltip={t("hints.library.common.cancel")}
+                onClick={() => setDeleting(null)}
+              >
+                {t("library.cancel")}
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={s.knowledgeBusy}
+                tooltip={t("hints.library.knowledge.confirmDelete")}
+                onClick={() => {
+                  const target = deleteTarget;
+                  void s
+                    .deleteKnowledgeItem(
+                      target.kind,
+                      target.id,
+                      target.revision,
+                      target.kind === "category" ? moveTo : undefined,
+                    )
+                    .then((ok) => {
+                      if (ok) {
+                        setDeleting(null);
+                        setSelected((ids) => ids.filter((id) => id !== target.id));
+                      }
+                    });
+                }}
+              >
+                {t("library.confirm.delete")}
+              </Button>
+            </div>
+          </>
+        )}
+      </AlertDialog>
     </section>
   );
 }

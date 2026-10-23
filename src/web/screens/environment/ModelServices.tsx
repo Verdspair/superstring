@@ -12,6 +12,7 @@ import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { InputSuggestions } from "../../components/ui/input-suggestions";
 import { NativeSelect } from "../../components/ui/native-select";
 import {
   Sheet,
@@ -37,6 +38,7 @@ import {
 import { translateNotice } from "../../i18n";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { useSuperstringStore } from "../../store";
+import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 
 type ProviderHealth = {
   ok: boolean;
@@ -115,22 +117,36 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
   const [testing, setTesting] = useState(false);
   const [revision, setRevision] = useState(0);
   const [pending, setPending] = useState<"close" | "delete" | null>(null);
+  const lastPending = useRef<"close" | "delete">("close");
+  const requestPending = (value: "close" | "delete") => {
+    lastPending.current = value;
+    setPending(value);
+  };
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit refresh generation
   useEffect(() => {
     if (!active) return;
     setLoading(true);
-    const task = startRead((signal) => apiClient.listModelProviders(signal), {
-      success: (rows) => {
-        setProviders(rows);
-        setError("");
-        void refreshModels(rows);
+    // 保留原始读取 Promise：读取失败时把原拒绝交给共享发现结算，
+    // 不把失败伪装成健康的空清单。
+    let read: Promise<ModelProviderResponse[]>;
+    const task = startRead(
+      (signal) => {
+        read = apiClient.listModelProviders(signal);
+        return read;
       },
-      failure: (caught) => {
-        setError(caught instanceof Error ? caught.message : String(caught));
-        void refreshModels([]);
+      {
+        success: (rows) => {
+          setProviders(rows);
+          setError("");
+          void refreshModels(rows);
+        },
+        failure: (caught) => {
+          setError(caught instanceof Error ? caught.message : String(caught));
+          void refreshModels(read);
+        },
+        settled: () => setLoading(false),
       },
-      settled: () => setLoading(false),
-    });
+    );
     return () => task.cancel();
   }, [active, apiClient, refreshModels, revision]);
   useEffect(() => {
@@ -229,28 +245,28 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
   const handleHeaderRefresh = () => setRevision((value) => value + 1);
   const providerModelIds = editor?.source ? (health[editor.source.id]?.models ?? []) : [];
   const uniqueProviderModelIds = [...new Set(providerModelIds)];
-  const modelOptionsId = editor?.source ? `provider-model-options-${editor.source.id}` : undefined;
+  const modelIdSuggestions = uniqueProviderModelIds.map((id) => ({ value: id }));
 
   return (
     <section className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]">
-      <header className="workspace-page-header mb-[24px] flex flex-wrap items-start justify-between gap-[14px]">
-        <div className="min-w-0 flex-1">
-          <p className="workspace-page-location">
-            {t("brand.workspace", { "0": t("models.title") })}
-          </p>
-          <h1 className="workspace-page-title">{t("models.title")}</h1>
-          <p className="workspace-page-description">{t("models.description")}</p>
-        </div>
-        <Button
-          variant="outline"
-          tooltip={t("hints.system.modelsRefresh")}
-          onClick={handleHeaderRefresh}
-          disabled={loading}
-        >
-          <RefreshCw />
-          {t("models.refresh")}
-        </Button>
-      </header>
+      <WorkspacePageHeader
+        location={t("brand.workspace", { "0": t("models.title") })}
+        title={t("models.title")}
+        description={t("models.description")}
+        actions={
+          <Button
+            variant="outline"
+            aria-label={t("models.refresh")}
+            tooltip={t("hints.system.modelsRefresh")}
+            onClick={handleHeaderRefresh}
+            disabled={loading}
+            className="max-[480px]:size-9 max-[480px]:p-0"
+          >
+            <RefreshCw />
+            <span className="max-[480px]:hidden">{t("models.refresh")}</span>
+          </Button>
+        }
+      />
       {error && (
         <p role="alert" className="px-4 py-3 text-sm text-destructive">
           {error}
@@ -259,7 +275,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
       <div className="min-h-0 flex-1 overflow-y-auto pb-[28px]">
         <div className="mb-6 flex items-start justify-between gap-4">
           <div>
-            <h2 className="font-semibold">{t("models.external")}</h2>
+            <h2 className="workspace-section-title">{t("models.external")}</h2>
             <p className="mt-1 text-sm text-muted-foreground">{t("models.externalHint")}</p>
           </div>
           <Button
@@ -340,7 +356,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
         </div>
         <section id="local-model-capacity" tabIndex={-1} className="mt-8 border-t pt-6">
           <div className="flex items-center gap-2">
-            <h2 className="font-semibold">{t("models.localProvider")}</h2>
+            <h2 className="workspace-section-title">{t("models.localProvider")}</h2>
             <Badge variant="outline">{t("models.local")}</Badge>
           </div>
           <p className="mt-2 text-sm text-muted-foreground">{translateNotice(modelStatus)}</p>
@@ -365,7 +381,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
         open={editor !== null && active}
         onOpenChange={(open) => {
           if (open || saving) return;
-          if (dirty) setPending("close");
+          if (dirty) requestPending("close");
           else setEditor(null);
         }}
       >
@@ -429,29 +445,22 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
               </section>
               <section className="space-y-4 border-t pt-5">
                 <div>
-                  <h3 className="font-medium">{t("models.registeredModels")}</h3>
+                  <h3 className="workspace-card-title">{t("models.registeredModels")}</h3>
                   <p className="mt-1 text-xs text-muted-foreground">{t("models.modelsHint")}</p>
                 </div>
-                {modelOptionsId && uniqueProviderModelIds.length > 0 && (
-                  <datalist id={modelOptionsId}>
-                    {uniqueProviderModelIds.map((id) => (
-                      <option key={id} value={id} />
-                    ))}
-                  </datalist>
-                )}
                 {editor.models.map((model) => (
                   <div key={model.key} className="space-y-3 rounded-md border p-4">
                     <div className="grid grid-cols-[minmax(0,1fr)_6rem_auto] items-end gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
                       <Field label="models.modelId" tooltip={t("hints.fieldExtra.providerModel")}>
-                        <Input
+                        <InputSuggestions
                           value={model.name}
-                          list={uniqueProviderModelIds.length > 0 ? modelOptionsId : undefined}
+                          suggestions={modelIdSuggestions}
                           disabled={saving}
-                          onChange={(e) =>
+                          onValueChange={(value) =>
                             setEditor({
                               ...editor,
                               models: editor.models.map((item) =>
-                                item.key === model.key ? { ...item, name: e.target.value } : item,
+                                item.key === model.key ? { ...item, name: value } : item,
                               ),
                             })
                           }
@@ -583,7 +592,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                     variant="ghost"
                     tooltip={t("hints.system.deleteProvider")}
                     disabled={saving}
-                    onClick={() => setPending("delete")}
+                    onClick={() => requestPending("delete")}
                   >
                     <Trash2 />
                     {t("models.delete")}
@@ -611,20 +620,22 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
           )}
         </SheetContent>
       </Sheet>
-      {active && pending && (
-        <ConfirmDialog
-          busy={saving}
-          message={t(pending === "delete" ? "models.deleteConfirm" : "models.discardConfirm")}
-          onCancel={() => setPending(null)}
-          onConfirm={() => {
-            if (pending === "delete") return save("delete");
-            else {
-              setEditor(null);
-              setPending(null);
-            }
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={active && pending !== null}
+        busy={saving}
+        message={t(
+          (pending ?? lastPending.current) === "delete"
+            ? "models.deleteConfirm"
+            : "models.discardConfirm",
+        )}
+        onCancel={() => setPending(null)}
+        onConfirm={() => {
+          const action = pending ?? lastPending.current;
+          if (action === "delete") return save("delete");
+          setEditor(null);
+          setPending(null);
+        }}
+      />
     </section>
   );
 }

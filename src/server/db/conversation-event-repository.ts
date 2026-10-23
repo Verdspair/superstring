@@ -141,9 +141,29 @@ const canonicalSpeechAlias = (eventAlias: string) => `EXISTS (
     )
 )`;
 
-const canonicalLegacyProjectionFilter = `(
+/**
+ * History-display eligibility for one row. The legacy send/speech rules are unchanged;
+ * the media rule is a read-only display filter over already-stored rows: a media_revision
+ * shows only while it is the note's current revision (same rule the projection owner
+ * applies in conversation-view) AND that revision carries a display fact — a real
+ * description, or a consumed attempt (a meaningful failure the timeline can offer to
+ * re-read). The initial 0-attempt, no-note state has no fact to show: the parent inbound
+ * row already carries the media source refs, so the revision row does not crowd the
+ * latest page. Purged notes keep their raw rows (fail closed; the projection reports
+ * expiry). Cursor and epoch arithmetic never depend on this filter.
+ */
+const historyDisplayEligible = `(
   (e.source_kind='qq_send' AND NOT ${canonicalLegacySend("e.conversation_id", "e.source_id", "e.source_expires_at")})
   OR (e.source_kind='qq_speech' AND NOT ${canonicalSpeechAlias("e")})
+  OR (e.source_kind='qq_media' AND (
+    e.kind!='media_revision'
+    OR NOT EXISTS (SELECT 1 FROM qq_media_notes n WHERE n.id=e.source_id)
+    OR EXISTS (SELECT 1 FROM qq_media_notes n
+      WHERE n.id=e.source_id
+        AND e.source_revision=CAST(n.attempts AS TEXT)
+        AND (n.note IS NOT NULL OR n.attempts>0))
+  ))
+  OR e.source_kind NOT IN('qq_send','qq_speech','qq_media')
 )`;
 
 /** Source-reference journal. SQLite allocates seq inside the same transaction as dedup. */
@@ -284,17 +304,34 @@ export class ConversationEventRepository {
   discover(userId: string): void {
     this.db.transaction(() => {
       const sessions = this.db
-        .query("SELECT id,updated_at FROM sessions WHERE user_id=?")
+        .query(`SELECT s.id FROM sessions s WHERE s.user_id=? AND NOT EXISTS (
+          SELECT 1 FROM conversations c WHERE c.channel='web' AND c.source_id=s.id
+            AND c.closed_at IS NULL AND c.agent_id=s.agent_id
+        )`)
+        .all(userId) as { id: string }[];
+      for (const session of sessions) this.ensureWeb(session.id, userId);
+      // Source edits can advance Web activity without a new journal event. Probe first
+      // so an unchanged directory does not even attempt a write on a read-only handle.
+      const changed = this.db
+        .query(`SELECT c.id,s.updated_at FROM sessions s JOIN conversations c
+          ON c.channel='web' AND c.source_id=s.id AND c.closed_at IS NULL
+          WHERE s.user_id=? AND s.updated_at>c.updated_at`)
         .all(userId) as { id: string; updated_at: string }[];
-      for (const session of sessions) {
-        const conversation = this.ensureWeb(session.id, userId)!;
+      for (const row of changed) {
         this.db
-          .query("UPDATE conversations SET updated_at=MAX(updated_at,?) WHERE id=?")
-          .run(session.updated_at, conversation.id);
+          .query(
+            "UPDATE conversations SET updated_at=MAX(updated_at,?) WHERE id=? AND updated_at<?",
+          )
+          .run(row.updated_at, row.id, row.updated_at);
       }
       if (userId === DEFAULT_USER_ID) {
-        for (const binding of this.db.query("SELECT id FROM qq_bindings").all() as { id: string }[])
-          this.ensureOneBotRow(binding.id);
+        const bindings = this.db
+          .query(`SELECT b.id FROM qq_bindings b WHERE NOT EXISTS (
+            SELECT 1 FROM conversations c WHERE c.channel='onebot11' AND c.source_id=b.id
+              AND c.closed_at IS NULL AND c.agent_id=b.agent_id
+          )`)
+          .all() as { id: string }[];
+        for (const binding of bindings) this.ensureOneBotRow(binding.id);
       }
     })();
   }
@@ -353,12 +390,10 @@ export class ConversationEventRepository {
       const local = cursor - epoch.offset;
       const query = before
         ? `SELECT e.* FROM conversation_events e
-          WHERE e.conversation_id=? AND e.seq<?
-            AND (e.source_kind NOT IN('qq_send','qq_speech') OR ${canonicalLegacyProjectionFilter})
+          WHERE e.conversation_id=? AND e.seq<? AND ${historyDisplayEligible}
           ORDER BY e.seq DESC LIMIT ?`
         : `SELECT e.* FROM conversation_events e
-          WHERE e.conversation_id=? AND e.seq>?
-            AND (e.source_kind NOT IN('qq_send','qq_speech') OR ${canonicalLegacyProjectionFilter})
+          WHERE e.conversation_id=? AND e.seq>? AND ${historyDisplayEligible}
           ORDER BY e.seq ASC LIMIT ?`;
       const rows = this.db.query(query).all(epoch.id, local, remaining) as EventRow[];
       found.push(...rows.map((row) => ({ event: eventFromRow(row), seq: row.seq + epoch.offset })));
@@ -798,6 +833,10 @@ export class ConversationEventRepository {
     if (!n) return null;
     const parent = this.ingestOneBotReference(n.event_key, bindingId, c, undefined, historical);
     if (!parent) return null;
+    // 初始未理解状态（0 次尝试、无描述）没有展示事实：原文行已携带媒体引用，
+    // 这里不发 media_revision；typed 成功不回写 legacy note，也不能伪造 revision。
+    // 旧（attempts>0）与 legacy 已描述行仍按修订发布。
+    if (n.attempts === 0 && n.note === null) return parent;
     return this.append({
       conversationId: parent.conversationId,
       eventKey: `media:${n.id}:${n.attempts}`,
@@ -864,15 +903,6 @@ export class ConversationEventRepository {
     agentLabel: string,
     historical: boolean,
   ): void {
-    const events = this.db
-      .query(
-        "SELECT event_key AS id,occurred_at_seconds AS time,recorded_at FROM qq_events WHERE account_id=? AND conversation_kind=? AND peer_id=? AND agent_id=?",
-      )
-      .all(b.account_id, b.conversation_kind, b.peer_id, b.agent_id) as {
-      id: string;
-      time: number;
-      recorded_at: string;
-    }[];
     const speeches = this.db
       .query(
         "SELECT id,spoke_at_seconds AS time,kind,expires_at,recorded_at FROM qq_speech_log WHERE account_id=? AND conversation_kind=? AND peer_id=? AND agent_id=? ORDER BY recorded_at,id",
@@ -925,16 +955,6 @@ export class ConversationEventRepository {
         sendSpeech.set(send.id, speech);
       }
     }
-    const media = this.db
-      .query(
-        "SELECT n.id,n.event_key,n.attempts,n.updated_at AS recorded_at FROM qq_media_notes n JOIN qq_events e ON e.event_key=n.event_key WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?",
-      )
-      .all(b.account_id, b.conversation_kind, b.peer_id, b.agent_id) as {
-      id: string;
-      event_key: string;
-      attempts: number;
-      recorded_at: string;
-    }[];
     const recorded = new Set(
       (
         this.db
@@ -966,11 +986,44 @@ export class ConversationEventRepository {
         }[]
       ).map((n) => n.event_key),
     );
+    const repairParents = JSON.stringify([...missingMediaParents]);
+    const events = this.db
+      .query(
+        `SELECT e.event_key AS id,e.occurred_at_seconds AS time,e.recorded_at
+        FROM qq_events e
+        WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?
+          AND (NOT EXISTS(SELECT 1 FROM conversation_events ce
+            WHERE ce.conversation_id=? AND ce.event_key='onebot:'||e.event_key)
+            OR e.event_key IN (SELECT value FROM json_each(?)))`,
+      )
+      .all(b.account_id, b.conversation_kind, b.peer_id, b.agent_id, c.id, repairParents) as {
+      id: string;
+      time: number;
+      recorded_at: string;
+    }[];
+    const media = this.db
+      .query(
+        `SELECT n.id,n.event_key,n.attempts,n.updated_at AS recorded_at
+        FROM qq_media_notes n JOIN qq_events e ON e.event_key=n.event_key
+        WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?
+          AND (n.event_key IN (SELECT value FROM json_each(?))
+            OR ((n.attempts>0 OR n.note IS NOT NULL)
+              AND NOT EXISTS(SELECT 1 FROM conversation_events ce
+                WHERE ce.conversation_id=? AND ce.event_key='media:'||n.id||':'||n.attempts)))`,
+      )
+      .all(b.account_id, b.conversation_kind, b.peer_id, b.agent_id, repairParents, c.id) as {
+      id: string;
+      event_key: string;
+      attempts: number;
+      recorded_at: string;
+    }[];
     const ordered = [
       ...events.map((e) => ({ ...e, priority: 0, type: "event" })),
-      ...sends.map((e) => ({ ...e, time: e.sent_at_seconds, priority: 1, type: "send" })),
+      ...sends
+        .filter((e) => !recorded.has(`send:${e.id}`) && !representedLegacySends.has(e.id))
+        .map((e) => ({ ...e, time: e.sent_at_seconds, priority: 1, type: "send" })),
       ...speeches
-        .filter((e) => !matched.has(e.id))
+        .filter((e) => !matched.has(e.id) && !recorded.has(`speech:${e.id}`))
         .map((e) => ({ ...e, priority: 2, type: "speech" })),
       ...media.map((e) => ({
         ...e,

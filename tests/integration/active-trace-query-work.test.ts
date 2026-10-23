@@ -106,7 +106,7 @@ function observe(db: Database) {
   return { db: observed, calls };
 }
 
-it("seeds status candidates through covering ids before full visibility for both group reads", () => {
+it("seeds status candidates through covering ids before the shared group read", () => {
   const f = fixture();
   const observed = observe(f.h.db);
   const page = new RuntimeSpanRepository(observed.db).traces(
@@ -115,8 +115,8 @@ it("seeds status candidates through covering ids before full visibility for both
     now,
   );
   expect(page.items).toHaveLength(1);
-  expect(observed.calls).toHaveLength(3);
-  for (const call of observed.calls.slice(0, 2)) {
+  expect(observed.calls).toHaveLength(2);
+  for (const call of observed.calls.slice(0, 1)) {
     expect(
       call.plan.some((detail) => /USING COVERING INDEX idx_runtime_spans_filter/.test(detail)),
     ).toBe(true);
@@ -132,7 +132,7 @@ it("seeds status candidates through covering ids before full visibility for both
   );
   expect(empty.items).toEqual([]);
   expect(empty.summary).toMatchObject({ totalTraces: 0, matchedSpans: 0 });
-  expect(observed.calls).toHaveLength(2);
+  expect(observed.calls).toHaveLength(1);
 });
 
 it("retains full visible siblings, exact combined matches, expiry, ownership and whole-trace cursors", () => {

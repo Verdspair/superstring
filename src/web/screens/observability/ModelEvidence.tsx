@@ -522,15 +522,14 @@ export function InspectedEvidence({
                 </Button>
               </CollapsibleTrigger>
               <CollapsibleContent className="min-w-0">
-                {open && (
-                  <section aria-label={label} className="min-w-0 space-y-3 border-t p-3">
-                    {section === "output"
-                      ? outputContent()
-                      : section === "input"
-                        ? inputContent()
-                        : sourcesContent()}
-                  </section>
-                )}
+                {/* Presence keeps this subtree so the exit can be measured and animated. */}
+                <section aria-label={label} className="min-w-0 space-y-3 border-t p-3">
+                  {section === "output"
+                    ? outputContent()
+                    : section === "input"
+                      ? inputContent()
+                      : sourcesContent()}
+                </section>
               </CollapsibleContent>
             </Collapsible>
           );

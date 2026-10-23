@@ -92,6 +92,8 @@ function TabsContent({ className, ...props }: React.ComponentProps<typeof TabsPr
       // 否则键盘用户 Tab 进面板后完全看不出焦点在哪。
       className={cn(
         "flex-1 text-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset",
+        // 入场动效只加类，不持有 key/state：hidden 与 forceMount 仍由 Radix 决定。
+        "panel-enter",
         className,
       )}
       {...props}

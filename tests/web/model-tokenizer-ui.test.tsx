@@ -1,6 +1,9 @@
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ModelProviderResponse } from "../../src/shared/contracts/models";
+import type {
+  LocalModelCatalogResponse,
+  ModelProviderResponse,
+} from "../../src/shared/contracts/models";
 import { ApiError, type SuperstringApi } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
@@ -33,6 +36,14 @@ const syntheticProvider: ModelProviderResponse = {
 function client(overrides: Partial<SuperstringApi> = {}) {
   return {
     listModelProviders: vi.fn(async () => [syntheticProvider]),
+    listModels: vi.fn(
+      async (): Promise<LocalModelCatalogResponse> => ({
+        provider: "lm_studio",
+        status: "available",
+        models: ["synthetic-model"],
+        default_model: "synthetic-model",
+      }),
+    ),
     testModelProvider: vi.fn(async () => ({
       ok: true,
       models: [syntheticProvider.models[0].name],

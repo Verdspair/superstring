@@ -36,9 +36,9 @@ export function ConversationIdentity({
         <ConversationAvatarButton key={conversation.id} conversation={conversation} />
       )}
       <div className="min-w-0 flex-1">
-        <h1 className="truncate text-base font-semibold tracking-tight">
+        <h2 className="truncate text-base font-semibold tracking-tight">
           {conversation?.title ?? t("workspace.your_next_conversation")}
-        </h1>
+        </h2>
         <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
           <Badge variant="outline" className="py-0 text-[10px]">
             {conversation?.channel === "onebot11"

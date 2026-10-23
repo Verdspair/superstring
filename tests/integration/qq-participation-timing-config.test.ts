@@ -45,7 +45,7 @@ describe("participation timing configuration", () => {
         "INSERT INTO qq_schemes(id,name,revision,created_at,updated_at,merge_window_seconds,initiative_time_target_seconds,initiative_time_jitter_seconds) VALUES('old','saved',7,'then','then',15,120,100)",
       ).run();
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 72 });
       expect(
         db
           .query(

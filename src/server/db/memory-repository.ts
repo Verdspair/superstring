@@ -279,7 +279,7 @@ export function entries(
   orm: Orm,
   agentId: string,
   ids?: string[],
-  options: { status?: string; scopeKeys?: MemoryScopeKeys } = {},
+  options: { status?: string; scopeKeys?: MemoryScopeKeys; requireAllIds?: boolean } = {},
 ): MemoryEntryRow[] {
   policy(orm, agentId);
   const conditions = [
@@ -300,7 +300,7 @@ export function entries(
     .orderBy(desc(schema.memoryEntries.createdAt), asc(schema.memoryEntries.id))
     .all();
 
-  if (ids !== undefined) {
+  if (ids !== undefined && options.requireAllIds !== false) {
     const found = new Set(items.map((i) => i.id));
     if (found.size !== new Set(ids).size || ids.some((id) => !found.has(id))) {
       fail("MEMORY_NOT_FOUND", "记忆不存在或不属于当前 Agent", 404);

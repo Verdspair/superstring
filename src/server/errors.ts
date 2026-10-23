@@ -101,8 +101,16 @@ export class DatabaseUnavailableError extends AppError {
  * and message for the other eight model-layer codes.
  */
 export class ModelUnavailableError extends AppError {
-  constructor(code: ErrorCode = "MODEL_SERVICE_UNAVAILABLE", message = "本地模型服务暂不可用") {
+  /** 模型原样 finish_reason；仅调用方显式传入时存在，不改变错误码与 HTTP 状态。 */
+  readonly finishReason?: string;
+
+  constructor(
+    code: ErrorCode = "MODEL_SERVICE_UNAVAILABLE",
+    message = "本地模型服务暂不可用",
+    finishReason?: string,
+  ) {
     super(code, message, 503);
+    if (finishReason !== undefined) this.finishReason = finishReason;
   }
 }
 

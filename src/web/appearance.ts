@@ -9,6 +9,14 @@ export {
   type AppearanceMode,
   type AppearanceSnapshot,
   encodeAppearanceMessage,
+  FONT_IDS,
+  FONT_STORAGE_KEY,
+  FONTS,
+  type FontId,
+  INTERFACE_SIZE_IDS,
+  INTERFACE_SIZE_STORAGE_KEY,
+  INTERFACE_SIZES,
+  type InterfaceSizeId,
   isAppearanceMode,
   isThemeId,
   MODE_IDS,
@@ -18,17 +26,33 @@ export {
   resolveMode,
   resolveTheme,
   SELECTABLE_THEMES,
+  TEXT_SIZE_IDS,
+  TEXT_SIZE_STORAGE_KEY,
+  TEXT_SIZES,
+  type TextSizeId,
   THEME_IDS,
   THEME_STORAGE_KEY,
   THEMES,
   type ThemeId,
 } from "../shared/appearance";
 
-import type { AppearanceMode, ThemeId } from "../shared/appearance";
+import type {
+  AppearanceMode,
+  FontId,
+  InterfaceSizeId,
+  TextSizeId,
+  ThemeId,
+} from "../shared/appearance";
 import {
+  FONT_STORAGE_KEY,
+  INTERFACE_SIZE_STORAGE_KEY,
   MODE_STORAGE_KEY,
+  resolveFont,
+  resolveInterfaceSize,
   resolveMode,
+  resolveTextSize,
   resolveTheme,
+  TEXT_SIZE_STORAGE_KEY,
   THEME_STORAGE_KEY,
 } from "../shared/appearance";
 import { persistDesktopPreference } from "./desktop-preferences";
@@ -136,6 +160,93 @@ export function selectMode(mode: AppearanceMode): boolean {
     return true;
   } catch {
     document.documentElement.dataset.modeUnsaved = "1";
+    return false;
+  }
+}
+
+export function readFont(): FontId {
+  if (document.documentElement.dataset.fontUnsaved === "1")
+    return resolveFont(document.documentElement.dataset.font).id;
+  try {
+    return resolveFont(localStorage.getItem(FONT_STORAGE_KEY)).id;
+  } catch {
+    return resolveFont(document.documentElement.dataset.font).id;
+  }
+}
+
+// CSS owns the family stacks: this only selects html[data-font=...]. A missing
+// attribute and the "default" id both fall back to the original system stack.
+export function applyFont(id: FontId) {
+  document.documentElement.dataset.font = resolveFont(id).id;
+}
+
+export function selectFont(id: FontId): boolean {
+  applyFont(id);
+  try {
+    localStorage.setItem(FONT_STORAGE_KEY, id);
+    void persistDesktopPreference(FONT_STORAGE_KEY, id);
+    delete document.documentElement.dataset.fontUnsaved;
+    return true;
+  } catch {
+    document.documentElement.dataset.fontUnsaved = "1";
+    return false;
+  }
+}
+
+export function readTextSize(): TextSizeId {
+  if (document.documentElement.dataset.textSizeUnsaved === "1")
+    return resolveTextSize(document.documentElement.dataset.textSize).id;
+  try {
+    return resolveTextSize(localStorage.getItem(TEXT_SIZE_STORAGE_KEY)).id;
+  } catch {
+    return resolveTextSize(document.documentElement.dataset.textSize).id;
+  }
+}
+
+// CSS owns every scale number: this only selects html[data-text-size=...]. A
+// missing attribute and the "medium" id both render today's sizes unchanged.
+export function applyTextSize(id: TextSizeId) {
+  document.documentElement.dataset.textSize = resolveTextSize(id).id;
+}
+
+export function selectTextSize(id: TextSizeId): boolean {
+  applyTextSize(id);
+  try {
+    localStorage.setItem(TEXT_SIZE_STORAGE_KEY, id);
+    void persistDesktopPreference(TEXT_SIZE_STORAGE_KEY, id);
+    delete document.documentElement.dataset.textSizeUnsaved;
+    return true;
+  } catch {
+    document.documentElement.dataset.textSizeUnsaved = "1";
+    return false;
+  }
+}
+
+export function readInterfaceSize(): InterfaceSizeId {
+  if (document.documentElement.dataset.interfaceSizeUnsaved === "1")
+    return resolveInterfaceSize(document.documentElement.dataset.interfaceSize).id;
+  try {
+    return resolveInterfaceSize(localStorage.getItem(INTERFACE_SIZE_STORAGE_KEY)).id;
+  } catch {
+    return resolveInterfaceSize(document.documentElement.dataset.interfaceSize).id;
+  }
+}
+
+// Same rule as the text axis: html[data-interface-size=...] selects a CSS block,
+// and "standard" plus a missing attribute both keep the current geometry.
+export function applyInterfaceSize(id: InterfaceSizeId) {
+  document.documentElement.dataset.interfaceSize = resolveInterfaceSize(id).id;
+}
+
+export function selectInterfaceSize(id: InterfaceSizeId): boolean {
+  applyInterfaceSize(id);
+  try {
+    localStorage.setItem(INTERFACE_SIZE_STORAGE_KEY, id);
+    void persistDesktopPreference(INTERFACE_SIZE_STORAGE_KEY, id);
+    delete document.documentElement.dataset.interfaceSizeUnsaved;
+    return true;
+  } catch {
+    document.documentElement.dataset.interfaceSizeUnsaved = "1";
     return false;
   }
 }

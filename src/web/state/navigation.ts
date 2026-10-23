@@ -17,6 +17,21 @@ import { errorText } from "./helpers";
 import type { PendingNavigation, StoreGet, StoreSet, SuperstringState } from "./types";
 import { hasUnsavedDrafts, navigationBusy } from "./unsaved-changes";
 
+// 放弃编辑对象时只清它自己的原始输入映射；global/其他 Agent 的键归各自所有者，不做全局清空。
+function discardEditorInvalidInputs(
+  get: () => SuperstringState,
+  set: (patch: Partial<SuperstringState>) => void,
+) {
+  const editorId = get().editorAgentId;
+  if (editorId === "__new__") return;
+  const prefix = `agent:${editorId}:`;
+  set({
+    allocationInvalidInputs: Object.fromEntries(
+      Object.entries(get().allocationInvalidInputs).filter(([key]) => !key.startsWith(prefix)),
+    ),
+  });
+}
+
 async function performNavigation(
   get: () => SuperstringState,
   set: (patch: Partial<SuperstringState>) => void,
@@ -245,6 +260,7 @@ async function performNavigation(
       (pending.page !== "settings" ||
         (dirtyBefore && (get().settingsView === "agents" || get().editorAgentId === "__new__")))
     ) {
+      discardEditorInvalidInputs(get, set);
       get().discardOrganization();
       get().discardKnowledgeModel();
       get().discardKnowledgeRead();
@@ -337,6 +353,7 @@ export function createNavigationActions(
   | "requestConversationNavigation"
   | "requestConversationView"
   | "openSettingsRoute"
+  | "syncSettingsRoute"
   | "requestContextAllocation"
   | "openSystemComponent"
   | "openChat"
@@ -524,10 +541,16 @@ export function createNavigationActions(
       const pending = get().pendingNavigation;
       if (pending?.kind === "page" && pending.settingsView === "workspace") {
         set({ pendingNavigation: { ...pending, settingsRoute } });
-      } else if (get().page === "settings" && get().settingsView === "workspace") {
-        set({ settingsRoute, componentTarget: null, feedback: "" });
-        markLanded();
+      } else {
+        get().syncSettingsRoute(settingsRoute);
       }
+    },
+    syncSettingsRoute: (settingsRoute) => {
+      // 已落地工作区内的子路由同步：标签页是本地视图，只记录落点。
+      // 真正的页面/Agent 切换仍走 requestPageNavigation/requestAgentNavigation，离开守卫不变。
+      if (get().page !== "settings" || get().settingsView !== "workspace") return;
+      set({ settingsRoute, componentTarget: null, feedback: "" });
+      markLanded();
     },
     openSystemComponent: (target) => {
       if (navigationBusy(get())) return;
@@ -657,8 +680,10 @@ export function createNavigationActions(
       set({ page, settingsView, feedback: "" });
       markLanded();
     },
-    requestAgentNavigation: (id, settingsRoute) => {
-      if (navigationBusy(get())) return;
+    // 返回「请求的编辑身份是否已落地」：true＝当前编辑器已代表目标（含同身份短路），
+    // false＝被在途写入、离开守卫或读取失败拦下；守卫确认后的落地由既有 continuation 完成。
+    requestAgentNavigation: async (id, settingsRoute) => {
+      if (navigationBusy(get())) return false;
       // 保存会清空 pageEditor，但保留 editorDraft；既有助手须重建编辑器。
       if (
         id === get().editorAgentId &&
@@ -667,7 +692,7 @@ export function createNavigationActions(
         if (settingsRoute && get().settingsRoute !== settingsRoute) {
           get().openSettingsRoute(settingsRoute);
         }
-        return;
+        return true;
       }
       if (
         get().dirty ||
@@ -685,15 +710,13 @@ export function createNavigationActions(
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("当前 Agent 有未保存修改，是否先保存再切换？"),
         });
-        return;
+        return false;
       }
-      void get()
-        .editAgent(id)
-        .then((ok) => {
-          if (ok && settingsRoute && get().settingsRoute !== settingsRoute) {
-            get().openSettingsRoute(settingsRoute);
-          }
-        });
+      const landed = await get().editAgent(id);
+      if (landed && settingsRoute && get().settingsRoute !== settingsRoute) {
+        get().openSettingsRoute(settingsRoute);
+      }
+      return landed;
     },
     requestQqSchemeNavigation: (id, view = "settings", settingsRoute) => {
       if (navigationBusy(get())) return;
@@ -962,7 +985,6 @@ export function createNavigationActions(
         await performNavigation(get, set, pending, true, markLanded);
         return;
       }
-      set({ allocationInvalidInputs: {} });
       await performNavigation(get, set, pending, true, markLanded);
       // 切换方案不能顺带丢弃其他资料草稿。
       if (!get().pendingNavigation && pending.kind !== "scheme") get().discardQqMemoryBatchDrafts();

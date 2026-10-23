@@ -2,11 +2,14 @@
 // server (src/server). This module MUST NOT import anything browser-only
 // (localStorage, document, window) — otherwise the server would pull DOM side
 // effects into the process. The native desktop launcher reads the persisted
-// JSON (see src/server/desktop-appearance.ts); the THEMES / MODES data here is
-// the single source of truth for saved theme ids and the three appearance modes.
+// JSON (see src/server/desktop-appearance.ts); the THEMES / MODES / FONTS /
+// TEXT_SIZES / INTERFACE_SIZES data here is the single source of truth for
+// saved theme ids, the three appearance modes and the three ids of each size
+// dimension.
 
 export const THEME_STORAGE_KEY = "superstring-appearance";
 export const MODE_STORAGE_KEY = "superstring-appearance-mode";
+export const FONT_STORAGE_KEY = "superstring-appearance-font";
 
 export const THEMES = [
   { id: "slate", name: "深蓝灰", color: "#26364a", dark: "#d7e1f0" },
@@ -50,6 +53,48 @@ export const MODES = [
 export type AppearanceMode = (typeof MODES)[number]["id"];
 export const MODE_IDS: readonly AppearanceMode[] = MODES.map((mode) => mode.id);
 
+// Font choice is a separate preference dimension, not part of the theme/mode
+// appearance frame. The actual family stacks live in src/web/styles.css.
+export const FONTS = [
+  { id: "default", name: "默认" },
+  { id: "elegant", name: "典雅衬线" },
+  { id: "cute", name: "可爱圆体" },
+] as const;
+
+export type FontId = (typeof FONTS)[number]["id"];
+export const FONT_IDS: readonly FontId[] = FONTS.map((font) => font.id);
+
+// Text size and interface size are two more preference dimensions on the same
+// appearance frame, and are deliberately NOT part of the desktop WebSocket
+// snapshot. Every scale number lives in src/web/styles.css under
+// html[data-text-size=...] / html[data-interface-size=...]; this module only
+// names the ids, so no saved value can ever select an unknown attribute and no
+// number is duplicated on the JavaScript side.
+export const TEXT_SIZE_STORAGE_KEY = "superstring-appearance-text-size";
+export const INTERFACE_SIZE_STORAGE_KEY = "superstring-appearance-interface-size";
+
+export const TEXT_SIZES = [
+  { id: "small", name: "小" },
+  { id: "medium", name: "标准" },
+  { id: "large", name: "大" },
+] as const;
+
+export type TextSizeId = (typeof TEXT_SIZES)[number]["id"];
+export const TEXT_SIZE_IDS: readonly TextSizeId[] = TEXT_SIZES.map((size) => size.id);
+
+// "medium" and "standard" are the untouched rendering: choosing them, or having
+// no stored preference at all, must look exactly like a fresh install.
+export const INTERFACE_SIZES = [
+  { id: "compact", name: "紧凑" },
+  { id: "standard", name: "标准" },
+  { id: "comfortable", name: "宽松" },
+] as const;
+
+export type InterfaceSizeId = (typeof INTERFACE_SIZES)[number]["id"];
+export const INTERFACE_SIZE_IDS: readonly InterfaceSizeId[] = INTERFACE_SIZES.map(
+  (size) => size.id,
+);
+
 export function resolveTheme(id: unknown): (typeof THEMES)[number] {
   return THEMES.find((theme) => theme.id === id) ?? THEMES[0];
 }
@@ -64,6 +109,32 @@ export function isThemeId(value: unknown): value is ThemeId {
 
 export function isAppearanceMode(value: unknown): value is AppearanceMode {
   return typeof value === "string" && (MODE_IDS as readonly string[]).includes(value);
+}
+
+export function resolveFont(id: unknown): (typeof FONTS)[number] {
+  return FONTS.find((font) => font.id === id) ?? FONTS[0];
+}
+
+export function isFontId(value: unknown): value is FontId {
+  return typeof value === "string" && (FONT_IDS as readonly string[]).includes(value);
+}
+
+// The second entry of each size list is the default (medium / standard), so a
+// missing or corrupt stored value resolves to the unchanged rendering.
+export function resolveTextSize(id: unknown): (typeof TEXT_SIZES)[number] {
+  return TEXT_SIZES.find((size) => size.id === id) ?? TEXT_SIZES[1];
+}
+
+export function isTextSizeId(value: unknown): value is TextSizeId {
+  return typeof value === "string" && (TEXT_SIZE_IDS as readonly string[]).includes(value);
+}
+
+export function resolveInterfaceSize(id: unknown): (typeof INTERFACE_SIZES)[number] {
+  return INTERFACE_SIZES.find((size) => size.id === id) ?? INTERFACE_SIZES[1];
+}
+
+export function isInterfaceSizeId(value: unknown): value is InterfaceSizeId {
+  return typeof value === "string" && (INTERFACE_SIZE_IDS as readonly string[]).includes(value);
 }
 
 // WebSocket appearance frame

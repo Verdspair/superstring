@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { AlertDialog } from "../components/confirmation";
@@ -10,6 +10,8 @@ import { useSuperstringStore } from "../store";
 export function NavigationGuard() {
   const open = useSuperstringStore((state) => state.navigationConfirmOpen);
   const [pending, setPending] = useState(false);
+  const visited = useRef(false);
+  if (open) visited.current = true;
   const run = async (operation: () => Promise<void>) => {
     if (pending) return;
     setPending(true);
@@ -19,13 +21,17 @@ export function NavigationGuard() {
       setPending(false);
     }
   };
-  return open ? <NavigationConfirmDialog pending={pending} run={run} /> : null;
+  return visited.current ? (
+    <NavigationConfirmDialog open={open} pending={pending} run={run} />
+  ) : null;
 }
 
 function NavigationConfirmDialog({
+  open,
   pending,
   run,
 }: {
+  open: boolean;
   pending: boolean;
   run: (operation: () => Promise<void>) => Promise<void>;
 }) {
@@ -49,6 +55,7 @@ function NavigationConfirmDialog({
   );
   return (
     <AlertDialog
+      open={open}
       title={t("workspace.this_section_has_unsaved_changes")}
       onCancel={state.cancelPendingNavigation}
       busy={pending}

@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { Arch, build, Platform } from "electron-builder";
 import { collectPackageFiles, readPackageVersion } from "../../../installer/package-files.mjs";
+import { renderBrandAssets } from "../brand-assets.mjs";
+import { stageStartupAppearance } from "../build-electron.mjs";
 import { buildBrand } from "./brand.mjs";
 import { writeChecksums } from "./checksums.mjs";
 import {
@@ -13,6 +15,7 @@ import {
   HOMEPAGE,
   macSigningPlan,
   normalizeMacSigningEnvironment,
+  serviceRootForApp,
 } from "./config.mjs";
 import { writeProductionNotices } from "./licenses.mjs";
 import { resolveProjectBun } from "./runtime-tools.mjs";
@@ -44,11 +47,18 @@ if (platform === "darwin" && release && !macSigning.signed) {
 const version = readPackageVersion(root);
 const stage = path.join(root, "artifacts/desktop", `${platform}-${arch}`);
 const output = path.join(root, "dist/desktop-packages", `${platform}-${arch}`);
-// These directories contain generated build inputs only, never user profiles.
-fs.rmSync(stage, { recursive: true, force: true });
-fs.rmSync(output, { recursive: true, force: true });
-fs.mkdirSync(stage, { recursive: true });
-fs.mkdirSync(output, { recursive: true });
+function prepareEmpty(directory, label) {
+  if (
+    fs.existsSync(directory) &&
+    (!fs.statSync(directory).isDirectory() || fs.readdirSync(directory).length > 0)
+  )
+    throw new Error(`${label} is not empty: ${directory}; review or move it before rebuilding`);
+  fs.mkdirSync(directory, { recursive: true });
+}
+// These directories contain generated build inputs only, never user profiles. A
+// previous candidate is evidence, not disposable input, so only empty dirs are reused.
+prepareEmpty(stage, "Desktop build stage");
+prepareEmpty(output, "Desktop package output");
 function run(executable, args) {
   const result = spawnSync(executable, args, { cwd: root, stdio: "inherit" });
   if (result.error || result.status !== 0) {
@@ -67,8 +77,7 @@ if (bunVersion.stdout.trim() !== requiredBun) {
   throw new Error(`Desktop build requires Bun ${requiredBun}; found ${bunVersion.stdout.trim()}`);
 }
 run(process.execPath, [path.join(root, "node_modules/vite/bin/vite.js"), "build"]);
-const host = path.join(root, "dist/desktop-host");
-fs.rmSync(host, { recursive: true, force: true });
+const host = path.join(stage, "host");
 fs.mkdirSync(host, { recursive: true });
 run(bun, [
   "build",
@@ -79,10 +88,12 @@ run(bun, [
   "--outfile",
   path.join(host, "main.cjs"),
 ]);
+// The preload runs under sandbox:true, so it is bundled for the browser: a node-target
+// bundle emits require/Node globals that a sandboxed preload cannot resolve.
 run(bun, [
   "build",
   "src/desktop/preload.ts",
-  "--target=node",
+  "--target=browser",
   "--format=cjs",
   "--external=electron",
   "--outfile",
@@ -106,6 +117,17 @@ fs.writeFileSync(
     2,
   )}\n`,
 );
+fs.copyFileSync(path.join(root, "src/desktop/startup.html"), path.join(host, "startup.html"));
+// The startup panel's tokens and local fonts have one owner: the Windows candidate
+// builder. Reusing it keeps the two Electron packages on the same source.
+stageStartupAppearance(host);
+const plateFrames = renderBrandAssets(root, path.join(stage, "brand-assets"), { source: "icon" });
+const plate = plateFrames.find((frame) => frame.size === 256);
+if (!plate) throw new Error("Missing 256px plate icon frame");
+fs.copyFileSync(plate.file, path.join(host, "icon.png"));
+const fonts = path.join(host, "fonts");
+if (!fs.existsSync(fonts) || fs.readdirSync(fonts).length === 0)
+  throw new Error("Startup appearance staged no local fonts");
 const service = path.join(stage, "service");
 fs.mkdirSync(service, { recursive: true });
 run(bun, [
@@ -140,14 +162,8 @@ fs.writeFileSync(
   `${JSON.stringify({ version, platform, arch, files: resources }, null, 2)}\n`,
 );
 buildBrand(root, path.join(stage, "brand"), platform, run);
-// Runtime tray assets stay outside app.asar; main can load them as native images.
+// The independent window has no tray; keep only the package icon beside the service.
 fs.mkdirSync(path.join(service, "brand"), { recursive: true });
-for (const size of [16, 32]) {
-  fs.copyFileSync(
-    path.join(stage, "brand/icons", `${size}x${size}.png`),
-    path.join(service, "brand", size === 16 ? "trayTemplate.png" : "trayTemplate@2x.png"),
-  );
-}
 fs.copyFileSync(path.join(stage, "brand/icon.png"), path.join(service, "brand/icon.png"));
 const config = createConfiguration({
   root,
@@ -179,6 +195,7 @@ fs.writeFileSync(
       release,
       ...(platform === "darwin" ? { macSigning: macSigning.signed ? "signed" : "unsigned" } : {}),
       app,
+      serviceRoot: serviceRootForApp(platform, app),
       artifacts,
     },
     null,

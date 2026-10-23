@@ -422,4 +422,76 @@ describe("allocation performance & render isolation (PROVEN RED FIRST)", () => {
     await act(async () => {});
     expect(nextCapacity).toHaveBeenCalledTimes(1);
   });
+  it("keeps the loaded Agent capacity across tab roundtrips without re-probing unchanged identity", async () => {
+    const editor = store.getState().pageEditor;
+    if (!editor) throw new Error("Agent editor fixture missing");
+    const getModelCapacity = vi.fn(async (model: string) => ({
+      model,
+      status: "loaded" as const,
+      context_length: 65536,
+    }));
+    const getOrganizationSettings = vi.fn().mockResolvedValue({
+      model_name: null,
+      vision_model_name: null,
+      transcription_model_name: null,
+      auxiliary_allocation: {},
+      revision: 1,
+    });
+    store.setState({
+      settingsRoute: "context",
+      editorDraft: editor.draft,
+      apiClient: { ...store.getState().apiClient, getModelCapacity, getOrganizationSettings },
+    });
+    const { rerender } = render(<CapabilityEditor active={false} />);
+    await act(async () => {});
+    expect(getModelCapacity).not.toHaveBeenCalled();
+    rerender(<CapabilityEditor active />);
+    await act(async () => {});
+    expect(getModelCapacity).toHaveBeenCalledTimes(1);
+    expect(store.getState().chatContextCapacity).toBe(65536);
+    rerender(<CapabilityEditor active={false} />);
+    await act(async () => {});
+    rerender(<CapabilityEditor active />);
+    expect(getModelCapacity).toHaveBeenCalledTimes(1);
+    expect(store.getState().chatContextCapacity).toBe(65536);
+    expect(store.getState().capacityPreview).not.toContain("正在刷新");
+    await act(async () => {});
+    expect(getModelCapacity).toHaveBeenCalledTimes(1);
+  });
+  it("does not cache a failed Agent capacity read and retries it on explicit refresh", async () => {
+    const editor = store.getState().pageEditor;
+    if (!editor) throw new Error("Agent editor fixture missing");
+    const getModelCapacity = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("capacity probe failed"))
+      .mockResolvedValue({
+        model: "shared-agent-model",
+        status: "loaded" as const,
+        context_length: 65536,
+      });
+    const getOrganizationSettings = vi.fn().mockResolvedValue({
+      model_name: null,
+      vision_model_name: null,
+      transcription_model_name: null,
+      auxiliary_allocation: {},
+      revision: 1,
+    });
+    store.setState({
+      settingsRoute: "context",
+      editorDraft: editor.draft,
+      apiClient: { ...store.getState().apiClient, getModelCapacity, getOrganizationSettings },
+    });
+    render(<CapabilityEditor active />);
+    await act(async () => {});
+    expect(getModelCapacity).toHaveBeenCalledTimes(1);
+    expect(store.getState().chatContextCapacity).toBeNull();
+    expect(store.getState().capacityPreview).toContain("容量预览不可用");
+    await act(async () => {
+      await store
+        .getState()
+        .refreshCapacityPreview(["shared-agent-model", "shared-agent-model", null]);
+    });
+    expect(getModelCapacity).toHaveBeenCalledTimes(2);
+    expect(store.getState().chatContextCapacity).toBe(65536);
+  });
 });

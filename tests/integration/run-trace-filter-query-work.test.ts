@@ -47,6 +47,7 @@ function fixture() {
 function observedPlans(db: Database) {
   const query = db.query.bind(db);
   const plans: string[] = [];
+  const groupQueries: string[] = [];
   const proxy = new Proxy(db, {
     get(target, key) {
       if (key !== "query") {
@@ -60,6 +61,7 @@ function observedPlans(db: Database) {
             const value = Reflect.get(current, method, current);
             if (method === "get" || method === "all")
               return (...args: unknown[]) => {
+                if (sql.includes("groups AS MATERIALIZED")) groupQueries.push(sql);
                 const plan = Reflect.apply(
                   query("EXPLAIN QUERY PLAN " + sql).all,
                   query("EXPLAIN QUERY PLAN " + sql),
@@ -74,7 +76,7 @@ function observedPlans(db: Database) {
       };
     },
   });
-  return { db: proxy, plans };
+  return { db: proxy, plans, groupQueries };
 }
 it("run-filtered traces use the run index before grouping while keeping the full visible trace", () => {
   const { h, runId, root } = fixture();
@@ -83,6 +85,7 @@ it("run-filtered traces use the run index before grouping while keeping the full
   const now = new Date().toISOString();
   const page = repository.traces({ runId, limit: 1 }, DEFAULT_USER_ID, now);
   expect(page.items).toHaveLength(1);
+  expect(observed.groupQueries).toHaveLength(1);
   expect(page.items[0].traceId).toBe(root.traceId);
   expect(page.items[0].spanCount).toBe(3);
   expect(page.items[0].matchedSpanCount).toBe(1);
@@ -119,4 +122,50 @@ it("combined span filters retain sibling status and the whole-trace pagination c
     repository.traces({ runId, stage: "sticker", limit: 10 }, DEFAULT_USER_ID, now).items,
   ).toEqual([]);
   expect(trace.traceId).toBe(root.traceId);
+});
+
+it("keeps summary totals outside page cursor filtering with one grouping execution", () => {
+  const { h, runId } = fixture();
+  const observed = observedPlans(h.db);
+  const repository = new RuntimeSpanRepository(observed.db);
+  const now = new Date().toISOString();
+  const first = repository.traces({ runId, limit: 1 }, DEFAULT_USER_ID, now);
+  expect(first.items).toHaveLength(1);
+  expect(observed.groupQueries).toHaveLength(1);
+  const emptyPage = repository.traces(
+    { runId, limit: 1, beforeId: first.items[0]!.cursorId },
+    DEFAULT_USER_ID,
+    now,
+  );
+  expect(emptyPage.items).toEqual([]);
+  expect(emptyPage.hasMore).toBe(false);
+  expect(emptyPage.nextBeforeId).toBe(0);
+  expect(emptyPage.summary).toEqual(first.summary);
+  expect(observed.groupQueries).toHaveLength(2);
+  const emptySet = repository.traces({ runId, stage: "sticker", limit: 1 }, DEFAULT_USER_ID, now);
+  expect(emptySet.items).toEqual([]);
+  expect(emptySet.summary).toEqual({
+    now,
+    totalTraces: 0,
+    activeTraces: 0,
+    failedTraces: 0,
+    matchedSpans: 0,
+    lastActivityAt: null,
+  });
+  expect(observed.groupQueries).toHaveLength(3);
+});
+it("uses one grouping statement for unfiltered global pages and preserves next-page totals", () => {
+  const { h } = fixture();
+  const observed = observedPlans(h.db);
+  const repository = new RuntimeSpanRepository(observed.db);
+  const now = new Date().toISOString();
+  const first = repository.traces({ limit: 2 }, DEFAULT_USER_ID, now);
+  expect(first.items).toHaveLength(2);
+  expect(first.hasMore).toBe(true);
+  expect(observed.groupQueries).toHaveLength(1);
+  const next = repository.traces({ limit: 2, beforeId: first.nextBeforeId }, DEFAULT_USER_ID, now);
+  expect(next.items).toHaveLength(2);
+  expect(next.items.every((item) => item.cursorId < first.nextBeforeId)).toBe(true);
+  expect(next.summary).toEqual(first.summary);
+  expect(observed.groupQueries).toHaveLength(2);
 });

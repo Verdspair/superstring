@@ -291,7 +291,7 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
     <div ref={rootRef} className="w-full min-w-0 space-y-6 px-4 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="flex items-center gap-2 font-semibold">
+          <h2 className="workspace-section-title flex items-center gap-2">
             <SlidersHorizontal className="size-4 text-primary" />
             {t("connections.execution.title")}
           </h2>

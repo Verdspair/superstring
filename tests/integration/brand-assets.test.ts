@@ -4,7 +4,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { imageSize } from "image-size";
-import { BRAND_FRAME_SIZES, renderBrandAssets } from "../../tools/desktop/build/brand-assets.mjs";
+import {
+  BRAND_FRAME_SIZES,
+  deriveBrandIconSvg,
+  renderBrandAssets,
+  WINDOWS_ICON_FRAME_SIZES,
+} from "../../tools/desktop/build/brand-assets.mjs";
 
 const directories: string[] = [];
 const temporary = () => {
@@ -63,6 +68,48 @@ describe("shared SVG desktop build assets", () => {
       });
       expect(frame.resourceName).toBe(`Superstring.Desktop.Brand.${frame.size}.png`);
     }
+  });
+
+  it("keeps the generated OS icon exactly equal to the master derivation", () => {
+    const brand = path.resolve(import.meta.dir, "../../src/shared/brand");
+    const master = readFileSync(path.join(brand, "superstring.svg"), "utf8");
+    const generated = readFileSync(path.join(brand, "superstring-icon.svg"), "utf8");
+    expect(generated).toBe(deriveBrandIconSvg(master));
+  });
+
+  it("renders the 13-frame Windows ladder from the master-derived icon", () => {
+    const frames = renderBrandAssets(path.resolve(import.meta.dir, "../.."), temporary(), {
+      source: "icon",
+    });
+    expect(frames.map((frame: { size: number }) => frame.size)).toEqual([
+      ...WINDOWS_ICON_FRAME_SIZES,
+    ]);
+    expect(frames).toHaveLength(WINDOWS_ICON_FRAME_SIZES.length);
+    for (const size of [24, 30, 36, 48])
+      expect(frames.some((frame: { size: number }) => frame.size === size)).toBe(true);
+    for (const frame of frames) {
+      expect(imageSize(readFileSync(frame.file))).toMatchObject({
+        width: frame.size,
+        height: frame.size,
+        type: "png",
+      });
+      expect(frame.resourceName).toBe(`Superstring.Desktop.Icon.${frame.size}.png`);
+    }
+  });
+
+  it("derives the OS icon from the master without a second checked-in source", () => {
+    const root = temporary();
+    const destination = temporary();
+    const brand = path.join(root, "src/shared/brand");
+    mkdirSync(brand, { recursive: true });
+    writeFileSync(
+      path.join(brand, "superstring.svg"),
+      readFileSync(path.resolve(import.meta.dir, "../../src/shared/brand/superstring.svg"), "utf8"),
+    );
+    const frames = renderBrandAssets(root, destination, { source: "icon" });
+    expect(frames.map((frame: { size: number }) => frame.size)).toEqual([
+      ...WINDOWS_ICON_FRAME_SIZES,
+    ]);
   });
 
   it("regenerates resources when only the canonical SVG changes, without any native geometry source", () => {

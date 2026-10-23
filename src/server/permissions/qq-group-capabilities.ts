@@ -66,6 +66,17 @@ type GroupScope =
   | { kind: "unresolved" }
   | { kind: "group"; bindingId: string; agentId: string };
 
+type CapabilityRef = {
+  bindingId: string;
+  agentId: string;
+  capability: QqGroupCapability;
+};
+
+type GroupSnapshot = {
+  readonly disabled: ReadonlySet<string>;
+  readonly revisions: ReadonlyMap<QqGroupCapability, number>;
+};
+
 function actionCapability(name: string): QqGroupCapability | undefined {
   for (const entry of ACTION_CAPABILITIES) {
     if ("name" in entry ? entry.name === name : name.startsWith(entry.prefix))
@@ -78,9 +89,7 @@ function capabilityRefId(bindingId: string, agentId: string, capability: QqGroup
   return JSON.stringify([bindingId, agentId, capability]);
 }
 
-function parseCapabilityRefId(
-  id: string,
-): { bindingId: string; agentId: string; capability: QqGroupCapability } | null {
+function parseCapabilityRefId(id: string): CapabilityRef | null {
   let value: unknown;
   try {
     value = JSON.parse(id);
@@ -219,6 +228,22 @@ export class QqGroupCapabilityGuard {
     return new Set(config.disabled_capabilities);
   }
 
+  /**
+   * 同一同步帧内的群配置快照：停用集合与各项修订来自同一次记录读取。
+   * 快照只在调用栈内使用，不跨调用/await 保留；下一次调用仍读当前记录。
+   */
+  private snapshot(scope: { bindingId: string; agentId: string }): GroupSnapshot {
+    const config = readQqGroupAgentConfig(this.orm, {
+      id: scope.bindingId,
+      agentId: scope.agentId,
+      kind: "group",
+    });
+    return {
+      disabled: new Set(config.disabled_capabilities),
+      revisions: config.capability_revisions,
+    };
+  }
+
   /** 来源引用的 revision：能力当前纪元（跟随↔停用每次翻转 +1）的十进制串，绑定签发时刻。 */
   private capabilityRevision(
     scope: { bindingId: string; agentId: string },
@@ -345,10 +370,25 @@ export class QqGroupCapabilityGuard {
 
   /** 结果提交边界：只检查群能力引用，其余来源交给原有解析器。 */
   assertSources(owner: RunOwner, sources: readonly SourceRef[]): void {
+    // 按来源顺序逐条校验：先验引用本身，第一次需要读库时取一次 scope 与一次群配置；
+    // 同一调用内复用，调用结束即丢弃，下一次调用仍读当前记录。
+    let scope: GroupScope | undefined;
+    let snapshot: GroupSnapshot | undefined;
     for (const source of sources) {
+      if (source.kind !== QQ_GROUP_CAPABILITY_SOURCE_KIND) continue;
+      const ref = parseCapabilityRefId(source.id);
+      if (!ref) fail("QQ_GROUP_CAPABILITY_DISABLED", "本群来源已失效，结果不得继续使用");
+      scope ??= this.scope(owner);
       if (
-        source.kind === QQ_GROUP_CAPABILITY_SOURCE_KIND &&
-        this.sourceAccess(source, owner) !== "available"
+        scope.kind !== "group" ||
+        scope.bindingId !== ref.bindingId ||
+        scope.agentId !== ref.agentId
+      )
+        fail("QQ_GROUP_CAPABILITY_DISABLED", "本群来源已失效，结果不得继续使用");
+      snapshot ??= this.snapshot(scope);
+      if (
+        snapshot.disabled.has(ref.capability) ||
+        source.revision !== String(snapshot.revisions.get(ref.capability) ?? 0)
       )
         fail("QQ_GROUP_CAPABILITY_DISABLED", "本群来源已失效，结果不得继续使用");
     }

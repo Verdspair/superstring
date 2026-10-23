@@ -105,9 +105,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
 
     setupApi({ getConversationEvents: getEvents });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
 
     // Initial load settles
     await act(async () => {
@@ -197,9 +195,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
 
     setupApi({ getConversationEvents: getEvents });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
 
     await act(async () => {
       await Promise.resolve();
@@ -292,9 +288,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
 
     setupApi({ getConversationEvents: getEvents });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
 
     await act(async () => {
       await Promise.resolve();
@@ -338,9 +332,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
       .mockReturnValueOnce(delayed)
       .mockResolvedValueOnce({ items: [sampleEvent(2)], nextSeq: 2, hasMore: false });
     setupApi({ getConversationEvents: read });
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
     await act(async () => {});
     act(() => {
       void result.current.refresh();
@@ -380,9 +372,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
       .mockReturnValueOnce(delayed)
       .mockRejectedValueOnce(new Error("access removed"));
     setupApi({ getConversationEvents: read });
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
     await act(async () => {});
     act(() => {
       void result.current.loadMore();
@@ -409,9 +399,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
       .fn<SuperstringApi["getConversationEvents"]>()
       .mockResolvedValue({ items: [], nextSeq: 0, hasMore: false });
     setupApi({ getConversationEvents: read });
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
     await act(async () => {});
     await act(async () => {
       await result.current.refresh();
@@ -471,9 +459,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
       });
     setupApi({ getConversationEvents: read });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
     await act(async () => {});
     expect(result.current.items).toHaveLength(100);
 
@@ -557,9 +543,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
       });
     setupApi({ getConversationEvents: read });
 
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
     await act(async () => {});
     expect(result.current.items.map((item) => item.seq)).toEqual([1, 50, 100]);
 
@@ -620,9 +604,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
         hasMore: false,
       });
     setupApi({ getConversationEvents: read });
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
     await act(async () => {});
     expect(result.current.items.map((item) => item.seq)).toEqual([1, 2]);
 
@@ -638,85 +620,49 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
     expect(read).toHaveBeenCalledTimes(2);
   });
 
-  it("slow range read longer than interval settles without triggering immediate re-read loop", async () => {
+  it("idle 30s issues no reads; a notify still tails immediately afterwards", async () => {
     vi.useFakeTimers();
-    let resolveSlowRange!: (value: unknown) => void;
-    const slowRangePromise = new Promise((res) => {
-      resolveSlowRange = res;
-    });
-    let rangeCallCount = 0;
-    const getEvents = vi
-      .fn()
-      .mockImplementation(
-        async (
-          _id: string,
-          params: Exclude<Parameters<SuperstringApi["getConversationEvents"]>[1], number>,
-        ) => {
-          if (params?.direction === "latest") {
-            return {
-              items: [sampleEvent(1), sampleEvent(2)],
-              nextSeq: 3,
-              hasMore: false,
-            };
-          }
-          if (params?.direction === "after") {
-            rangeCallCount++;
-            if (rangeCallCount === 1) {
-              await slowRangePromise;
-              return {
-                items: [sampleEvent(1, "slow-1"), sampleEvent(2, "slow-2")],
-                nextSeq: 3,
-                hasMore: false,
-              };
-            }
-            return {
-              items: [sampleEvent(1, "tick-1"), sampleEvent(2, "tick-2")],
-              nextSeq: 3,
-              hasMore: false,
-            };
-          }
+    let tailReads = 0;
+    const read = vi
+      .fn<SuperstringApi["getConversationEvents"]>()
+      .mockImplementation(async (_id, params) => {
+        if (typeof params === "number" || params === undefined)
           return { items: [], nextSeq: 0, hasMore: false };
-        },
-      );
-    setupApi({ getConversationEvents: getEvents });
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 5000 }),
-    );
+        if (params.direction === "latest") {
+          return { items: [sampleEvent(1), sampleEvent(2)], nextSeq: 3, hasMore: false };
+        }
+        if (params.direction === "after" && params.afterSeq === 2) {
+          tailReads += 1;
+          return { items: [sampleEvent(3, "live-3")], nextSeq: 3, hasMore: false };
+        }
+        return { items: [], nextSeq: 0, hasMore: false };
+      });
+    setupApi({ getConversationEvents: read });
 
-    // Initial load settles with fake timers
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(result.current.items.map((i) => i.seq)).toEqual([1, 2]);
-    expect(rangeCallCount).toBe(0);
 
-    // 1st 5s tick: triggers range revalidation (which is slow and pending)
+    // 30 idle seconds: zero reads without any notification.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(30000);
     });
-    expect(rangeCallCount).toBe(1);
-    expect(result.current.loading).toBe(true);
+    expect(read).toHaveBeenCalledTimes(1);
 
-    // 2nd 5s tick: fires at 10s while 1st read is STILL pending (> 5s slow range read)
+    // A notify still tails immediately.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
-    });
-
-    // Now slow range read resolves
-    await act(async () => {
-      resolveSlowRange(null);
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-1",
+        seq: 3,
+        bindingEpoch: 1,
+      });
       await vi.advanceTimersByTimeAsync(0);
     });
-
-    // Background tick must NOT have queued an immediate loop re-read on settle
-    expect(rangeCallCount).toBe(1);
-    expect(result.current.loading).toBe(false);
-
-    // Next scheduled tick triggers normal next poll
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
-    });
-    expect(rangeCallCount).toBe(2);
+    expect(tailReads).toBe(1);
+    expect(result.current.items.map((i) => i.seq)).toEqual([1, 2, 3]);
   });
 
   it("manual refresh aborts pending transport; late old resolution does not clear in-flight loading or corrupt state", async () => {
@@ -774,9 +720,7 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
       );
 
     setupApi({ getConversationEvents: getEvents });
-    const { result } = renderHook(() =>
-      useConversationEvents("conv-1", undefined, { refreshMs: 60000 }),
-    );
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
     await act(async () => {});
     expect(result.current.items.map((i) => i.seq)).toEqual([1, 2]);
 
@@ -821,5 +765,247 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
     // Fresh read completes cleanly: loading is false, items are from fresh read
     expect(result.current.loading).toBe(false);
     expect(result.current.items.find((i) => i.seq === 1)?.text).toBe("manual-fresh");
+  });
+
+  it("empty stale tail snapshot does not defer a newer notification to the 5s poll", async () => {
+    vi.useFakeTimers();
+    let resolveTail!: (value: Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>) => void;
+    const staleTail = new Promise<Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>>(
+      (resolve) => {
+        resolveTail = resolve;
+      },
+    );
+    let tailReads = 0;
+    const read = vi
+      .fn<SuperstringApi["getConversationEvents"]>()
+      .mockImplementation(async (_id, params) => {
+        if (typeof params === "number" || params === undefined)
+          return { items: [], nextSeq: 0, hasMore: false };
+        if (params.direction === "latest") {
+          return { items: [sampleEvent(1)], nextSeq: 2, hasMore: false };
+        }
+        if (params.direction === "after" && params.afterSeq === 1) {
+          tailReads += 1;
+          if (tailReads === 1) return staleTail;
+          return { items: [sampleEvent(2), sampleEvent(3)], nextSeq: 3, hasMore: false };
+        }
+        return { items: [], nextSeq: 0, hasMore: false };
+      });
+    setupApi({ getConversationEvents: read });
+
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.items.map((i) => i.seq)).toEqual([1]);
+
+    // seq 2 starts tail request A, which stays in flight.
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-1",
+        seq: 2,
+        bindingEpoch: 1,
+      });
+      await Promise.resolve();
+    });
+    expect(tailReads).toBe(1);
+
+    // seq 3 arrives while A is in flight: the second notification must not start its own read.
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-1",
+        seq: 3,
+        bindingEpoch: 1,
+      });
+      await Promise.resolve();
+    });
+    expect(tailReads).toBe(1);
+
+    // A settles with a stale empty snapshot that ends before seq 2; server nextSeq stays 0.
+    await act(async () => {
+      resolveTail({ items: [], nextSeq: 0, hasMore: false });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // One follow-up read must pick up the deferred seq 3 without any poll advance,
+    // and it must resume from the last visible seq, never afterSeq 0.
+    expect(tailReads).toBe(2);
+    expect(read.mock.calls[1]?.[1]).toMatchObject({ direction: "after", afterSeq: 1 });
+    expect(result.current.items.map((i) => i.seq)).toEqual([1, 2, 3]);
+  });
+
+  it("ghost tail sequence stays bounded: one extra empty read then stop, no poll advance", async () => {
+    vi.useFakeTimers();
+    let resolveTail!: (value: Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>) => void;
+    const staleTail = new Promise<Awaited<ReturnType<SuperstringApi["getConversationEvents"]>>>(
+      (resolve) => {
+        resolveTail = resolve;
+      },
+    );
+    let tailReads = 0;
+    const read = vi
+      .fn<SuperstringApi["getConversationEvents"]>()
+      .mockImplementation(async (_id, params) => {
+        if (typeof params === "number" || params === undefined)
+          return { items: [], nextSeq: 0, hasMore: false };
+        if (params.direction === "latest") {
+          return { items: [sampleEvent(1)], nextSeq: 2, hasMore: false };
+        }
+        if (params.direction === "after" && params.afterSeq === 1) {
+          tailReads += 1;
+          if (tailReads === 1) return staleTail;
+          // Ghost notification: seq 2/3 never materialize as rows; server nextSeq stays 0.
+          return { items: [], nextSeq: 0, hasMore: false };
+        }
+        return { items: [], nextSeq: 0, hasMore: false };
+      });
+    setupApi({ getConversationEvents: read });
+
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.items.map((i) => i.seq)).toEqual([1]);
+
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-1",
+        seq: 2,
+        bindingEpoch: 1,
+      });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "conv-1",
+        seq: 3,
+        bindingEpoch: 1,
+      });
+      await Promise.resolve();
+    });
+    expect(tailReads).toBe(1);
+
+    await act(async () => {
+      resolveTail({ items: [], nextSeq: 0, hasMore: false });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // Exactly one extra read for the deferred notification; the second empty read stops.
+    expect(tailReads).toBe(2);
+    expect(read.mock.calls[1]?.[1]).toMatchObject({ direction: "after", afterSeq: 1 });
+    expect(result.current.items.map((i) => i.seq)).toEqual([1]);
+  });
+
+  it("expires a loaded source locally without a network read or changing a live row", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-22T00:00:00Z"));
+    const expiring = {
+      ...sampleEvent(1),
+      sources: [
+        {
+          kind: "qq_observation",
+          id: "body-1",
+          revision: "1",
+          expiresAt: new Date(Date.now() + 1000).toISOString(),
+        },
+      ],
+    };
+    const live = sampleEvent(2);
+    const read = vi
+      .fn<SuperstringApi["getConversationEvents"]>()
+      .mockResolvedValue({ items: [expiring, live], nextSeq: 2, hasMore: false });
+    setupApi({ getConversationEvents: read });
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
+    await act(async () => {});
+    const liveRow = result.current.items[1];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(result.current.items[0]).toMatchObject({
+      text: null,
+      contentState: "expired",
+      qqMessageFacts: [],
+    });
+    expect(result.current.items[1]).toBe(liveRow);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("arms cached source expiry while the initial authoritative read is pending", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-22T00:00:00Z"));
+    const cached = {
+      ...sampleEvent(1),
+      source: {
+        kind: "qq_event",
+        id: "event-1",
+        revision: "1",
+        expiresAt: new Date(Date.now() + 1000).toISOString(),
+      },
+    };
+    const read = vi
+      .fn<SuperstringApi["getConversationEvents"]>()
+      .mockReturnValue(new Promise(() => {}));
+    setupApi({ getConversationEvents: read });
+    useSuperstringStore.setState({
+      summaryById: { "conv-1": { id: "conv-1", agentId: "agent-1", bindingEpoch: 1 } as never },
+      sessionStateStorage: {
+        read: vi.fn(async () =>
+          JSON.stringify({
+            conversationId: "conv-1",
+            agentId: "agent-1",
+            bindingEpoch: 1,
+            items: [cached],
+            cachedAt: Date.now(),
+          }),
+        ),
+        write: vi.fn(async () => {}),
+        remove: vi.fn(async () => {}),
+      },
+    });
+    const { result } = renderHook(() => useConversationEvents("conv-1"));
+    await act(async () => {});
+    expect(result.current.items[0]?.text).toBe("msg-1");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(result.current.items[0]).toMatchObject({ text: null, contentState: "expired" });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps long source retention as one bounded deadline and cancels it on unmount", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-22T00:00:00Z"));
+    const row = {
+      ...sampleEvent(1),
+      source: {
+        kind: "qq_event",
+        id: "event-1",
+        revision: "1",
+        expiresAt: new Date(Date.now() + 3_000_000_000).toISOString(),
+      },
+    };
+    const read = vi
+      .fn<SuperstringApi["getConversationEvents"]>()
+      .mockResolvedValue({ items: [row], nextSeq: 1, hasMore: false });
+    setupApi({ getConversationEvents: read });
+    const { result, unmount } = renderHook(() => useConversationEvents("conv-1"));
+    await act(async () => {});
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_147_483_647);
+    });
+    expect(result.current.items[0]?.text).toBe("msg-1");
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -111,7 +111,18 @@ function rankAuthorizedKnowledge(
       }
     : new KnowledgeRepository(db).settings();
   const terms = knowledgeTerms(question);
-  const ranked: Array<{ candidate: Candidate; score: number }> = [];
+  const ranked: Array<{
+    id: string;
+    chunk: ReturnType<typeof knowledgeSegments>[number];
+    document: {
+      row: DocumentRow;
+      saved: { body: string; sources: string } | null;
+      mapped: ContentItem["sources"];
+      original: ContentItem;
+      baseBytes: number;
+    };
+    score: number;
+  }> = [];
   const authorized =
     frozen?.config.enabled === false
       ? []
@@ -138,69 +149,114 @@ function rankAuthorizedKnowledge(
         /* Invalid/legacy maps fall back to original. */
       }
     }
-    const chunks = knowledgeSegments(row.original_text, 768);
-    for (const chunk of chunks) {
+    const original: ContentItem = {
+      id: row.id,
+      source_type: "knowledge",
+      content_origin: "original",
+      name: row.name,
+      summary: "",
+      tags: [],
+      body: "",
+      revision: String(row.content_version),
+      validity: "valid",
+      sources: [
+        {
+          type: "document",
+          document_id: row.id,
+          version: row.content_version,
+          start: 0,
+          end: 0,
+          valid: true,
+        },
+      ],
+    };
+    const document = {
+      row,
+      saved,
+      mapped,
+      original,
+      baseBytes: utf8Size(
+        JSON.stringify({
+          id: `${row.id}:`,
+          document_id: row.id,
+          token: row.token,
+          items: [original],
+        }),
+      ),
+    };
+    for (const chunk of knowledgeSegments(row.original_text, 768)) {
       if (!chunk.body.trim()) continue;
-      const original: ContentItem = {
-        id: row.id,
-        source_type: "knowledge",
-        content_origin: "original",
-        name: row.name,
-        summary: "",
-        tags: [],
-        body: chunk.body,
-        revision: String(row.content_version),
-        validity: "valid",
-        sources: [
-          {
-            type: "document",
-            document_id: row.id,
-            version: row.content_version,
-            start: chunk.start,
-            end: chunk.end,
-            valid: true,
-          },
-        ],
-      };
-      const source = mapped.find(
-        (source) =>
-          source.type === "document" &&
-          source.valid &&
-          source.document_id === row.id &&
-          source.version === row.content_version &&
-          source.start <= chunk.start &&
-          source.end >= chunk.end &&
-          source.end <= row.original_text.length &&
-          source.draft_start !== undefined &&
-          source.draft_end !== undefined &&
-          source.draft_end <= (saved?.body.length ?? 0),
-      );
-      const derived =
-        source?.type === "document" && saved
-          ? {
-              ...original,
-              content_origin: "derived" as const,
-              body: saved.body.slice(source.draft_start, source.draft_end),
-              sources: [source],
-            }
-          : null;
-      const candidate: Candidate = {
-        id: `${row.id}:${chunk.ordinal}`,
-        document_id: row.id,
-        token: row.token,
-        items: derived ? [derived, original] : [original],
-      };
       const haystack = `${row.name}\n${chunk.body}`.toLowerCase();
       const score = terms.reduce((sum, term) => sum + Number(haystack.includes(term)), 0);
-      ranked.push({ candidate, score });
+      ranked.push({ id: `${row.id}:${chunk.ordinal}`, chunk, document, score });
     }
   }
-  ranked.sort((a, b) => b.score - a.score || a.candidate.id.localeCompare(b.candidate.id));
+  ranked.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
   const candidates: Candidate[] = [];
-  for (const { candidate } of ranked) {
+  let candidateBytes = utf8Size(JSON.stringify(candidates));
+  for (const { id, chunk, document } of ranked) {
     if (candidates.length >= 12) break;
-    // Bound the actual source payload, including derived and original bodies.
-    if (utf8Size(JSON.stringify([...candidates, candidate])) <= 8192) candidates.push(candidate);
+    // The original is always included. Replacing the template's empty body and
+    // zero offsets gives its exact JSON size; a mapped draft can only add bytes.
+    const originalBytes =
+      document.baseBytes +
+      String(chunk.ordinal).length +
+      utf8Size(JSON.stringify(chunk.body)) -
+      2 +
+      String(chunk.start).length -
+      1 +
+      String(chunk.end).length -
+      1;
+    if (candidateBytes + Number(candidates.length > 0) + originalBytes > 8192) continue;
+    const { row, saved, mapped } = document;
+    const original: ContentItem = {
+      ...document.original,
+      body: chunk.body,
+      sources: [
+        {
+          type: "document",
+          document_id: row.id,
+          version: row.content_version,
+          start: chunk.start,
+          end: chunk.end,
+          valid: true,
+        },
+      ],
+    };
+    const source = mapped.find(
+      (source) =>
+        source.type === "document" &&
+        source.valid &&
+        source.document_id === row.id &&
+        source.version === row.content_version &&
+        source.start <= chunk.start &&
+        source.end >= chunk.end &&
+        source.end <= row.original_text.length &&
+        source.draft_start !== undefined &&
+        source.draft_end !== undefined &&
+        source.draft_end <= (saved?.body.length ?? 0),
+    );
+    const derived =
+      source?.type === "document" && saved
+        ? {
+            ...original,
+            content_origin: "derived" as const,
+            body: saved.body.slice(source.draft_start, source.draft_end),
+            sources: [source],
+          }
+        : null;
+    const candidate: Candidate = {
+      id,
+      document_id: row.id,
+      token: row.token,
+      items: derived ? [derived, original] : [original],
+    };
+    // Keep the complete payload check, including both mapped and original bodies.
+    const bytes = utf8Size(JSON.stringify([...candidates, candidate]));
+    if (bytes <= 8192) {
+      candidates.push(candidate);
+      candidateBytes = bytes;
+    }
   }
   return { candidates, budget: settings.context_budget, revision: settings.revision };
 }

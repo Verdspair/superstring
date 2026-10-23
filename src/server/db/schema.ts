@@ -21,6 +21,7 @@ import {
   type AnySQLiteColumn,
   blob,
   check,
+  customType,
   index,
   integer,
   primaryKey,
@@ -2012,6 +2013,47 @@ export const outboundIntents = sqliteTable(
   (t) => [index("ix_outbound_conversation_status").on(t.conversationId, t.status)],
 );
 
+// Query-only projection maintained by the parent outbox row's database triggers.
+const extractedJsonScalar = customType<{ data: string | number | null }>({
+  dataType: () => "BLOB",
+});
+export const outboundIntentMetadata = sqliteTable(
+  "outbound_intent_metadata",
+  {
+    intentId: text("intent_id")
+      .primaryKey()
+      .notNull()
+      .references(() => outboundIntents.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    outputOrdinal: integer("output_ordinal").notNull(),
+    speechKind: text("speech_kind").notNull(),
+    sourceThroughSeq: integer("source_through_seq").notNull(),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    qqTaskId: extractedJsonScalar("qq_task_id"),
+    accountId: extractedJsonScalar("account_id"),
+    conversationKind: extractedJsonScalar("conversation_kind"),
+    peerId: extractedJsonScalar("peer_id"),
+    participantId: extractedJsonScalar("participant_id"),
+    bindingId: extractedJsonScalar("binding_id"),
+    bindingEpoch: extractedJsonScalar("binding_epoch"),
+    agentId: extractedJsonScalar("agent_id"),
+    authorityRevision: extractedJsonScalar("authority_revision"),
+    observedThroughSeq: extractedJsonScalar("observed_through_seq"),
+  },
+  (t) => [
+    index("ix_outbound_metadata_task").on(t.qqTaskId, t.conversationId, t.intentId),
+    index("ix_outbound_metadata_conversation_time").on(
+      t.conversationId,
+      t.createdAt,
+      t.outputOrdinal,
+      t.intentId,
+    ),
+  ],
+);
+
 export const outboundParts = sqliteTable("outbound_parts", {
   id: text("id").primaryKey().notNull(),
   intentId: text("intent_id")
@@ -2618,6 +2660,7 @@ export const businessTables = {
   conversationEvents,
   wakeSignals,
   outboundIntents,
+  outboundIntentMetadata,
   outboundParts,
   agentRuns,
   agentSteps,

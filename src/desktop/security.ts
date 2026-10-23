@@ -28,6 +28,7 @@ export function installSessionSecurity(
   session: Session,
   getBackend: () => { origin: string; token: string } | null,
   getContents: () => WebContents | null,
+  startupUrl: string,
 ): void {
   session.webRequest.onBeforeSendHeaders((details, callback) => {
     const requestHeaders = { ...details.requestHeaders };
@@ -40,15 +41,22 @@ export function installSessionSecurity(
     const currentUrl = contents && !contents.isDestroyed() ? contents.getURL() : null;
     const initialDocument =
       details.resourceType === "mainFrame" &&
-      (currentUrl === "about:blank" || currentUrl === "") &&
-      (frameUrl === undefined || frameUrl === "about:blank" || frameUrl === "");
+      (currentUrl === "about:blank" || currentUrl === "" || currentUrl === startupUrl) &&
+      (frameUrl === undefined ||
+        frameUrl === "about:blank" ||
+        frameUrl === "" ||
+        frameUrl === startupUrl);
     if (
       backend &&
       contents &&
       !contents.isDestroyed() &&
       details.webContentsId === contents.id &&
       isServiceUrl(details.url, backend.origin) &&
-      (!details.initiatorOrigin || isServiceUrl(details.initiatorOrigin, backend.origin)) &&
+      (!details.initiatorOrigin ||
+        isServiceUrl(details.initiatorOrigin, backend.origin) ||
+        (currentUrl === startupUrl &&
+          initialDocument &&
+          details.initiatorOrigin === "superstring://startup")) &&
       (initialDocument || (frameUrl !== undefined && isServiceUrl(frameUrl, backend.origin)))
     ) {
       requestHeaders[ACCESS_HEADER] = backend.token;

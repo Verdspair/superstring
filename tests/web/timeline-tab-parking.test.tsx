@@ -7,6 +7,7 @@ import type {
 import { api, type SuperstringApi } from "../../src/web/api";
 import { timelineKey } from "../../src/web/features/conversations/use-timeline-scroll";
 import { ExternalConversation as ConversationTimeline } from "../../src/web/screens/conversations/ExternalConversation";
+import { notifyConversationChange } from "../../src/web/services/conversation-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { render } from "./helpers/render-with-providers";
 
@@ -79,7 +80,7 @@ function viewportOf(scrollHeight: number, clientHeight: number) {
   return viewport;
 }
 
-it("revalidates every five seconds while visible and stops reading when another tab hides it", async () => {
+it("updates on matching events without polling and stops reading while another tab hides it", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
     const events = vi
@@ -94,6 +95,15 @@ it("revalidates every five seconds while visible and stops reading when another 
     expect(screen.getByText("message-201")).toBeTruthy();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(events).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: "bot",
+        seq: 202,
+        bindingEpoch: 1,
+      });
     });
     expect(screen.getByText("message-202")).toBeTruthy();
     expect(events).toHaveBeenCalledTimes(2);

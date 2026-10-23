@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { agentPageDirty } from "@/features/agents/page-drafts";
@@ -24,6 +25,7 @@ import { useSuperstringStore } from "@/store";
 import { P5ConfigSchema } from "../../../shared/contracts/models";
 import { executionPolicy, toolExecutionEnabled } from "../../../shared/contracts/permissions";
 import { compilePersona } from "../../../shared/contracts/persona-compile";
+import type { SuperstringApi } from "../../api";
 import { AllocationModelCapacity } from "../connections/AllocationModelCapacity";
 import { ContextAllocationAuxiliary } from "../connections/ContextAllocationAuxiliary";
 import { AgentModelPurpose } from "../environment/AgentModelPurpose";
@@ -51,7 +53,7 @@ export function IdentityEditor() {
   if (!editor) return null;
   const { draft, personaDraft: persona } = editor;
   return (
-    <div className="grid items-start gap-[28px] xl:grid-cols-[minmax(0,1fr)_minmax(260px,.6fr)] [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:shadow-none [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-content]]:px-0 [&_[data-slot=card-title]]:text-[15px] [&_[data-slot=card-title]]:font-bold">
+    <div className="grid items-start gap-[28px] xl:grid-cols-[minmax(0,1fr)_minmax(260px,.6fr)]">
       <div className="space-y-6">
         <Card>
           <CardHeader>
@@ -158,6 +160,14 @@ export function IdentityEditor() {
 }
 
 // 此处只投影工具范围，编辑仍归系统能力与扩展授权。
+type ToolScope = {
+  agentId: string;
+  apiClient: SuperstringApi;
+  approved: string[];
+  pending: number;
+  error: string;
+};
+
 export function AgentToolScope({ agentId, active }: { agentId: string; active: boolean }) {
   const t = useTranslation().t;
   const s = useSuperstringStore(
@@ -168,16 +178,24 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
     })),
   );
   const open = s.openSettingsRoute;
-  const [scope, setScope] = useState<{ approved: string[]; pending: number } | null>(null);
-  const [scopeError, setScopeError] = useState("");
+  const [scope, setScope] = useState<ToolScope | null>(null);
+  const current =
+    scope &&
+    s.editorAgentId === agentId &&
+    scope.agentId === agentId &&
+    scope.apiClient === s.apiClient
+      ? scope
+      : null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scope is the last loaded value, not a trigger; identity deps decide whether a read is needed, and reading it on activation keeps a parked tab from blanking.
   useEffect(() => {
-    if (!active) return;
-    setScope(null);
-    setScopeError("");
-    if (s.editorAgentId === "__new__") {
-      setScope(null);
+    if (!active || s.editorAgentId === "__new__") return;
+    if (
+      scope?.agentId === agentId &&
+      s.editorAgentId === agentId &&
+      scope.apiClient === s.apiClient &&
+      !scope.error
+    )
       return;
-    }
     const task = startRead((signal) => s.apiClient.getPermissions(signal), {
       success: (value) => {
         const execution = executionPolicy(value.policy);
@@ -199,11 +217,21 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
           ];
         });
         setScope({
+          agentId,
+          apiClient: s.apiClient,
           approved: mine.filter((grant) => grant.approved).map((grant) => grant.resource),
           pending: mine.filter((grant) => !grant.approved).length,
+          error: "",
         });
       },
-      failure: (error) => setScopeError(error instanceof Error ? error.message : String(error)),
+      failure: (error) =>
+        setScope({
+          agentId,
+          apiClient: s.apiClient,
+          approved: [],
+          pending: 0,
+          error: error instanceof Error ? error.message : String(error),
+        }),
     });
     return () => task.cancel();
   }, [active, agentId, s.apiClient, s.editorAgentId]);
@@ -214,9 +242,9 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
         <CardDescription>{t("library.tools.for.agent.hint")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {scope?.approved.length ? (
+        {current?.approved.length ? (
           <div className="flex flex-wrap gap-2">
-            {scope.approved.map((resource) => (
+            {current.approved.map((resource) => (
               <Badge key={resource} variant="secondary" className="font-mono text-xs">
                 {resource}
               </Badge>
@@ -224,20 +252,22 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
           </div>
         ) : (
           <p
-            role={scopeError ? "alert" : "status"}
-            className={scopeError ? "text-sm text-destructive" : "text-sm text-muted-foreground"}
+            role={current?.error ? "alert" : "status"}
+            className={
+              current?.error ? "text-sm text-destructive" : "text-sm text-muted-foreground"
+            }
           >
-            {scopeError ||
+            {current?.error ||
               t(
-                scope === null && s.editorAgentId !== "__new__"
+                current === null && s.editorAgentId !== "__new__"
                   ? "library.loading"
                   : "library.tools.none",
               )}
           </p>
         )}
-        {!!scope?.pending && (
+        {!!current?.pending && (
           <p className="text-xs text-muted-foreground">
-            {t("library.tools.pending", { "0": scope.pending })}
+            {t("library.tools.pending", { "0": current.pending })}
           </p>
         )}
         <div className="flex flex-wrap gap-2">
@@ -318,7 +348,7 @@ function AllocationAgentNumber({
   };
 
   return (
-    <Field label={label} info={info} tooltip={info ? t(info) : t(`hints.contextNumber.${name}`)}>
+    <Field label={label} info={info} tooltip={info ? undefined : t(`hints.contextNumber.${name}`)}>
       <Input
         type="number"
         disabled={busy}
@@ -424,16 +454,16 @@ export function CapabilityEditor({ active = true }: { active?: boolean } = {}) {
   const canDiscard = (isContextDirty || hasContextInvalid) && !s.settingsSaving;
 
   return (
-    <div className="space-y-[28px] [&_[data-slot=card]]:rounded-none [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:bg-transparent [&_[data-slot=card]]:shadow-none [&_[data-slot=card-header]]:px-0 [&_[data-slot=card-content]]:px-0 [&_[data-slot=card-title]]:text-[15px] [&_[data-slot=card-title]]:font-bold">
+    <div className="space-y-[28px]">
       {/* 1. 助手模型配置 (唯一 Canonical Host，内联复用 AgentModelPurpose) */}
-      <AgentModelPurpose active={active} />
+      <AgentModelPurpose active={active} embedded />
 
       {/* 2. 助手短期上下文预算与模式 */}
       <Card data-testid="agent-context-card">
         <CardHeader className="pb-3">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
-              <CardTitle className="text-base font-semibold text-foreground">
+              <CardTitle>
                 {editor.agent.name} - {t("workspace.short_term_context")}
               </CardTitle>
               <CardDescription className="text-xs text-muted-foreground mt-1 whitespace-pre-line">
@@ -461,42 +491,42 @@ export function CapabilityEditor({ active = true }: { active?: boolean } = {}) {
         <CardContent className="space-y-5">
           {/* Mode Selector */}
           <Field label="schemes.allocation.aux.mode" tooltip={t("hints.agent.fieldAllocMode")}>
-            <div className="flex items-center gap-4">
-              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-                <input
-                  type="radio"
-                  name="agent-alloc-mode"
+            <RadioGroup
+              className="flex flex-row items-center gap-4"
+              value={agentAllocation.mode === "auto" ? "auto" : "fixed"}
+              onValueChange={(value) => {
+                if (value !== "fixed" && value !== "auto") return;
+                s.patchPageAgent("context", {
+                  p5_config: {
+                    ...editor.draft.p5_config,
+                    allocation: { mode: value },
+                  },
+                });
+              }}
+            >
+              <label
+                htmlFor="agent-alloc-mode-fixed"
+                className="flex items-center gap-2 text-sm font-medium cursor-pointer"
+              >
+                <RadioGroupItem
+                  id="agent-alloc-mode-fixed"
                   value="fixed"
-                  checked={agentAllocation.mode !== "auto"}
-                  onChange={() => {
-                    s.patchPageAgent("context", {
-                      p5_config: {
-                        ...editor.draft.p5_config,
-                        allocation: { mode: "fixed" },
-                      },
-                    });
-                  }}
+                  aria-label={t("schemes.allocation.modeFixed")}
                 />
                 {t("schemes.allocation.modeFixed")}
               </label>
-              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-                <input
-                  type="radio"
-                  name="agent-alloc-mode"
+              <label
+                htmlFor="agent-alloc-mode-auto"
+                className="flex items-center gap-2 text-sm font-medium cursor-pointer"
+              >
+                <RadioGroupItem
+                  id="agent-alloc-mode-auto"
                   value="auto"
-                  checked={agentAllocation.mode === "auto"}
-                  onChange={() => {
-                    s.patchPageAgent("context", {
-                      p5_config: {
-                        ...editor.draft.p5_config,
-                        allocation: { mode: "auto" },
-                      },
-                    });
-                  }}
+                  aria-label={t("schemes.allocation.modeAuto")}
                 />
                 {t("schemes.allocation.modeAuto")}
               </label>
-            </div>
+            </RadioGroup>
           </Field>
 
           {/* Core Parameters */}

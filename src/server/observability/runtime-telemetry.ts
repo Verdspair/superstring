@@ -191,7 +191,10 @@ export class RuntimeTelemetry {
     this.safe(() =>
       this.db
         .query(
-          "UPDATE runtime_spans SET status='unknown',code='PROCESS_INTERRUPTED',finished_at=? WHERE status='started' AND finished_at IS NULL",
+          `WITH candidates AS MATERIALIZED (
+          SELECT id FROM runtime_spans INDEXED BY idx_runtime_spans_filter WHERE status='started'
+        ) UPDATE runtime_spans SET status='unknown',code='PROCESS_INTERRUPTED',finished_at=?
+        WHERE id IN (SELECT id FROM candidates) AND status='started' AND finished_at IS NULL`,
         )
         .run(new Date().toISOString()),
     );
@@ -282,8 +285,10 @@ export class RuntimeTelemetry {
         JSON.stringify(m.details ?? {}),
       );
     // Derived execution metadata cannot outlive any source used in its trace.
+    // Only shrink rows that still carry a later expiry; the steady state (all rows
+    // already at the trace minimum) performs no row write.
     this.db
-      .query("UPDATE runtime_spans SET expires_at=MIN(expires_at,?) WHERE trace_id=?")
-      .run(expires, ids.traceId);
+      .query("UPDATE runtime_spans SET expires_at=? WHERE trace_id=? AND expires_at>?")
+      .run(expires, ids.traceId, expires);
   }
 }

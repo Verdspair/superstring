@@ -20,7 +20,7 @@ import { Field } from "@/components/form-field";
 import { SettingsGroup } from "@/components/settings-group";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -106,6 +106,13 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
     [retryJob, setRetryJob] = useState<MemoryJobView | null>(null),
     [retryBusy, setRetryBusy] = useState(false),
     [retryError, setRetryError] = useState("");
+  // 常挂载弹窗在关闭动画期间仍会渲染，目标与计数必须来自最近一次打开时的快照。
+  const purgeTarget = useRef<{ ids: string[]; count: number }>({ ids: [], count: 0 });
+  const retryTarget = useRef<MemoryJobView | null>(null);
+  const requestRetry = (job: MemoryJobView) => {
+    retryTarget.current = job;
+    setRetryJob(job);
+  };
   const agentId = s.editorAgentId,
     agent = s.agents.find((a) => a.id === agentId),
     ready = !!agent && s.pageEditor?.agent.id === agentId && !s.editorLoading;
@@ -287,8 +294,9 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
       }
     }
   };
-  const retryConfirmMessage = retryJob
-    ? t("library.memory.job.retry.confirm", { "0": retryJob.id })
+  const retryDisplay = retryJob ?? retryTarget.current;
+  const retryConfirmMessage = retryDisplay
+    ? t("library.memory.job.retry.confirm", { "0": retryDisplay.id })
     : "";
   return (
     <section className="space-y-6" aria-label={t("library.memory.library")}>
@@ -411,9 +419,9 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
               {selectedScope && (
                 <Card className="rounded-xl border-border/80">
                   <CardHeader className="p-4 pb-2">
-                    <CardTitle className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                    <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
                       {t("library.read.partitions")}
-                    </CardTitle>
+                    </p>
                     <CardDescription className="text-xs">
                       {t("library.value.active.value.total", {
                         "0": selectedScope.active_count,
@@ -612,7 +620,10 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                     variant="destructive"
                     disabled={locked}
                     tooltip={t("hints.library.memory.purge")}
-                    onClick={() => setPurge(true)}
+                    onClick={() => {
+                      purgeTarget.current = { ids: [...selected], count: selected.length };
+                      setPurge(true);
+                    }}
                   >
                     {t("library.permanently.delete")}
                   </Button>
@@ -902,7 +913,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                         tooltip={t("hints.library.memory.retry")}
                         onClick={() => {
                           setRetryError("");
-                          setRetryJob(job);
+                          requestRetry(job);
                         }}
                       >
                         <RotateCcw className="size-3.5" />
@@ -925,41 +936,38 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
       {manual && <ManualMemory active={active} onClose={() => setManual(false)} />}
 
       {/* 永久删除确认弹窗 */}
-      {active && purge && (
-        <ConfirmDialog
-          message={t("library.permanently.delete.value.memories.this.cannot.be.undone", {
-            "0": selected.length,
-          })}
-          onCancel={() => setPurge(false)}
-          onConfirm={() => {
-            return s.governMemories(agentId, selected, "purge", true).then((ok) => {
-              if (ok) {
-                setPurge(false);
-                setSelected([]);
-                refresh();
-              }
-            });
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={active && purge}
+        message={t("library.permanently.delete.value.memories.this.cannot.be.undone", {
+          "0": purgeTarget.current.count,
+        })}
+        onCancel={() => setPurge(false)}
+        onConfirm={() => {
+          const ids = purgeTarget.current.ids;
+          return s.governMemories(agentId, ids, "purge", true).then((ok) => {
+            if (ok) {
+              setPurge(false);
+              setSelected([]);
+              refresh();
+            }
+          });
+        }}
+      />
 
       {/* 作业重试确认弹窗 */}
-      {active && retryJob && (
-        <ConfirmDialog
-          message={
-            retryError
-              ? `${retryConfirmMessage} ${translateNotice(retryError)}`
-              : retryConfirmMessage
-          }
-          confirmLabel={t("capabilities.retry")}
-          busy={retryBusy}
-          onCancel={() => {
-            setRetryJob(null);
-            setRetryError("");
-          }}
-          onConfirm={retryFailedJob}
-        />
-      )}
+      <ConfirmDialog
+        open={active && retryJob !== null}
+        message={
+          retryError ? `${retryConfirmMessage} ${translateNotice(retryError)}` : retryConfirmMessage
+        }
+        confirmLabel={t("capabilities.retry")}
+        busy={retryBusy}
+        onCancel={() => {
+          setRetryJob(null);
+          setRetryError("");
+        }}
+        onConfirm={retryFailedJob}
+      />
     </section>
   );
 }
@@ -1170,17 +1178,16 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
           </SheetFooter>
         </SheetContent>
       </Sheet>
-      {active && discard && (
-        <ConfirmDialog
-          message={t("library.discard.the.unsaved.memory.correction")}
-          onCancel={() => setDiscard(false)}
-          onConfirm={() => {
-            s.discardMemoryCorrection();
-            s.clearMemoryDetail();
-            setDiscard(false);
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={active && discard}
+        message={t("library.discard.the.unsaved.memory.correction")}
+        onCancel={() => setDiscard(false)}
+        onConfirm={() => {
+          s.discardMemoryCorrection();
+          s.clearMemoryDetail();
+          setDiscard(false);
+        }}
+      />
     </>
   );
 }

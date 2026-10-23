@@ -53,9 +53,15 @@
 
 #### 当前 main 源码更新
 
-本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **71**，新增迁移 0055–0071。
+本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **72**，新增迁移 0055–0072。
 
 QQ群聊与私聊现共用会话配置页；已有配置与草稿保留，私聊详细策略默认跟随所选方案，未主动自定义的项目不改写。会话菜单可解除绑定并移除目录入口，不删除Agent、方案或平台聊天。私聊添加需填写联系人的QQ号，不能填写机器人自身账号。这些界面与绑定操作不新增数据库迁移。
+
+新消息到达已绑定会话时逐条即时显示。补读历史或手动刷新期间收到的新消息会继续显示，不会因较早的读取结果而漏显示，也不会等到下一次刷新；查看历史时的阅读位置保持不变。
+
+模型工具调用会对函数名与请求结构做协议兼容处理，遇到明确的函数调用格式异常时可在现有纠错流程内再试一次；异常调用不执行，已完成的工具操作不重复。持续异常、内容过滤与输出上限仍明确报错。兼容处理不保证每个模型与服务商组合都能完成工具调用。
+
+关闭窗口以外的动效略微加快：启动、最小化与从任务栏还原由 250 毫秒改为 225 毫秒，最大化与取消最大化由 100 毫秒改为 90 毫秒，常见界面过渡约缩短一成；关闭窗口保持 150 毫秒，曲线与形状不变，并继续遵循减少动效偏好。
 
 方案、会话与绑定、QQ 设置现位于同一工作区。系统能力的执行设置可配置调用重试，QQ 设置可单独配置唤醒重试；未配置时分别采用共 3 次尝试／2 秒间隔与共 3 次尝试／15 秒间隔（次数均含首次）。既有 QQ 配置保留，新增系统重试设置不需单独迁移；系统调用重试仅针对明确的 HTTP 429／503 拒收，不盲目重放写操作、超时或结果未知的请求。
 
@@ -132,9 +138,15 @@ Unknown schemas or downgrade attempts are rejected to protect data safety. Rolli
 
 #### Current source updates on main
 
-This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **71**, with migrations 0055–0071.
+This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **72**, with migrations 0055–0072.
 
 QQ groups and private chats now share one conversation policy editor. Existing configuration and drafts remain; private settings follow the selected scheme unless explicitly overridden. Conversation menus can remove a binding and its directory entry without deleting the Agent, scheme, or platform chat. Enter the contact’s QQ number when adding a private chat, not the bot’s own account. These interface and binding changes add no database migration.
+
+New messages appear one by one as they arrive in bound conversations. Messages received while older history loads or a manual refresh runs are still shown, are not dropped by an earlier read, and do not wait for the next refresh; your reading position stays in place.
+
+Tool calls apply protocol compatibility handling to function names and request structures, and an explicit malformed function-call finish can be retried once through the existing correction flow. Rejected calls are not executed and completed tool actions are not repeated. Repeated failures, content filtering, and output limits remain explicit errors. This adaptation does not guarantee that every model and provider combination can complete tool calls.
+
+Transitions other than closing are slightly faster: startup, minimize, and restore from the taskbar go from 250 to 225 ms, maximize and unmaximize from 100 to 90 ms, and common interface transitions are about 10% shorter. Closing stays at 150 ms, with unchanged curves and shapes, and reduced-motion preferences still apply.
 
 Schemes, Conversations & bindings, and QQ settings now share one workspace. Configure call retries in System capabilities execution settings and wake retries separately in QQ settings. When unconfigured, defaults are 3 attempts with a 2-second delay and 3 attempts with a 15-second delay, respectively; both counts include the first attempt. Existing QQ settings are preserved, and the new system retry settings need no separate migration. System call retries apply only to explicit HTTP 429/503 rejections, without blind replay of writes, timeouts, or requests with unknown outcomes.
 

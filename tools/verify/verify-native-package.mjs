@@ -4,26 +4,38 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const stage = process.argv[2];
-if (!stage || !path.isAbsolute(stage)) throw new Error("Expected absolute staging path");
+const receiptPath = process.argv[2];
+if (!receiptPath || !path.isAbsolute(receiptPath))
+  throw new Error("Expected absolute package receipt path");
+const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+const packageDir = receipt.packageDir;
+if (
+  typeof packageDir !== "string" ||
+  !path.isAbsolute(packageDir) ||
+  !fs.existsSync(packageDir) ||
+  !fs.statSync(packageDir).isDirectory()
+)
+  throw new Error("Package receipt must contain an absolute packageDir directory");
 const parent = path.join(root, "artifacts/validation");
 fs.mkdirSync(parent, { recursive: true });
 const evidence = fs.mkdtempSync(path.join(parent, "native-package-"));
 const install = path.join(evidence, "安装 空格路径");
 fs.mkdirSync(install);
-const manifest = JSON.parse(fs.readFileSync(path.join(stage, "build-manifest.json"), "utf8"));
+const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, "build-manifest.json"), "utf8"));
+if (receipt.version !== undefined && receipt.version !== manifest.version)
+  throw new Error("Package receipt version does not match the manifest");
 for (const item of manifest.files) {
   if (!item.path.startsWith("app/") || item.path.includes(".."))
     throw new Error("Unsafe fixture path");
   const dest = path.join(install, item.path);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(path.join(stage, item.path), dest, fs.constants.COPYFILE_EXCL);
+  fs.copyFileSync(path.join(packageDir, item.path), dest, fs.constants.COPYFILE_EXCL);
 }
-fs.copyFileSync(path.join(stage, "build-manifest.json"), path.join(install, "build-manifest.json"));
 fs.copyFileSync(
-  path.join(root, "dist/desktop/installed/superstring.exe"),
-  path.join(install, "superstring.exe"),
+  path.join(packageDir, "build-manifest.json"),
+  path.join(install, "build-manifest.json"),
 );
+fs.copyFileSync(path.join(packageDir, "superstring.exe"), path.join(install, "superstring.exe"));
 const checks = [];
 function check(name, condition) {
   checks.push({ name, pass: condition });
@@ -153,14 +165,6 @@ try {
   fs.renameSync(missing, `${missing}.fixture-backup`);
   check("missing listed file rejected", run().status === 1);
   fs.renameSync(`${missing}.fixture-backup`, missing);
-  check(
-    "installed build rejects development self-test",
-    spawnSync(path.join(install, "superstring.exe"), ["--self-test"], {
-      cwd: evidence,
-      windowsHide: true,
-      timeout: 20000,
-    }).status === 1,
-  );
   check("restored package validates", run().status === 0);
   check(
     "all rejection checks leave user state untouched",

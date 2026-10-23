@@ -3,7 +3,7 @@ import { lazy, Suspense } from "react";
 import type { ConversationAvatar as AvatarAsset } from "../../../shared/contracts/conversation-avatar";
 import { Avatar, AvatarFallback, AvatarImage } from "../../components/ui/avatar";
 import { cn } from "../../lib/utils";
-import type { AvatarIdentity } from "./avatar-designs";
+import { type AvatarIdentity, defaultGroupAvatarUrl } from "./avatar-designs";
 import type { AvatarImageStatus } from "./avatar-generated-image";
 
 const generatedImages = {
@@ -33,16 +33,26 @@ export function ConversationAvatar({
 }) {
   if (value == null) {
     const Icon = conversation.topology === "shared" ? Users : MessageCircle;
+    const groupUrl = defaultGroupAvatarUrl(conversation);
     return (
       <Avatar
+        key={groupUrl ?? "local"}
         className={cn("size-10 border border-border bg-primary/8 text-primary", className)}
-        role={label ? "img" : undefined}
-        aria-label={label || undefined}
-        aria-hidden={!label}
+        role={!groupUrl && label ? "img" : undefined}
+        aria-label={!groupUrl ? label || undefined : undefined}
+        aria-hidden={!groupUrl && !label}
       >
-        <span className="flex size-full items-center justify-center bg-primary/8">
+        {groupUrl ? (
+          <AvatarImage
+            src={groupUrl}
+            alt={label}
+            referrerPolicy="no-referrer"
+            onLoadingStatusChange={onImageStatus}
+          />
+        ) : null}
+        <AvatarFallback className="bg-primary/8" aria-hidden={!groupUrl && !label}>
           <Icon aria-hidden="true" className="size-[52%] stroke-[1.5]" />
-        </span>
+        </AvatarFallback>
       </Avatar>
     );
   }

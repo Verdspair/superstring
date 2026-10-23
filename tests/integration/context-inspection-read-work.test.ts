@@ -1,14 +1,25 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
+import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { inspectContext, sourceAccess } from "../../src/server/agent/context-access";
+import type { ContextReadTimings } from "../../src/server/agent/context-engine";
+import { readConcurrentReplyJobs } from "../../src/server/channels/onebot11/concurrent-reply-context";
+import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
+import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
+import { readQqBinding } from "../../src/server/db/qq-binding-repository";
+import { readQqScheme } from "../../src/server/db/qq-scheme-repository";
 import {
   DEFAULT_AGENT_ID,
   DEFAULT_USER_ID,
   ensureDefaults,
+  getAgentRow,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { captureQqTask } from "../../src/server/services/qq-binding-contract";
+import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import type { RunOwner } from "../../src/shared/contracts/agent-run";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
 
@@ -352,5 +363,281 @@ describe("context inspection read work (contiguous qq_observation batching)", ()
     expect(inspected?.status).toBe("revoked");
     expect(inspected?.exactMessages).toBeUndefined();
     expect(executions).toBeLessThanOrEqual(1);
+  });
+});
+
+let timingPeer = 30000;
+function timingSource(
+  h: ReturnType<typeof setup>,
+  assertCurrent: () => void = () => {},
+  capacity = 65536,
+) {
+  const id = crypto.randomUUID();
+  h.business.db
+    .query("INSERT INTO qq_schemes(id,name,created_at,updated_at) VALUES(?,?,?,?)")
+    .run(id, id, NOW, NOW);
+  h.business.db
+    .query(`INSERT INTO qq_bindings(id,account_id,conversation_kind,peer_id,agent_id,scheme_id,created_at,updated_at)
+    VALUES(?,'100','private',?,?,?,?,?)`)
+    .run(id, String(++timingPeer), DEFAULT_AGENT_ID, id, NOW, NOW);
+  const binding = readQqBinding(h.business.orm, id)!;
+  const scheme = readQqScheme(h.business.orm, id)!;
+  const captured = captureQqTask(binding, "reply");
+  if (captured.kind !== "captured") throw new Error("timing binding fixture refused");
+  const journal = new ConversationEventRepository(h.business.db);
+  const conversation = journal.ensureOneBot(id)!;
+  const runtime = runtimeFromAgent(getAgentRow(h.business.orm, DEFAULT_AGENT_ID)!);
+  runtime.p5_config.retrieval_mode = "off";
+  runtime.p5_config.compression_enabled = false;
+  return new BotContextSource({
+    ...h.business,
+    binding,
+    scheme,
+    snapshot: captured.snapshot,
+    runtime,
+    journal,
+    outbox: new OutboundIntentRepository(h.business.db),
+    conversationId: conversation.id,
+    gateway: { loadedContextCapacity: async () => capacity },
+    agentRuntime: createAgentRuntime({ repository: h.repository }),
+    spec: {
+      id: "timing-fixture",
+      context: "conversation",
+      model: "fixture",
+      availableActions: [],
+      limits: { steps: 1 },
+    },
+    path: "direct_reply",
+    decisionTier: "reply",
+    targets: () => [],
+    assertCurrent,
+    now: () => NOW,
+  });
+}
+
+describe("per-read Bot context assertion timings", () => {
+  it("counts occurrences and stops collection before the callback and outside read", async () => {
+    const h = setup();
+    h.seedObservation("timed", "body");
+    const source = timingSource(h);
+    source.setPendingPlan({ kind: "fixture" }, [obsRef("timed", "body")]);
+    let timings: ContextReadTimings | undefined;
+    await source.read({
+      signal: new AbortController().signal,
+      observations: [],
+      onReadTimings(value) {
+        timings = value;
+        source.assertCurrent();
+        source.assertSources([]);
+      },
+    });
+    if (!timings) throw new Error("timings missing");
+    expect(timings.readAssertCurrentCalls).toBeGreaterThan(0);
+    expect(timings.readAssertCommonOccurrences).toBe(timings.readAssertCurrentCalls);
+    for (const key of [
+      "readAssertCurrentMs",
+      "readAssertHostMs",
+      "readAssertBudgetMs",
+      "readAssertConcurrentMs",
+      "readAssertCommonBuildMs",
+      "readAssertCommonVerifyMs",
+    ] as const)
+      expect(timings[key]).toBeGreaterThanOrEqual(0);
+    const finished = { ...timings };
+    source.assertCurrent();
+    source.assertSources([]);
+    await source.read({ signal: new AbortController().signal, observations: [] });
+    expect(timings).toEqual(finished);
+  });
+
+  it("reports failed guards in finally and isolates overlapping source reads", async () => {
+    const h = setup();
+    const failed = timingSource(h, () => {
+      throw new Error("fixture guard failure");
+    });
+    let failure: ContextReadTimings | undefined;
+    await expect(
+      failed.read({
+        signal: new AbortController().signal,
+        observations: [],
+        onReadTimings: (value) => {
+          failure = value;
+        },
+      }),
+    ).rejects.toThrow("fixture guard failure");
+    expect(failure?.readAssertCurrentCalls).toBe(1);
+    expect(failure?.readAssertHostMs).toBeGreaterThanOrEqual(0);
+    expect(failure?.readAssertCurrentMs).toBeGreaterThanOrEqual(0);
+    expect(failure?.readAssertCommonOccurrences).toBeUndefined();
+    const left = timingSource(h);
+    const right = timingSource(h);
+    const results: ContextReadTimings[] = [];
+    await Promise.all(
+      [left, right].map((source) =>
+        source.read({
+          signal: new AbortController().signal,
+          observations: [],
+          onReadTimings: (value) => {
+            results.push(value);
+          },
+        }),
+      ),
+    );
+    expect(results).toHaveLength(2);
+    expect(results[0]).not.toBe(results[1]);
+    expect(results[0]?.readAssertCurrentCalls).toBe(results[1]?.readAssertCurrentCalls);
+    expect(results[0]?.readAssertCommonOccurrences).toBe(0);
+    expect(results[1]?.readAssertCommonOccurrences).toBe(0);
+  });
+});
+
+describe("Bot provenance identity sets", () => {
+  it("checks one source identity once after overlapping observation, plan and intent provenance merge", async () => {
+    const h = setup();
+    const refs = Array.from({ length: 3132 }, (_, index) => {
+      const id = `overlap-${index}`;
+      const body = `body-${index}`;
+      h.seedObservation(id, body);
+      return obsRef(id, body);
+    });
+    const source = timingSource(h, () => {}, 4_000_000);
+    source.setPendingPlan({ kind: "prior plan" }, refs);
+    source.setBatchIntents({ kind: "accepted intents" }, refs);
+    const observations = Array.from({ length: 5 }, (_, index) => ({
+      id: `observation-${index}`,
+      name: "history.read",
+      arguments: {},
+      value: { status: "ok", items: [] },
+      sources: refs.map((ref) => ({ ...ref })),
+    }));
+    let timings: ContextReadTimings | undefined;
+    await source.read({
+      signal: new AbortController().signal,
+      observations,
+      onReadTimings: (value) => {
+        timings = value;
+      },
+    });
+    expect(source.commonSources).toHaveLength(3132);
+    expect(timings?.readAssertCommonOccurrences).toBe(
+      3132 * (timings?.readAssertCurrentCalls ?? 0),
+    );
+    const first = h.countObservationExecutions(() => source.assertCurrent());
+    expect(first.executions).toBe(3132);
+    // A later boundary still reads current facts, not an earlier authorization result.
+    h.business.db
+      .query("UPDATE qq_observation_text SET body='changed' WHERE event_key='overlap-0'")
+      .run();
+    expect(() => source.assertCurrent()).toThrow();
+  });
+
+  it("keeps the earliest expiry cap and treats different revisions as independent identities", () => {
+    const h = setup();
+    h.seedObservation("cap", "body");
+    const source = timingSource(h);
+    const later = obsRef("cap", "body");
+    const earlier = { ...later, expiresAt: "2031-01-01T00:00:00.000Z" };
+    source.setPendingPlan({}, [later]);
+    source.setBatchIntents({}, [earlier]);
+    expect(source.commonSources).toEqual([earlier]);
+    const different = { ...later, revision: hash("different") };
+    expect(() => source.setBatchIntents({}, [different])).toThrow();
+    const expired = { ...later, expiresAt: "2029-01-01T00:00:00.000Z" };
+    expect(() => source.setBatchIntents({}, [expired])).toThrow();
+    expect(source.commonSources).toEqual([earlier]);
+  });
+
+  it("unions protected provenance from separate concurrent judgement snapshots without losing stricter caps", () => {
+    const h = setup();
+    h.seedObservation("concurrent-shared", "body");
+    const source = timingSource(h);
+    const row = h.business.db
+      .query("SELECT id,source_id FROM conversations ORDER BY rowid DESC LIMIT 1")
+      .get() as {
+      id: string;
+      source_id: string;
+    };
+    const late = obsRef("concurrent-shared", "body");
+    const early = { ...late, expiresAt: "2031-01-01T00:00:00.000Z" };
+    for (const [index, ref] of [late, early].entries()) {
+      const wake = `set-wake-${index}`;
+      const task = `set-task-${index}`;
+      const runId = `set-run-${index}`;
+      const stepId = `set-step-${index}`;
+      h.business.db
+        .query(`INSERT INTO wake_signals(id,conversation_id,cause,through_seq,dedupe_key,ready_at,priority,status,created_at)
+        VALUES(?,?,'chiming_in',2,?,?,50,'completed',?)`)
+        .run(wake, row.id, wake, NOW, NOW);
+      h.business.db
+        .query(`INSERT INTO qq_conversation_tasks(id,task_key,conversation_id,binding_epoch,agent_id,task_class,cause,
+        source_from_seq,source_through_seq,status,judgement_done,origin_wake_id,created_at,updated_at)
+        VALUES(?,?,?,1,?,'ordinary','chiming_in',1,2,'pending',1,?,?,?)`)
+        .run(task, task, row.id, DEFAULT_AGENT_ID, wake, NOW, NOW);
+      h.repository.createRun({
+        runId,
+        specId: "onebot.initiative.evaluate_batch",
+        specVersion: "1",
+        owner: {
+          kind: "qq_binding",
+          id: row.source_id,
+          agentId: DEFAULT_AGENT_ID,
+          userId: DEFAULT_USER_ID,
+        },
+        at: NOW,
+      });
+      h.business.db
+        .query("UPDATE agent_runs SET conversation_id=?,wake_id=?,observed_seq=2 WHERE run_id=?")
+        .run(row.id, wake, runId);
+      h.repository.startStep({
+        runId,
+        stepId,
+        stepNo: 1,
+        model: "fixture",
+        phase: "leaf",
+        at: NOW,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                kind: "text",
+                text: JSON.stringify({
+                  kind: "qq_batch_targets",
+                  trust: "data_only",
+                  sourceSeqs: [1, 2],
+                  targets: [{ targetId: "member", speakerId: "member", sourceSeqs: [2] }],
+                }),
+              },
+            ],
+          },
+        ],
+        sources: [ref],
+      });
+      h.repository.finishStep(stepId, "completed", NOW, {
+        output: {
+          format: "text",
+          complete: true,
+          text: JSON.stringify({
+            evaluations: [{ targetId: "member", score: 8, intent: "synthetic", sourceSeqs: [1] }],
+          }),
+        },
+      });
+      h.repository.setStatus(runId, "completed", NOW);
+    }
+    let checks = 0;
+    const projection = readConcurrentReplyJobs(h.business.db, {
+      conversationId: row.id,
+      bindingEpoch: 1,
+      agentId: DEFAULT_AGENT_ID,
+      now: NOW,
+      visibleEventKeys: new Set(),
+      assertSources(refs) {
+        checks++;
+        source.assertSources(refs);
+      },
+    });
+    expect(checks).toBe(2);
+    expect(projection.contexts).toHaveLength(2);
+    expect(projection.sources).toEqual([early]);
   });
 });

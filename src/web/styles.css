@@ -2,10 +2,15 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "./assets/fonts/noto-serif-sc/font.css";
+@import "./assets/fonts/libre-caslon-text/font.css";
+@import "./assets/fonts/quicksand/font.css";
+@import "./assets/fonts/zcool-kuaile/font.css";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  --default-transition-duration: 135ms;
   --text-xs: 12px;
   --text-sm: 13.5px;
   --text-base: 14px;
@@ -14,8 +19,7 @@
   --text-2xl: 20px;
   --text-3xl: 22px;
   --font-heading: var(--font-sans);
-  --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-sans: var(--app-font-family);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -59,12 +63,18 @@
 }
 
 :root {
+  /* The system stack is the default font preference; the two alternative
+     family stacks below replace only this token. */
+  --app-font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --scrollbar-size: 10px;
+  --selection-background: color-mix(in srgb, var(--primary) 12%, var(--popover));
   --scrollbar-thumb: color-mix(in srgb, var(--muted-foreground) 42%, transparent);
   --scrollbar-thumb-hover: color-mix(in srgb, var(--muted-foreground) 64%, transparent);
-  --motion-fast: 120ms;
-  --motion-base: 160ms;
-  --motion-slow: 240ms;
+  --motion-fast: 108ms;
+  --motion-base: 144ms;
+  --motion-slow: 216ms;
+  --motion-expand: 180ms;
   --ease-standard: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --background: oklch(1 0 0);
@@ -268,24 +278,63 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family:
-      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: var(--app-font-family);
     font-size: 14px;
     line-height: 1.5;
   }
   html {
-    font-family:
-      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: var(--app-font-family);
     font-size: 14px;
     line-height: 1.5;
   }
+}
+
+/* Font preference. The browser fetches only the woff2 ranges that rendered text
+   actually needs; mono and the SVG brand mark stay on their own stacks. */
+html[data-font="elegant"] {
+  --app-font-family: "Libre Caslon Text", "Noto Serif SC Variable", serif;
+}
+html[data-font="cute"] {
+  --app-font-family: "Quicksand Variable", "ZCOOL KuaiLe", sans-serif;
+  /* The Chinese face has one real weight; synthesizing bold fills its small counters. */
+  font-synthesis-weight: none;
+}
+
+/* Two independent size axes, each reduced to one multiplier that the compiled
+   stylesheet consumes. tools/desktop/build/appearance-scale.mjs multiplies every
+   concrete font size by --app-text-scale and divides viewport-unit lengths by
+   --app-interface-scale, so no component needs a scaled shadow utility. The
+   defaults are 1: an unset preference renders exactly as before. The html font
+   size above stays unscaled on purpose, because rem-derived spacing and control
+   sizes must not follow the text axis. Interface density uses CSS zoom, which is
+   a layout scale rather than a transform, so text stays crisp and the two axes
+   only share the viewport-unit compensation. */
+:root {
+  --app-text-scale: 1;
+  --app-interface-scale: 1;
+}
+html[data-text-size="small"] {
+  --app-text-scale: 0.93;
+}
+html[data-text-size="large"] {
+  --app-text-scale: 1.14;
+}
+html[data-interface-size="compact"] {
+  --app-interface-scale: 0.9;
+  zoom: 0.9;
+}
+html[data-interface-size="comfortable"] {
+  --app-interface-scale: 1.1;
+  zoom: 1.1;
 }
 
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,
   ::after,
-  ::backdrop {
+  ::backdrop,
+  select::picker(select),
+  details::details-content {
     animation: none !important;
     transition: none !important;
   }
@@ -307,11 +356,27 @@
 }
 .workspace-page-title {
   margin: 0;
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
-  line-height: 1.25;
+  line-height: 1.2;
   letter-spacing: -0.02em;
   color: var(--foreground);
+}
+.workspace-section-title {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+.workspace-card-title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.workspace-dialog-title {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
 }
 .workspace-page-description {
   margin-top: 6px;
@@ -321,6 +386,21 @@
   color: var(--muted-foreground);
 }
 
+/* Scoped un-boxed card presentation for agent workspace studio tabs */
+.agent-workspace-content [data-slot="card"] {
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  box-shadow: none;
+  padding-top: 0;
+  padding-bottom: 0;
+  gap: 16px;
+}
+.agent-workspace-content [data-slot="card-header"],
+.agent-workspace-content [data-slot="card-content"] {
+  padding-left: 0;
+  padding-right: 0;
+}
 /* =========================================================================
    Nordic Tonal Themes: Lavender, Fjord, Birch
    Complete 39 Reference Literal Tokens -> Product Semantic Role Aliases
@@ -1288,4 +1368,128 @@ html[data-theme="blossom"] [data-slot="conversation-surface"] {
   :scope.selection-card--unavailable {
     border-style: dashed;
   }
+}
+
+[data-slot="app-header"][data-desktop-host="true"] {
+  -webkit-app-region: drag;
+}
+[data-slot="app-header"][data-desktop-host="true"] > div {
+  -webkit-app-region: no-drag;
+}
+
+/* Keep the native value, form and keyboard owner while painting the popup in the app theme. */
+@supports (appearance: base-select) {
+  select[data-slot="native-select"],
+  select[data-slot="native-select"]::picker(select) {
+    appearance: base-select;
+  }
+  select[data-slot="native-select"] {
+    align-items: center;
+  }
+  select[data-slot="native-select"]::picker-icon {
+    display: none;
+  }
+  select[data-slot="native-select"]::picker(select) {
+    min-width: anchor-size(width);
+    max-width: calc(100vw - 24px);
+    max-height: min(360px, calc(100dvh - 24px));
+    margin-block: 5px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+    background: var(--popover);
+    color: var(--popover-foreground);
+    font-family: inherit;
+    font-size: inherit;
+    font-synthesis-weight: inherit;
+    box-shadow: 0 6px 22px color-mix(in srgb, var(--foreground) 10%, transparent);
+    opacity: 0;
+    transform: translateY(-5px) scale(0.97);
+    transform-origin: top;
+    transition:
+      opacity var(--motion-base) var(--ease-standard),
+      transform var(--motion-slow) var(--ease-standard),
+      display var(--motion-slow) allow-discrete,
+      overlay var(--motion-slow) allow-discrete;
+  }
+  select[data-slot="native-select"]:open::picker(select) {
+    opacity: 1;
+    transform: none;
+  }
+  @starting-style {
+    select[data-slot="native-select"]:open::picker(select) {
+      opacity: 0;
+      transform: translateY(-5px) scale(0.97);
+    }
+  }
+  select[data-slot="native-select"] option {
+    min-height: 32px;
+    gap: 8px;
+    border-radius: 6px;
+    padding: 7px 10px;
+    background: transparent;
+    color: var(--popover-foreground);
+    font: inherit;
+    transition:
+      color var(--motion-fast) var(--ease-standard),
+      background-color var(--motion-fast) var(--ease-standard);
+  }
+  select[data-slot="native-select"] option:checked,
+  select[data-slot="native-select"] option:hover,
+  select[data-slot="native-select"] option:focus-visible {
+    background: var(--selection-background);
+    color: var(--popover-foreground);
+  }
+  select[data-slot="native-select"] option:checked {
+    box-shadow: inset 2px 0 0 var(--primary);
+  }
+  select[data-slot="native-select"] option::checkmark {
+    color: var(--primary);
+  }
+  select[data-slot="native-select"] option:disabled {
+    color: var(--muted-foreground);
+    opacity: 0.6;
+  }
+}
+
+/* Enter only: hidden/visited workspaces keep their own DOM, drafts and scroll owner. */
+.panel-enter {
+  animation: panel-enter var(--motion-base) var(--ease-standard);
+}
+@keyframes panel-enter {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+@supports (interpolate-size: allow-keywords) {
+  details::details-content {
+    interpolate-size: allow-keywords;
+    block-size: 0;
+    overflow: clip;
+    opacity: 0;
+    transition:
+      block-size var(--motion-expand) var(--ease-standard),
+      opacity var(--motion-base) var(--ease-standard),
+      content-visibility var(--motion-expand) allow-discrete;
+  }
+  details[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+  }
+}
+
+/* Text selection and editable fields use the same theme roles as the choice surfaces. */
+::selection {
+  background: color-mix(in srgb, var(--primary) 24%, var(--background));
+  color: var(--foreground);
+}
+[data-slot="button"][aria-pressed="true"] {
+  background-color: var(--selection-background);
+  color: var(--foreground);
 }

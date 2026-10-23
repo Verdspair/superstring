@@ -39,6 +39,11 @@ import {
 import { TraceTimeline } from "../observability/TraceTimeline";
 import { DeliveryEvidence } from "./DeliveryEvidence";
 
+// Root-selected renderer read bound for the trace waterfall chain (no shared
+// web read-concurrency owner exists). Chunks keep trace order and stop
+// launching new reads after a failure, matching the previous serial behavior.
+const WATERFALL_READ_CONCURRENCY = 4;
+
 const runLabels: Record<RunStatus, string> = {
   prepared: "observability.waiting",
   deciding: "observability.preparing",
@@ -380,10 +385,14 @@ export function RunWorkspace({
         }
         beforeId = page.nextBeforeId;
       }
-      const waterfalls = [];
-      for (const trace of allTraces) {
+      const waterfalls: RuntimeTraceDetail[] = [];
+      for (let start = 0; start < allTraces.length; start += WATERFALL_READ_CONCURRENCY) {
         if (signal.aborted) break;
-        waterfalls.push(await api.getRuntimeWaterfall(trace.traceId, { runId }, signal));
+        const chunk = allTraces.slice(start, start + WATERFALL_READ_CONCURRENCY);
+        const details = await Promise.all(
+          chunk.map((trace) => api.getRuntimeWaterfall(trace.traceId, { runId }, signal)),
+        );
+        waterfalls.push(...details);
       }
       return { api, runId, traces: allTraces, waterfalls };
     },

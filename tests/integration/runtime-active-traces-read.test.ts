@@ -263,7 +263,7 @@ describe("active conversation traces", () => {
     }) as typeof f.h.db.query);
     const actual = f.spans.traces(query, userId, at);
     trace.mockRestore();
-    expect(groupedCalls).toHaveLength(2);
+    expect(groupedCalls).toHaveLength(1);
     const groupedCall = groupedCalls[0];
     if (!groupedCall) throw new Error("production candidate statement missing");
     const plan = f.h.db

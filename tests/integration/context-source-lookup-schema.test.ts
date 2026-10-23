@@ -200,7 +200,7 @@ it("upgrades real schema69 through the production gate and maintains derived mem
   ]);
   const before = results(db);
   ensureBusinessSchema(db, sqls as unknown as BusinessMigrationSql);
-  expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
+  expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 72 });
   expect(results(db)).toEqual(before);
   const initial = [{ step_id: "step", source_kind: "memory", source_id: "42" }];
   expect(memberships(db)).toEqual(initial);
@@ -245,7 +245,7 @@ it("rejects unknown schema69 and a missing schema70 lookup index without stampin
   expect(() => ensureBusinessSchema(current, sqls as unknown as BusinessMigrationSql)).toThrow(
     "REJECT_UNKNOWN_STRUCTURE",
   );
-  expect(current.query("PRAGMA user_version").get()).toEqual({ user_version: 71 });
+  expect(current.query("PRAGMA user_version").get()).toEqual({ user_version: 72 });
 });
 it("uses the covering source lookup for matched and missing IDs, with a missing-index scan control", () => {
   const db = sourceFixture(true);

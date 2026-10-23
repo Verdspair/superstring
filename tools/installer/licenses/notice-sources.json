@@ -152,6 +152,46 @@
       "version": "0.2.0",
       "license": "Apache-2.0",
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "file": "font-noto-serif-sc-OFL.txt",
+      "source": "https://registry.npmjs.org/@fontsource-variable/noto-serif-sc/-/noto-serif-sc-5.3.1.tgz#package/LICENSE",
+      "component": "@fontsource-variable/noto-serif-sc",
+      "version": "5.3.1",
+      "license": "OFL-1.1",
+      "sha256": "18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3"
+    },
+    {
+      "file": "font-zcool-kuaile-OFL.txt",
+      "source": "https://registry.npmjs.org/@fontsource/zcool-kuaile/-/zcool-kuaile-5.3.0.tgz#package/LICENSE",
+      "component": "@fontsource/zcool-kuaile",
+      "version": "5.3.0",
+      "license": "OFL-1.1",
+      "sha256": "fedb735f9b624acc40c8b926a8220dc0992a9034c48a5175ebee2f9e6ea942ef"
+    },
+    {
+      "file": "font-quicksand-OFL.txt",
+      "source": "https://registry.npmjs.org/@fontsource-variable/quicksand/-/quicksand-5.3.0.tgz#package/LICENSE",
+      "component": "@fontsource-variable/quicksand",
+      "version": "5.3.0",
+      "license": "OFL-1.1",
+      "sha256": "f44e4e5dd4655efc07bc9a843a3d2448e45d2e389960b5c44be83d079bb28ae7"
+    },
+    {
+      "file": "font-libre-caslon-text-OFL.txt",
+      "source": "https://registry.npmjs.org/@fontsource/libre-caslon-text/-/libre-caslon-text-5.3.0.tgz#package/LICENSE",
+      "component": "@fontsource/libre-caslon-text",
+      "version": "5.3.0",
+      "license": "OFL-1.1",
+      "sha256": "f655e804b05a2ed71ec88ef3006394e51972ec20546d4a14328a43c53ccd2607"
+    },
+    {
+      "file": "koffi-MIT.txt",
+      "source": "npm:koffi@3.3.3/LICENSE.txt",
+      "component": "koffi",
+      "version": "3.3.3",
+      "license": "MIT",
+      "sha256": "22bcbbbacd739b026a8dc484f62a31484ce4c4e31f3408b60b29b4e41d62b290"
     }
   ]
 }

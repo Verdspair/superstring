@@ -35,6 +35,7 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
+import { InputSuggestions } from "../../components/ui/input-suggestions";
 import { Label } from "../../components/ui/label";
 import { NativeSelect } from "../../components/ui/native-select";
 import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
@@ -128,6 +129,9 @@ function schemeCollectionNames(
 /** 枚举选项的中话标签（值原样进入载荷，不在这里改写契约值）。 */
 const schemeEnumLabels = QQ_SCHEME_ENUM_OPTION_LABELS;
 
+/** 时区建议来自共享 IANA 常量；输入仍可自由写，校验与错误提示仍归本组件。 */
+const timezoneSuggestions = TIMEZONE_SUGGESTIONS.map((value) => ({ value }));
+
 /** 枚举选择（引用模式/时间模式/图片输入模式）：选项显示人话，载荷原样存契约值。 */
 function SchemeEnum({
   group,
@@ -196,16 +200,15 @@ function SchemeTimezone({ label }: { label: string }) {
   const valid = isValidTimezone;
   return (
     <Field label={label} info="connections.timezoneHint" tooltip={t("connections.timezoneHint")}>
-      <Input
+      <InputSuggestions
         id={inputId}
         type="text"
-        list="scheme-timezone-suggestions"
+        suggestions={timezoneSuggestions}
         disabled={saving}
         value={raw ?? editor.messageSettings.timezone}
         aria-invalid={!!invalid[id]}
         aria-describedby={invalid[id] ? errorId : undefined}
-        onChange={(e) => {
-          const value = e.target.value;
+        onValueChange={(value) => {
           setTexts((old) => ({ ...old, [id]: value }));
           if (valid(value)) {
             patch("messageSettings", { timezone: value.trim() });
@@ -217,11 +220,6 @@ function SchemeTimezone({ label }: { label: string }) {
           } else setInvalid((old) => ({ ...old, [id]: t("connections.timezoneInvalid") }));
         }}
       />
-      <datalist id="scheme-timezone-suggestions">
-        {TIMEZONE_SUGGESTIONS.map((zone) => (
-          <option key={zone} value={zone} />
-        ))}
-      </datalist>
       {invalid[id] && (
         <p id={errorId} className="text-xs text-destructive" role="alert">
           {invalid[id]}
@@ -599,6 +597,8 @@ function PromptEditor({
   );
 }
 
+type SchemeNaming = { kind: "new" | "copy"; step: "name" | "draft" };
+
 export function SchemeStudio({
   active = true,
   breadcrumb,
@@ -654,14 +654,18 @@ export function SchemeStudio({
   useEffect(() => {
     setVisitedTasks((previous) => (previous.includes(task) ? previous : [...previous, task]));
   }, [task]);
-  const [naming, setNaming] = useState<{ kind: "new" | "copy"; step: "name" | "draft" } | null>(
-    null,
-  );
+  const [naming, setNaming] = useState<SchemeNaming | null>(null);
+  // 常挂载命名弹窗在关闭动画期间仍会渲染：快照最近一次打开/推进的步骤。
+  const namingRef = useRef<SchemeNaming | null>(null);
+  if (naming) namingRef.current = naming;
+  const namingView = naming ?? namingRef.current ?? ({ kind: "new", step: "name" } as const);
   const [namingBusy, setNamingBusy] = useState(false);
   const [newName, setNewName] = useQqInput("schemeNewName");
   const [copyName, setCopyName] = useQqInput("schemeCopyName");
   const [preview, setPreview] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // 常挂载删除确认在关闭动画期间仍会渲染：目标文案取最近一次打开时的快照。
+  const deleteTarget = useRef<{ name: string; dirty: boolean }>({ name: "", dirty: false });
   const [focusField, setFocusField] = useState<string | null>(null);
   useEffect(() => {
     if (!active) return;
@@ -729,7 +733,7 @@ export function SchemeStudio({
       ? state.qqSchemeUsage.bindings
       : null;
   const effectiveTab = editor ? task : "participation";
-  const namingName = naming?.kind === "copy" ? copyName : newName;
+  const namingName = namingView.kind === "copy" ? copyName : newName;
   // 命名确认：新建且草稿已改时先问草稿去向；放弃继续会保留原草稿直到创建成功（失败不丢草稿与名称）。
   const busy = namingBusy || saving || state.qqSchemesLoading;
   const runNaming = async (saveFirst: boolean) => {
@@ -765,7 +769,7 @@ export function SchemeStudio({
               </div>
             )}
             <div className="flex flex-wrap items-center gap-[12px]">
-              <h1 className="text-[22px] font-bold leading-[1.25] tracking-[-0.02em]">
+              <h1 className="workspace-page-title">
                 {t(
                   schemeTaskLabels[effectiveTab] ??
                     QQ_SCHEME_SECTIONS.find((section) => section.id === effectiveTab)?.labelKey ??
@@ -845,7 +849,7 @@ export function SchemeStudio({
       )}
       {!editor ? (
         <div className="grid flex-1 place-content-center gap-3 p-8 text-center">
-          <h2 className="text-lg font-medium">
+          <h2 className="workspace-section-title">
             {t("connections.defineParticipationInRealConversations")}
           </h2>
           <p className="max-w-sm text-sm text-muted-foreground">
@@ -893,7 +897,7 @@ export function SchemeStudio({
                   >
                     <section>
                       <div className="mb-[14px] flex flex-wrap items-baseline justify-between gap-[8px]">
-                        <h2 className="text-[15px] font-bold">{t("strict.qq.modelTitle")}</h2>
+                        <h2 className="workspace-section-title">{t("strict.qq.modelTitle")}</h2>
                         <p className="text-[12.5px] text-[var(--text-tertiary)]">
                           {t("strict.qq.modelHint")}
                         </p>
@@ -1674,7 +1678,11 @@ export function SchemeStudio({
                       aria-label={t("connections.deleteScheme")}
                       disabled={!editor || busy || selectedUsage !== 0}
                       tooltip={t("hints.qq.schemeDelete")}
-                      onClick={() => setConfirmDelete(true)}
+                      onClick={() => {
+                        if (!editor) return;
+                        deleteTarget.current = { name: editor.name, dirty };
+                        setConfirmDelete(true);
+                      }}
                     >
                       <Trash2 />
                     </Button>
@@ -1744,119 +1752,122 @@ export function SchemeStudio({
           )}
         </div>
       )}
-      {confirmDelete && editor && (
-        <ConfirmDialog
-          message={t(
-            dirty ? "schemes.studio.deleteDirtyConfirm" : "schemes.studio.deleteUnusedConfirm",
-            { "0": editor.name },
+      <ConfirmDialog
+        open={confirmDelete && editor !== null}
+        message={t(
+          deleteTarget.current.dirty
+            ? "schemes.studio.deleteDirtyConfirm"
+            : "schemes.studio.deleteUnusedConfirm",
+          { "0": deleteTarget.current.name },
+        )}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={() => {
+          if (!editor) return;
+          const id = editor.source.id;
+          setConfirmDelete(false);
+          void state.deleteQqScheme(id);
+        }}
+      />
+      <Dialog
+        open={naming !== null}
+        onOpenChange={(open) => {
+          if (!open && !busy) setNaming(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {t(
+                namingView.kind === "copy"
+                  ? "connections.saveAsANewScheme"
+                  : "connections.newScheme",
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              {t("connections.aSharedSchemeMayAffectSeveralConversationsReviewIts")}
+            </DialogDescription>
+          </DialogHeader>
+          {namingView.step === "draft" ? (
+            <>
+              <p className="text-sm">{t("schemes.studio.draftGuardMessage")}</p>
+              {state.error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {translateNotice(state.error)}
+                </p>
+              )}
+              <DialogFooter>
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.cancel" />}
+                  variant="outline"
+                  data-dialog-cancel
+                  disabled={busy}
+                  onClick={() => setNaming(null)}
+                >
+                  {t("connections.cancel")}
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={busy}
+                  tooltip={t("hints.qq.draftDiscardAndContinue")}
+                  onClick={() => void runNaming(false)}
+                >
+                  {t("workspace.discard_and_continue")}
+                </Button>
+                <Button
+                  disabled={busy || invalid}
+                  tooltip={t("hints.qq.draftSaveAndContinue")}
+                  onClick={() => void runNaming(true)}
+                >
+                  {t("workspace.save_and_continue")}
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <Field label="connections.schemeName" tooltip={t("hints.fieldExtra.schemeName")}>
+                <Input
+                  value={namingName}
+                  disabled={busy}
+                  onChange={(e) =>
+                    namingView.kind === "copy"
+                      ? setCopyName(e.target.value)
+                      : setNewName(e.target.value)
+                  }
+                />
+              </Field>
+              {namingView.kind === "copy" && (
+                <p className="text-xs text-muted-foreground">{t("schemes.studio.copyHint")}</p>
+              )}
+              {state.error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {translateNotice(state.error)}
+                </p>
+              )}
+              <DialogFooter>
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.cancel" />}
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => setNaming(null)}
+                >
+                  {t("connections.cancel")}
+                </Button>
+                <Button
+                  tooltip={t("hints.qq.namingConfirm")}
+                  disabled={busy || !namingName.trim()}
+                  onClick={() => {
+                    if (namingView.kind === "new" && dirty)
+                      setNaming({ ...namingView, step: "draft" });
+                    else void runNaming(false);
+                  }}
+                >
+                  {t("connections.confirm")}
+                </Button>
+              </DialogFooter>
+            </>
           )}
-          onCancel={() => setConfirmDelete(false)}
-          onConfirm={() => {
-            const id = editor.source.id;
-            setConfirmDelete(false);
-            void state.deleteQqScheme(id);
-          }}
-        />
-      )}
-      {naming && (
-        <Dialog
-          open
-          onOpenChange={(open) => {
-            if (!open && !busy) setNaming(null);
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>
-                {t(
-                  naming.kind === "copy" ? "connections.saveAsANewScheme" : "connections.newScheme",
-                )}
-              </DialogTitle>
-              <DialogDescription>
-                {t("connections.aSharedSchemeMayAffectSeveralConversationsReviewIts")}
-              </DialogDescription>
-            </DialogHeader>
-            {naming.step === "draft" ? (
-              <>
-                <p className="text-sm">{t("schemes.studio.draftGuardMessage")}</p>
-                {state.error && (
-                  <p role="alert" className="text-sm text-destructive">
-                    {translateNotice(state.error)}
-                  </p>
-                )}
-                <DialogFooter>
-                  <Button
-                    tooltip={<Trans i18nKey="hints.complete.cancel" />}
-                    variant="outline"
-                    data-dialog-cancel
-                    disabled={busy}
-                    onClick={() => setNaming(null)}
-                  >
-                    {t("connections.cancel")}
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    disabled={busy}
-                    tooltip={t("hints.qq.draftDiscardAndContinue")}
-                    onClick={() => void runNaming(false)}
-                  >
-                    {t("workspace.discard_and_continue")}
-                  </Button>
-                  <Button
-                    disabled={busy || invalid}
-                    tooltip={t("hints.qq.draftSaveAndContinue")}
-                    onClick={() => void runNaming(true)}
-                  >
-                    {t("workspace.save_and_continue")}
-                  </Button>
-                </DialogFooter>
-              </>
-            ) : (
-              <>
-                <Field label="connections.schemeName" tooltip={t("hints.fieldExtra.schemeName")}>
-                  <Input
-                    value={namingName}
-                    disabled={busy}
-                    onChange={(e) =>
-                      naming.kind === "copy"
-                        ? setCopyName(e.target.value)
-                        : setNewName(e.target.value)
-                    }
-                  />
-                </Field>
-                {naming.kind === "copy" && (
-                  <p className="text-xs text-muted-foreground">{t("schemes.studio.copyHint")}</p>
-                )}
-                {state.error && (
-                  <p role="alert" className="text-sm text-destructive">
-                    {translateNotice(state.error)}
-                  </p>
-                )}
-                <DialogFooter>
-                  <Button
-                    tooltip={<Trans i18nKey="hints.complete.cancel" />}
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => setNaming(null)}
-                  >
-                    {t("connections.cancel")}
-                  </Button>
-                  <Button
-                    tooltip={t("hints.qq.namingConfirm")}
-                    disabled={busy || !namingName.trim()}
-                    onClick={() => {
-                      if (naming.kind === "new" && dirty) setNaming({ ...naming, step: "draft" });
-                      else void runNaming(false);
-                    }}
-                  >
-                    {t("connections.confirm")}
-                  </Button>
-                </DialogFooter>
-              </>
-            )}
-          </DialogContent>
-        </Dialog>
-      )}
+        </DialogContent>
+      </Dialog>
       <Dialog open={preview} onOpenChange={setPreview}>
         <DialogContent className="max-h-[85dvh] overflow-auto sm:max-w-3xl">
           <DialogHeader>

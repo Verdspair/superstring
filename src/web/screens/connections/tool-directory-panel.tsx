@@ -2,6 +2,7 @@ import { RefreshCw, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ToolDirectoryEntry } from "../../../shared/contracts/tool-directory";
+import { CatalogItem } from "../../components/catalog-item";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -13,18 +14,10 @@ import {
   SheetHeader,
   SheetTitle,
 } from "../../components/ui/sheet";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table";
 import { grantDraftOf } from "../../features/access/permission-draft";
 import { useToolDirectoryResource } from "../../services/connection-resources";
 import { useSuperstringStore } from "../../store";
-import { CAPABILITY_CATALOG } from "../../workspace/capability-catalog";
+import { CAPABILITY_CATALOG, TOOL_HUMAN_LABELS } from "../../workspace/capability-catalog";
 import { ToolGrantsPanel } from "./tool-grants-panel";
 
 export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {}) {
@@ -42,6 +35,7 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
   const [origin, setOrigin] = useState("all");
   const [detail, setDetail] = useState<ToolDirectoryEntry | null>(null);
   const [grantResource, setGrantResource] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   useEffect(() => {
     if (active) void loadPermissions();
   }, [active, loadPermissions]);
@@ -53,13 +47,23 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
       setError("");
     } else setError(t("connections.tools.unavailable"));
   }, [target, tools, loading, t]);
-  const visible = tools.filter(
-    (tool) =>
-      (origin === "all" || origin === tool.origin) &&
-      `${tool.name} ${tool.description}`
+  const needle = query.trim().toLocaleLowerCase();
+  const visible = tools
+    .filter((tool) => origin === "all" || origin === tool.origin)
+    .filter((tool) => {
+      if (!needle) return true;
+      const humanKey = TOOL_HUMAN_LABELS[tool.name];
+      const labels = humanKey ? t(humanKey) : "";
+      const description =
+        tool.origin === "system"
+          ? t(`connections.components.toolSummary.${tool.name}`, { defaultValue: tool.description })
+          : tool.description;
+      return `${tool.name} ${tool.description} ${description} ${labels} ${tool.resource ?? ""}`
         .toLocaleLowerCase()
-        .includes(query.trim().toLocaleLowerCase()),
-  );
+        .includes(needle);
+    })
+    .slice()
+    .sort((a, b) => Number(b.globalEnabled) - Number(a.globalEnabled));
   const authorisation = (tool: ToolDirectoryEntry) => {
     if (!tool.resource) return t("connections.components.scopeBound");
     if (!editor) return t("capabilities.state.unread");
@@ -85,7 +89,7 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
     <div className="w-full space-y-5 px-4 py-6">
       <div className="flex items-start justify-between gap-4">
         <div className="space-y-1">
-          <h2 className="font-semibold">{t("connections.tools.title")}</h2>
+          <h2 className="workspace-section-title">{t("connections.tools.title")}</h2>
           <p className="text-sm text-muted-foreground">{t("connections.tools.description")}</p>
         </div>
         <Button
@@ -128,97 +132,104 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
           {readError || error}
         </p>
       )}
-      <div className="overflow-hidden rounded-lg border">
-        <Table aria-label={t("connections.tools.title")}>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("connections.tools.name")}</TableHead>
-              <TableHead>{t("connections.tools.origin")}</TableHead>
-              <TableHead>{t("connections.tools.effect")}</TableHead>
-              <TableHead>{t("connections.tools.state")}</TableHead>
-              <TableHead>{t("connections.tools.authorisation")}</TableHead>
-              <TableHead className="text-right">{t("connections.actions")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {visible.map((tool) => (
-              <TableRow
+      <div className="overflow-hidden rounded-lg border border-border/80 bg-card text-card-foreground">
+        <div className="divide-y divide-border/60">
+          {visible.map((tool) => {
+            const humanKey = TOOL_HUMAN_LABELS[tool.name];
+            return (
+              <div
                 key={tool.name}
                 data-tool-name={tool.name}
                 data-global-enabled={tool.globalEnabled}
-                className={tool.globalEnabled ? undefined : "text-muted-foreground bg-muted/30"}
               >
-                <TableCell className="max-w-md whitespace-normal align-top">
-                  <div className="font-mono text-sm">{tool.name}</div>
-                  <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                    {tool.description}
+                <CatalogItem
+                  muted={!tool.globalEnabled}
+                  open={needle ? true : (expanded[tool.name] ?? false)}
+                  onOpenChange={(next) =>
+                    setExpanded((previous) => ({ ...previous, [tool.name]: next }))
+                  }
+                  summary={
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        {humanKey && (
+                          <span className="text-sm font-medium text-foreground">{t(humanKey)}</span>
+                        )}
+                        <span className="font-mono text-sm font-medium text-foreground">
+                          {tool.name}
+                        </span>
+                        <Badge variant="outline">
+                          {tool.origin === "system" ? t("connections.components.system") : "MCP"}
+                        </Badge>
+                        <span className="text-xs">
+                          {t(
+                            tool.effect === "read"
+                              ? "connections.grants.effectRead"
+                              : "connections.grants.effectWrite",
+                          )}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {t(
+                            tool.globalEnabled
+                              ? "connections.components.globalOn"
+                              : "connections.components.globalOff",
+                          )}
+                        </span>
+                      </div>
+                      <p className="max-w-48 whitespace-normal text-xs text-muted-foreground">
+                        {authorisation(tool)}
+                      </p>
+                    </div>
+                  }
+                  actions={
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        tooltip={t("hints.extensions.tools.details")}
+                        onClick={() => setDetail(tool)}
+                      >
+                        {t("connections.tools.details")}
+                      </Button>
+                      {tool.functionId && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          tooltip={t("hints.extensions.tools.configureFunction")}
+                          onClick={() => configure(tool)}
+                        >
+                          {t("connections.tools.configureFunction")}
+                        </Button>
+                      )}
+                      {tool.resource && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          tooltip={t("hints.extensions.tools.manageGrant")}
+                          onClick={() => setGrantResource(tool.resource)}
+                        >
+                          {t("connections.tools.manageGrant")}
+                        </Button>
+                      )}
+                    </>
+                  }
+                >
+                  <p className="whitespace-normal break-words text-sm leading-relaxed">
+                    {tool.origin === "system"
+                      ? t(`connections.components.toolSummary.${tool.name}`, {
+                          defaultValue: tool.description,
+                        })
+                      : tool.description}
                   </p>
-                </TableCell>
-                <TableCell className="align-top">
-                  <Badge variant="outline">
-                    {tool.origin === "system" ? t("connections.components.system") : "MCP"}
-                  </Badge>
-                </TableCell>
-                <TableCell className="align-top text-xs">
-                  {t(
-                    tool.effect === "read"
-                      ? "connections.grants.effectRead"
-                      : "connections.grants.effectWrite",
-                  )}
-                </TableCell>
-                <TableCell className="align-top text-xs">
-                  {t(
-                    tool.globalEnabled
-                      ? "connections.components.globalOn"
-                      : "connections.components.globalOff",
-                  )}
-                </TableCell>
-                <TableCell className="max-w-48 whitespace-normal align-top text-xs">
-                  {authorisation(tool)}
-                </TableCell>
-                <TableCell className="align-top text-right">
-                  <div className="flex flex-col items-end gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      tooltip={t("hints.extensions.tools.details")}
-                      onClick={() => setDetail(tool)}
-                    >
-                      {t("connections.tools.details")}
-                    </Button>
-                    {tool.functionId && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        tooltip={t("hints.extensions.tools.configureFunction")}
-                        onClick={() => configure(tool)}
-                      >
-                        {t("connections.tools.configureFunction")}
-                      </Button>
-                    )}
-                    {tool.resource && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        tooltip={t("hints.extensions.tools.manageGrant")}
-                        onClick={() => setGrantResource(tool.resource)}
-                      >
-                        {t("connections.tools.manageGrant")}
-                      </Button>
-                    )}
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-            {!visible.length && (
-              <TableRow>
-                <TableCell colSpan={6} className="py-12 text-center text-muted-foreground">
-                  {t(loading ? "connections.common.loading" : "connections.tools.empty")}
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
+                </CatalogItem>
+              </div>
+            );
+          })}
+          {!visible.length && (
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              {t(loading ? "connections.common.loading" : "connections.tools.empty")}
+            </div>
+          )}
+        </div>
       </div>
       {grantResource && (
         <section className="space-y-3 rounded-lg border p-4">

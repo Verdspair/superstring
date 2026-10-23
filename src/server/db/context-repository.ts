@@ -322,8 +322,11 @@ function validMemoryRows(
   agentId: string,
   scopeKeys?: MemoryScopeKeys,
   boundedRows?: ReturnType<typeof entries>,
+  ids?: string[],
 ): ReturnType<typeof entries> {
-  const rows = boundedRows ?? entries(orm, agentId, undefined, { status: "active", scopeKeys });
+  const rows =
+    boundedRows ??
+    entries(orm, agentId, ids, { status: "active", scopeKeys, requireAllIds: false });
   const observations = observationSources(
     orm,
     rows.map((row) => row.id),
@@ -730,10 +733,15 @@ export function catalogByScopeKeys(
         0,
       );
     };
-    rows.sort(
-      (a, b) =>
-        score(b) - score(a) || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
-    );
+    rows = rows
+      .map((row) => ({ row, score: score(row) }))
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          b.row.createdAt.localeCompare(a.row.createdAt) ||
+          a.row.id.localeCompare(b.row.id),
+      )
+      .map(({ row }) => row);
   } else {
     rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
   }
@@ -801,7 +809,7 @@ export function memoryBodiesByScopeKeys(
   ids: string[],
   scopeKeys: MemoryScopeKeys,
 ): MemoryItem[] {
-  const rows = validMemoryRows(orm, agentId, scopeKeys).filter((row) => ids.includes(row.id));
+  const rows = validMemoryRows(orm, agentId, scopeKeys, undefined, ids);
   if (new Set(rows.map((row) => row.id)).size !== new Set(ids).size) {
     contextFail("已选记忆的权限、状态或来源已变化");
   }

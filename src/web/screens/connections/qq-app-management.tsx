@@ -5,7 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import { SettingsGroup, SettingsRow } from "../../components/settings-group";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import { Input } from "../../components/ui/input";
+import { InputSuggestions } from "../../components/ui/input-suggestions";
 import { organizationDirty } from "../../features/knowledge/types";
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
@@ -51,6 +51,7 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
   });
   // QQ 页挂载时的 loadOrganization 由 QqConnectionTab 的 active gate 统一触发；本组件只读编辑器。
   const mediaRoles = QQ_MEDIA_GLOBAL_ROLES;
+  const modelSuggestions = s.modelNames.map((name) => ({ value: name }));
   // 两个角色共用已存的图片理解模型：容量只读一次。晚到响应按 api/model/active 身份丢弃。
   const savedVisionModel = editor?.source.vision_model_name ?? null;
   const [visionCapacity, setVisionCapacity] = useState<{
@@ -107,15 +108,15 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
               }
               description={t("models.purpose.vision.hint")}
             >
-              <Input
+              <InputSuggestions
                 id="qq-default-vision-model"
-                list="qq-model-catalog"
+                suggestions={modelSuggestions}
                 value={editor.visionModelName ?? ""}
                 placeholder={t("models.followDefault")}
                 disabled={s.settingsSaving || s.organizationLoading}
                 aria-label={t("models.purpose.vision")}
-                onChange={(e) =>
-                  s.patchOrganizationPurposes({ visionModelName: e.target.value || null })
+                onValueChange={(value) =>
+                  s.patchOrganizationPurposes({ visionModelName: value || null })
                 }
                 className="w-full sm:w-64 sm:min-w-56"
               />
@@ -131,15 +132,15 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
               }
               description={t("models.purpose.transcription.hint")}
             >
-              <Input
+              <InputSuggestions
                 id="qq-default-transcription-model"
-                list="qq-model-catalog"
+                suggestions={modelSuggestions}
                 value={editor.transcriptionModelName ?? ""}
                 placeholder={t("models.followDefault")}
                 disabled={s.settingsSaving || s.organizationLoading}
                 aria-label={t("models.purpose.transcription")}
-                onChange={(e) =>
-                  s.patchOrganizationPurposes({ transcriptionModelName: e.target.value || null })
+                onValueChange={(value) =>
+                  s.patchOrganizationPurposes({ transcriptionModelName: value || null })
                 }
                 className="w-full sm:w-64 sm:min-w-56"
               />
@@ -271,11 +272,6 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
           }}
         />
       )}
-      <datalist id="qq-model-catalog">
-        {s.modelNames.map((name) => (
-          <option key={name} value={name} />
-        ))}
-      </datalist>
     </div>
   );
 }

@@ -193,13 +193,7 @@ async function startProvider(): Promise<{
       };
       const schema = body.response_format?.json_schema?.schema;
       const properties = (schema?.properties ?? null) as Record<string, unknown> | null;
-      const oneOfBranches = Array.isArray(schema?.oneOf) ? (schema?.oneOf as unknown[]) : [];
-      const envelope = oneOfBranches.some(
-        (branch) =>
-          typeof branch === "object" &&
-          branch !== null &&
-          (branch as { properties?: { media?: unknown } }).properties?.media !== undefined,
-      );
+      const envelope = properties?.decision !== undefined;
       const texts: string[] = [];
       for (const message of body.messages ?? []) {
         if (typeof message.content === "string") texts.push(message.content);

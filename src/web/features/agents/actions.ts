@@ -21,6 +21,19 @@ export function createAgentActions(
   | "deleteAgents"
 > {
   let editorRequest = 0;
+  // 助手身份切换成功后，被离开的助手不再有可达的原文输入框：只清它自己的
+  // agent:<id>: 键，保留当前助手与其他所有者（global:*）的非法原文。
+  const releaseInvalidInputsFor = (previousId: string, nextId: string) => {
+    if (previousId === nextId) return;
+    const prefix = `agent:${previousId}:`;
+    const invalid = get().allocationInvalidInputs;
+    if (!Object.keys(invalid).some((key) => key.startsWith(prefix))) return;
+    set({
+      allocationInvalidInputs: Object.fromEntries(
+        Object.entries(invalid).filter(([key]) => !key.startsWith(prefix)),
+      ),
+    });
+  };
   return {
     setNewSessionAgent: (id) => {
       set({ selectedNewSessionAgentId: id });
@@ -29,6 +42,7 @@ export function createAgentActions(
     editAgent: async (id) => {
       if (get().settingsSaving) return false;
       const request = ++editorRequest;
+      const previousId = get().editorAgentId;
       const { apiClient: api, page, settingsView, settingsRoute } = get();
       const isCurrent = () => request === editorRequest && get().apiClient === api;
       const ownsPage = () =>
@@ -89,6 +103,7 @@ export function createAgentActions(
           memoryEntryDetail: null,
           memoryJobs: [],
         });
+        releaseInvalidInputsFor(previousId, id);
         return true;
       }
       try {
@@ -98,6 +113,7 @@ export function createAgentActions(
           resolvePreloadedPersona(api, id).then((preloaded) => preloaded ?? api.getPersona(id)),
         ]);
         if (!ownsPage()) return false;
+        releaseInvalidInputsFor(previousId, id);
         get().discardKnowledgeRead();
         set({
           editorAgentId: id,
@@ -120,15 +136,20 @@ export function createAgentActions(
         if (isCurrent()) set({ editorLoading: false });
       }
     },
-    patchDraft: (patch) =>
+    // 写入在途时由本次提交独占草稿：与页面编辑（patchPageAgent）同一门禁，
+    // 迟到的保存结果因此不会与提交后继续输入的草稿互相覆盖。
+    patchDraft: (patch) => {
+      if (get().settingsSaving) return;
       set((state) => ({
         pageEditor: null,
         editorDraft: state.editorDraft ? { ...state.editorDraft, ...patch } : null,
         dirty: true,
-      })),
+      }));
+    },
     saveCurrentSection: async () => {
       const draft = get().editorDraft;
-      if (!draft) return false;
+      // 单飞：settingsSaving 是写入与导航共用的唯一在途锁，第二次提交直接拒绝。
+      if (!draft || get().settingsSaving) return false;
       const section = get().activeSection;
       if (section !== "A" && section !== "B" && section !== "C" && section !== "D") {
         set({ error: null, feedback: msg("此分区尚未开放，不能保存。") });
@@ -142,24 +163,40 @@ export function createAgentActions(
           });
           return false;
         }
-        return get().savePersona({
-          ...get().persona,
-          persona_intensity: draft.persona_intensity,
-        });
+        set({ settingsSaving: true });
+        try {
+          return await get().savePersona({
+            ...get().persona,
+            persona_intensity: draft.persona_intensity,
+          });
+        } finally {
+          set({ settingsSaving: false });
+        }
       }
       const creating = get().editorAgentId === "__new__";
       if (creating && section !== "A") {
         set({ error: null, feedback: msg("请先创建 Agent 基础记录") });
         return false;
       }
-      // 捕获本次提交的所有权身份，异步续编完成时据此拒绝覆盖更新的导航或草稿。
+      // 提交时捕获所有权身份。写期间 settingsSaving 拒绝导航与草稿补丁；若仍有
+      // 其他所有者改写页面/编辑器/草稿，落库成功后不得把旧编辑器写回新页面。
       const ownerApi = get().apiClient;
       const ownerPage = get().page;
       const ownerView = get().settingsView;
       const ownerRoute = get().settingsRoute;
+      const ownerEditorId = get().editorAgentId;
+      const ownsEditor = () =>
+        get().apiClient === ownerApi &&
+        get().page === ownerPage &&
+        get().settingsView === ownerView &&
+        get().settingsRoute === ownerRoute &&
+        get().editorAgentId === ownerEditorId &&
+        get().editorDraft === draft;
+      let saved: AgentResponse | null = null;
+      set({ settingsSaving: true });
       try {
         if (!creating && section === "C" && draft.p5_config.context_window !== null) {
-          const capacity = await get().apiClient.getModelCapacity(draft.model_name);
+          const capacity = await ownerApi.getModelCapacity(draft.model_name);
           if (capacity.context_length === null) {
             set({
               error: null,
@@ -175,9 +212,8 @@ export function createAgentActions(
             return false;
           }
         }
-        let saved: AgentResponse;
         if (creating) {
-          saved = await get().apiClient.createAgent({
+          saved = await ownerApi.createAgent({
             name: draft.name,
             description: draft.description,
             persona: {},
@@ -187,58 +223,69 @@ export function createAgentActions(
             is_active: draft.is_active,
           });
         } else {
-          const persisted = get().agents.find((agent) => agent.id === get().editorAgentId);
+          const persisted = get().agents.find((agent) => agent.id === ownerEditorId);
           if (!persisted) {
             set({ error: msg("当前 Agent 不存在，请重新选择。") });
             return false;
           }
           const payload = buildSectionPayload(section as "A" | "B" | "C", draft, persisted);
-          saved = await get().apiClient.updateAgent(get().editorAgentId, payload);
+          saved = await ownerApi.updateAgent(ownerEditorId, payload);
         }
-        set((state) => {
-          const editorDraft = mergeSavedSection(
-            section as "A" | "B" | "C",
-            state.editorDraft,
-            saved,
-            creating,
-          );
-          return {
-            agents: [saved, ...state.agents.filter((item) => item.id !== saved.id)],
-            editorAgentId: saved.id,
-            pageEditor: null,
-            editorDraft,
-            dirty: false,
-            error: null,
-            feedback: creating
-              ? msg("已创建助手「{0}」，可继续配置记忆、上下文与人设。", saved.name)
-              : section === "A"
-                ? msg("当前 Agent 配置已保存。")
-                : msg("{0} 分区已保存", sectionLetter(section)),
-          };
-        });
-        if (!creating) return true;
-        // 续编编辑器复用已保存响应与一次人设读取；创建已提交，不重跑完整 editAgent/记忆读取。
-        const committedDraft = get().editorDraft;
-        const ownsCreate = () =>
-          get().apiClient === ownerApi &&
-          get().page === ownerPage &&
-          get().settingsView === ownerView &&
-          get().settingsRoute === ownerRoute &&
-          get().editorAgentId === saved.id &&
-          get().pageEditor === null;
-        try {
-          const savedPersona = await ownerApi.getPersona(saved.id);
-          if (!ownsCreate() || get().editorDraft !== committedDraft) return true;
-          set({ pageEditor: newPageEditor(saved, savedPersona), persona: savedPersona });
-        } catch (error) {
-          if (ownsCreate() && get().editorDraft === committedDraft)
-            set({ error: errorText(error) });
-        }
-        return true;
       } catch (error) {
-        set({ error: errorText(error) });
+        if (ownsEditor()) set({ error: errorText(error) });
         return false;
+      } finally {
+        set({ settingsSaving: false });
       }
+      if (!saved) return false;
+      const committed = saved;
+      if (!ownsEditor()) {
+        // 已持久化：只并入目录避免重复创建，不回写旧编辑器、草稿、提示或导航。
+        set((state) => ({
+          agents: [committed, ...state.agents.filter((item) => item.id !== committed.id)],
+        }));
+        return true;
+      }
+      set((state) => {
+        const editorDraft = mergeSavedSection(
+          section as "A" | "B" | "C",
+          state.editorDraft,
+          committed,
+          creating,
+        );
+        return {
+          agents: [committed, ...state.agents.filter((item) => item.id !== committed.id)],
+          editorAgentId: committed.id,
+          pageEditor: null,
+          editorDraft,
+          dirty: false,
+          error: null,
+          feedback: creating
+            ? msg("已创建助手「{0}」，可继续配置记忆、上下文与人设。", committed.name)
+            : section === "A"
+              ? msg("当前 Agent 配置已保存。")
+              : msg("{0} 分区已保存", sectionLetter(section)),
+        };
+      });
+      if (!creating) return true;
+      // 续编编辑器复用已保存响应与一次人设读取；创建已提交，不重跑完整 editAgent/记忆读取。
+      const committedDraft = get().editorDraft;
+      const ownsCreate = () =>
+        get().apiClient === ownerApi &&
+        get().page === ownerPage &&
+        get().settingsView === ownerView &&
+        get().settingsRoute === ownerRoute &&
+        get().editorAgentId === committed.id &&
+        get().pageEditor === null &&
+        get().editorDraft === committedDraft;
+      try {
+        const savedPersona = await ownerApi.getPersona(committed.id);
+        if (!ownsCreate()) return true;
+        set({ pageEditor: newPageEditor(committed, savedPersona), persona: savedPersona });
+      } catch (error) {
+        if (ownsCreate()) set({ error: errorText(error) });
+      }
+      return true;
     },
     savePersona: async (patch) => {
       const ownerApi = get().apiClient;

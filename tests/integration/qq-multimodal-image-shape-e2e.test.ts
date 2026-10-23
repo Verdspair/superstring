@@ -380,14 +380,19 @@ it("[S25_2] the native decision/score/generation calls reach real HTTP with the 
       }
       expect(sawImage).toBe(true);
 
-      // 声明形状（本地路由）：批评分带 evaluations schema、回复决策带 oneOf 决策分支，均无 native tools。
+      // 声明形状（本地路由）：批评分带 evaluations、回复决策带 decision/media 信封，均无 native tools。
       const evaluationSchema = schemaOf(bodies[0] ?? {}) as {
         properties?: Record<string, unknown>;
       };
       expect(evaluationSchema?.properties?.evaluations).toBeDefined();
       expect(bodies[0]?.tools).toBeUndefined();
-      const decisionSchema = schemaOf(bodies[1] ?? {}) as { oneOf?: unknown } | undefined;
-      expect(Array.isArray(decisionSchema?.oneOf)).toBe(true);
+      const decisionSchema = schemaOf(bodies[1] ?? {}) as
+        | {
+            properties?: { decision?: { oneOf?: unknown }; media?: unknown };
+          }
+        | undefined;
+      expect(Array.isArray(decisionSchema?.properties?.decision?.oneOf)).toBe(true);
+      expect(decisionSchema?.properties?.media).toBeDefined();
       expect(bodies[1]?.tools).toBeUndefined();
 
       // 来源真落库：一个 asset，sha 等于受控字节 sha；一次真实取字节（后两相走缓存）。
@@ -580,14 +585,8 @@ function loopbackReply(parsed: {
   if (properties?.text !== undefined) {
     return JSON.stringify({ text: "合成回复正文", media: [] });
   }
-  if (oneOf !== undefined) {
-    const hasMediaBranch = oneOf.some(
-      (branch) =>
-        branch !== null &&
-        typeof branch === "object" &&
-        (branch as { properties?: { media?: unknown } }).properties?.media !== undefined,
-    );
-    return hasMediaBranch
+  if (properties?.decision !== undefined || oneOf !== undefined) {
+    return properties?.decision !== undefined
       ? JSON.stringify({
           decision: {
             kind: "final",

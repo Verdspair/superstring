@@ -163,6 +163,7 @@ import {
   parseQqDecision,
   QQ_DECISION_ENVELOPE_SCHEMA,
   QQ_DECISION_JSON_SCHEMA,
+  QQ_MEDIA_CLASSIFICATION_JSON_SCHEMA,
 } from "./qq-reply-decision-contract";
 export interface OneBotPolicy {
   maxSteps: number;
@@ -172,7 +173,7 @@ export interface OneBotPolicy {
 // 规格 §10：native 同次分类的内部 envelope 响应 schema。本体权威（decision/scoreResult/text）
 // 原样保留各自约束，附属 media 白名单由 model-response-envelope 解析；宿主只在存在待分类
 // unknown 图时把对应 schema 换成 envelope 版本，text-only 决策照走原 schema。
-const QQ_SCORE_ENVELOPE_SCHEMA = {
+export const QQ_SCORE_ENVELOPE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["scoreResult"],
@@ -186,16 +187,16 @@ const QQ_SCORE_ENVELOPE_SCHEMA = {
         reason: QQ_JUDGEMENT_RESPONSE_SCHEMA.properties.reason,
       },
     },
-    media: { type: "array", items: { type: "object" } },
+    media: { type: "array", items: QQ_MEDIA_CLASSIFICATION_JSON_SCHEMA },
   },
 };
-const QQ_TEXT_ENVELOPE_SCHEMA = {
+export const QQ_TEXT_ENVELOPE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["text"],
   properties: {
     text: { type: "string" },
-    media: { type: "array", items: { type: "object" } },
+    media: { type: "array", items: QQ_MEDIA_CLASSIFICATION_JSON_SCHEMA },
   },
 };
 

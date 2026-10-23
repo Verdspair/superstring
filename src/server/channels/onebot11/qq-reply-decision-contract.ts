@@ -1,7 +1,9 @@
+import { z } from "zod";
 import {
   AGENT_DECISION_JSON_SCHEMA,
   parseAgentDecision,
 } from "../../../shared/contracts/agent-output";
+import { QqImageCategorySchema } from "../../../shared/contracts/qq-media-input";
 
 function withoutFinalStickerChoice(schema: Record<string, unknown>): Record<string, unknown> {
   const clone = structuredClone(schema);
@@ -28,15 +30,21 @@ function withoutFinalStickerChoice(schema: Record<string, unknown>): Record<stri
 
 export const QQ_DECISION_JSON_SCHEMA = withoutFinalStickerChoice(AGENT_DECISION_JSON_SCHEMA);
 
+export const QQ_MEDIA_CLASSIFICATION_JSON_SCHEMA = z.toJSONSchema(
+  z.strictObject({ mediaId: z.string().min(1), category: QqImageCategorySchema }),
+);
+
 export const QQ_DECISION_ENVELOPE_SCHEMA: Record<string, unknown> = {
-  ...QQ_DECISION_JSON_SCHEMA,
-  oneOf: ((QQ_DECISION_JSON_SCHEMA.oneOf as Record<string, unknown>[]) ?? []).map((branch) => ({
-    ...branch,
-    properties: {
-      ...((branch.properties as Record<string, unknown>) ?? {}),
-      media: { type: "array", items: { type: "object" } },
+  type: "object",
+  additionalProperties: false,
+  required: ["decision"],
+  properties: {
+    decision: QQ_DECISION_JSON_SCHEMA,
+    media: {
+      type: "array",
+      items: QQ_MEDIA_CLASSIFICATION_JSON_SCHEMA,
     },
-  })),
+  },
 };
 
 export function parseQqDecision(raw: string) {

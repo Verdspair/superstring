@@ -9,7 +9,7 @@ import type {
 import type { RuntimeTracesPage } from "../../src/shared/contracts/runtime-observability";
 import { api, type SuperstringApi } from "../../src/web/api";
 import { emptyWebConversation } from "../../src/web/features/chat/conversation-state";
-import { selectLocale } from "../../src/web/i18n";
+import { selectLocale, translate } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
 import { ConversationWorkspace } from "../../src/web/screens/conversations/ConversationWorkspace";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -453,7 +453,12 @@ it("labels the current scope with the real conversation title and never fakes gl
     screen.getByRole("button", { name: key("workspace.conversationHub.scopeGlobal") }),
   );
   await screen.findByRole("heading", { name: key("observability.integrated.globalTitle") });
-  expect(screen.queryByText(label)).toBeNull();
+  // 紧凑工具条要么整段不渲染隐藏操作，要么留在 DOM 但不进可访问树；两种都不能把全局说成当前会话。
+  const caption = screen.queryByText(label);
+  if (caption) {
+    const hiddenAncestor = caption.closest('[aria-hidden="true"]');
+    expect(caption.hasAttribute("aria-hidden") || hiddenAncestor !== null).toBe(true);
+  }
 });
 it("disables the view-level refresh while the trace read is in flight", async () => {
   let settle!: (page: RuntimeTracesPage) => void;
@@ -511,4 +516,140 @@ it("pauses and resumes the runtime summary and trace list from one view-level co
   } finally {
     vi.useRealTimers();
   }
+});
+it("keeps one compact three-tab strip above the split with no page path or visible page title", () => {
+  setup();
+  selectConversation(webConversation);
+  render(<ConversationWorkspace />);
+
+  // 紧凑首层：对话页不再重复渲染面包屑路径与大标题，页面名只留给屏幕阅读器。
+  const title = translate("workspace.conversations");
+  expect(screen.queryByText(translate("brand.workspace", title))).toBeNull();
+  expect(
+    screen
+      .queryAllByRole("heading", { level: 1 })
+      .every((node) => node.classList.contains("sr-only") || !!node.closest(".sr-only")),
+  ).toBe(true);
+  // 会话身份仍只在正文里出现一次，不在页头重复。
+  expect(screen.getAllByRole("heading", { name: webConversation.title })).toHaveLength(1);
+
+  const tabs = hubTablist();
+  expect(within(tabs).getAllByRole("tab")).toHaveLength(3);
+  const directory = screen.getByRole("region", { name: key("workspace.conversation_index") });
+  const surface = screen.getAllByRole("region", { name: key("workspace.current_conversation") })[0];
+  expect(tabs.compareDocumentPosition(directory) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(tabs.compareDocumentPosition(surface) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+it("restores the compact help on focus and closes it with Escape without a visible page title", async () => {
+  const user = userEvent.setup();
+  setup();
+  selectConversation(webConversation);
+  render(<ConversationWorkspace />);
+
+  const title = translate("workspace.conversations");
+  expect(
+    screen
+      .queryAllByRole("heading", { level: 1 })
+      .every((node) => node.classList.contains("sr-only") || !!node.closest(".sr-only")),
+  ).toBe(true);
+  const help = screen.getByRole("button", {
+    name: i18n.t("hints.field.learnAbout", { "0": title }),
+  });
+  act(() => help.focus());
+  expect(document.activeElement).toBe(help);
+  expect((await screen.findByRole("tooltip")).textContent).toBe(
+    translate("workspace.search_select_or_create_a_conversation"),
+  );
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
+});
+it("drops the scope controls from the messages view without keeping placeholder DOM", async () => {
+  setup();
+  selectConversation(webConversation);
+  render(<ConversationWorkspace />);
+
+  const current = key("workspace.conversationHub.scopeCurrent");
+  const global = key("workspace.conversationHub.scopeGlobal");
+  // 消息页第一层只有三页签：范围操作既不进可访问树，也不为撑高度留着空 DOM。
+  expect(screen.queryAllByRole("button", { name: current, hidden: true })).toHaveLength(0);
+  expect(screen.queryAllByRole("button", { name: global, hidden: true })).toHaveLength(0);
+  expect(screen.queryByText(current)).toBeNull();
+  expect(screen.queryByText(global)).toBeNull();
+
+  switchTab(key("workspace.runtime_observability"));
+  await screen.findByRole("region", { name: key("workspace.conversationHub.activityTitle") });
+  expect(screen.getByRole("button", { name: current }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByRole("button", { name: global }).getAttribute("aria-pressed")).toBe("false");
+});
+it("keeps the three-tab strip and the conversation directory entry on small screens", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+  );
+  try {
+    setup();
+    selectConversation(webConversation);
+    render(<ConversationWorkspace />);
+    expect(within(hubTablist()).getAllByRole("tab")).toHaveLength(3);
+    expect(
+      screen.queryByText(translate("brand.workspace", translate("workspace.conversations"))),
+    ).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: key("workspace.open_conversation_index") }),
+    );
+    expect(screen.getByRole("dialog", { name: key("workspace.conversation_index") })).toBeTruthy();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+it("keeps the tab strip and hidden composer across scope changes", async () => {
+  const user = userEvent.setup();
+  setup();
+  selectConversation(webConversation);
+  render(<ConversationWorkspace />);
+
+  const tabs = hubTablist();
+  const composer = screen.getByRole("textbox", { name: key("workspace.enter_a_message") });
+  fireEvent.change(composer, { target: { value: "范围切换草稿" } });
+
+  switchTab(key("workspace.runtime_observability"));
+  await screen.findByRole("region", { name: key("workspace.conversationHub.activityTitle") });
+  await user.click(
+    screen.getByRole("button", { name: key("workspace.conversationHub.scopeGlobal") }),
+  );
+  await screen.findByRole("heading", { name: key("observability.integrated.globalTitle") });
+  expect(hubTablist()).toBe(tabs);
+  expect(composer.isConnected).toBe(true);
+  expect(composer.closest("[hidden]")).toBeTruthy();
+
+  await user.click(
+    screen.getByRole("button", { name: key("workspace.conversationHub.scopeCurrent") }),
+  );
+  switchTab(key("workspace.message_history"));
+  const restored = screen.getByRole("textbox", {
+    name: key("workspace.enter_a_message"),
+  }) as HTMLTextAreaElement;
+  expect(restored).toBe(composer);
+  expect(restored.value).toBe("范围切换草稿");
+});
+
+it("restores a collapsed global directory from messages without a selected conversation", async () => {
+  setup();
+  render(<ConversationWorkspace />);
+  expect(
+    screen.queryByRole("button", { name: key("workspace.conversationHub.collapseDirectory") }),
+  ).toBeNull();
+  switchTab(key("workspace.runtime_observability"));
+  await screen.findByRole("heading", { name: key("observability.integrated.globalTitle") });
+  await userEvent.click(
+    screen.getByRole("button", { name: key("workspace.conversationHub.collapseDirectory") }),
+  );
+  switchTab(key("workspace.message_history"));
+  const expand = screen.getByRole("button", {
+    name: key("workspace.conversationHub.expandDirectory"),
+  });
+  expect(expand.closest("[inert]")).toBeNull();
+  await userEvent.click(expand);
+  expect(screen.getByRole("navigation", { name: key("workspace.chat_history") })).toBeTruthy();
 });
