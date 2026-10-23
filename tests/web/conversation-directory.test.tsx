@@ -19,7 +19,7 @@ const group = {
 beforeEach(() => {
   localStorage.clear();
   store.getState().resetForTests({
-    listMessages: async () => [],
+    listMessages: async () => ({ items: [], has_more: false }),
     getSessionRuntime: async () => null,
   } as unknown as SuperstringApi);
 });

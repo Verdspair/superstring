@@ -20,10 +20,14 @@
 // nothing in those cases.
 
 import type { Database } from "bun:sqlite";
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
-import type { RuntimeConfig } from "../../shared/contracts";
-import { RuntimeConfigSchema } from "../../shared/contracts";
+import {
+  type MessagePageQuery,
+  type RuntimeConfig,
+  RuntimeConfigSchema,
+  WEB_MESSAGE_PAGE_SIZE,
+} from "../../shared/contracts";
 import {
   DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
   DEFAULT_MEMORY_RETRIEVAL_PROMPT,
@@ -520,6 +524,57 @@ export function listMessages(
     .where(and(...conditions))
     .orderBy(asc(schema.messages.sequenceNo))
     .all();
+}
+
+/** Public transcript reads seek the existing session/sequence index, independently of context reads. */
+export function listMessagePage(
+  orm: Orm,
+  sessionId: string,
+  query: MessagePageQuery = {},
+): { items: MessageRow[]; has_more: boolean } {
+  getSession(orm, sessionId);
+  if (query.turn_id || query.client_request_id) {
+    const turn = orm
+      .select({ id: schema.turns.id })
+      .from(schema.turns)
+      .where(
+        and(
+          eq(schema.turns.sessionId, sessionId),
+          query.turn_id
+            ? eq(schema.turns.id, query.turn_id)
+            : eq(schema.turns.clientRequestId, query.client_request_id!),
+        ),
+      )
+      .get();
+    const items = turn
+      ? orm
+          .select()
+          .from(schema.messages)
+          .where(and(eq(schema.messages.sessionId, sessionId), eq(schema.messages.turnId, turn.id)))
+          .orderBy(asc(schema.messages.sequenceNo))
+          .limit(3)
+          .all()
+      : [];
+    return { items, has_more: false };
+  }
+  const conditions = [eq(schema.messages.sessionId, sessionId)];
+  if (query.before_sequence_no !== undefined)
+    conditions.push(lt(schema.messages.sequenceNo, query.before_sequence_no));
+  if (query.after_sequence_no !== undefined)
+    conditions.push(gt(schema.messages.sequenceNo, query.after_sequence_no));
+  const forward = query.after_sequence_no !== undefined;
+  const rows = orm
+    .select()
+    .from(schema.messages)
+    .where(and(...conditions))
+    .orderBy(forward ? asc(schema.messages.sequenceNo) : desc(schema.messages.sequenceNo))
+    .limit(WEB_MESSAGE_PAGE_SIZE + 1)
+    .all();
+  const items = rows.slice(0, WEB_MESSAGE_PAGE_SIZE);
+  return {
+    items: forward ? items : items.reverse(),
+    has_more: rows.length > WEB_MESSAGE_PAGE_SIZE,
+  };
 }
 
 export function deleteMessage(

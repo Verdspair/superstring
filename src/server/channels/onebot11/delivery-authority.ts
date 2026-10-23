@@ -10,7 +10,7 @@ import { readQqOwnerIdentity } from "../../db/qq-owner-repository";
 import { effectiveQqTriggers } from "../../db/qq-scheme-repository";
 import { readQqSettings } from "../../db/qq-settings-repository";
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
-import type { ModuleSourceResolver } from "../../modules/composition";
+import { type ModuleSourceResolver, resolveSourceStates } from "../../modules/composition";
 import type { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
 
 export type DeliveryAuthorityDeps = {
@@ -185,21 +185,24 @@ export function qqDeliveryAuthorize(deps: DeliveryAuthorityDeps) {
       userId: DEFAULT_USER_ID,
       agentId: target.agentId,
     };
-    return (target.sources ?? []).every((source) => {
-      // 本群能力引用以 guard 为准：它判定的结果不得被任何外部解析器翻回可用（撤权不可覆盖）。
-      const access = guard.sourceAccess(source, bindingOwner);
-      if (access !== undefined) return access === "available";
-      // 其余来源种类沿用原有解析路径：外部注入的解析器优先，其次中央授权表。
-      return (
-        (resolveSource?.(source, conversationOwner, new Date().toISOString()) ??
-          sourceAccess(
-            db,
-            source,
-            conversationOwner,
-            { userId: DEFAULT_USER_ID },
-            new Date().toISOString(),
-          )) === "available"
+    const resolve: ModuleSourceResolver = (source) =>
+      guard.sourceAccess(source, bindingOwner) ??
+      resolveSource?.(source, conversationOwner, new Date().toISOString()) ??
+      sourceAccess(
+        db,
+        source,
+        conversationOwner,
+        { userId: DEFAULT_USER_ID },
+        new Date().toISOString(),
       );
-    });
+    resolve.resolveMany = resolveSource?.resolveMany;
+    for (const access of resolveSourceStates(
+      target.sources ?? [],
+      resolve,
+      conversationOwner,
+      new Date().toISOString(),
+    ))
+      if (access !== "available") return false;
+    return true;
   };
 }

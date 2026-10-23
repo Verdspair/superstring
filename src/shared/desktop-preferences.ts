@@ -18,7 +18,7 @@ export type DesktopPreferenceKey = (typeof DESKTOP_PREFERENCE_KEYS)[number];
 export type DesktopPreferenceSnapshot = Partial<Record<DesktopPreferenceKey, string | null>>;
 export interface DesktopPreferencesBridge {
   load(): Promise<DesktopPreferenceSnapshot>;
-  save(key: DesktopPreferenceKey, value: string | null): Promise<void>;
+  save(snapshot: DesktopPreferenceSnapshot): Promise<void>;
   bootstrapFailed(): Promise<void>;
 }
 
@@ -28,6 +28,17 @@ export const DESKTOP_PREFERENCES_BOOTSTRAP_FAILED = "superstring:preferences:boo
 
 export function isDesktopPreferenceKey(value: unknown): value is DesktopPreferenceKey {
   return typeof value === "string" && DESKTOP_PREFERENCE_KEYS.some((key) => key === value);
+}
+
+/**
+ * One write payload: a native object of whitelisted keys. The desktop store schema stays the
+ * authoritative value validator; this only rejects arrays, unknown keys and non-string values.
+ */
+export function isDesktopPreferenceSnapshot(value: unknown): value is DesktopPreferenceSnapshot {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return Object.entries(value).every(
+    ([key, entry]) => isDesktopPreferenceKey(key) && (entry === null || typeof entry === "string"),
+  );
 }
 
 /**

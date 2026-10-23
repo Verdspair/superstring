@@ -38,7 +38,7 @@
 
 以下功能属于 main 源码更新，未重发 v0.4.0-alpha-2 安装包。
 
-- **消息即时显示**：新消息到达已绑定会话时逐条即时显示。补读历史或手动刷新期间收到的新消息会继续显示，不会因较早的读取结果而漏显示，也不会推迟到下一次刷新；阅读位置保持不变。
+- **消息记录按需加载**：首次从服务器只读取最新 100 条，旧记录按需分页加载；新消息仍即时显示，刷新和回复完成保留已加载旧页与阅读位置，不删除保存的历史。优化消息详情、启动记录核对与权限读取中的重复工作。
 
 - **工作区布局与字体**：管理工作区统一标题、操作区和主标签的起始位置，窄屏按钮不会挤压标题；用途说明收进可悬停、聚焦或点击查看的帮助提示，错误与权限限制仍直接显示。偏好设置新增“典雅衬线”和“可爱圆润”两套中英文字体方案，保留当前默认字体；字体随程序提供，可离线使用，代码和技术标识保持等宽显示。
 - **群头像与 Agent 页面布局**：没有自定义头像的 QQ 群会话自动显示群头像，读取失败时显示群聊图标；手动上传和生成头像仍优先。Agent 四个配置标签共用标题和操作区布局，切换资料读取时标签栏不再上下移动，检索规则、上下文预算和知识读取继续分别保存。
@@ -87,7 +87,7 @@ This release focuses on QQ replies, chat history, and desktop exit behavior. Cha
 
 ### Chat History and In-flight Tasks
 
-- Fresh messages appear right away without waiting for older history pages to finish loading, keeping your current scroll position.
+- **On-demand message history**: Initially reads only the latest 100 records from the server and loads older records in pages on demand. New messages still appear immediately; refreshing or completing a reply retains loaded older pages and the reading position, without deleting saved history. Reduces repeated work in message details, startup history reconciliation, and permission reads.
 - In-flight model tasks appear directly above group chat messages. Click a task to view subtasks and model inputs/outputs; the final result updates upon completion.
 
 ### QQ Message Quotes and Member Mentions

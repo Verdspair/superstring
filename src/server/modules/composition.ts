@@ -35,11 +35,36 @@ export interface ModuleQueries {
   knowledge: KnowledgeModule;
 }
 /** Unknown kinds fall through to the application's existing source resolver; never auto-authorize. */
-export type ModuleSourceResolver = (
-  source: SourceRef,
+type SourceVerdict = "available" | "expired" | "revoked" | undefined;
+export type ModuleSourceResolver = {
+  (source: SourceRef, owner: RunOwner, at: string): SourceVerdict;
+  resolveMany?: (
+    sources: readonly SourceRef[],
+    owner: RunOwner,
+    at: string,
+  ) => readonly SourceVerdict[];
+};
+
+/** Only adjacent permission refs share a synchronous policy read; other resolvers retain order. */
+export function* resolveSourceStates(
+  sources: readonly SourceRef[],
+  resolve: ModuleSourceResolver | undefined,
   owner: RunOwner,
   at: string,
-) => "available" | "expired" | "revoked" | undefined;
+): Generator<SourceVerdict> {
+  for (let index = 0; index < sources.length; ) {
+    const source = sources[index]!;
+    if (source.kind !== "tool_permission" || !resolve?.resolveMany) {
+      yield resolve?.(source, owner, at);
+      index++;
+      continue;
+    }
+    let end = index + 1;
+    while (end < sources.length && sources[end]!.kind === "tool_permission") end++;
+    yield* resolve.resolveMany(sources.slice(index, end), owner, at);
+    index = end;
+  }
+}
 export interface ModuleQueryBinding {
   runtime: RuntimeConfig;
   assertSources?: (sources: readonly SourceRef[]) => void;

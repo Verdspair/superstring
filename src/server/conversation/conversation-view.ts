@@ -21,103 +21,304 @@ type ProjectedWake = {
   through_seq: number;
 };
 
-/**
- * A persisted step is inserted immediately before its model call. Only the initiative judge
- * leaf and an ordinary reply decision step prove that this wake reached intent judgement.
- */
+type ProjectionConversation = {
+  binding_epoch: number;
+  agent_id: string;
+  source_id: string;
+  user_id: string;
+};
+
+type ProjectionIntent = {
+  run_id: string;
+  source_through_seq: number;
+  speech_kind: string;
+  qq_task_id: unknown;
+  binding_id: unknown;
+  binding_epoch: unknown;
+  agent_id: unknown;
+  observed_through_seq: unknown;
+};
+
+type ProjectedActivity = {
+  activityId: string;
+  task: NonNullable<ConversationEventView["task"]>;
+  runId: string | null;
+};
+
+type PageMetadata = {
+  conversations: Map<string, ProjectionConversation | null>;
+  wakes: Map<string, ProjectedWake>;
+  tasks: Map<string, ProjectedTask[]>;
+  intents: Map<string, ProjectionIntent>;
+  activities: Map<string, ProjectedActivity | undefined>;
+  judgments: Map<string, { started: boolean | undefined; latestRunId: string }>;
+};
+
+const eventIdentity = (event: ConversationEvent) =>
+  JSON.stringify([event.conversationId, event.kind, event.seq, event.source.kind, event.source.id]);
+const wakeIdentity = (conversationId: string, wakeId: string) =>
+  JSON.stringify([conversationId, wakeId]);
+
+/** Metadata is selected once for this synchronous projection, never retained across reads. */
+function pageMetadata(db: Database, events: readonly ConversationEvent[]): PageMetadata {
+  const page: PageMetadata = {
+    conversations: new Map(),
+    wakes: new Map(),
+    tasks: new Map(),
+    intents: new Map(),
+    judgments: new Map(),
+    activities: new Map(),
+  };
+  const groups = new Map<string, ConversationEvent[]>();
+  for (const event of events) {
+    if (
+      !(
+        (event.kind === "wake" && event.source.kind === "wake") ||
+        (event.kind === "inbound" && event.source.kind === "qq_event") ||
+        event.source.kind === "outbound_intent"
+      )
+    )
+      continue;
+    const group = groups.get(event.conversationId) ?? [];
+    group.push(event);
+    groups.set(event.conversationId, group);
+  }
+  for (const [conversationId, selected] of groups) {
+    const conversation = db
+      .query("SELECT binding_epoch,agent_id,source_id,user_id FROM conversations WHERE id=?")
+      .get(conversationId) as ProjectionConversation | null;
+    page.conversations.set(conversationId, conversation);
+    const wakeIds = [
+      ...new Set(
+        selected
+          .filter((event) => event.kind === "wake" && event.source.kind === "wake")
+          .map((event) => event.source.id),
+      ),
+    ];
+    const transferred = new Map<string, string | null>();
+    if (wakeIds.length) {
+      const placeholders = wakeIds.map(() => "?").join(",");
+      const wakes = db
+        .query(`SELECT id,cause,status,ready_at,error_code,through_seq,
+        transferred_task_id FROM wake_signals WHERE conversation_id=? AND id IN (${placeholders})`)
+        .all(conversationId, ...wakeIds) as (ProjectedWake & {
+        transferred_task_id: string | null;
+      })[];
+      for (const wake of wakes) {
+        page.wakes.set(wakeIdentity(conversationId, wake.id), wake);
+        transferred.set(wake.id, wake.transferred_task_id);
+      }
+      if (conversation) {
+        const judgments = db
+          .query(`WITH evidence AS (
+          SELECT r.wake_id,MAX(r.rowid) AS latest_rowid,
+            MAX(CASE WHEN ((r.owner_kind='conversation' AND r.owner_id=?)
+                OR (r.owner_kind='qq_binding' AND r.owner_id=?))
+              AND r.user_id=? AND r.agent_id=? THEN 1 ELSE 0 END) AS has_run,
+            MAX(CASE WHEN ((r.owner_kind='conversation' AND r.owner_id=?)
+                OR (r.owner_kind='qq_binding' AND r.owner_id=?))
+              AND r.user_id=? AND r.agent_id=? AND EXISTS (
+                SELECT 1 FROM agent_steps step WHERE step.run_id=r.run_id AND (
+                  (r.owner_kind='qq_binding' AND r.spec_id='onebot.initiative.evaluate_batch'
+                    AND step.phase='leaf')
+                  OR (r.owner_kind='conversation' AND r.spec_id='onebot.main' AND step.phase='next')
+                )
+              ) THEN 1 ELSE 0 END) AS intent_step_started
+          FROM agent_runs r INDEXED BY ix_agent_runs_conversation
+          WHERE r.conversation_id=? AND r.wake_id IN (${placeholders}) GROUP BY r.wake_id
+        ) SELECT e.wake_id,e.has_run,e.intent_step_started,r.run_id AS latest_run_id
+          FROM evidence e JOIN agent_runs r ON r.rowid=e.latest_rowid`)
+          .all(
+            conversationId,
+            conversation.source_id,
+            conversation.user_id,
+            conversation.agent_id,
+            conversationId,
+            conversation.source_id,
+            conversation.user_id,
+            conversation.agent_id,
+            conversationId,
+            ...wakeIds,
+          ) as {
+          wake_id: string;
+          has_run: number;
+          intent_step_started: number;
+          latest_run_id: string;
+        }[];
+        for (const judgment of judgments) {
+          page.judgments.set(wakeIdentity(conversationId, judgment.wake_id), {
+            started:
+              judgment.intent_step_started === 1 ? true : judgment.has_run ? false : undefined,
+            latestRunId: judgment.latest_run_id,
+          });
+        }
+      }
+    }
+    if (!conversation) continue;
+    const intentIds = [
+      ...new Set(
+        selected
+          .filter((event) => event.source.kind === "outbound_intent")
+          .map((event) => event.source.id),
+      ),
+    ];
+    if (intentIds.length) {
+      const intents = db
+        .query(`SELECT metadata.intent_id,metadata.run_id,
+        metadata.source_through_seq,metadata.speech_kind,metadata.qq_task_id,metadata.binding_id,
+        metadata.binding_epoch,metadata.agent_id,metadata.observed_through_seq
+        FROM json_each(?) selected
+        CROSS JOIN outbound_intent_metadata metadata ON metadata.intent_id=selected.value
+        WHERE metadata.conversation_id=?`)
+        .all(JSON.stringify(intentIds), conversationId) as (ProjectionIntent & {
+        intent_id: string;
+      })[];
+      for (const intent of intents) page.intents.set(intent.intent_id, intent);
+    }
+    const taskIds = new Set<string>();
+    for (const id of transferred.values()) if (id) taskIds.add(id);
+    const throughSeqs = new Set<number>();
+    for (const event of selected) {
+      if (event.kind === "inbound" && event.source.kind === "qq_event") throughSeqs.add(event.seq);
+      const wake = page.wakes.get(wakeIdentity(conversationId, event.source.id));
+      if (event.kind === "wake" && wake?.cause === "direct_reply")
+        throughSeqs.add(wake.through_seq);
+      const intent = page.intents.get(event.source.id);
+      if (
+        event.source.kind === "outbound_intent" &&
+        intent &&
+        typeof intent.qq_task_id === "string" &&
+        intent.binding_id === conversation.source_id &&
+        intent.binding_epoch === conversation.binding_epoch &&
+        intent.agent_id === conversation.agent_id
+      )
+        taskIds.add(intent.qq_task_id);
+    }
+    type CandidateTask = ProjectedTask & {
+      origin_event_key?: string | null;
+      task_class?: string;
+    };
+    const tasksById = new Map<string, CandidateTask>();
+    const columns =
+      "t.id,t.status,t.error_code,t.origin_run_id,t.origin_wake_id,t.cause,t.source_through_seq";
+    const scopeArgs = [conversationId, conversation.binding_epoch, conversation.agent_id];
+    if (taskIds.size) {
+      const tasks = db
+        .query(`SELECT ${columns} FROM json_each(?) selected
+        CROSS JOIN qq_conversation_tasks t ON t.id=selected.value
+        WHERE t.conversation_id=? AND t.binding_epoch=? AND t.agent_id=?`)
+        .all(JSON.stringify([...taskIds]), ...scopeArgs) as CandidateTask[];
+      for (const task of tasks) tasksById.set(task.id, task);
+    }
+    if (throughSeqs.size) {
+      const tasks = db
+        .query(`SELECT ${columns},t.origin_event_key,t.task_class
+        FROM qq_conversation_tasks t WHERE t.conversation_id=? AND t.binding_epoch=? AND t.agent_id=?
+          AND t.task_class='mention' AND t.cause='direct_reply' AND t.origin_wake_id IS NULL
+          AND t.source_through_seq IN (${[...throughSeqs].map(() => "?").join(",")})`)
+        .all(...scopeArgs, ...throughSeqs) as CandidateTask[];
+      for (const task of tasks) tasksById.set(task.id, task);
+    }
+    const tasks = [...tasksById.values()];
+    for (const event of selected) {
+      let candidates: ProjectedTask[] = [];
+      if (event.kind === "wake" && event.source.kind === "wake") {
+        candidates = tasks.filter(
+          (task) =>
+            task.id === transferred.get(event.source.id) && task.origin_wake_id === event.source.id,
+        );
+        const wake = page.wakes.get(wakeIdentity(conversationId, event.source.id));
+        if (!candidates.length && wake?.cause === "direct_reply") {
+          candidates = tasks.filter(
+            (task) =>
+              task.task_class === "mention" &&
+              task.cause === "direct_reply" &&
+              task.origin_wake_id === null &&
+              task.source_through_seq === wake.through_seq &&
+              typeof task.origin_event_key === "string" &&
+              !!db
+                .query(`SELECT 1
+              FROM conversation_events WHERE conversation_id=? AND seq=? AND source_kind='qq_event'
+                AND source_id=? AND kind='inbound'`)
+                .get(conversationId, task.source_through_seq, task.origin_event_key),
+          );
+        }
+      } else if (event.kind === "inbound" && event.source.kind === "qq_event") {
+        candidates = tasks.filter(
+          (task) =>
+            task.task_class === "mention" &&
+            task.cause === "direct_reply" &&
+            task.origin_wake_id === null &&
+            task.source_through_seq === event.seq &&
+            task.origin_event_key === event.source.id,
+        );
+      } else if (event.source.kind === "outbound_intent") {
+        const intent = page.intents.get(event.source.id);
+        if (
+          intent &&
+          typeof intent.qq_task_id === "string" &&
+          intent.binding_id === conversation.source_id &&
+          intent.binding_epoch === conversation.binding_epoch &&
+          intent.agent_id === conversation.agent_id
+        )
+          candidates = tasks.filter(
+            (task) =>
+              task.id === intent.qq_task_id &&
+              task.source_through_seq === intent.source_through_seq &&
+              task.cause === intent.speech_kind,
+          );
+      }
+      page.tasks.set(eventIdentity(event), candidates);
+    }
+  }
+  return page;
+}
+
 function initiativeJudgementStarted(
-  db: Database,
+  page: PageMetadata,
   wake: ProjectedWake,
   conversationId: string,
 ): boolean | undefined {
   if (wake.cause !== "chiming_in" && wake.cause !== "idle_topic") return undefined;
-  const row = db
-    .query(
-      `WITH scope AS (
-        SELECT w.id AS wake_id,w.status,w.error_code,c.id AS conversation_id,
-          c.source_id,c.user_id,c.agent_id
-        FROM wake_signals w JOIN conversations c ON c.id=w.conversation_id
-        WHERE w.id=? AND w.conversation_id=?
-      ), candidates AS (
-        SELECT r.run_id,r.spec_id,r.owner_kind
-        FROM scope s JOIN agent_runs r INDEXED BY ix_agent_runs_conversation
-          ON r.conversation_id=s.conversation_id
-        WHERE ((r.owner_kind='conversation' AND r.owner_id=s.conversation_id)
-            OR (r.owner_kind='qq_binding' AND r.owner_id=s.source_id))
-          AND r.user_id=s.user_id AND r.agent_id=s.agent_id
-          AND r.conversation_id=s.conversation_id AND r.wake_id=s.wake_id
-      ), evidence AS (
-        SELECT s.status,s.error_code,COUNT(DISTINCT r.run_id) AS run_count,
-          MAX(CASE WHEN step.step_id IS NOT NULL THEN 1 ELSE 0 END) AS intent_step_started
-        FROM scope s
-        LEFT JOIN candidates r ON 1=1
-        LEFT JOIN agent_steps step ON step.run_id=r.run_id AND (
-          (r.owner_kind='qq_binding' AND r.spec_id='onebot.initiative.evaluate_batch'
-            AND step.phase='leaf')
-          OR (r.owner_kind='conversation' AND r.spec_id='onebot.main' AND step.phase='next')
-        )
-        GROUP BY s.wake_id
-      )
-      SELECT CASE
-        WHEN intent_step_started=1 THEN 1
-        WHEN run_count>0 OR status IN ('pending','leased')
-          OR error_code IN ('BATCH_NO_ELIGIBLE_SOURCE','BATCH_WAITING_FOR_COUNT') THEN 0
-        ELSE NULL
-      END AS judgmentStarted
-      FROM evidence`,
-    )
-    .get(wake.id, conversationId) as { judgmentStarted: number | null } | null;
-  if (!row || row.judgmentStarted === null) return undefined;
-  return row.judgmentStarted === 1;
+  const judgment = page.judgments.get(wakeIdentity(conversationId, wake.id));
+  if (judgment?.started === true) return true;
+  if (
+    judgment?.started === false ||
+    wake.status === "pending" ||
+    wake.status === "leased" ||
+    wake.error_code === "BATCH_NO_ELIGIBLE_SOURCE" ||
+    wake.error_code === "BATCH_WAITING_FOR_COUNT"
+  )
+    return false;
+  return undefined;
 }
 
-function taskActivity(db: Database, event: ConversationEvent, wake: ProjectedWake | null) {
-  if (
-    !(
-      (event.kind === "wake" && event.source.kind === "wake") ||
-      (event.kind === "inbound" && event.source.kind === "qq_event") ||
-      event.source.kind === "outbound_intent"
-    )
-  )
-    return undefined;
-  const conversation = db
-    .query("SELECT binding_epoch,agent_id,source_id FROM conversations WHERE id=?")
-    .get(event.conversationId) as {
-    binding_epoch: number;
-    agent_id: string;
-    source_id: string;
-  } | null;
+function taskActivity(
+  db: Database,
+  event: ConversationEvent,
+  page: PageMetadata,
+): ProjectedActivity | undefined {
+  const candidates = page.tasks.get(eventIdentity(event)) ?? [];
+  if (candidates.length !== 1) return undefined;
+  const key = JSON.stringify([
+    event.conversationId,
+    event.source.kind === "outbound_intent" ? "intent" : "task",
+    event.source.kind === "outbound_intent" ? event.source.id : candidates[0]!.id,
+  ]);
+  if (!page.activities.has(key)) page.activities.set(key, resolveTaskActivity(db, event, page));
+  return page.activities.get(key);
+}
+
+function resolveTaskActivity(
+  db: Database,
+  event: ConversationEvent,
+  page: PageMetadata,
+): ProjectedActivity | undefined {
+  const conversation = page.conversations.get(event.conversationId);
   if (!conversation) return undefined;
-  const columns =
-    "t.id,t.status,t.error_code,t.origin_run_id,t.origin_wake_id,t.cause,t.source_through_seq";
-  const scope = "t.conversation_id=? AND t.binding_epoch=? AND t.agent_id=?";
-  const scopeArgs = [event.conversationId, conversation.binding_epoch, conversation.agent_id];
-  let candidates: ProjectedTask[] = [];
-  if (event.kind === "wake" && event.source.kind === "wake") {
-    candidates = db
-      .query(`SELECT ${columns} FROM wake_signals w JOIN qq_conversation_tasks t
-        ON t.id=w.transferred_task_id AND t.origin_wake_id=w.id
-        WHERE w.id=? AND w.conversation_id=? AND ${scope}`)
-      .all(event.source.id, event.conversationId, ...scopeArgs) as ProjectedTask[];
-    if (candidates.length === 0) {
-      if (wake?.cause === "direct_reply") {
-        candidates = db
-          .query(`SELECT ${columns} FROM qq_conversation_tasks t
-            JOIN conversation_events e ON e.conversation_id=t.conversation_id
-              AND e.seq=t.source_through_seq AND e.source_kind='qq_event'
-              AND e.source_id=t.origin_event_key AND e.kind='inbound'
-            WHERE ${scope} AND t.task_class='mention' AND t.cause='direct_reply'
-              AND t.origin_wake_id IS NULL AND t.source_through_seq=?`)
-          .all(...scopeArgs, wake.through_seq) as ProjectedTask[];
-      }
-    }
-  } else if (event.kind === "inbound" && event.source.kind === "qq_event") {
-    candidates = db
-      .query(`SELECT ${columns} FROM qq_conversation_tasks t WHERE ${scope}
-        AND t.task_class='mention' AND t.cause='direct_reply' AND t.origin_wake_id IS NULL
-        AND t.source_through_seq=? AND t.origin_event_key=?`)
-      .all(...scopeArgs, event.seq, event.source.id) as ProjectedTask[];
-  } else if (event.source.kind === "outbound_intent") {
+  const candidates = page.tasks.get(eventIdentity(event)) ?? [];
+  if (event.source.kind === "outbound_intent") {
+    if (candidates.length !== 1) return undefined;
     const intent = db
       .query(
         "SELECT run_id,source_through_seq,speech_kind,target FROM outbound_intents WHERE id=? AND conversation_id=?",
@@ -149,15 +350,6 @@ function taskActivity(db: Database, event: ConversationEvent, wake: ProjectedWak
       target.agentId !== conversation.agent_id
     )
       return undefined;
-    candidates = db
-      .query(`SELECT ${columns} FROM qq_conversation_tasks t WHERE ${scope}
-      AND t.id=? AND t.source_through_seq=? AND t.cause=?`)
-      .all(
-        ...scopeArgs,
-        target.qqTaskId,
-        intent.source_through_seq,
-        intent.speech_kind,
-      ) as ProjectedTask[];
     const run = db
       .query(
         "SELECT conversation_id,owner_kind,owner_id,agent_id,wake_id,observed_seq FROM agent_runs WHERE run_id=?",
@@ -186,6 +378,7 @@ function taskActivity(db: Database, event: ConversationEvent, wake: ProjectedWak
     if (
       candidates.length !== 1 ||
       !candidate ||
+      candidate.id !== target.qqTaskId ||
       run.wake_id !== candidate.origin_wake_id ||
       (intent.run_id !== candidate.origin_run_id &&
         candidate.cause !== "chiming_in" &&
@@ -254,13 +447,28 @@ export function projectConversationEvent(
   event: ConversationEvent,
   at = new Date().toISOString(),
 ): ConversationEventView {
+  return projectConversationEvents(db, [event], at)[0]!;
+}
+
+/** Only this selected page shares synchronous metadata work; source bodies stay on demand. */
+export function projectConversationEvents(
+  db: Database,
+  events: readonly ConversationEvent[],
+  at = new Date().toISOString(),
+): ConversationEventView[] {
+  const page = pageMetadata(db, events);
+  return events.map((event) => projectEvent(db, event, at, page));
+}
+
+function projectEvent(
+  db: Database,
+  event: ConversationEvent,
+  at: string,
+  page: PageMetadata,
+): ConversationEventView {
   const wake =
     event.kind === "wake" && event.source.kind === "wake"
-      ? (db
-          .query(
-            "SELECT id,cause,status,ready_at,error_code,through_seq FROM wake_signals WHERE id=? AND conversation_id=?",
-          )
-          .get(event.source.id, event.conversationId) as ProjectedWake | null)
+      ? (page.wakes.get(wakeIdentity(event.conversationId, event.source.id)) ?? null)
       : null;
   const base: ConversationEventView = {
     ...event,
@@ -271,22 +479,18 @@ export function projectConversationEvent(
     media: [],
     deliveryStatus: null,
     deliveryStaleReason: null,
-    ...taskActivity(db, event, wake),
+    ...taskActivity(db, event, page),
   };
   if (event.kind === "wake" && event.source.kind === "wake") {
     if (!wake) return { ...base, contentState: "revoked" };
-    const run = base.task
+    const runId = base.task
       ? null
-      : (db
-          .query(
-            "SELECT run_id FROM agent_runs WHERE wake_id=? AND conversation_id=? ORDER BY rowid DESC LIMIT 1",
-          )
-          .get(wake.id, event.conversationId) as { run_id: string } | null);
-    const judgmentStarted = initiativeJudgementStarted(db, wake, event.conversationId);
+      : page.judgments.get(wakeIdentity(event.conversationId, wake.id))?.latestRunId;
+    const judgmentStarted = initiativeJudgementStarted(page, wake, event.conversationId);
     return {
       ...base,
       contentState: "active",
-      runId: base.runId ?? run?.run_id ?? null,
+      runId: base.runId ?? runId ?? null,
       wake: {
         id: wake.id,
         cause: wake.cause,

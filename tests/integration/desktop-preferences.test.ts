@@ -116,7 +116,7 @@ describe("desktop profile preference IPC", () => {
     };
     expect(first.presentations).toEqual([{}]);
     for (const [key, value] of Object.entries(values))
-      first.call(DESKTOP_PREFERENCES_SAVE, key, value);
+      first.call(DESKTOP_PREFERENCES_SAVE, { [key]: value });
     expect(first.presentations.at(-1)).toEqual(values);
     first.dispose();
 
@@ -131,7 +131,7 @@ describe("desktop profile preference IPC", () => {
 
   it("rejects foreign contents, subframes, navigated pages, stale origins and destroyed senders", async () => {
     const current = await fixture();
-    current.call(DESKTOP_PREFERENCES_SAVE, "superstring-locale", "en");
+    current.call(DESKTOP_PREFERENCES_SAVE, { "superstring-locale": "en" });
     for (const event of [
       { ...current.event, sender: {} },
       { ...current.event, senderFrame: { url: current.frame.url } },
@@ -141,12 +141,9 @@ describe("desktop profile preference IPC", () => {
         current.from(event as unknown as IpcMainInvokeEvent, DESKTOP_PREFERENCES_LOAD),
       ).toThrow("DESKTOP_PREFERENCES_FORBIDDEN");
       expect(() =>
-        current.from(
-          event as unknown as IpcMainInvokeEvent,
-          DESKTOP_PREFERENCES_SAVE,
-          "superstring-locale",
-          "zh-CN",
-        ),
+        current.from(event as unknown as IpcMainInvokeEvent, DESKTOP_PREFERENCES_SAVE, {
+          "superstring-locale": "zh-CN",
+        }),
       ).toThrow("DESKTOP_PREFERENCES_FORBIDDEN");
     }
     for (const url of [
@@ -172,14 +169,18 @@ describe("desktop profile preference IPC", () => {
 
   it("rejects unrelated keys, path access and malformed payloads without mutating saved settings", async () => {
     const current = await fixture();
-    current.call(DESKTOP_PREFERENCES_SAVE, "superstring-locale", "en");
+    current.call(DESKTOP_PREFERENCES_SAVE, { "superstring-locale": "en" });
     for (const args of [
-      ["token", "secret"],
-      ["superstring-locale.nested", "en"],
-      ["__proto__", "x"],
-      ["superstring-session", {}],
-      ["superstring-agent"],
-      ["superstring-locale", "en", "extra"],
+      [{ token: "secret" }],
+      [{ "superstring-locale.nested": "en" }],
+      [{ ["__proto__"]: "x" }],
+      [{ "superstring-session": {} }],
+      [{ "superstring-agent": undefined }],
+      [{ "superstring-locale": "en" }, { "superstring-appearance": "jade" }],
+      [],
+      [null],
+      [["superstring-locale", "en"]],
+      ["superstring-locale"],
     ]) {
       expect(() => current.call(DESKTOP_PREFERENCES_SAVE, ...args)).toThrow(
         "DESKTOP_PREFERENCE_INVALID",
@@ -188,9 +189,9 @@ describe("desktop profile preference IPC", () => {
     expect(() => current.call(DESKTOP_PREFERENCES_LOAD, "any-key")).toThrow(
       "DESKTOP_PREFERENCE_INVALID",
     );
-    expect(() => current.call(DESKTOP_PREFERENCES_SAVE, "superstring-locale", "arbitrary")).toThrow(
-      "DESKTOP_PREFERENCES_WRITE_FAILED",
-    );
+    expect(() =>
+      current.call(DESKTOP_PREFERENCES_SAVE, { "superstring-locale": "arbitrary" }),
+    ).toThrow("DESKTOP_PREFERENCES_WRITE_FAILED");
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({ "superstring-locale": "en" });
     expect(current.errors).toEqual(["DESKTOP_PREFERENCES_WRITE_FAILED"]);
   });
@@ -198,19 +199,19 @@ describe("desktop profile preference IPC", () => {
   it("preserves explicit removal as a tombstone and disposes all IPC handlers", async () => {
     const current = await fixture();
     // The font key joins the whitelist: permitted, saved, and still schema-checked.
-    current.call(DESKTOP_PREFERENCES_SAVE, "superstring-appearance-font", "cute");
+    current.call(DESKTOP_PREFERENCES_SAVE, { "superstring-appearance-font": "cute" });
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
       "superstring-appearance-font": "cute",
     });
     expect(() =>
-      current.call(DESKTOP_PREFERENCES_SAVE, "superstring-appearance-font", "not-a-font"),
+      current.call(DESKTOP_PREFERENCES_SAVE, { "superstring-appearance-font": "not-a-font" }),
     ).toThrow("DESKTOP_PREFERENCES_WRITE_FAILED");
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
       "superstring-appearance-font": "cute",
     });
-    current.call(DESKTOP_PREFERENCES_SAVE, "superstring-appearance-font", null);
-    current.call(DESKTOP_PREFERENCES_SAVE, "superstring-agent", "ciphertext");
-    current.call(DESKTOP_PREFERENCES_SAVE, "superstring-agent", null);
+    current.call(DESKTOP_PREFERENCES_SAVE, { "superstring-appearance-font": null });
+    current.call(DESKTOP_PREFERENCES_SAVE, { "superstring-agent": "ciphertext" });
+    current.call(DESKTOP_PREFERENCES_SAVE, { "superstring-agent": null });
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
       "superstring-appearance-font": null,
       "superstring-agent": null,
@@ -221,8 +222,8 @@ describe("desktop profile preference IPC", () => {
 
   it("round-trips both size keys and rejects ids outside the approved enums", async () => {
     const current = await fixture();
-    current.call(DESKTOP_PREFERENCES_SAVE, TEXT_SIZE_STORAGE_KEY, "small");
-    current.call(DESKTOP_PREFERENCES_SAVE, INTERFACE_SIZE_STORAGE_KEY, "comfortable");
+    current.call(DESKTOP_PREFERENCES_SAVE, { [TEXT_SIZE_STORAGE_KEY]: "small" });
+    current.call(DESKTOP_PREFERENCES_SAVE, { [INTERFACE_SIZE_STORAGE_KEY]: "comfortable" });
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
       [TEXT_SIZE_STORAGE_KEY]: "small",
       [INTERFACE_SIZE_STORAGE_KEY]: "comfortable",
@@ -232,7 +233,7 @@ describe("desktop profile preference IPC", () => {
       [TEXT_SIZE_STORAGE_KEY, "normal"],
       [INTERFACE_SIZE_STORAGE_KEY, "spacious"],
     ]) {
-      expect(() => current.call(DESKTOP_PREFERENCES_SAVE, key, value)).toThrow(
+      expect(() => current.call(DESKTOP_PREFERENCES_SAVE, { [key]: value })).toThrow(
         "DESKTOP_PREFERENCES_WRITE_FAILED",
       );
     }
@@ -240,8 +241,8 @@ describe("desktop profile preference IPC", () => {
       [TEXT_SIZE_STORAGE_KEY]: "small",
       [INTERFACE_SIZE_STORAGE_KEY]: "comfortable",
     });
-    current.call(DESKTOP_PREFERENCES_SAVE, TEXT_SIZE_STORAGE_KEY, null);
-    current.call(DESKTOP_PREFERENCES_SAVE, INTERFACE_SIZE_STORAGE_KEY, "standard");
+    current.call(DESKTOP_PREFERENCES_SAVE, { [TEXT_SIZE_STORAGE_KEY]: null });
+    current.call(DESKTOP_PREFERENCES_SAVE, { [INTERFACE_SIZE_STORAGE_KEY]: "standard" });
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
       [TEXT_SIZE_STORAGE_KEY]: null,
       [INTERFACE_SIZE_STORAGE_KEY]: "standard",
@@ -250,30 +251,58 @@ describe("desktop profile preference IPC", () => {
 
   it("accepts only the close fold's on/off tombstone and rejects booleans or arbitrary strings", async () => {
     const current = await fixture();
-    current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, "off");
+    current.call(DESKTOP_PREFERENCES_SAVE, { [CLOSE_ANIMATION_STORAGE_KEY]: "off" });
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
       [CLOSE_ANIMATION_STORAGE_KEY]: "off",
     });
-    current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, "on");
+    current.call(DESKTOP_PREFERENCES_SAVE, { [CLOSE_ANIMATION_STORAGE_KEY]: "on" });
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
       [CLOSE_ANIMATION_STORAGE_KEY]: "on",
     });
     for (const value of [true, false, 1, {}]) {
       expect(() =>
-        current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, value),
+        current.call(DESKTOP_PREFERENCES_SAVE, { [CLOSE_ANIMATION_STORAGE_KEY]: value }),
       ).toThrow("DESKTOP_PREFERENCE_INVALID");
     }
     for (const value of ["true", "false", "garbage", ""]) {
       expect(() =>
-        current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, value),
+        current.call(DESKTOP_PREFERENCES_SAVE, { [CLOSE_ANIMATION_STORAGE_KEY]: value }),
       ).toThrow("DESKTOP_PREFERENCES_WRITE_FAILED");
     }
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
       [CLOSE_ANIMATION_STORAGE_KEY]: "on",
     });
-    current.call(DESKTOP_PREFERENCES_SAVE, CLOSE_ANIMATION_STORAGE_KEY, null);
+    current.call(DESKTOP_PREFERENCES_SAVE, { [CLOSE_ANIMATION_STORAGE_KEY]: null });
     expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
       [CLOSE_ANIMATION_STORAGE_KEY]: null,
+    });
+  });
+
+  it("writes one batched adoption snapshot with a single presentation change", async () => {
+    const current = await fixture();
+    const before = current.presentations.length;
+    current.call(DESKTOP_PREFERENCES_SAVE, {
+      "superstring-locale": "en",
+      "superstring-appearance": "jade",
+      "superstring-session": "ciphertext",
+    });
+    expect(current.presentations.length - before).toBe(1);
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      "superstring-locale": "en",
+      "superstring-appearance": "jade",
+      "superstring-session": "ciphertext",
+    });
+    // The store schema stays authoritative: an invalid enum rejects the whole batch, untouched.
+    expect(() =>
+      current.call(DESKTOP_PREFERENCES_SAVE, {
+        "superstring-locale": "zh-CN",
+        "superstring-appearance": "not-a-theme",
+      }),
+    ).toThrow("DESKTOP_PREFERENCES_WRITE_FAILED");
+    expect(current.call(DESKTOP_PREFERENCES_LOAD)).toEqual({
+      "superstring-locale": "en",
+      "superstring-appearance": "jade",
+      "superstring-session": "ciphertext",
     });
   });
 
@@ -295,7 +324,7 @@ describe("desktop profile preference IPC", () => {
 
   it("does not silently reset a corrupt profile store", async () => {
     const first = await fixture();
-    first.call(DESKTOP_PREFERENCES_SAVE, "superstring-locale", "en");
+    first.call(DESKTOP_PREFERENCES_SAVE, { "superstring-locale": "en" });
     first.dispose();
     const file = path.join(first.profileDirectory, "state", "desktop-preferences.json");
     writeFileSync(file, "corrupt preference data");

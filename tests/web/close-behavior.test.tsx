@@ -49,7 +49,9 @@ describe("desktop preference contract", () => {
     expect(screen.getByRole("option", { name: "收回动画后退出" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "立即退出" })).toBeTruthy();
     expect(localStorage.getItem(CLOSE_ANIMATION_STORAGE_KEY)).toBeNull();
-    expect(save.mock.calls.filter(([key]) => key === CLOSE_ANIMATION_STORAGE_KEY)).toHaveLength(0);
+    expect(
+      save.mock.calls.filter(([snapshot]) => CLOSE_ANIMATION_STORAGE_KEY in snapshot),
+    ).toHaveLength(0);
     expect(
       screen.getByText("关闭窗口将退出 Superstring，并停止本地服务与 Agent 运行。"),
     ).toBeTruthy();
@@ -61,13 +63,17 @@ describe("desktop preference contract", () => {
     });
     expect(localStorage.getItem(CLOSE_ANIMATION_STORAGE_KEY)).toBe("off");
     expect(choice.value).toBe("off");
-    await waitFor(() => expect(save).toHaveBeenCalledWith(CLOSE_ANIMATION_STORAGE_KEY, "off"));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({ [CLOSE_ANIMATION_STORAGE_KEY]: "off" }),
+    );
     await act(async () => {
       fireEvent.change(choice, { target: { value: "on" } });
     });
     expect(localStorage.getItem(CLOSE_ANIMATION_STORAGE_KEY)).toBe("on");
     expect(choice.value).toBe("on");
-    await waitFor(() => expect(save).toHaveBeenLastCalledWith(CLOSE_ANIMATION_STORAGE_KEY, "on"));
+    await waitFor(() =>
+      expect(save).toHaveBeenLastCalledWith({ [CLOSE_ANIMATION_STORAGE_KEY]: "on" }),
+    );
     expect(store.getState().desktopCloseAction).toBe("background");
     expect(client.updateDesktopSettings).not.toHaveBeenCalled();
   });

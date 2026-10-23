@@ -52,7 +52,8 @@ export class ActionExecutor {
     options?: { readonly retainedCarrierObservation?: Pick<ActionObservation, "name" | "sources"> },
   ): void {
     context.signal.throwIfAborted();
-    // Group capability is rechecked at both sides of the permission assertion.
+    // 入场边界＝群能力与权限各查一次；生产 FilePermissionStore 的读取不回写库，
+    // 同帧再查同一事实没有新信息。飞行期间的撤权由 execute() 跨 await 的 check() 复验。
     this.guard?.assertAction(action, context.owner, options);
     const effect = action.description.effect ?? "write";
     this.permissions.assert(
@@ -63,7 +64,6 @@ export class ActionExecutor {
       action.sandboxCallable ?? effect === "read",
       approvalKey,
     );
-    this.guard?.assertAction(action, context.owner, options);
     action.assertAvailable?.();
   }
   async executeBatch(

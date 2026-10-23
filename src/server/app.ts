@@ -116,6 +116,7 @@ export function createApp(opts: CreateAppOptions): Hono {
     (business ? conversationEvidenceSourceAccess(business, source, owner, at) : undefined) ??
     skillSourceAccess(opts.skillsRoot, source) ??
     opts.resolveSource?.(source, owner, at);
+  resolveSource.resolveMany = (sources, owner) => permissions.sourceAccessMany(sources, owner);
   const webAccess = opts.webAccess;
   const externalActions =
     opts.externalActions ??

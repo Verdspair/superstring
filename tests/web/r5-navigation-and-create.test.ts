@@ -192,7 +192,7 @@ describe("R5 新建会话状态机", () => {
       selectedNewSessionAgentId: AGENT_ID,
       apiClient: fakeClient({
         createSession,
-        listMessages: vi.fn().mockResolvedValue([]),
+        listMessages: vi.fn().mockResolvedValue({ items: [], has_more: false }),
         getSessionRuntime,
       }),
     });
@@ -226,7 +226,7 @@ describe("R5 新建会话状态机", () => {
       },
       apiClient: fakeClient({
         createSession,
-        listMessages: vi.fn().mockResolvedValue([]),
+        listMessages: vi.fn().mockResolvedValue({ items: [], has_more: false }),
         getSessionRuntime: vi.fn().mockResolvedValue(runtime),
       }),
     });
@@ -257,20 +257,23 @@ describe("R5 会话加载隔离", () => {
   it("runtime 读取失败时保留成功读取的消息并标记标题不可用", async () => {
     useSuperstringStore.setState({
       apiClient: fakeClient({
-        listMessages: vi.fn().mockResolvedValue([
-          {
-            id: "44444444-4444-4444-8444-444444444444",
-            session_id: SESSION_ID,
-            turn_id: "55555555-5555-4555-8555-555555555555",
-            role: "user",
-            content: "已读取消息",
-            sequence_no: 1,
-            status: "completed",
-            error_code: null,
-            created_at: NOW,
-            completed_at: NOW,
-          },
-        ]),
+        listMessages: vi.fn().mockResolvedValue({
+          items: [
+            {
+              id: "44444444-4444-4444-8444-444444444444",
+              session_id: SESSION_ID,
+              turn_id: "55555555-5555-4555-8555-555555555555",
+              role: "user",
+              content: "已读取消息",
+              sequence_no: 1,
+              status: "completed",
+              error_code: null,
+              created_at: NOW,
+              completed_at: NOW,
+            },
+          ],
+          has_more: false,
+        }),
         getSessionRuntime: vi.fn().mockRejectedValue(new Error("runtime 失败")),
       }),
     });

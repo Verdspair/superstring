@@ -14,7 +14,7 @@ import { ConversationEventRepository } from "../db/conversation-event-repository
 import { memoryRevision } from "../db/memory-content-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { fail } from "../errors";
-import type { ModuleSourceResolver } from "../modules/composition";
+import { type ModuleSourceResolver, resolveSourceStates } from "../modules/composition";
 import { stringifyJsonSpaced } from "../services/memory-contract";
 import { qqMediaSourceAccess } from "../services/qq-media-sources";
 import { qqMediaReadTaskSourceAccess } from "../services/qq-media-task-sources";
@@ -474,14 +474,13 @@ export function assertContextSources(options: {
   messages: { memory: string; other: string };
 }): void {
   const { db, sources, owner, now } = options;
-  const resolved = new Map(
-    sources.map((source) => [
-      source,
-      isDirectSourceKind(source.kind)
-        ? sourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, now)
-        : options.resolveSource?.(source, owner, now),
-    ]),
-  );
+  const resolve: ModuleSourceResolver = (source, identity, at) =>
+    isDirectSourceKind(source.kind)
+      ? sourceAccess(db, source, identity, { userId: DEFAULT_USER_ID }, at)
+      : options.resolveSource?.(source, identity, at);
+  resolve.resolveMany = options.resolveSource?.resolveMany;
+  const states = [...resolveSourceStates(sources, resolve, owner, now)];
+  const resolved = new Map(sources.map((source, index) => [source, states[index]]));
   const refs = sources.filter(
     (source) => source.kind === "memory" && resolved.get(source) === undefined,
   );
@@ -577,6 +576,21 @@ export function inspectContext(
     const states: SourceAccess[] = [];
     for (let index = 0; index < stored.sources.length; ) {
       const source = stored.sources[index]!;
+      if (source.kind === "tool_permission" && resolveSource?.resolveMany) {
+        let end = index + 1;
+        while (end < stored.sources.length && stored.sources[end]!.kind === "tool_permission")
+          end++;
+        const segment = stored.sources.slice(index, end);
+        const verdicts = [...resolveSourceStates(segment, resolveSource, run.owner, now)];
+        states.push(
+          ...segment.map(
+            (ref, offset) =>
+              verdicts[offset] ?? sourceAccess(db, ref, run.owner, principal, now, "inspection"),
+          ),
+        );
+        index = end;
+        continue;
+      }
       if (source.kind !== "qq_observation") {
         states.push(
           isDirectSourceKind(source.kind)

@@ -13,6 +13,7 @@ import type { RuntimeConfig } from "../../shared/contracts";
 import {
   ChatRequestSchema,
   CreateSessionRequestSchema,
+  MessagePageQuerySchema,
   UpdateSessionRequestSchema,
 } from "../../shared/contracts";
 import type { WebChannelOptions } from "../channels/web-channel";
@@ -22,7 +23,7 @@ import {
   deleteSession,
   getRuntimeConfig,
   getSession,
-  listMessages as listMessageRows,
+  listMessagePage,
   listSessions as listSessionRows,
   type Orm,
   renameSession,
@@ -32,7 +33,7 @@ import type { ModelGateway } from "../llm/model-gateway";
 import { DirectService } from "../services/direct-service";
 import { isDatabaseError } from "./error-handler";
 import { createSseResponse } from "./sse";
-import { parseBody, parseUuidParam, readJsonBody } from "./validation";
+import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
 
 function toSessionResponse(row: {
   id: string;
@@ -159,7 +160,16 @@ export function sessionRoutes(
   // 302
   router.get("/sessions/:sessionId/messages", (c) => {
     const sessionId = parseUuidParam(c.req.param("sessionId"));
-    return c.json(listMessageRows(orm, sessionId).map(toMessageResponse));
+    const rawQuery = c.req.query();
+    if (
+      [rawQuery.before_sequence_no, rawQuery.after_sequence_no].some(
+        (value) => value !== undefined && !/^\d+$/.test(value),
+      )
+    )
+      throw validationFailed();
+    const query = parseBody(MessagePageQuerySchema, rawQuery);
+    const page = listMessagePage(orm, sessionId, query);
+    return c.json({ items: page.items.map(toMessageResponse), has_more: page.has_more });
   });
 
   /**

@@ -11,6 +11,9 @@ export type ChatPhase = "idle" | "submitting" | "streaming" | "settling" | "reco
 export interface WebConversationState {
   sessionId: string;
   messages: ChatItem[];
+  loadedFromSequence: number | null;
+  hasOlderMessages: boolean;
+  loadingOlderMessages: boolean;
   composer: string;
   runtimeConfig: RuntimeConfig | null;
   runtimeConfigUnavailable: boolean;
@@ -29,6 +32,9 @@ export function emptyWebConversation(sessionId = ""): WebConversationState {
   return {
     sessionId,
     messages: [],
+    loadedFromSequence: null,
+    hasOlderMessages: false,
+    loadingOlderMessages: false,
     composer: "",
     runtimeConfig: null,
     runtimeConfigUnavailable: false,
@@ -50,6 +56,7 @@ export interface ConversationState {
   conversationById: Record<string, WebConversationState>;
   unselectedChat: WebConversationState;
   reconcileChat: (conversationId?: string) => Promise<void>;
+  loadOlderMessages: () => Promise<void>;
 }
 export function currentChat(state: SuperstringState): WebConversationState {
   const id = state.currentConversationId;

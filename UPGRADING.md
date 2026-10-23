@@ -57,7 +57,7 @@
 
 QQ群聊与私聊现共用会话配置页；已有配置与草稿保留，私聊详细策略默认跟随所选方案，未主动自定义的项目不改写。会话菜单可解除绑定并移除目录入口，不删除Agent、方案或平台聊天。私聊添加需填写联系人的QQ号，不能填写机器人自身账号。这些界面与绑定操作不新增数据库迁移。
 
-新消息到达已绑定会话时逐条即时显示。补读历史或手动刷新期间收到的新消息会继续显示，不会因较早的读取结果而漏显示，也不会等到下一次刷新；查看历史时的阅读位置保持不变。
+聊天记录首次从服务器只读取最新 100 条，点击“加载更早消息”分页查看旧记录；保存的历史不会被删除或截断。新消息仍逐条即时显示，刷新和回复完成保留已加载的旧页及阅读位置。优化消息详情、启动记录核对与权限读取中的重复工作。
 
 模型工具调用会对函数名与请求结构做协议兼容处理，遇到明确的函数调用格式异常时可在现有纠错流程内再试一次；异常调用不执行，已完成的工具操作不重复。持续异常、内容过滤与输出上限仍明确报错。兼容处理不保证每个模型与服务商组合都能完成工具调用。
 
@@ -142,7 +142,7 @@ This section applies to source code on main, not a new packaged release. The pub
 
 QQ groups and private chats now share one conversation policy editor. Existing configuration and drafts remain; private settings follow the selected scheme unless explicitly overridden. Conversation menus can remove a binding and its directory entry without deleting the Agent, scheme, or platform chat. Enter the contact’s QQ number when adding a private chat, not the bot’s own account. These interface and binding changes add no database migration.
 
-New messages appear one by one as they arrive in bound conversations. Messages received while older history loads or a manual refresh runs are still shown, are not dropped by an earlier read, and do not wait for the next refresh; your reading position stays in place.
+Message history initially reads only the latest 100 records from the server. Use “Load older messages” to page through earlier records; saved history is never deleted or truncated. New messages still appear one by one as they arrive, while refreshes and completed replies retain loaded older pages and the reading position. Reduces repeated work in message details, startup history reconciliation, and permission reads.
 
 Tool calls apply protocol compatibility handling to function names and request structures, and an explicit malformed function-call finish can be retried once through the existing correction flow. Rejected calls are not executed and completed tool actions are not repeated. Repeated failures, content filtering, and output limits remain explicit errors. This adaptation does not guarantee that every model and provider combination can complete tool calls.
 

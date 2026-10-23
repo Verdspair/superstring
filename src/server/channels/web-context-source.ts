@@ -562,9 +562,12 @@ export class WebContextSource implements ConversationContextSource {
       owner: this.owner,
       now: new Date().toISOString(),
       // 会话证据先本地复验（持久存储），外部注入解析器不能把已撤权的引用改判为 available。
-      resolveSource: (source, owner, at) =>
-        conversationEvidenceSourceAccess(o, source, owner, at) ??
-        o.resolveSource?.(source, owner, at),
+      resolveSource: Object.assign(
+        (source: SourceRef, owner: RunOwner, at: string) =>
+          conversationEvidenceSourceAccess(o, source, owner, at) ??
+          o.resolveSource?.(source, owner, at),
+        { resolveMany: o.resolveSource?.resolveMany },
+      ),
       memoryRevisions: (ids) =>
         new Map(
           [...new Set(ids)].map((id) => {

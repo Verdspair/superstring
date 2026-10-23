@@ -148,7 +148,7 @@ describe("browser font layer", () => {
     expect(localStorage.getItem(FONT_STORAGE_KEY)).toBe("cute");
     expect(document.documentElement.dataset.font).toBe("cute");
     expect("fontUnsaved" in document.documentElement.dataset).toBe(false);
-    expect(save.mock.calls).toEqual([[FONT_STORAGE_KEY, "cute"]]);
+    expect(save.mock.calls).toEqual([[{ [FONT_STORAGE_KEY]: "cute" }]]);
     // Choosing a font is not a theme or mode write.
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBeNull();
     expect(localStorage.getItem(MODE_STORAGE_KEY)).toBeNull();

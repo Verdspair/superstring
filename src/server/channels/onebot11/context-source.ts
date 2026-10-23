@@ -670,10 +670,13 @@ export function assertBotContextSources(
     now: o.now?.() ?? new Date().toISOString(),
     // 本群能力引用先按 guard 复验（纪元与停用）；会话证据再本地复验（持久存储），
     // 外部注入解析器不能把已撤权的引用改判为 available。
-    resolveSource: (source, owner_, at) =>
-      guard.sourceAccess(source, owner_) ??
-      conversationEvidenceSourceAccess(o, source, owner_, at) ??
-      o.resolveSource?.(source, owner_, at),
+    resolveSource: Object.assign(
+      (source: SourceRef, owner_: RunOwner, at: string) =>
+        guard.sourceAccess(source, owner_) ??
+        conversationEvidenceSourceAccess(o, source, owner_, at) ??
+        o.resolveSource?.(source, owner_, at),
+      { resolveMany: o.resolveSource?.resolveMany },
+    ),
     memoryRevisions: (ids) =>
       new Map(
         [...new Set(ids)].map((id) => {

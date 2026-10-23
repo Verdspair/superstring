@@ -1,4 +1,6 @@
 {
+  "workspace.load_older_messages": "Load older messages",
+  "workspace.loading_older_messages": "Loading older messages…",
   "library.font": "Font style",
   "library.font.preview": "Font preview",
   "preferences.textSize.label": "Text size",

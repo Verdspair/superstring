@@ -1,4 +1,6 @@
 {
+  "workspace.load_older_messages": "加载更早消息",
+  "workspace.loading_older_messages": "正在加载更早消息…",
   "library.font": "字体方案",
   "library.font.preview": "字体预览",
   "preferences.textSize.label": "字号",

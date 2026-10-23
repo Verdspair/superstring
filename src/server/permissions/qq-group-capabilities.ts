@@ -330,12 +330,15 @@ export class QqGroupCapabilityGuard {
   /** 能力当前启用的来源引用：非群、停用或归属不明时为 []。自动装配（非工具）同样靠它把产出绑定到当前纪元。 */
   sources(owner: RunOwner, capability: QqGroupCapability): SourceRef[] {
     const scope = this.scope(owner);
-    if (scope.kind !== "group" || this.disabled(scope).has(capability)) return [];
+    if (scope.kind !== "group") return [];
+    // 停用集合与纪元来自同一次同帧配置读取；下一次调用仍读当前记录。
+    const snapshot = this.snapshot(scope);
+    if (snapshot.disabled.has(capability)) return [];
     return [
       {
         kind: QQ_GROUP_CAPABILITY_SOURCE_KIND,
         id: capabilityRefId(scope.bindingId, scope.agentId, capability),
-        revision: this.capabilityRevision(scope, capability),
+        revision: String(snapshot.revisions.get(capability) ?? 0),
       },
     ];
   }
@@ -398,14 +401,18 @@ export class QqGroupCapabilityGuard {
   assertLeaf(owner: RunOwner, specId: string): void | (() => void) {
     const capability = (LEAF_CAPABILITIES as Record<string, QqGroupCapability | undefined>)[specId];
     if (capability === undefined) return;
-    this.assert(owner, capability);
+    // 归属判定、停用集合与纪元冻结共用同一次同帧读取（与 assert() 同一错误码与消息）；
+    // 返回的闭包每次调用仍走 assertSources 现读复验，off→on 不复活旧纪元。
     const scope = this.scope(owner);
-    // Web/私聊不属停用面，没有纪元可冻结；归属无法确认的已在上面按停用失败。
+    if (scope.kind === "unresolved")
+      fail("QQ_GROUP_CAPABILITY_DISABLED", "无法确认这条 QQ 绑定，按停用处理");
     if (scope.kind !== "group") return;
+    const snapshot = this.snapshot(scope);
+    if (snapshot.disabled.has(capability)) fail("QQ_GROUP_CAPABILITY_DISABLED", "本群已停用该能力");
     const source: SourceRef = {
       kind: QQ_GROUP_CAPABILITY_SOURCE_KIND,
       id: capabilityRefId(scope.bindingId, scope.agentId, capability),
-      revision: this.capabilityRevision(scope, capability),
+      revision: String(snapshot.revisions.get(capability) ?? 0),
     };
     return () => this.assertSources(owner, [source]);
   }

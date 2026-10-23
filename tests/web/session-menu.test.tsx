@@ -118,7 +118,7 @@ it("重命名失败保留输入，空白/超长不提交，Escape取消", async 
   expect(screen.queryByRole("textbox", { name: "会话名称" })).toBeNull();
 });
 it("刷新非当前会话不会切换或覆盖当前消息", async () => {
-  const listMessages = vi.fn().mockResolvedValue([]),
+  const listMessages = vi.fn().mockResolvedValue({ items: [], has_more: false }),
     getSessionRuntime = vi.fn().mockResolvedValue(null);
   client({
     listSessions: vi.fn().mockResolvedValue([a, b]),
@@ -129,7 +129,7 @@ it("刷新非当前会话不会切换或覆盖当前消息", async () => {
   openOther();
   fireEvent.click(screen.getByRole("menuitem", { name: "刷新会话" }));
   await screen.findByText("会话已刷新");
-  expect(listMessages).toHaveBeenCalledWith("b");
+  expect(listMessages).toHaveBeenCalledWith("b", {});
   expect(store.getState().currentSessionId).toBe("a");
   expect(store.getState().messages).toEqual([message]);
 });
@@ -220,11 +220,11 @@ it("删除最后一个会话清空选择和持久键", async () => {
   expect(write).toHaveBeenCalledWith("superstring-session", null);
 });
 it("迟到的会话读取不覆盖新选择", async () => {
-  let finish!: (value: []) => void;
+  let finish!: (value: { items: []; has_more: boolean }) => void;
   client({
     listMessages: vi.fn().mockImplementation(
       () =>
-        new Promise<[]>((resolve) => {
+        new Promise<{ items: []; has_more: boolean }>((resolve) => {
           finish = resolve;
         }),
     ),
@@ -233,7 +233,7 @@ it("迟到的会话读取不覆盖新选择", async () => {
   const pending = store.getState().selectSession("b");
   await waitFor(() => expect(finish).toBeTypeOf("function"));
   store.setState({ currentSessionId: "a" });
-  finish([]);
+  finish({ items: [], has_more: false });
   await pending;
   expect(store.getState().messages).toEqual([message]);
 });

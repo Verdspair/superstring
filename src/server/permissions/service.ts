@@ -147,20 +147,41 @@ export class PermissionService {
       revision: this.grantRevision(this.store.read().policy, requirement),
     };
   }
-  sourceAccess(source: SourceRef, owner: RunOwner): "available" | "revoked" | undefined {
-    if (source.kind !== "tool_permission") return undefined;
-    let policy: PermissionPolicy;
-    try {
-      policy = this.store.read().policy;
-    } catch {
-      return "revoked";
-    }
+  private sourceVerdict(
+    source: SourceRef,
+    owner: RunOwner,
+    policy: PermissionPolicy,
+  ): "available" | "revoked" {
     const grant = policy.grants.find((entry) => entry.resource === source.id);
     if (!grant || (grant.agentIds && (!owner.agentId || !grant.agentIds.includes(owner.agentId))))
       return "revoked";
     return createHash("sha256").update(JSON.stringify(grant)).digest("hex") === source.revision
       ? "available"
       : "revoked";
+  }
+  sourceAccessMany(
+    sources: readonly SourceRef[],
+    owner: RunOwner,
+  ): ("available" | "revoked" | undefined)[] {
+    if (!sources.some((source) => source.kind === "tool_permission"))
+      return sources.map(() => undefined);
+    let policy: PermissionPolicy;
+    try {
+      policy = this.store.read().policy;
+    } catch {
+      return sources.map((source) => (source.kind === "tool_permission" ? "revoked" : undefined));
+    }
+    return sources.map((source) =>
+      source.kind === "tool_permission" ? this.sourceVerdict(source, owner, policy) : undefined,
+    );
+  }
+  sourceAccess(source: SourceRef, owner: RunOwner): "available" | "revoked" | undefined {
+    if (source.kind !== "tool_permission") return undefined;
+    try {
+      return this.sourceVerdict(source, owner, this.store.read().policy);
+    } catch {
+      return "revoked";
+    }
   }
   private approvalKeyFromPolicy(
     policy: PermissionPolicy,

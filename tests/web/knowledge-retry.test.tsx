@@ -16,7 +16,7 @@ function reset() {
   useSuperstringStore.getState().resetForTests(
     {
       listSessions: async () => [{ id: session }],
-      listMessages: async () => [],
+      listMessages: async () => ({ items: [], has_more: false }),
       getSessionRuntime: async () => null,
     } as unknown as SuperstringApi,
     { streamChatV2: stream, requestId: () => `request-${++id}` },

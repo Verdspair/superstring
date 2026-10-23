@@ -14,7 +14,7 @@ import {
   DESKTOP_PREFERENCES_LOAD,
   DESKTOP_PREFERENCES_SAVE,
   type DesktopPreferenceSnapshot,
-  isDesktopPreferenceKey,
+  isDesktopPreferenceSnapshot,
 } from "../shared/desktop-preferences";
 
 export type DesktopPreferencesError =
@@ -104,19 +104,18 @@ export async function installDesktopPreferences(
   });
   options.ipcMain.handle(DESKTOP_PREFERENCES_SAVE, (event, ...args: unknown[]) => {
     assertSender(event, options);
-    const [key, value] = args;
-    if (
-      args.length !== 2 ||
-      !isDesktopPreferenceKey(key) ||
-      (value !== null && typeof value !== "string")
-    ) {
+    if (args.length !== 1 || !isDesktopPreferenceSnapshot(args[0])) {
       throw new Error("DESKTOP_PREFERENCE_INVALID");
     }
+    const snapshot = args[0];
     try {
+      // One bulk set: conf validates the whole store and writes once; onChange derives once.
       // A stored null is a tombstone. On another port it must clear an older local value.
-      store.set(key, value);
+      store.set(snapshot);
       options.onChange?.(store.store);
-      if (key === "superstring-locale") options.onLocaleChange?.(value as "zh-CN" | "en" | null);
+      // The store schema has already checked the enum; keep the null tombstone.
+      if (Object.hasOwn(snapshot, "superstring-locale"))
+        options.onLocaleChange?.(snapshot["superstring-locale"] as "zh-CN" | "en" | null);
     } catch {
       return fail("DESKTOP_PREFERENCES_WRITE_FAILED");
     }

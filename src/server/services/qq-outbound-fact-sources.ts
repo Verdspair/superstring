@@ -164,7 +164,22 @@ export function visibleQqOutboundFactPartState(
   key: QqOutboundFactPartKey,
   now: string | null,
 ): QqOutboundFactPartState | null {
-  const rows = outboundFactRows(db, scope, key);
+  return validatedOutboundFactPartState(
+    db,
+    scope,
+    outboundFactRows(db, scope, key),
+    now,
+    (platformMessageId) => claimedByExactlyOnePart(db, scope, platformMessageId),
+  );
+}
+
+function validatedOutboundFactPartState(
+  db: Database,
+  scope: QqConversationScope,
+  rows: readonly OutboundFactRow[],
+  now: string | null,
+  hasUniqueClaim: (platformMessageId: string) => boolean,
+): QqOutboundFactPartState | null {
   // Never guess between two authors/parts: the lookup is only valid when it is unique.
   if (rows.length !== 1) return null;
   const [row] = rows;
@@ -173,7 +188,7 @@ export function visibleQqOutboundFactPartState(
   if (row.platformMessageId === null || row.platformMessageId === "") return null;
   if (row.finishedAt === null || !parseableTime(row.finishedAt)) return null;
   if (row.partKind !== "text" && row.partKind !== "sticker") return null;
-  if (!claimedByExactlyOnePart(db, scope, row.platformMessageId)) return null;
+  if (!hasUniqueClaim(row.platformMessageId)) return null;
   const target = parseJsonObject(row.targetRaw);
   if (!target) return null;
   // The intent must belong to the current scope exactly: six target dimensions plus the
@@ -274,6 +289,62 @@ export function visibleQqOutboundFactPartState(
     journalSeq: journal.seq,
     journalEventKey: journal.eventKey,
   };
+}
+
+/** Select only this synchronous page's platform keys; no proof is accepted from callers. */
+export function visibleQqOutboundFactPartStates(
+  db: Database,
+  scope: QqConversationScope,
+  platformMessageIds: readonly string[],
+  now: string,
+): QqOutboundFactPartState[] {
+  const ids = [...new Set(platformMessageIds)];
+  if (!ids.length || !evidenceScopeExists(db, { channel: "onebot11", ...scope })) return [];
+  const selected = JSON.stringify(ids);
+  const rows = db
+    .query(`SELECT p.id AS partId,p.intent_id AS intentId,p.ordinal AS partOrdinal,
+    p.kind AS partKind,p.payload AS payload,p.status AS partStatus,
+    p.platform_message_id AS platformMessageId,p.finished_at AS finishedAt,
+    i.target AS targetRaw,i.expires_at AS intentExpiresAt,
+    f.account_id AS accountId,f.group_card AS groupCard,f.personal_nickname AS personalNickname,
+    f.legacy_display_name AS legacyDisplayName,f.parts AS factParts,
+    f.revision AS factRevision,f.expires_at AS factExpiresAt
+    FROM outbound_parts p
+    CROSS JOIN outbound_intents i ON i.id=p.intent_id
+    CROSS JOIN qq_outbound_message_facts f ON f.intent_id=i.id
+    WHERE p.platform_message_id IN (SELECT value FROM json_each(?)) AND i.conversation_id=?
+      AND f.account_id=? AND f.agent_id=?`)
+    .all(selected, scope.conversationId, scope.accountId, scope.agentId) as OutboundFactRow[];
+  const claims = db
+    .query(`SELECT p.platform_message_id AS platformMessageId,COUNT(*) AS n
+    FROM outbound_parts p JOIN outbound_intents i ON i.id=p.intent_id
+    WHERE i.conversation_id=? AND p.status='confirmed'
+      AND p.platform_message_id IN (SELECT value FROM json_each(?))
+    GROUP BY p.platform_message_id`)
+    .all(scope.conversationId, selected) as {
+    platformMessageId: string;
+    n: number;
+  }[];
+  const claimCounts = new Map(claims.map((row) => [row.platformMessageId, row.n]));
+  const byPlatform = new Map<string, OutboundFactRow[]>();
+  for (const row of rows) {
+    if (row.platformMessageId === null) continue;
+    const group = byPlatform.get(row.platformMessageId) ?? [];
+    group.push(row);
+    byPlatform.set(row.platformMessageId, group);
+  }
+  const states: QqOutboundFactPartState[] = [];
+  for (const id of ids) {
+    const state = validatedOutboundFactPartState(
+      db,
+      scope,
+      byPlatform.get(id) ?? [],
+      now,
+      (key) => claimCounts.get(key) === 1,
+    );
+    if (state) states.push(state);
+  }
+  return states;
 }
 
 /** Display-state derivation from the snapshot columns (no separate state column exists). */

@@ -2,13 +2,14 @@ import type {
   ConversationEventView,
   ConversationSummary,
 } from "../../shared/contracts/conversation";
+import { WEB_MESSAGE_PAGE_SIZE } from "../../shared/contracts/message";
 import type { RuntimeTrace, RuntimeTracesPage } from "../../shared/contracts/runtime-observability";
 import type { BrowserStateStorage } from "../browser-state";
 import type { ChatItem } from "../state/types";
 
 export const CACHE_LIMITS = {
   MAX_DIRECTORY_ITEMS: 200,
-  MAX_CHAT_MESSAGES: 200,
+  MAX_CHAT_MESSAGES: WEB_MESSAGE_PAGE_SIZE,
   MAX_QQ_EVENTS: 200,
   MAX_TRACE_ITEMS: 100,
   MAX_TOTAL_BYTES: 4 * 1024 * 1024,
@@ -176,7 +177,7 @@ export async function loadWebChatCache(
       !Array.isArray(parsed.messages)
     )
       return null;
-    return parsed;
+    return { ...parsed, messages: parsed.messages.slice(-CACHE_LIMITS.MAX_CHAT_MESSAGES) };
   } catch {
     return null;
   }
@@ -249,7 +250,7 @@ export async function loadQqEventsCache(
 
     const now = Date.now();
     // 来源带真实 expiresAt 已知到期的项目执行脱敏，对齐真实 redactEvent 语义（不造顶层 expiresAt）
-    const sanitized = parsed.items.map((item) => {
+    const sanitized = parsed.items.slice(-CACHE_LIMITS.MAX_QQ_EVENTS).map((item) => {
       const isExpired =
         (item.source?.expiresAt && now >= Date.parse(item.source.expiresAt)) ||
         (Array.isArray(item.sources) &&

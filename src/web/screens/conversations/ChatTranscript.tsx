@@ -10,11 +10,17 @@ export function ChatTranscript({
   session,
   active = true,
   onDelete,
+  hasOlder = false,
+  loadingOlder = false,
+  onLoadOlder,
 }: {
   messages: ChatItem[];
   session: string | null;
   active?: boolean;
   onDelete: (id: string) => void;
+  hasOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => Promise<void>;
 }) {
   const { t } = useTranslation();
   const viewport = useRef<HTMLElement>(null);
@@ -22,6 +28,24 @@ export function ChatTranscript({
   const previousSession = useRef(session);
   const [away, setAway] = useState(false);
   const last = messages.at(-1);
+  const anchor = useRef<{ id: string; top: number; firstId: string | undefined } | null>(null);
+  const loadOlder = () => {
+    const node = viewport.current;
+    if (!node || !onLoadOlder) return;
+    const top = node.getBoundingClientRect().top;
+    const visible = Array.from(node.querySelectorAll<HTMLElement>("article[data-message-id]")).find(
+      (item) => item.getBoundingClientRect().bottom > top,
+    );
+    anchor.current = visible
+      ? {
+          id: visible.dataset.messageId!,
+          top: visible.getBoundingClientRect().top,
+          firstId: messages[0]?.id,
+        }
+      : null;
+    following.current = false;
+    void onLoadOlder();
+  };
   // biome-ignore lint/correctness/useExhaustiveDependencies: 新消息、流式增量与切回页签都是跟随信号。
   useLayoutEffect(() => {
     const node = viewport.current;
@@ -29,12 +53,22 @@ export function ChatTranscript({
     if (previousSession.current !== session) {
       previousSession.current = session;
       following.current = true;
+      anchor.current = null;
       setAway(false);
     }
     // 隐藏期间写 scrollTop 会把 display:none 下的位置清成 0；返回时再按跟随状态贴底。
     if (!active) return;
-    if (following.current) node.scrollTop = node.scrollHeight;
-  }, [active, session, messages.length, last?.content]);
+    if (anchor.current) {
+      const saved = anchor.current;
+      const item = Array.from(node.querySelectorAll<HTMLElement>("article[data-message-id]")).find(
+        (item) => item.dataset.messageId === saved.id,
+      );
+      if (saved.firstId !== messages[0]?.id) {
+        if (item) node.scrollTop += item.getBoundingClientRect().top - saved.top;
+        anchor.current = null;
+      } else if (!loadingOlder) anchor.current = null;
+    } else if (following.current) node.scrollTop = node.scrollHeight;
+  }, [active, session, messages.length, messages[0]?.id, last?.content, loadingOlder]);
   const latest = () => {
     if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
     following.current = true;
@@ -57,6 +91,19 @@ export function ChatTranscript({
         }}
       >
         <div className="mx-auto flex max-w-[880px] flex-col gap-8">
+          {hasOlder && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={loadingOlder}
+              onClick={loadOlder}
+              tooltip={t("workspace.load_older_messages")}
+            >
+              {t(
+                loadingOlder ? "workspace.loading_older_messages" : "workspace.load_older_messages",
+              )}
+            </Button>
+          )}
           {messages
             .filter((message) => message.role !== "system")
             .map((message) => (
@@ -103,6 +150,7 @@ function TranscriptMessage({ message, onDelete }: { message: ChatItem; onDelete:
     >
       {(trigger) => (
         <article
+          data-message-id={message.id}
           className={cn(
             "group flex gap-3 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring",
             user && "flex-row-reverse",

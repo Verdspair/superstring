@@ -171,7 +171,7 @@ describe("R5 聊天区 P0 交互", () => {
 
   it("确认右键删除后调用当前会话消息 DELETE 并重新读取会话", async () => {
     const deleteMessage = vi.fn().mockResolvedValue(undefined);
-    const listMessages = vi.fn().mockResolvedValue([]);
+    const listMessages = vi.fn().mockResolvedValue({ items: [], has_more: false });
     const getSessionRuntime = vi.fn().mockResolvedValue({
       agent_id: "11111111-1111-4111-8111-111111111111",
       name: "测试助手",
@@ -201,7 +201,7 @@ describe("R5 聊天区 P0 交互", () => {
     await userEvent.click(screen.getByRole("button", { name: "删除" }));
 
     await waitFor(() => expect(deleteMessage).toHaveBeenCalledWith(SESSION_ID, MESSAGE_ID));
-    expect(listMessages).toHaveBeenCalledWith(SESSION_ID);
+    expect(listMessages).toHaveBeenCalledWith(SESSION_ID, {});
   });
 
   it("会话菜单删除须确认目标，取消不请求后端", async () => {

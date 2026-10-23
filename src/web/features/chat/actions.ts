@@ -1,4 +1,8 @@
-import { type MessageResponse, UpdateSessionRequestSchema } from "../../../shared/contracts";
+import {
+  type MessagePageResponse,
+  type MessageResponse,
+  UpdateSessionRequestSchema,
+} from "../../../shared/contracts";
 import type { RunEvent } from "../../../shared/contracts/agent-run";
 import { ApiError } from "../../api";
 import { msg } from "../../i18n";
@@ -19,6 +23,12 @@ import {
   type WebConversationState,
 } from "./conversation-state";
 import { createOptimisticMessages, toChatItem } from "./message-rules";
+
+const transcriptItem = (message: MessageResponse) => ({
+  ...toChatItem(message),
+  sequenceNo: message.sequence_no,
+  turnId: message.turn_id,
+});
 
 // 同一 request 重试复用原 turn：按 turn_id + assistant 对上服务器终态助手行，重试只应替换这一条。
 const failedReplyIdForTurn = (messages: MessageResponse[], turnId: string | null) =>
@@ -43,6 +53,7 @@ type Actions = Pick<
   | "cancelKnowledgeResend"
   | "deleteMessage"
   | "reconcileChat"
+  | "loadOlderMessages"
 >;
 export function createChatActions(set: StoreSet, get: StoreGet): Actions {
   const write = (
@@ -90,14 +101,122 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
     }));
     return summary.id;
   };
-  const recoverPendingTurn = async (id: string, messages: MessageResponse[]) => {
+  const readOwner = (id: string) => {
+    const view = get().conversationById[id];
+    const client = get().apiClient;
+    if (!view) return null;
+    const revision = view.loadRevision + 1;
+    write(id, { loadRevision: revision, loadingOlderMessages: false });
+    return {
+      client,
+      sessionId: view.sessionId,
+      revision,
+      current: () =>
+        get().apiClient === client &&
+        get().conversationById[id]?.sessionId === view.sessionId &&
+        get().conversationById[id]?.loadRevision === revision,
+    };
+  };
+  const loadedPage = async (
+    view: WebConversationState,
+    owner: NonNullable<ReturnType<typeof readOwner>>,
+  ): Promise<MessagePageResponse> => {
+    let page = await owner.client.listMessages(
+      view.sessionId,
+      view.loadedFromSequence === null ? {} : { after_sequence_no: view.loadedFromSequence - 1 },
+    );
+    if (view.loadedFromSequence === null) return page;
+    const items = [...page.items];
+    while (page.has_more && owner.current()) {
+      const cursor = page.items.at(-1)?.sequence_no;
+      if (cursor === undefined) throw Error("Message history cursor did not advance");
+      page = await owner.client.listMessages(view.sessionId, { after_sequence_no: cursor });
+      if (page.items.length && page.items[0].sequence_no <= cursor)
+        throw Error("Message history cursor did not advance");
+      items.push(...page.items);
+    }
+    if (
+      owner.current() &&
+      view.request &&
+      view.outputId &&
+      !items.some((item) => item.id === view.outputId)
+    ) {
+      const pair = await owner.client.listMessages(view.sessionId, {
+        client_request_id: view.request.requestId,
+      });
+      items.push(...pair.items.filter((item) => !items.some((loaded) => loaded.id === item.id)));
+      items.sort((a, b) => a.sequence_no - b.sequence_no);
+    }
+    return { items, has_more: view.hasOlderMessages };
+  };
+  const pagePatch = (
+    captured: WebConversationState,
+    current: WebConversationState,
+    page: MessagePageResponse,
+  ) => {
+    // A concurrent older read extends the range outside this refresh's authority.
+    const extendedOlder =
+      captured.loadedFromSequence !== null &&
+      current.loadedFromSequence !== null &&
+      current.loadedFromSequence < captured.loadedFromSequence;
+    const older = extendedOlder
+      ? current.messages.filter(
+          (item) =>
+            item.sequenceNo !== undefined &&
+            item.sequenceNo >= current.loadedFromSequence! &&
+            item.sequenceNo < captured.loadedFromSequence!,
+        )
+      : [];
+    const messages = [
+      ...new Map(
+        [...older, ...page.items.map(transcriptItem)].map((item) => [item.id, item]),
+      ).values(),
+    ].sort((a, b) => (a.sequenceNo ?? Infinity) - (b.sequenceNo ?? Infinity));
+    return {
+      messages,
+      loadedFromSequence: extendedOlder
+        ? current.loadedFromSequence
+        : (captured.loadedFromSequence ?? page.items[0]?.sequence_no ?? null),
+      hasOlderMessages: extendedOlder ? current.hasOlderMessages : page.has_more,
+    };
+  };
+  const settleMessages = async (
+    id: string,
+    request?: ChatRequestRef,
+    turnId?: string,
+  ): Promise<MessageResponse[] | null> => {
+    const view = get().conversationById[id];
+    const owner = readOwner(id);
+    if (!view || !owner) return null;
+    const page = await loadedPage(view, owner);
+    if (!owner.current()) return null;
+    let pair: MessageResponse[] = [];
+    if (request && turnId && !page.items.some((item) => item.turn_id === turnId)) {
+      pair = (
+        await owner.client.listMessages(view.sessionId, { client_request_id: request.requestId })
+      ).items;
+      if (!owner.current()) return null;
+    }
+    const messages = [
+      ...new Map([...pair, ...page.items].map((item) => [item.id, item])).values(),
+    ].sort((a, b) => a.sequence_no - b.sequence_no);
+    write(id, (current) => pagePatch(view, current, { ...page, items: messages }));
+    return messages;
+  };
+  const recoverPendingTurn = async (
+    id: string,
+    messages: MessageResponse[],
+    owner: NonNullable<ReturnType<typeof readOwner>>,
+  ) => {
     const pending = messages.findLast(
       (item) => item.role === "assistant" && item.status === "pending",
     );
-    if (!pending) return;
+    if (!pending || !owner.current()) return;
     write(id, { phase: "reconciling" });
+    let settlementRevision: number | null = null;
     try {
-      const { runs } = await get().apiClient.listRuns("web_turn", pending.turn_id);
+      const { runs } = await owner.client.listRuns("web_turn", pending.turn_id);
+      if (!owner.current()) return;
       const run = runs.toSorted((a, b) => b.startedAt.localeCompare(a.startedAt))[0];
       if (!run) {
         write(id, { phase: "idle" });
@@ -105,21 +224,27 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       }
       get().receiveRunSnapshot(run);
       write(id, { runId: run.runId, outputId: pending.id });
-      const { events } = await get().apiClient.getRunEvents(run.runId, 0);
+      const { events } = await owner.client.getRunEvents(run.runId, 0);
+      if (!owner.current()) return;
       const started = events.find((event) => event.type === "started");
-      const user = messages.find(
-        (item) => item.turn_id === pending.turn_id && item.role === "user",
-      );
+      let user = messages.find((item) => item.turn_id === pending.turn_id && item.role === "user");
+      if (!user) {
+        user = (
+          await owner.client.listMessages(owner.sessionId, { turn_id: pending.turn_id })
+        ).items.find((item) => item.role === "user");
+        if (!owner.current()) return;
+      }
       if (started?.requestId && user)
         write(id, {
-          request: {
-            sessionId: get().conversationById[id].sessionId,
-            text: user.content,
-            requestId: started.requestId,
-          },
+          request: { sessionId: owner.sessionId, text: user.content, requestId: started.requestId },
         });
       if (["completed", "no_output", "failed", "cancelled"].includes(run.status)) {
-        await settleMessages(id);
+        const request = get().conversationById[id].request ?? undefined;
+        const settling = settleMessages(id, request, pending.turn_id);
+        settlementRevision = get().conversationById[id]?.loadRevision ?? null;
+        const settled = await settling;
+        if (!settled) return;
+        if (get().apiClient !== owner.client || !get().conversationById[id]) return;
         const failed = run.status === "failed" || run.status === "cancelled";
         write(id, (view) => ({
           phase: failed ? "failed" : "idle",
@@ -130,48 +255,48 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         }));
       } else write(id, { feedback: msg("服务端仍在处理，可稍后核对结果。") });
     } catch (reason) {
-      write(id, { error: errorText(reason), feedback: msg("结果尚未确认，请核对结果后继续。") });
+      if (
+        owner.current() ||
+        (settlementRevision !== null &&
+          get().apiClient === owner.client &&
+          get().conversationById[id]?.loadRevision === settlementRevision)
+      )
+        write(id, { error: errorText(reason), feedback: msg("结果尚未确认，请核对结果后继续。") });
     }
   };
   const reload = async (id: string) => {
     const initial = get().conversationById[id];
-    if (!initial) return;
-    const revision = initial.loadRevision + 1;
-    write(id, { loadRevision: revision, error: null });
-
+    const owner = readOwner(id);
+    if (!initial || !owner) return;
+    write(id, { error: null });
     let networkSettled = false;
-
-    // F5 刷新缓存预显水合（网络在途时先显缓存，网络响应返回后权威覆盖；响应落地后拒迟到缓存）
     const storage = get().sessionStateStorage;
     const currentAgentId = initial.runtimeConfig?.agent_id ?? get().selectedNewSessionAgentId;
     if (storage && initial.messages.length === 0) {
       void loadWebChatCache(storage, initial.sessionId, currentAgentId).then((cached) => {
         if (
           !networkSettled &&
-          cached &&
-          cached.messages.length > 0 &&
-          get().conversationById[id]?.loadRevision === revision &&
+          cached?.messages.length &&
+          owner.current() &&
           get().conversationById[id]?.messages.length === 0
-        ) {
+        )
           write(id, { messages: cached.messages, phase: "idle" });
-        }
       });
     }
-
     const [messages, runtime] = await Promise.allSettled([
-      get().apiClient.listMessages(initial.sessionId),
-      get().apiClient.getSessionRuntime(initial.sessionId),
+      loadedPage(initial, owner),
+      owner.client.getSessionRuntime(initial.sessionId),
     ]);
     networkSettled = true;
-    if (get().conversationById[id]?.loadRevision !== revision) return;
-    const recoveryRead =
-      get().conversationById[id].phase === "reconciling" && !get().conversationById[id].request;
-    const recover = !chatBusy(get().conversationById[id]) || recoveryRead;
-    write(id, (view) => ({
-      ...(messages.status === "fulfilled" && (!chatBusy(view) || recoveryRead)
+    if (!owner.current()) return;
+    const view = get().conversationById[id];
+    const recoveryRead = view.phase === "reconciling" && !view.request;
+    const recover = !chatBusy(view) || recoveryRead;
+    write(id, (current) => ({
+      ...(messages.status === "fulfilled" && recover
         ? {
-            messages: messages.value.map(toChatItem),
-            ...(recoveryRead && !messages.value.some((item) => item.status === "pending")
+            ...pagePatch(initial, current, messages.value),
+            ...(recoveryRead && !messages.value.items.some((item) => item.status === "pending")
               ? { phase: "idle" as const, feedback: "" }
               : {}),
           }
@@ -180,30 +305,31 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       runtimeConfigUnavailable: runtime.status === "rejected",
       ...(messages.status === "rejected" ? { error: errorText(messages.reason) } : {}),
     }));
-    if (messages.status === "fulfilled") {
-      const items = messages.value.map(toChatItem);
+    if (messages.status === "fulfilled" && recover) {
       const agentId =
         runtime.status === "fulfilled" && runtime.value ? runtime.value.agent_id : currentAgentId;
-      void saveWebChatCache(get().sessionStateStorage, initial.sessionId, agentId, revision, items);
-      if (recover) await recoverPendingTurn(id, messages.value);
+      void saveWebChatCache(
+        get().sessionStateStorage,
+        initial.sessionId,
+        agentId,
+        owner.revision,
+        messages.value.items.map(transcriptItem),
+      );
+      await recoverPendingTurn(id, messages.value.items, owner);
     } else if (messages.status === "rejected") {
       const err = errorText(messages.reason);
-      if (err.includes("403") || err.includes("revoked") || err.includes("Forbidden")) {
+      if (err.includes("403") || err.includes("revoked") || err.includes("Forbidden"))
         void removeWebChatCache(get().sessionStateStorage, initial.sessionId);
-      }
     }
-  };
-  const settleMessages = async (id: string): Promise<MessageResponse[]> => {
-    const view = get().conversationById[id];
-    if (!view) return [];
-    const messages = await get().apiClient.listMessages(view.sessionId);
-    write(id, { messages: messages.map(toChatItem) });
-    return messages;
   };
   const checking = new Set<string>();
   const reconcile = async (id: string) => {
     const view = get().conversationById[id];
+    const client = get().apiClient;
     if (!view?.request || checking.has(id)) return;
+    const current = () =>
+      get().apiClient === client &&
+      get().conversationById[id]?.request?.requestId === view.request?.requestId;
     checking.add(id);
     write(id, {
       phase: "reconciling",
@@ -211,7 +337,8 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       feedback: msg("连接中断，正在核对服务端结果…"),
     });
     try {
-      const run = await get().apiClient.getRunByRequest(view.sessionId, view.request.requestId);
+      const run = await client.getRunByRequest(view.sessionId, view.request.requestId);
+      if (!current()) return;
       get().receiveRunSnapshot(run);
       write(id, { runId: run.runId });
       const terminal = ["completed", "no_output", "failed", "cancelled"].includes(run.status);
@@ -219,7 +346,12 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         write(id, { feedback: msg("服务端仍在处理，可稍后核对结果。") });
         return;
       }
-      const settled = await settleMessages(id);
+      const settled = await settleMessages(
+        id,
+        view.request,
+        run.owner.kind === "web_turn" ? run.owner.id : undefined,
+      );
+      if (!settled) return;
       const failed = run.status === "failed" || run.status === "cancelled";
       const failedReplyId = failed
         ? failedReplyIdForTurn(settled, run.owner.kind === "web_turn" ? run.owner.id : null)
@@ -233,6 +365,7 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         ...(failedReplyId ? { outputId: failedReplyId } : {}),
       });
     } catch (reason) {
+      if (!current()) return;
       if (reason instanceof ApiError && reason.status === 404) {
         write(id, (chat) => ({
           phase: "failed",
@@ -254,6 +387,10 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
   const transmit = async (request: ChatRequestRef, retry = false, feedback = "") => {
     const id = await ensureConversation(request.sessionId);
     if (chatBusy(get().conversationById[id])) return;
+    const client = get().apiClient;
+    const current = () =>
+      get().apiClient === client &&
+      get().conversationById[id]?.request?.requestId === request.requestId;
     const assistantId = `optimistic-assistant-${request.requestId}`;
     let terminal = false;
     let knownFailure = false;
@@ -263,6 +400,8 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
     const pending = new Map<number, RunEvent>();
     write(id, (view) => ({
       phase: "submitting",
+      loadRevision: view.loadRevision + 1,
+      loadingOlderMessages: false,
       request,
       contextUsage: null,
       error: null,
@@ -287,6 +426,7 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
           client_request_id: request.requestId,
         },
         (event) => {
+          if (!current()) return;
           if (event.type === "replay") {
             terminal = true;
             write(id, (view) => ({
@@ -389,16 +529,22 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
           }
         },
       );
+      if (!current()) return;
       if (!terminal) {
         await reconcile(id);
         return;
       }
-      const settled = await settleMessages(id);
+      const failedRun = knownFailure
+        ? await client.getRunByRequest(request.sessionId, request.requestId).catch(() => null)
+        : null;
+      if (!current()) return;
+      const settled = await settleMessages(
+        id,
+        request,
+        failedRun?.owner.kind === "web_turn" ? failedRun.owner.id : undefined,
+      );
+      if (!settled) return;
       if (knownFailure) {
-        // failed/cancelled 事件不带 messageId：按本 request 的 run owner turn 绑定服务器失败助手行，重试只替换它。
-        const failedRun = await get()
-          .apiClient.getRunByRequest(request.sessionId, request.requestId)
-          .catch(() => null);
         const failedReplyId = failedReplyIdForTurn(
           settled,
           failedRun?.owner.kind === "web_turn" ? failedRun.owner.id : null,
@@ -407,6 +553,7 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       }
       await syncSessions();
     } catch (reason) {
+      if (!current()) return;
       // An eager HTTP rejection is an explicit verdict. Transport/EOF failures require read-only reconciliation.
       if (!started && reason instanceof ApiError && reason.status >= 400 && reason.status < 500) {
         knownFailure = true;
@@ -422,10 +569,49 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       } else if (!terminal) await reconcile(id);
       else write(id, { error: errorText(reason) });
     } finally {
-      if (terminal) write(id, { phase: knownFailure ? "failed" : "idle" });
+      if (terminal && current()) write(id, { phase: knownFailure ? "failed" : "idle" });
     }
   };
   return {
+    loadOlderMessages: async () => {
+      const id = get().currentConversationId;
+      const view = id ? get().conversationById[id] : null;
+      if (
+        !id ||
+        !view ||
+        chatBusy(view) ||
+        view.loadingOlderMessages ||
+        !view.hasOlderMessages ||
+        view.loadedFromSequence === null
+      )
+        return;
+      const client = get().apiClient;
+      const revision = view.loadRevision;
+      const current = () =>
+        get().apiClient === client &&
+        get().conversationById[id]?.sessionId === view.sessionId &&
+        get().conversationById[id]?.loadRevision === revision;
+      write(id, { loadingOlderMessages: true, error: null });
+      try {
+        const page = await client.listMessages(view.sessionId, {
+          before_sequence_no: view.loadedFromSequence,
+        });
+        if (!current()) return;
+        write(id, (chat) => ({
+          messages: [
+            ...new Map(
+              [...page.items.map(transcriptItem), ...chat.messages].map((item) => [item.id, item]),
+            ).values(),
+          ].sort((a, b) => (a.sequenceNo ?? Infinity) - (b.sequenceNo ?? Infinity)),
+          loadedFromSequence: page.items[0]?.sequence_no ?? chat.loadedFromSequence,
+          hasOlderMessages: page.has_more,
+        }));
+      } catch (reason) {
+        if (current()) write(id, { error: errorText(reason) });
+      } finally {
+        if (current()) write(id, { loadingOlderMessages: false });
+      }
+    },
     reconcileChat: async (id = get().currentConversationId ?? undefined) => {
       if (id) {
         if (get().conversationById[id]?.request) await reconcile(id);

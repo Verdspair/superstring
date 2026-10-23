@@ -881,7 +881,8 @@ export class ConversationEventRepository {
           )
         )
           this.ingestWebMessage(m.id);
-      for (const b of this.db
+      // All open activations exist before the shared proof; each per-binding call consumes it.
+      const bindings = this.db
         .query(
           "SELECT id,account_id,conversation_kind,peer_id,agent_id FROM qq_bindings ORDER BY created_at,id",
         )
@@ -891,17 +892,77 @@ export class ConversationEventRepository {
         conversation_kind: string;
         peer_id: string;
         agent_id: string;
-      }[]) {
-        const c = this.ensureOneBotRow(b.id)!;
-        if (c.binding_epoch === 1) this.backfillOneBot(b, c, this.agentName(c.agent_id), false);
+      }[];
+      const activations = new Map(bindings.map((b) => [b.id, this.ensureOneBotRow(b.id)!]));
+      // One call-local proof pass for every open epoch-1 binding of this boot.
+      const missingParents = this.missingMediaParentsByConversation(
+        [...activations.values()].filter((c) => c.binding_epoch === 1).map((c) => c.id),
+      );
+      for (const b of bindings) {
+        const c = activations.get(b.id)!;
+        if (c.binding_epoch === 1)
+          this.backfillOneBot(b, c, this.agentName(c.agent_id), false, missingParents.get(c.id));
       }
     })();
+  }
+  /** Startup-only membership proof, computed once for the given open epoch-1 conversations. */
+  private missingMediaParentsByConversation(conversationIds: string[]): Map<string, Set<string>> {
+    const missing = new Map<string, Set<string>>();
+    if (!conversationIds.length) return missing;
+    // Every requested conversation is keyed, even with zero missing rows: an empty set is a
+    // result, not an absent result.
+    for (const conversationId of conversationIds) missing.set(conversationId, new Set<string>());
+    for (const row of this.db
+      .query(
+        `WITH scopes AS MATERIALIZED (
+        SELECT c.id AS cid,b.account_id,b.conversation_kind,b.peer_id,b.agent_id
+        FROM json_each(?) selected
+        CROSS JOIN conversations c ON c.id=selected.value
+        CROSS JOIN qq_bindings b ON b.id=c.source_id
+      )
+      SELECT selected.cid,n.event_key
+      FROM qq_media_notes n
+      CROSS JOIN qq_events e ON e.event_key=n.event_key
+      CROSS JOIN scopes selected
+        ON e.account_id=selected.account_id
+        AND e.conversation_kind=selected.conversation_kind
+        AND e.peer_id=selected.peer_id
+        AND e.agent_id=selected.agent_id
+      WHERE NOT EXISTS(
+        SELECT 1 FROM conversation_events ce,json_each(ce.sources) s
+        WHERE ce.conversation_id=selected.cid
+          AND ce.event_key='onebot:'||n.event_key
+          AND json_extract(s.value,'$.kind')='qq_media'
+          AND json_extract(s.value,'$.id')=n.id
+      )`,
+      )
+      .all(JSON.stringify(conversationIds)) as { cid: string; event_key: string }[]) {
+      missing.get(row.cid)!.add(row.event_key);
+    }
+    return missing;
+  }
+  /** The same predicate scoped to one binding, for non-startup callers. */
+  private missingMediaParents(b: OneBotBindingSource, c: ConversationActivation): Set<string> {
+    return new Set(
+      (
+        this.db
+          .query(`SELECT n.event_key FROM qq_media_notes n JOIN qq_events e ON e.event_key=n.event_key
+        WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?
+        AND NOT EXISTS(SELECT 1 FROM conversation_events ce,json_each(ce.sources) s
+          WHERE ce.conversation_id=? AND ce.event_key='onebot:'||n.event_key
+          AND json_extract(s.value,'$.kind')='qq_media' AND json_extract(s.value,'$.id')=n.id)`)
+          .all(b.account_id, b.conversation_kind, b.peer_id, b.agent_id, c.id) as {
+          event_key: string;
+        }[]
+      ).map((n) => n.event_key),
+    );
   }
   private backfillOneBot(
     b: OneBotBindingSource,
     c: ConversationActivation,
     agentLabel: string,
     historical: boolean,
+    startupMissingParents?: ReadonlySet<string>,
   ): void {
     const speeches = this.db
       .query(
@@ -973,19 +1034,8 @@ export class ConversationEventRepository {
         }[]
       ).map((send) => send.send_id),
     );
-    const missingMediaParents = new Set(
-      (
-        this.db
-          .query(`SELECT n.event_key FROM qq_media_notes n JOIN qq_events e ON e.event_key=n.event_key
-        WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?
-        AND NOT EXISTS(SELECT 1 FROM conversation_events ce,json_each(ce.sources) s
-          WHERE ce.conversation_id=? AND ce.event_key='onebot:'||n.event_key
-          AND json_extract(s.value,'$.kind')='qq_media' AND json_extract(s.value,'$.id')=n.id)`)
-          .all(b.account_id, b.conversation_kind, b.peer_id, b.agent_id, c.id) as {
-          event_key: string;
-        }[]
-      ).map((n) => n.event_key),
-    );
+    const missingMediaParents =
+      startupMissingParents === undefined ? this.missingMediaParents(b, c) : startupMissingParents;
     const repairParents = JSON.stringify([...missingMediaParents]);
     const events = this.db
       .query(

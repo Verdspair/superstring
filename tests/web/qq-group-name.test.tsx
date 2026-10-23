@@ -25,7 +25,7 @@ const group = (overrides: Partial<ConversationSummary> = {}): ConversationSummar
 beforeEach(() => {
   localStorage.clear();
   store.getState().resetForTests({
-    listMessages: async () => [],
+    listMessages: async () => ({ items: [], has_more: false }),
     getSessionRuntime: async () => null,
   } as unknown as SuperstringApi);
 });

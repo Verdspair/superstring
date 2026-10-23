@@ -300,17 +300,22 @@ describe("cache-refresh-hydration integration tests", () => {
     store.getState().resetForTests({
       ...api,
       getBrowserStateConfig: async () => mockConfig,
-      listMessages: vi.fn().mockResolvedValue([
-        {
-          id: "msg-fresh",
-          role: "assistant",
-          content: "Fresh network message",
-          status: "completed",
-          error_code: null,
-          created_at: "2026-09-30T12:00:00.000Z",
-          completed_at: "2026-09-30T12:00:01.000Z",
-        },
-      ]),
+      listMessages: vi.fn().mockResolvedValue({
+        items: [
+          {
+            id: "msg-fresh",
+            sequence_no: 1,
+            turn_id: "turn-fresh",
+            role: "assistant",
+            content: "Fresh network message",
+            status: "completed",
+            error_code: null,
+            created_at: "2026-09-30T12:00:00.000Z",
+            completed_at: "2026-09-30T12:00:01.000Z",
+          },
+        ],
+        has_more: false,
+      }),
       getSessionRuntime: vi
         .fn()
         .mockResolvedValue({ status: "idle", agent_id: "agent-1", mode: "standard" }),

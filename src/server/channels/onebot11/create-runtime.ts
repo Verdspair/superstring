@@ -46,7 +46,11 @@ import {
 import { DEFAULT_USER_ID, getAgentRow, type Orm } from "../../db/repositories";
 import { WakeRepository } from "../../db/wake-repository";
 import type { ModelGateway } from "../../llm/model-gateway";
-import type { ModuleQueryFactory, ModuleSourceResolver } from "../../modules/composition";
+import {
+  type ModuleQueryFactory,
+  type ModuleSourceResolver,
+  resolveSourceStates,
+} from "../../modules/composition";
 import type { RuntimeTelemetry } from "../../observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "../../permissions/qq-group-capabilities";
 import { attentionTriggerFilter } from "../../services/qq-dispatch";
@@ -261,17 +265,16 @@ export function createOneBotConversationRuntime(options: {
       userId: DEFAULT_USER_ID,
       agentId: agent.id,
     };
-    for (const event of events) {
-      for (const source of event.sources) {
-        // Event identity is checked through the journal; readable content has its own source guard.
-        if (source.kind === "qq_event") continue;
-        const state =
-          guard.sourceAccess(source, bindingOwner) ??
+    const resolve: ModuleSourceResolver = (source) =>
+      source.kind === "qq_event"
+        ? "available"
+        : (guard.sourceAccess(source, bindingOwner) ??
           options.resolveSource?.(source, owner, at) ??
-          sourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, at);
+          sourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, at));
+    resolve.resolveMany = options.resolveSource?.resolveMany;
+    for (const event of events)
+      for (const state of resolveSourceStates(event.sources, resolve, owner, at))
         if (state !== "available") return state === "expired" ? "expired" : "revoked";
-      }
-    }
     return "valid";
   };
   const host = new OneBotHost({

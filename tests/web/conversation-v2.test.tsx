@@ -1,6 +1,10 @@
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { MessageResponse, RuntimeConfig } from "../../src/shared/contracts";
+import type {
+  MessagePageResponse,
+  MessageResponse,
+  RuntimeConfig,
+} from "../../src/shared/contracts";
 import type { RunSnapshot } from "../../src/shared/contracts/agent-run";
 import type { ChatV2Event } from "../../src/shared/contracts/chat-v2";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
@@ -74,7 +78,7 @@ function setup(patch: Partial<SuperstringApi> = {}, effect: Partial<RuntimeEffec
       items: [summary(sourceId)],
       nextCursor: null,
     })),
-    listMessages: vi.fn(async () => [] as MessageResponse[]),
+    listMessages: vi.fn(async () => ({ items: [] as MessageResponse[], has_more: false })),
     getSessionRuntime: vi.fn(async () => null as unknown as RuntimeConfig),
     listSessions: vi.fn(async () => []),
     getRunByRequest: vi.fn(async () => snapshot("completed")),
@@ -137,13 +141,13 @@ it("uses canonical source lookup and keeps two live conversations and their draf
 it("buffers out-of-order sequences, deduplicates deltas and waits for authoritative messages", async () => {
   let emit!: (event: ChatV2Event) => void,
     finish!: () => void,
-    settle!: (messages: MessageResponse[]) => void;
+    settle!: (messages: MessagePageResponse) => void;
   const listMessages = vi
     .fn()
-    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce({ items: [], has_more: false })
     .mockImplementationOnce(
       () =>
-        new Promise<MessageResponse[]>((resolve) => {
+        new Promise<MessagePageResponse>((resolve) => {
           settle = resolve;
         }),
     );
@@ -173,7 +177,7 @@ it("buffers out-of-order sequences, deduplicates deltas and waits for authoritat
   store.getState().setComposer("next");
   await store.getState().send();
   expect(currentChat(store.getState()).composer).toBe("next");
-  settle([message("reply", "authoritative")]);
+  settle({ items: [message("reply", "authoritative")], has_more: false });
   await sending;
   expect(currentChat(store.getState()).messages.at(-1)?.content).toBe("authoritative");
   expect(currentChat(store.getState()).phase).toBe("idle");
@@ -221,7 +225,12 @@ it("an unsuccessful result lookup keeps outcome unknown; authoritative failure p
 it("legacy completed replay is a persisted message, with no fabricated run", async () => {
   const reply = message("legacy", "persisted");
   setup(
-    { listMessages: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([reply]) },
+    {
+      listMessages: vi
+        .fn()
+        .mockResolvedValueOnce({ items: [], has_more: false })
+        .mockResolvedValueOnce({ items: [reply], has_more: false }),
+    },
     {
       streamChatV2: async (body, emit) => {
         emit({
@@ -303,7 +312,7 @@ it("reload discovers a pending turn's active run and request without POST or bro
     listRuns = vi.fn(async () => ({ runs: [snapshot("generating")] }));
   setup(
     {
-      listMessages: async () => [userMessage, pendingMessage],
+      listMessages: async () => ({ items: [userMessage, pendingMessage], has_more: false }),
       listRuns,
       getRunEvents: async () => ({
         events: [
@@ -331,8 +340,11 @@ it("reload discovers a pending turn's active run and request without POST or bro
 it("reload of a pending row with a terminal run reads the committed message", async () => {
   const listMessages = vi
     .fn()
-    .mockResolvedValueOnce([userMessage, pendingMessage])
-    .mockResolvedValueOnce([userMessage, message("reply", "committed")]);
+    .mockResolvedValueOnce({ items: [userMessage, pendingMessage], has_more: false })
+    .mockResolvedValueOnce({
+      items: [userMessage, message("reply", "committed")],
+      has_more: false,
+    });
   setup({
     listMessages,
     listRuns: async () => ({ runs: [snapshot("completed")] }),
@@ -346,7 +358,7 @@ it("reload of a pending row with a terminal run reads the committed message", as
 });
 it("legacy pending rows without run history remain readable without fabricated runs", async () => {
   setup({
-    listMessages: async () => [userMessage, pendingMessage],
+    listMessages: async () => ({ items: [userMessage, pendingMessage], has_more: false }),
     listRuns: async () => ({ runs: [] }),
   });
   await store.getState().selectSession("a");
@@ -360,7 +372,7 @@ it("failed pending-run lookup stays unresolved and the check action retries only
     .mockRejectedValueOnce(Error("lookup unavailable"))
     .mockResolvedValueOnce({ runs: [snapshot("completed")] });
   setup({
-    listMessages: async () => [userMessage, pendingMessage],
+    listMessages: async () => ({ items: [userMessage, pendingMessage], has_more: false }),
     listRuns,
     getRunEvents: async () => ({ events: [] }),
   });
@@ -418,8 +430,11 @@ it("read-only recovery settles a completed message when the earlier run lookup f
   const stream = vi.fn(async () => {});
   const listMessages = vi
     .fn()
-    .mockResolvedValueOnce([userMessage, pendingMessage])
-    .mockResolvedValueOnce([userMessage, message("reply", "finished while disconnected")]);
+    .mockResolvedValueOnce({ items: [userMessage, pendingMessage], has_more: false })
+    .mockResolvedValueOnce({
+      items: [userMessage, message("reply", "finished while disconnected")],
+      has_more: false,
+    });
   setup(
     { listMessages, listRuns: vi.fn().mockRejectedValueOnce(Error("lookup unavailable")) },
     { streamChatV2: stream },
@@ -461,9 +476,9 @@ it("a same-request retry after a failed preflight never exposes duplicate messag
   const finalReply: MessageResponse = { ...message("reply-failed", "answer"), sequence_no: 4 };
   const listMessages = vi
     .fn()
-    .mockResolvedValueOnce([oldUser, oldReply])
-    .mockResolvedValueOnce([oldUser, oldReply, serverUser, failedReply])
-    .mockResolvedValueOnce([oldUser, oldReply, serverUser, finalReply]);
+    .mockResolvedValueOnce({ items: [oldUser, oldReply], has_more: false })
+    .mockResolvedValueOnce({ items: [oldUser, oldReply, serverUser, failedReply], has_more: false })
+    .mockResolvedValueOnce({ items: [oldUser, oldReply, serverUser, finalReply], has_more: false });
   const lookup = vi.fn(async () => snapshot("failed"));
   let emitRetry!: (event: ChatV2Event) => void;
   let finishRetry!: () => void;
@@ -547,9 +562,9 @@ it("a delta-less failed event binds the retry target to the server failed assist
   const finalReply: MessageResponse = { ...message("reply-failed", "retried"), sequence_no: 2 };
   const listMessages = vi
     .fn()
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([serverUser, failedReply])
-    .mockResolvedValueOnce([serverUser, finalReply]);
+    .mockResolvedValueOnce({ items: [], has_more: false })
+    .mockResolvedValueOnce({ items: [serverUser, failedReply], has_more: false })
+    .mockResolvedValueOnce({ items: [serverUser, finalReply], has_more: false });
   const lookup = vi.fn(async () => snapshot("failed"));
   let emitRetry!: (event: ChatV2Event) => void;
   let finishRetry!: () => void;

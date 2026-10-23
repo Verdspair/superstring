@@ -480,14 +480,14 @@ describe("sessions and messages routes", () => {
     expect(runtime.config_version).toBe(1);
   });
 
-  it("GET messages returns an ordered list and is empty for a fresh session", async () => {
+  it("GET messages returns an ordered page and is empty for a fresh session", async () => {
     const { app } = makeApp();
     const created = (await (await app.request("/sessions", json({ title: "会话" }))).json()) as {
       id: string;
     };
     const res = await app.request(`/sessions/${created.id}/messages`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual([]);
+    expect(await res.json()).toEqual({ items: [], has_more: false });
   });
 
   it("unknown session is 404 SESSION_NOT_FOUND", async () => {
@@ -507,12 +507,12 @@ describe("sessions and messages routes", () => {
     // Seed one turn + two messages through the repository (POST /chat is R3-b).
     const { prepareTurn } = await import("../../src/server/db/repositories");
     prepareTurn(business.orm, created.id, "你好", "cg-1");
-    const messages = (await (
-      await app.request(`/sessions/${created.id}/messages`)
-    ).json()) as Array<{ id: string; role: string }>;
-    expect(messages).toHaveLength(2);
+    const messages = (await (await app.request(`/sessions/${created.id}/messages`)).json()) as {
+      items: Array<{ id: string; role: string }>;
+    };
+    expect(messages.items).toHaveLength(2);
 
-    const user = messages.find((m) => m.role === "user") as { id: string };
+    const user = messages.items.find((m) => m.role === "user") as { id: string };
     const res = await app.request(`/sessions/${created.id}/messages/${user.id}`, {
       method: "DELETE",
     });
@@ -521,10 +521,10 @@ describe("sessions and messages routes", () => {
     expect(res.headers.get("X-Superstring-Turn-Source-Valid")).toBe("false");
     expect(res.headers.get("X-Superstring-Turn-Id")).toBeTruthy();
 
-    const after = (await (
-      await app.request(`/sessions/${created.id}/messages`)
-    ).json()) as unknown[];
-    expect(after).toHaveLength(1);
+    const after = (await (await app.request(`/sessions/${created.id}/messages`)).json()) as {
+      items: unknown[];
+    };
+    expect(after.items).toHaveLength(1);
   });
 });
 
@@ -555,7 +555,7 @@ describe("UUID spelling on the wire (#92)", () => {
     const variant = created.id.replace(/-/g, "").toUpperCase();
     const res = await app.request(`/sessions/${variant}/messages`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual([]);
+    expect(await res.json()).toEqual({ items: [], has_more: false });
   });
 
   it("accepts the braces and urn:uuid: spellings the contract accepts", async () => {

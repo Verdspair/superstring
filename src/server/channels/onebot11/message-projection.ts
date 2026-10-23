@@ -23,6 +23,7 @@ import {
   qqOutboundFactNameState,
   qqOutboundFactSourceRevision,
   visibleQqOutboundFactPartState,
+  visibleQqOutboundFactPartStates,
 } from "../../services/qq-outbound-fact-sources";
 import { isObservationExpired } from "../../services/qq-retention";
 import { qqReplySegments } from "../../services/qq-send-transport";
@@ -135,6 +136,27 @@ export function loadQqOutboundMessageFact(
   if (!evidenceScopeExists(store.db, botScope(scope))) return null;
   const state = visibleQqOutboundFactPartState(store.db, scope, { platformMessageId }, now);
   return state ? outboundFactOf(scope, state) : null;
+}
+
+/**
+ * One synchronous, fully scoped read for the selected page. The state owner validates
+ * authority, both ledgers, journal and expiry once. These refs are minted from that same
+ * state; immediately rereading and hashing it as an independent keeper adds no boundary.
+ */
+export function loadQqOutboundMessageFacts(
+  store: EvidenceStore,
+  scope: QqConversationScope,
+  platformMessageIds: readonly string[],
+  now: string = nowIso(),
+): QqMessageFact[] {
+  const states = visibleQqOutboundFactPartStates(store.db, scope, platformMessageIds, now);
+  const facts = new Map(
+    states.map((state) => [state.platformMessageId, outboundFactOf(scope, state)]),
+  );
+  return platformMessageIds.flatMap((id) => {
+    const fact = facts.get(id);
+    return fact ? [fact] : [];
+  });
 }
 
 /**

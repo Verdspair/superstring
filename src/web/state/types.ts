@@ -86,6 +86,8 @@ export type PendingNavigation =
   | { kind: "knowledge"; target: KnowledgeTarget };
 
 export interface ChatItem {
+  sequenceNo?: number;
+  turnId?: string;
   id: string;
   role: "user" | "assistant" | "system";
   content: string;

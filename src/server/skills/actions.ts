@@ -73,7 +73,8 @@ export function createSkillActions(root?: string): BuiltInAction[] {
       async execute(args) {
         EmptySchema.parse(args);
         assertAvailable();
-        assertCatalog();
+        // 已消费时 assertAvailable() 已在同帧完成整目录复验；未消费时才补一次，顺序与错误码不变。
+        if (!catalogConsumed) assertCatalog();
         catalogConsumed = true;
         return {
           value: {

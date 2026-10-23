@@ -23,8 +23,9 @@ import {
   MemoryScopeViewSchema,
   type MemorySessionOption,
   MemorySessionOptionSchema,
-  type MessageResponse,
-  MessageResponseSchema,
+  type MessagePageQuery,
+  type MessagePageResponse,
+  MessagePageResponseSchema,
   type ModelCapacityResponse,
   ModelCapacityResponseSchema,
   ModelProviderResponseSchema,
@@ -516,8 +517,12 @@ export const api = {
     const response = await fetch(`/sessions/${id}`, { method: "DELETE" });
     if (!response.ok) throw await responseError(response);
   },
-  listMessages(sessionId: string): Promise<MessageResponse[]> {
-    return requestJson(`/sessions/${sessionId}/messages`, MessageResponseSchema.array());
+  listMessages(sessionId: string, query: MessagePageQuery = {}): Promise<MessagePageResponse> {
+    const params = new URLSearchParams(
+      Object.entries(query).map(([key, value]) => [key, String(value)]),
+    );
+    const suffix = params.size ? `?${params}` : "";
+    return requestJson(`/sessions/${sessionId}/messages${suffix}`, MessagePageResponseSchema);
   },
   async deleteMessage(sessionId: string, messageId: string): Promise<void> {
     const response = await fetch(`/sessions/${sessionId}/messages/${messageId}`, {

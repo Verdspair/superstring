@@ -72,7 +72,7 @@ describe("desktop preference bootstrap and mutations", () => {
     await restoreDesktopPreferences();
     expect(localStorage.getItem("superstring-locale")).toBe("en");
     expect(localStorage.getItem("superstring-agent")).toBeNull();
-    expect(save.mock.calls).toEqual([["superstring-appearance", "rose"]]);
+    expect(save.mock.calls).toEqual([[{ "superstring-appearance": "rose" }]]);
     expect(localStorage.getItem("unrelated-token")).toBe("never sent");
   });
 
@@ -99,7 +99,7 @@ describe("desktop preference bootstrap and mutations", () => {
     };
     await restoreDesktopPreferences();
     expect(localStorage.getItem(FONT_STORAGE_KEY)).toBe("cute");
-    expect(adopt.mock.calls).toEqual([[FONT_STORAGE_KEY, "cute"]]);
+    expect(adopt.mock.calls).toEqual([[{ [FONT_STORAGE_KEY]: "cute" }]]);
 
     // A desktop tombstone clears an older browser choice instead of re-saving it.
     const tombstone = vi.fn().mockResolvedValue(undefined);
@@ -140,7 +140,7 @@ describe("desktop preference bootstrap and mutations", () => {
       bootstrapFailed: vi.fn().mockResolvedValue(undefined),
     };
     await restoreDesktopPreferences();
-    expect(adopt.mock.calls).toEqual([[CLOSE_ANIMATION_STORAGE_KEY, "off"]]);
+    expect(adopt.mock.calls).toEqual([[{ [CLOSE_ANIMATION_STORAGE_KEY]: "off" }]]);
 
     // A desktop tombstone clears the older browser choice instead of re-saving it.
     const tombstone = vi.fn().mockResolvedValue(undefined);
@@ -176,10 +176,9 @@ describe("desktop preference bootstrap and mutations", () => {
       bootstrapFailed: vi.fn().mockResolvedValue(undefined),
     };
     await restoreDesktopPreferences();
-    // Adoption walks the whitelist in order, so both size axes follow the font key.
+    // Cold adoption carries every missing known key in one snapshot write.
     expect(adopt.mock.calls).toEqual([
-      [TEXT_SIZE_STORAGE_KEY, "large"],
-      [INTERFACE_SIZE_STORAGE_KEY, "compact"],
+      [{ [TEXT_SIZE_STORAGE_KEY]: "large", [INTERFACE_SIZE_STORAGE_KEY]: "compact" }],
     ]);
     expect(localStorage.getItem("unrelated-token")).toBe("never sent");
 
@@ -192,7 +191,7 @@ describe("desktop preference bootstrap and mutations", () => {
     };
     await restoreDesktopPreferences();
     expect(localStorage.getItem(TEXT_SIZE_STORAGE_KEY)).toBeNull();
-    expect(tombstone.mock.calls).toEqual([[INTERFACE_SIZE_STORAGE_KEY, "compact"]]);
+    expect(tombstone.mock.calls).toEqual([[{ [INTERFACE_SIZE_STORAGE_KEY]: "compact" }]]);
 
     // The saved desktop size wins over the browser value and is never echoed back.
     const canonical = vi.fn().mockResolvedValue(undefined);
@@ -229,7 +228,14 @@ describe("desktop preference bootstrap and mutations", () => {
     const storage = createBrowserStateStorage(config);
     await storage.write(config.storage_keys.session, "session-uuid");
     await storage.write(config.storage_keys.agent, "agent-uuid");
-    const calls = Object.fromEntries(save.mock.calls);
+    // Mutations stay one single-key snapshot per user action.
+    expect(save.mock.calls.every(([snapshot]) => Object.keys(snapshot ?? {}).length === 1)).toBe(
+      true,
+    );
+    const calls = Object.assign(
+      {},
+      ...save.mock.calls.map(([snapshot]) => snapshot as Record<string, string | null>),
+    );
     expect(calls["superstring-appearance"]).toBe("jade");
     expect(calls["superstring-appearance-mode"]).toBe("dark");
     expect(calls[FONT_STORAGE_KEY]).toBe("elegant");
@@ -246,6 +252,65 @@ describe("desktop preference bootstrap and mutations", () => {
     expect(await storage.read(config.storage_keys.session)).toBe("session-uuid");
     await storage.write(config.storage_keys.agent, null);
     expect(save).toHaveBeenCalledTimes(8);
+  });
+
+  it("adopts every missing known key in one batched snapshot save", async () => {
+    const localValues = {
+      "superstring-appearance": "jade",
+      "superstring-appearance-mode": "dark",
+      [FONT_STORAGE_KEY]: "cute",
+      [TEXT_SIZE_STORAGE_KEY]: "large",
+      [INTERFACE_SIZE_STORAGE_KEY]: "compact",
+      "superstring-session": "session-ciphertext",
+      "superstring-agent": "agent-ciphertext",
+      [CLOSE_ANIMATION_STORAGE_KEY]: "off",
+    };
+    for (const [key, value] of Object.entries(localValues)) localStorage.setItem(key, value);
+    localStorage.setItem("unrelated-token", "never sent");
+    const save = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => ({}),
+      save,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0][0]).toEqual(localValues);
+    expect(localStorage.getItem("unrelated-token")).toBe("never sent");
+  });
+
+  it("never writes when the desktop store already owns every known key", async () => {
+    const stored = Object.fromEntries(
+      DESKTOP_PREFERENCE_KEYS.map((key) => [key, key === "superstring-locale" ? "en" : null]),
+    ) as DesktopPreferenceSnapshot;
+    for (const key of DESKTOP_PREFERENCE_KEYS) localStorage.setItem(key, "browser-value");
+    const save = vi.fn().mockResolvedValue(undefined);
+    window.superstringPreferences = {
+      load: async () => stored,
+      save,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(save).not.toHaveBeenCalled();
+    expect(localStorage.getItem(FONT_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem("superstring-locale")).toBe("en");
+  });
+
+  it("keeps adopted local values usable when the batched save fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    localStorage.setItem(FONT_STORAGE_KEY, "cute");
+    localStorage.setItem(TEXT_SIZE_STORAGE_KEY, "large");
+    const save = vi.fn().mockRejectedValue(new Error("offline"));
+    window.superstringPreferences = {
+      load: async () => ({}),
+      save,
+      bootstrapFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    await restoreDesktopPreferences();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls).toEqual([["DESKTOP_PREFERENCES_WRITE_FAILED"]]);
+    expect(localStorage.getItem(FONT_STORAGE_KEY)).toBe("cute");
+    expect(localStorage.getItem(TEXT_SIZE_STORAGE_KEY)).toBe("large");
   });
 
   it("keeps normal web launches unchanged and never forwards unrelated keys", async () => {

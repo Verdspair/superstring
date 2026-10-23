@@ -30,7 +30,7 @@ import { correctionsForTurns } from "../db/memory-content-repository";
 import { DEFAULT_USER_ID, immediate, type Orm } from "../db/repositories";
 import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
-import type { ModuleSourceResolver } from "../modules/composition";
+import { type ModuleSourceResolver, resolveSourceStates } from "../modules/composition";
 import { estimateMessages, validateContextIds } from "../modules/memory-query";
 import { turnSources } from "../modules/provenance";
 import { requireChat } from "../services/runtime-config";
@@ -890,12 +890,15 @@ export class ContextBuilder {
         agentId: runtime.agent_id,
       };
       const at = new Date().toISOString();
-      for (const source of sources)
+      let index = 0;
+      for (const state of resolveSourceStates(sources, this.resolveSource, owner, at)) {
+        const source = sources[index++]!;
         if (
-          (this.resolveSource?.(source, owner, at) ??
-            sourceAccess(this.db, source, owner, { userId: DEFAULT_USER_ID }, at)) !== "available"
+          (state ?? sourceAccess(this.db, source, owner, { userId: DEFAULT_USER_ID }, at)) !==
+          "available"
         )
           fail("CONTEXT_SOURCE_INVALID", "模块来源已删除、过期或撤权");
+      }
     };
     const historical = history(this.orm, runtime.agent_id, args.sessionId, current.sequenceNo);
     const retrievalEnabled = originalCfg.retrieval_mode !== "off";

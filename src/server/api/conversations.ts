@@ -8,14 +8,14 @@ import {
 import type { QqConversationScope, QqMessageFact } from "../../shared/contracts/qq-message";
 import { visibleConversation } from "../agent/conversation-access";
 import {
-  loadQqOutboundMessageFact,
+  loadQqOutboundMessageFacts,
   projectQqMessageFacts,
 } from "../channels/onebot11/message-projection";
 import {
   publishConversationChange,
   subscribeConversationChanges,
 } from "../conversation/conversation-changes";
-import { projectConversationEvent } from "../conversation/conversation-view";
+import { projectConversationEvents } from "../conversation/conversation-view";
 import { toOrmHandle } from "../db/connection";
 import { ConversationAvatarRepository } from "../db/conversation-avatar-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
@@ -28,7 +28,6 @@ import {
   pruneQqMemberCurrentNames,
   type QqMemberNameCandidate,
 } from "../services/qq-member-sources";
-import { qqOutboundFactSourceAccess } from "../services/qq-outbound-fact-sources";
 import { conversationAvatarRoutes } from "./conversation-avatars";
 import { createSseResponse } from "./sse";
 import { parseUuidParam, validationFailed } from "./validation";
@@ -280,11 +279,22 @@ export function conversationRoutes(
     // 请求闭包——同一真实会话只重建一次，不同 epoch/owner 各自重算；不跨请求持久，
     // 不按展示 root 或分页范围共键。投影授权与既有守卫全部不变。
     const requestScopes = new Map<string, ReturnType<typeof ownerScope>>();
+    const projected = projectConversationEvents(
+      db,
+      result.items.map(({ event }) => event),
+    );
+    const deliveryFacts = qqDeliveryPageFacts(
+      db,
+      factStore,
+      result.items.map(({ event }) => event),
+      conversation,
+      requestScopes,
+    );
     return c.json({
       ...result,
-      items: result.items.map(({ event, seq }) => ({
-        ...projectConversationEvent(db, event),
-        ...qqEventFacts(db, factStore, event, conversation, requestScopes),
+      items: result.items.map(({ event, seq }, index) => ({
+        ...projected[index],
+        ...qqEventFacts(db, factStore, event, conversation, requestScopes, deliveryFacts),
         conversationId: conversation.id,
         seq,
       })),
@@ -321,12 +331,12 @@ function qqEventFacts(
   event: ConversationEvent,
   conversation: ConversationSummary,
   requestScopes: Map<string, ReturnType<typeof ownerScope>>,
+  deliveryFacts: ReadonlyMap<ConversationEvent, QqMessageFact[]>,
 ): { qqMessageFacts?: QqMessageFact[] } {
   if (event.kind === "inbound")
     return qqInboundEventFacts(db, store, event, conversation, requestScopes);
-  if (event.kind === "delivery")
-    return qqDeliveryEventFacts(db, store, event, conversation, requestScopes);
-  return {};
+  const facts = deliveryFacts.get(event);
+  return facts?.length ? { qqMessageFacts: facts } : {};
 }
 
 /**
@@ -387,104 +397,83 @@ function qqInboundEventFacts(
   return pruned.length ? { qqMessageFacts: pruned } : {};
 }
 
-/**
- * T13 Step6 出站余项（规格 §6/§13.4）：`delivery` 事件的已确认部件详情组。
- *
- * 授权 fail closed（复用已审 loader，不复制权限 SQL）：`ownerScope` 用 event 的真实
- * conversationId（不是展示 root）重建完整 8 字段 scope；`event.source.id` 必须对应真实
- * `outbound_intents.conversation_id = event.conversationId` 的意图。候选按真实 ledger
- * （本 intent 的 confirmed 部件 + 非空平台 ID，ordinal 稳定序）与 event 自身 revision
- * 快照的交集，逐件经 `loadQqOutboundMessageFact`（scope 存在、confirmed 台账 + facts
- * 双账一致、intent target 六维 + 当前 authorityRevision、真实 delivery journal 归属、
- * 双期限帽）投影；fact.id 必须等于该 ordinal 部件在 ledger 里的精确 id（防 ambiguous）。
- * 来源证明是 loader mint 的 `qq_outbound_message_fact` ref（仅 part.id/ref），详情组末尾
- * 用域 keeper `qqOutboundFactSourceAccess` 复核（revision/expiry），不借 generic
- * contextaccess，保持与 315 域隔离。
- *
- * 事件时间语义（2026-10-03 裁定）：outbound-delivery 对每个状态推进 append 一个 delivery
- * 事件。只有 event 自己的 source.revision JSON 快照证明"本次确认了哪些 part"（planned
- * commit 事件 revision='planned'，无任何事实，不冒当时已发送）；不做后续 ledger 倒灌——
- * 早期 planned/中间态事件不得借当前 confirmed 状态加"已发详情"，重复事件各自真实映射。
- */
-function qqDeliveryEventFacts(
+/** Preserve each event's confirmation snapshot; current ledger state cannot backfill it. */
+function qqDeliveryPageFacts(
   db: Database,
   store: EvidenceStore,
-  event: ConversationEvent,
+  events: readonly ConversationEvent[],
   conversation: ConversationSummary,
   requestScopes: Map<string, ReturnType<typeof ownerScope>>,
-): { qqMessageFacts?: QqMessageFact[] } {
-  const intentSource = event.sources.find((ref) => ref.kind === "outbound_intent");
-  if (!intentSource || intentSource.id !== event.source.id) return {};
-  // source.id 必须真实指向本会话的出站意图：conversation_id 不符即拒绝（跨会话引用不泄露）。
-  const intentRow = db
-    .query("SELECT conversation_id AS conversationId FROM outbound_intents WHERE id=?")
-    .get(intentSource.id) as { conversationId: string } | null;
-  if (!intentRow || intentRow.conversationId !== event.conversationId) return {};
-  // 该事件时点自己证明的已确认部件：revision 是 [status, platformMessageId] 快照；
-  // 'planned'/畸形快照无任何已发事实，直接无详情（不借当前 ledger 状态补历史事件）。
-  let snapshot: unknown;
-  try {
-    snapshot = JSON.parse(intentSource.revision);
-  } catch {
-    return {};
-  }
-  if (!Array.isArray(snapshot)) return {};
-  const claimed = new Set<string>();
-  for (const entry of snapshot) {
-    if (
-      !Array.isArray(entry) ||
-      entry.length !== 2 ||
-      entry[0] !== "confirmed" ||
-      typeof entry[1] !== "string" ||
-      entry[1] === ""
-    )
+): Map<ConversationEvent, QqMessageFact[]> {
+  const result = new Map<ConversationEvent, QqMessageFact[]>();
+  const groups = new Map<
+    string,
+    {
+      scope: QqConversationScope;
+      selections: {
+        event: ConversationEvent;
+        parts: { partId: string; platformMessageId: string }[];
+      }[];
+    }
+  >();
+  for (const event of events) {
+    if (event.kind !== "delivery") continue;
+    const intentSource = event.sources.find((ref) => ref.kind === "outbound_intent");
+    if (!intentSource || intentSource.id !== event.source.id) continue;
+    const intent = db
+      .query("SELECT conversation_id AS conversationId FROM outbound_intents WHERE id=?")
+      .get(intentSource.id) as { conversationId: string } | null;
+    if (!intent || intent.conversationId !== event.conversationId) continue;
+    let snapshot: unknown;
+    try {
+      snapshot = JSON.parse(intentSource.revision);
+    } catch {
       continue;
-    claimed.add(entry[1]);
+    }
+    if (!Array.isArray(snapshot)) continue;
+    const claimed = new Set<string>();
+    for (const entry of snapshot) {
+      if (
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        entry[0] === "confirmed" &&
+        typeof entry[1] === "string" &&
+        entry[1] !== ""
+      )
+        claimed.add(entry[1]);
+    }
+    if (!claimed.size) continue;
+    const located = requestScope(db, conversation, event.conversationId, requestScopes);
+    if (!located || located === "ambiguous") continue;
+    const parts = (
+      db
+        .query(`SELECT p.id AS partId,p.platform_message_id AS platformMessageId
+      FROM outbound_parts p JOIN outbound_intents i ON i.id=p.intent_id
+      WHERE i.id=? AND p.status='confirmed' AND p.platform_message_id IS NOT NULL ORDER BY p.ordinal`)
+        .all(intentSource.id) as { partId: string; platformMessageId: string }[]
+    ).filter((part) => claimed.has(part.platformMessageId));
+    if (!parts.length) continue;
+    // requestScope is keyed by the physical conversation, not the displayed history root.
+    const group = groups.get(event.conversationId) ?? { scope: located.scope, selections: [] };
+    group.selections.push({ event, parts });
+    groups.set(event.conversationId, group);
   }
-  if (!claimed.size) return {};
-  const located = requestScope(db, conversation, event.conversationId, requestScopes);
-  if (!located || located === "ambiguous") return {};
-  const scope = located.scope;
   const now = new Date().toISOString();
-  // 候选 = 真实 ledger 里本 intent 的 confirmed 部件（ordinal 稳定序），且平台 ID 被该
-  // event 自己的 revision 快照证明为"当时已确认"；伪造/外来引用进不来。
-  const ledgerParts = db
-    .query(
-      `SELECT p.id AS partId,p.platform_message_id AS platformMessageId FROM outbound_parts p
-      JOIN outbound_intents i ON i.id=p.intent_id
-      WHERE i.id=? AND p.status='confirmed' AND p.platform_message_id IS NOT NULL
-      ORDER BY p.ordinal`,
-    )
-    .all(intentSource.id) as { partId: string; platformMessageId: string }[];
-  const facts: QqMessageFact[] = [];
-  for (const part of ledgerParts) {
-    if (!claimed.has(part.platformMessageId)) continue;
-    const fact = loadQqOutboundMessageFact(store, scope, part.platformMessageId, now);
-    // loader 已完整校验 8 字段 scope/authority/journal/target/body；这里再防 ambiguous：
-    // fact.id（精确 outbound_parts.id）必须是该 ordinal 部件的真实 id。
-    if (!fact || fact.id !== part.partId) continue;
-    // 来源末验：域 keeper 复核 loader mint 的 qq_outbound_message_fact ref（revision/expiry）。
-    const ref = fact.sources.find((source) => source.kind === "qq_outbound_message_fact");
-    if (!ref) continue;
-    if (
-      qqOutboundFactSourceAccess(
-        db,
-        ref,
-        {
-          kind: "conversation",
-          id: scope.conversationId,
-          userId: DEFAULT_USER_ID,
-          agentId: scope.agentId,
-        },
-        { userId: DEFAULT_USER_ID },
-        now,
-      ) !== "available"
-    )
-      continue;
-    facts.push(fact);
+  for (const { scope, selections } of groups.values()) {
+    const platformIds = [
+      ...new Set(
+        selections.flatMap((selection) => selection.parts.map((part) => part.platformMessageId)),
+      ),
+    ];
+    const facts = loadQqOutboundMessageFacts(store, scope, platformIds, now);
+    const byPlatform = new Map(facts.map((fact) => [fact.platformMessageId, fact]));
+    for (const { event, parts } of selections) {
+      const readable = parts.flatMap((part) => {
+        const fact = byPlatform.get(part.platformMessageId);
+        return fact && fact.id === part.partId && fact.completeness !== "unavailable" ? [fact] : [];
+      });
+      if (readable.length) result.set(event, readable);
+    }
   }
-  // 与入站同一 readable filter：sticker/不可读快照（completeness=unavailable）只标存在，
-  // 不进详情组、不编描述（§4.3 边界）。
-  const readable = facts.filter((fact) => fact.completeness !== "unavailable");
-  return readable.length ? { qqMessageFacts: readable } : {};
+  return result;
 }

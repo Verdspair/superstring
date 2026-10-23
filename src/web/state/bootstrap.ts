@@ -1,4 +1,5 @@
 import { createBrowserStateStorage } from "../browser-state";
+import { emptyWebConversation } from "../features/chat/conversation-state";
 import {
   isCurrentModelDiscovery,
   modelStatusText,
@@ -153,21 +154,8 @@ export function createBootstrapActions(
                       conversationById: {
                         ...state.conversationById,
                         [previewItem.id]: {
-                          sessionId: previewItem.sourceId,
+                          ...emptyWebConversation(previewItem.sourceId),
                           messages: cachedChat.messages,
-                          phase: "idle",
-                          composer: "",
-                          request: null,
-                          failedChat: null,
-                          knowledgeResend: null,
-                          loadRevision: 0,
-                          runtimeConfig: null,
-                          runtimeConfigUnavailable: false,
-                          contextUsage: null,
-                          runId: null,
-                          outputId: null,
-                          error: null,
-                          feedback: "",
                         },
                       },
                     };

@@ -26,6 +26,7 @@ export function DirectConversation({ active = true }: { active?: boolean }) {
     null,
   );
   const remove = useSuperstringStore((s) => s.deleteMessage);
+  const loadOlder = useSuperstringStore((s) => s.loadOlderMessages);
   const resend = useSuperstringStore((s) => s.resendKnowledgeChat);
   const cancelResend = useSuperstringStore((s) => s.cancelKnowledgeResend);
   const visibleDeletion = deletion?.session === session ? deletion : null;
@@ -52,11 +53,14 @@ export function DirectConversation({ active = true }: { active?: boolean }) {
           actions={chat.runId && <RunLink runId={chat.runId} />}
         />
       )}
-      {chat.messages.some((item) => item.role !== "system") ? (
+      {chat.messages.some((item) => item.role !== "system") || chat.hasOlderMessages ? (
         <ChatTranscript
           session={session}
           messages={chat.messages}
           active={active}
+          hasOlder={chat.hasOlderMessages}
+          loadingOlder={chat.loadingOlderMessages}
+          onLoadOlder={loadOlder}
           onDelete={(message) => setDeletion({ session, message })}
         />
       ) : (

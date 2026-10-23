@@ -28,7 +28,7 @@ import { stableStringify } from "../db/json-text";
 import { readQqBinding } from "../db/qq-binding-repository";
 import { readQqOwnerIdentity } from "../db/qq-owner-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
-import type { ModuleSourceResolver } from "../modules/composition";
+import { type ModuleSourceResolver, resolveSourceStates } from "../modules/composition";
 import { resolveAgentTraceScope, startAgentTrace } from "../observability/agent-tracing";
 import type { RuntimeTelemetry } from "../observability/runtime-telemetry";
 import { PermissionError } from "../permissions/service";
@@ -164,14 +164,17 @@ export class AgentTaskService {
       )
         throw taskError("TASK_SOURCE_INVALID");
     }
-    for (const source of task.sources.filter((source) => !guardOwned(source))) {
-      const access =
-        this.sourceAccess(source, this.owner(task)) ??
-        this.options.executor.permissions.sourceAccess(source, this.owner(task)) ??
-        this.options.resolveSource?.(source, this.owner(task), this.now()) ??
-        sourceAccess(db, source, this.owner(task), { userId: DEFAULT_USER_ID }, this.now());
+    const refs = task.sources.filter((source) => !guardOwned(source));
+    const owner = this.owner(task);
+    const resolve: ModuleSourceResolver = (source, identity) =>
+      this.sourceAccess(source, identity) ??
+      this.options.executor.permissions.sourceAccess(source, identity) ??
+      this.options.resolveSource?.(source, identity, this.now()) ??
+      sourceAccess(db, source, identity, { userId: DEFAULT_USER_ID }, this.now());
+    resolve.resolveMany = (sources, identity) =>
+      this.options.executor.permissions.sourceAccessMany(sources, identity);
+    for (const access of resolveSourceStates(refs, resolve, owner, this.now()))
       if (access !== "available") throw taskError("TASK_SOURCE_INVALID");
-    }
   }
   private resultRevision(task: AgentTask): string {
     return createHash("sha256")

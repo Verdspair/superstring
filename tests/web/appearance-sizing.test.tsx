@@ -188,8 +188,8 @@ describe("browser size layer", () => {
     expect(document.documentElement.dataset.interfaceSize).toBe("compact");
     expect("interfaceSizeUnsaved" in document.documentElement.dataset).toBe(false);
     expect(save.mock.calls).toEqual([
-      [TEXT_SIZE_STORAGE_KEY, "large"],
-      [INTERFACE_SIZE_STORAGE_KEY, "compact"],
+      [{ [TEXT_SIZE_STORAGE_KEY]: "large" }],
+      [{ [INTERFACE_SIZE_STORAGE_KEY]: "compact" }],
     ]);
     // A size choice is not a theme, mode or font write.
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBeNull();
