@@ -9,7 +9,7 @@
 // the configured count against what is pending, and it never invents a count.
 
 import { and, asc, eq, isNotNull } from "drizzle-orm";
-import { pendingObservationCount } from "../db/qq-observation-repository";
+import { hasAtLeastPendingObservations } from "../db/qq-observation-repository";
 import { readQqSettings } from "../db/qq-settings-repository";
 import { DEFAULT_USER_ID, getAgent, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
@@ -51,15 +51,36 @@ function scopeOf(binding: typeof schema.qqBindings.$inferSelect): QqConversation
  * per assistant, so a second conversation of the same assistant simply waits for the
  * next cycle. Anything that is not an `AppError` propagates, because that is a real
  * fault rather than a declined attempt.
+ *
+ * `scope` narrows the same query to one conversation — the inbound path uses it so a single
+ * message never re-walks every binding. Without it the pass stays the periodic full restore,
+ * in the same (oldest binding first) order.
  */
-export function scheduleQqMemory(orm: Orm, now?: string): QqMemoryScheduleResult {
+export function scheduleQqMemory(
+  orm: Orm,
+  now?: string,
+  scope?: QqConversationMemoryScope,
+): QqMemoryScheduleResult {
   const settings = readQqSettings(orm);
   if (settings.enabled !== 1) return { due: 0, enqueued: 0 };
 
+  const conditions = [
+    isNotNull(schema.qqBindings.memoryBatchSize),
+    eq(schema.qqBindings.paused, 0),
+  ];
+  // 定向就加满这条会话的身份条件：命中不到即空集，绝不回退成全量扫描。
+  if (scope !== undefined) {
+    conditions.push(
+      eq(schema.qqBindings.accountId, scope.accountId),
+      eq(schema.qqBindings.conversationKind, scope.conversationKind),
+      eq(schema.qqBindings.peerId, scope.peerId),
+      eq(schema.qqBindings.agentId, scope.agentId),
+    );
+  }
   const bindings = orm
     .select()
     .from(schema.qqBindings)
-    .where(and(isNotNull(schema.qqBindings.memoryBatchSize), eq(schema.qqBindings.paused, 0)))
+    .where(and(...conditions))
     .orderBy(asc(schema.qqBindings.createdAt), asc(schema.qqBindings.id))
     .all();
 
@@ -79,8 +100,8 @@ export function scheduleQqMemory(orm: Orm, now?: string): QqMemoryScheduleResult
         )
       )
         continue;
-      const pending = pendingObservationCount(orm, scopeOf(binding), now);
-      if (pending < batchSize) continue;
+      // 阈值只看「到没到 batchSize」：LIMIT 提前结束，不整段计数、不读正文。
+      if (!hasAtLeastPendingObservations(orm, scopeOf(binding), batchSize, now)) continue;
       due += 1;
       const job = enqueueQqMemory(orm, {
         scope: scopeOf(binding),

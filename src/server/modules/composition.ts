@@ -17,6 +17,7 @@ import type { RuntimeTelemetry } from "../observability/runtime-telemetry";
 import { KnowledgeOrganizer } from "../services/knowledge-organizer";
 import { MemoryService } from "../services/memory-service";
 import type { QqObservation } from "../services/onebot-protocol";
+import { qqConversationScopeOf } from "../services/qq-binding-contract";
 import { scheduleQqMemory } from "../services/qq-memory-scheduler";
 import { runtimeFromAgent } from "../services/runtime-config";
 import type {
@@ -154,11 +155,14 @@ export function createSqliteModules(options: {
         if (payload.kind === "qq_event") {
           const row = options.db
             .query(
-              "SELECT e.recorded_at,e.agent_id,t.event_key AS text_id FROM qq_events e LEFT JOIN qq_observation_text t ON t.event_key=e.event_key WHERE e.event_key=?",
+              "SELECT e.recorded_at,e.agent_id,e.account_id,e.conversation_kind,e.peer_id,t.event_key AS text_id FROM qq_events e LEFT JOIN qq_observation_text t ON t.event_key=e.event_key WHERE e.event_key=?",
             )
             .get(payload.eventKey) as {
             recorded_at: string;
             agent_id: string;
+            account_id: string;
+            conversation_kind: string;
+            peer_id: string;
             text_id: string | null;
           } | null;
           if (
@@ -169,7 +173,16 @@ export function createSqliteModules(options: {
             source.source.revision !== row.recorded_at
           )
             fail("MEMORY_SOURCE_INVALID", "QQ记忆来源不是当前已提交的受权观察");
-          scheduleQqMemory(options.orm);
+          scheduleQqMemory(
+            options.orm,
+            undefined,
+            qqConversationScopeOf({
+              accountId: row.account_id,
+              conversationKind: row.conversation_kind as "group" | "private",
+              peerId: row.peer_id,
+              agentId: row.agent_id,
+            }),
+          );
           return {
             source: source.source,
             created: false,
@@ -205,15 +218,18 @@ export function createSqliteModules(options: {
           fail("MEMORY_SOURCE_INVALID", "记忆模块不支持这个来源事件");
         const turn = options.db
           .query(
-            `SELECT t.id FROM turns t JOIN sessions s ON s.id=t.session_id WHERE t.id=? AND s.agent_id=? AND s.user_id=? AND t.source_valid=1 AND t.generation_status='completed'`,
+            `SELECT t.id,s.id AS session_id FROM turns t JOIN sessions s ON s.id=t.session_id WHERE t.id=? AND s.agent_id=? AND s.user_id=? AND t.source_valid=1 AND t.generation_status='completed'`,
           )
-          .get(payload.turnId, payload.agentId, DEFAULT_USER_ID);
+          .get(payload.turnId, payload.agentId, DEFAULT_USER_ID) as {
+          id: string;
+          session_id: string;
+        } | null;
         if (!turn) fail("MEMORY_SOURCE_INVALID", "网页记忆来源不是已完成的受权轮次");
         const ref = turnSources(options.orm, [payload.turnId])[0];
         if (!ref || ref.revision !== source.source.revision)
           fail("MEMORY_SOURCE_INVALID", "网页记忆来源版本已变化");
         // The completed turn is already the canonical source; do not copy it into another table.
-        memoryWorker.scheduleAuto();
+        memoryWorker.scheduleAuto(turn.session_id);
         return { source: ref, created: false, metadata: { recorded: false, hasText: true } };
       },
       async maintain(target) {

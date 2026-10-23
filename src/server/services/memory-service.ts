@@ -267,8 +267,12 @@ export class MemoryService {
    * interval for a clean retry.
    * `AppError` per session is swallowed (the contract rolls back and moves on);
    * anything else propagates to the loop's generic handler.
+   *
+   * `sessionId` narrows the same query to one session — the completed-turn path uses it so a
+   * single turn does not re-walk every session. Without it the pass stays the periodic
+   * restore of all auto-enabled sessions, in the same (oldest session first) order.
    */
-  scheduleAuto(): void {
+  scheduleAuto(sessionId?: string): void {
     const sessions = this.orm
       .select({ id: schema.sessions.id, agentId: schema.sessions.agentId })
       .from(schema.sessions)
@@ -280,6 +284,8 @@ export class MemoryService {
           eq(schema.agents.isActive, 1),
           eq(schema.sessions.userId, DEFAULT_USER_ID),
           eq(schema.memoryPolicies.userId, DEFAULT_USER_ID),
+          // 定向就限定这一条会话；查不到即空集，绝不回退成全量扫描。
+          ...(sessionId === undefined ? [] : [eq(schema.sessions.id, sessionId)]),
         ),
       )
       .orderBy(asc(schema.sessions.createdAt), asc(schema.sessions.id))
@@ -302,7 +308,11 @@ export class MemoryService {
             .get();
           if (p.autoEnabled !== 1 || busy) return;
 
-          const rows = turns(this.orm, session.agentId, session.id, { unprocessed: true });
+          // 阈值只需要最老的 everyTurns 条；不再把全部未处理正文读进内存。
+          const rows = turns(this.orm, session.agentId, session.id, {
+            unprocessed: true,
+            limit: p.everyTurns,
+          });
           if (rows.length < p.everyTurns) return;
           const selected = rows.slice(0, p.everyTurns);
           const pendingIds = new Set(selected.map((r) => r.turn.id));

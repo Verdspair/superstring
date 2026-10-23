@@ -628,7 +628,11 @@ export class AgentTaskService {
   }
   async runOnce(): Promise<boolean> {
     if (this.stopped) return false;
-    this.options.repository.expire(this.now());
+    // Empty tick: skip the action catalog and the claim transaction. Real work still expires
+    // before the modules/concurrency gate, so full lanes never stop expired cleanup.
+    const at = this.now();
+    if (!this.options.repository.hasWork(at)) return false;
+    this.options.repository.expire(at);
     const execution = this.options.execution?.() ?? ExecutionPolicySchema.parse({});
     if (!execution.modules.tasks || this.active.size >= this.limits().concurrency)
       return Promise.resolve(false);

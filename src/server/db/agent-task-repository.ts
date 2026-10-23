@@ -250,6 +250,23 @@ export class AgentTaskRepository {
       })
       .immediate();
   }
+  /**
+   * Read-only preflight mirroring the sets expire() (expired non-terminal + removable payload),
+   * recover() (lapsed lease, NULL never matches) and claim() (queued) act on. No writes.
+   */
+  hasWork(at: string): boolean {
+    return Boolean(
+      this.db
+        .query(
+          `SELECT 1 FROM agent_tasks t WHERE t.status='queued'
+           OR (t.status IN('running','waiting_tool') AND t.lease_expires_at<=?)
+           OR (t.expires_at<=? AND (t.status IN('queued','running','waiting_tool','waiting_approval')
+             OR (${TASK_PAYLOAD_SQL} AND NOT ${TASK_PROTECTION_SQL})))
+           LIMIT 1`,
+        )
+        .get(at, at),
+    );
+  }
   claim(
     at: string,
     leaseMs: number,

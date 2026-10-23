@@ -532,6 +532,36 @@ export function pendingObservationCount(
   return row?.total ?? 0;
 }
 
+/**
+ * Whether this conversation reached `atLeast` waiting observations.
+ *
+ * Same `pendingConditions` as the exact count, but the statement stops at the threshold and
+ * materialises no column, so the inbound path can answer "batch reached?" without counting
+ * the whole conversation. The exact count stays for callers that report a number.
+ */
+export function hasAtLeastPendingObservations(
+  orm: Orm,
+  scope: QqConversationScope,
+  atLeast: number,
+  now: string = nowIso(),
+): boolean {
+  const rows = orm
+    .select({ present: sql`1` })
+    .from(sql`${schema.qqEvents} INDEXED BY ix_qq_event_conversation`)
+    .innerJoin(
+      schema.qqObservationText,
+      eq(schema.qqObservationText.eventKey, schema.qqEvents.eventKey),
+    )
+    .leftJoin(
+      schema.qqProcessedEvents,
+      eq(schema.qqProcessedEvents.eventKey, schema.qqEvents.eventKey),
+    )
+    .where(and(...pendingConditions(scope, now)))
+    .limit(atLeast)
+    .all();
+  return rows.length >= atLeast;
+}
+
 /** Mark a batch as offered. Idempotent, and independent of the text's lifetime. */
 export function markObservationsProcessed(orm: Orm, eventKeys: string[]): void {
   for (const eventKey of [...new Set(eventKeys)]) {

@@ -195,7 +195,7 @@ export function turns(
   orm: Orm,
   agentId: string,
   sessionId: string | null,
-  options: { ids?: string[]; recent?: number; unprocessed?: boolean } = {},
+  options: { ids?: string[]; recent?: number; unprocessed?: boolean; limit?: number } = {},
 ): TurnTriple[] {
   if (sessionId === null) {
     // Only merge jobs reach here, and they never call `turns`.
@@ -242,6 +242,10 @@ export function turns(
     .orderBy(orderBy);
 
   if (options.recent) query = query.limit(options.recent) as typeof query;
+  // `limit` is the oldest-first bound (auto-consolidation's everyTurns window). It never
+  // applies to an explicit id read, whose full-resolution assertion below must see every row.
+  else if (options.limit !== undefined && options.ids === undefined)
+    query = query.limit(options.limit) as typeof query;
 
   const rows = query.all() as TurnTriple[];
 

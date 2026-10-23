@@ -367,3 +367,45 @@ describe("the manual action", () => {
     }
   });
 });
+
+describe("directed scheduling", () => {
+  it("a scoped call queues only the named conversation, even when another sorts first", () => {
+    const h = setup({ enabled: true });
+    try {
+      const groupB: QqConversationIdentity = { accountId: "10001", kind: "group", peerId: "20002" };
+      insertBinding(h.orm, BINDING_A, GROUP_A, { memoryBatchSize: 1 });
+      insertBinding(h.orm, BINDING_B, groupB, { memoryBatchSize: 1 });
+      observe(h.orm, "evt_a", 0, GROUP_A);
+      observe(h.orm, "evt_b", 1, groupB);
+      expect(scheduleQqMemory(h.orm, undefined, scopeOf(groupB))).toEqual({
+        due: 1,
+        enqueued: 1,
+      });
+      expect(eventIdsOf(h.orm)).toEqual(["evt_b"]);
+      expect(pendingObservationCount(h.orm, scopeOf(GROUP_A), nowIso())).toBe(1);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("a scoped call keeps the paused gate and the exact pending count", () => {
+    const h = setup({ enabled: true });
+    try {
+      insertBinding(h.orm, BINDING_A, GROUP_A, { memoryBatchSize: 2, paused: 1 });
+      observeMany(h.orm, 2);
+      expect(scheduleQqMemory(h.orm, undefined, scopeOf(GROUP_A))).toEqual({
+        due: 0,
+        enqueued: 0,
+      });
+      expect(pendingObservationCount(h.orm, scopeOf(GROUP_A), nowIso())).toBe(2);
+      h.orm.update(schema.qqBindings).set({ paused: 0 }).run();
+      expect(scheduleQqMemory(h.orm, undefined, scopeOf(GROUP_A))).toEqual({
+        due: 1,
+        enqueued: 1,
+      });
+      expect(eventIdsOf(h.orm)).toEqual(["evt_0", "evt_1"]);
+    } finally {
+      h.business.close();
+    }
+  });
+});

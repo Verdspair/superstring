@@ -602,11 +602,12 @@ describe("the transport supervisor (P5r)", () => {
 
   it("reconnects after a dropped link instead of staying dead", async () => {
     const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
     try {
       bind(h);
       saveTransport(h);
       const sockets: FakeSocket[] = [];
-      const runtime = answering(h, sockets);
+      runtime = answering(h, sockets);
       await runtime.start();
       expect(await waitForPhase(runtime, "ready")).toEqual({
         phase: "ready",
@@ -622,19 +623,20 @@ describe("the transport supervisor (P5r)", () => {
         accountId: "10001",
       });
       expect(sockets).toHaveLength(2);
-      runtime.stop();
     } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   }, 15_000);
 
   it("gives up a live connection once the switch is turned off", async () => {
     const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
     try {
       bind(h);
       saveTransport(h);
       const sockets: FakeSocket[] = [];
-      const runtime = supervised(h, sockets);
+      runtime = supervised(h, sockets);
       const started = runtime.start();
       completeHandshake(sockets[0] as FakeSocket);
       await started;
@@ -650,20 +652,21 @@ describe("the transport supervisor (P5r)", () => {
       expect(sockets).toHaveLength(1);
       await runtime.superviseOnce();
       expect(sockets).toHaveLength(1);
-      runtime.stop();
     } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   }, 15_000);
 
   it("lets stop() win over a handshake that is still in flight", async () => {
     const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
     try {
       bind(h);
       saveTransport(h);
       const sockets: FakeSocket[] = [];
       const ticks: number[] = [];
-      const runtime = new QqIntakeRuntime({
+      runtime = new QqIntakeRuntime({
         orm: h.orm,
         transportKeyPath: h.keyPath,
         connectTimeoutMs: 500,
@@ -695,17 +698,19 @@ describe("the transport supervisor (P5r)", () => {
       await runtime.superviseOnce();
       expect(sockets).toHaveLength(1);
     } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   }, 15_000);
 
   it("keeps looking while the configuration is incomplete, and stops looking after stop()", async () => {
     const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
     try {
       bind(h);
       saveTransport(h, { token: null });
       const sockets: FakeSocket[] = [];
-      const runtime = supervised(h, sockets);
+      runtime = supervised(h, sockets);
       await runtime.start();
       // Switched on but half-configured: no socket, and the supervisor keeps checking.
       expect(sockets).toHaveLength(0);
@@ -723,6 +728,7 @@ describe("the transport supervisor (P5r)", () => {
       await runtime.superviseOnce();
       expect(sockets).toHaveLength(before);
     } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   }, 15_000);
@@ -731,10 +737,11 @@ describe("the transport supervisor (P5r)", () => {
 describe("the assembled runtime over an injected transport", () => {
   it("refuses to connect while the switch is off, and reports a fixed event", async () => {
     const h = setup();
+    let runtime: QqIntakeRuntime | undefined;
     try {
       const events: QqIntakeEvent[] = [];
       let built = 0;
-      const runtime = new QqIntakeRuntime({
+      runtime = new QqIntakeRuntime({
         orm: h.orm,
         transportKeyPath: h.keyPath,
         connectTimeoutMs: 500,
@@ -751,16 +758,18 @@ describe("the assembled runtime over an injected transport", () => {
       expect(events).toEqual([{ kind: "ignored", reason: "switch_off" }]);
       expect(runtime.connection).toBeNull();
     } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   });
 
   it("does not connect while the saved configuration is incomplete", async () => {
     const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
     try {
       const events: QqIntakeEvent[] = [];
       let built = 0;
-      const runtime = new QqIntakeRuntime({
+      runtime = new QqIntakeRuntime({
         orm: h.orm,
         transportKeyPath: h.keyPath,
         connectTimeoutMs: 500,
@@ -791,18 +800,20 @@ describe("the assembled runtime over an injected transport", () => {
       runtime.stop();
       await started;
     } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   });
 
   it("records a delivered message, then triggers on the next housekeeping pass", async () => {
     const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
     try {
       bind(h, { memoryBatchSize: 1 });
       saveTransport(h);
       const sockets: FakeSocket[] = [];
       const events: QqIntakeEvent[] = [];
-      const runtime = new QqIntakeRuntime({
+      runtime = new QqIntakeRuntime({
         orm: h.orm,
         transportKeyPath: h.keyPath,
         connectTimeoutMs: 500,
@@ -831,6 +842,7 @@ describe("the assembled runtime over an injected transport", () => {
       runtime.stop();
       expect(socket.terminations).toBe(1);
     } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   });
@@ -888,6 +900,7 @@ describe("the assembled runtime over an injected transport", () => {
 
   it("keeps the transport alive when a message would otherwise throw", async () => {
     const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
     try {
       bind(h);
       saveTransport(h);
@@ -895,7 +908,7 @@ describe("the assembled runtime over an injected transport", () => {
       // absorb that instead of aborting the connection (which reports consumer_error).
       const sockets: FakeSocket[] = [];
       const events: QqIntakeEvent[] = [];
-      const runtime = new QqIntakeRuntime({
+      runtime = new QqIntakeRuntime({
         orm: h.orm,
         transportKeyPath: h.keyPath,
         connectTimeoutMs: 500,
@@ -936,18 +949,19 @@ describe("the assembled runtime over an injected transport", () => {
       // Still ready: the bad messages did not take down the transport.
       expect(runtime.state).toEqual({ phase: "ready", accountId: "10001" });
       expect(h.orm.select().from(schema.qqEvents).all()).toHaveLength(1);
-      runtime.stop();
     } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   });
 
   it("keeps no failed attempt around, and retries on the supervisor's next pass", async () => {
     const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
     try {
       saveTransport(h);
       let built = 0;
-      const runtime = new QqIntakeRuntime({
+      runtime = new QqIntakeRuntime({
         orm: h.orm,
         transportKeyPath: h.keyPath,
         connectTimeoutMs: 100,
@@ -968,8 +982,8 @@ describe("the assembled runtime over an injected transport", () => {
       await runtime.superviseOnce();
       expect(built).toBe(2);
       expect(runtime.connection).toBeNull();
-      runtime.stop();
     } finally {
+      runtime?.stop();
       closeSetup(h);
     }
   });

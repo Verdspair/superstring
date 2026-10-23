@@ -25,6 +25,7 @@ import {
   govern,
   policy,
   publish,
+  turns,
   updateJobRow,
 } from "../../src/server/db/memory-repository";
 import { writeQqGroupAgentConfigRow } from "../../src/server/db/qq-binding-repository";
@@ -1501,5 +1502,67 @@ describe("memory worker leaf origin and per-send guard", () => {
     expect(captured[0]?.retryOrigin).toBe("system");
     expect(() => captured[0]?.assertSources?.()).not.toThrow();
     expect(jobById(orm, jobs(orm)[0].id).status).toBe("succeeded");
+  });
+});
+
+describe("directed auto scheduling", () => {
+  it("scheduleAuto(sessionId) queues only that session; the periodic pass still restores all", () => {
+    const ctx = setup();
+    try {
+      configureAuto(ctx.orm, AGENT_ID, 1);
+      const older = newSession(ctx.orm, "older");
+      const newer = newSession(ctx.orm, "newer");
+      ctx.orm
+        .update(schema.sessions)
+        .set({ createdAt: "2026-01-01T00:00:00.000Z" })
+        .where(eq(schema.sessions.id, older))
+        .run();
+      ctx.orm
+        .update(schema.sessions)
+        .set({ createdAt: "2026-01-02T00:00:00.000Z" })
+        .where(eq(schema.sessions.id, newer))
+        .run();
+      completedTurn(ctx.orm, older, "older-1");
+      completedTurn(ctx.orm, newer, "newer-1");
+
+      ctx.service.scheduleAuto(newer);
+      expect(jobs(ctx.orm)).toHaveLength(1);
+      expect(jobs(ctx.orm)[0]?.sessionId).toBe(newer);
+
+      ctx.orm.update(schema.memoryJobs).set({ status: "failed" }).run();
+      ctx.service.scheduleAuto();
+      expect(
+        jobs(ctx.orm)
+          .filter((job) => job.status === "queued")
+          .map((job) => job.sessionId),
+      ).toEqual([older]);
+    } finally {
+      ctx.business.close();
+    }
+  });
+
+  it("stops the unprocessed read at everyTurns while ids/recent keep their exact contract", () => {
+    const ctx = setup();
+    try {
+      configureAuto(ctx.orm, AGENT_ID, 2);
+      const sessionId = newSession(ctx.orm, "session");
+      const ids = ["r1", "r2", "r3", "r4"].map((request) =>
+        completedTurn(ctx.orm, sessionId, request),
+      );
+
+      expect(
+        turns(ctx.orm, AGENT_ID, sessionId, { unprocessed: true, limit: 3 }).map(
+          (row) => row.turn.id,
+        ),
+      ).toEqual(ids.slice(0, 3));
+      expect(turns(ctx.orm, AGENT_ID, sessionId, { ids, limit: 1 })).toHaveLength(4);
+      expect(turns(ctx.orm, AGENT_ID, sessionId, { recent: 2 })).toHaveLength(2);
+
+      ctx.service.scheduleAuto(sessionId);
+      const job = jobs(ctx.orm)[0];
+      expect((JSON.parse(job?.turnIds ?? "[]") as string[]).length).toBe(2);
+    } finally {
+      ctx.business.close();
+    }
   });
 });

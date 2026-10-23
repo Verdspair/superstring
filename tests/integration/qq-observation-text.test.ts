@@ -22,9 +22,11 @@ import {
   observationText,
   pendingObservationCount,
   purgeExpiredObservationText,
+  type QqConversationScope,
   storeObservationText,
 } from "../../src/server/db/qq-observation-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { readQqSettings, updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { createSession, DEFAULT_USER_ID, ensureDefaults } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
@@ -36,6 +38,7 @@ import {
   qqMemoryScopeKey,
 } from "../../src/server/services/qq-binding-contract";
 import { enqueueQqMemory, qqMemoryCandidates } from "../../src/server/services/qq-memory-enqueue";
+import { scheduleQqMemory } from "../../src/server/services/qq-memory-scheduler";
 import {
   isObservationExpired,
   mediaCacheExpiresAt,
@@ -474,6 +477,45 @@ describe("worker organises observation text", () => {
       const entry = h.orm.select().from(schema.memoryEntries).get();
       if (!entry) throw new Error("expected the memory");
       expect(validateEntrySources(h.orm, entries(h.orm, AGENT_ID, [entry.id]))).toEqual([]);
+    } finally {
+      h.business.close();
+    }
+  });
+});
+
+describe("directed scheduling uses the same retention window", () => {
+  it("queues the live conversation and leaves expired bodies unread", () => {
+    const h = setup();
+    try {
+      const settings = readQqSettings(h.orm);
+      updateQqSettings(h.orm, {
+        enabled: true,
+        accountId: "10001",
+        expectedRevision: settings.revision,
+      });
+      h.orm.update(schema.qqBindings).set({ memoryBatchSize: 2 }).run();
+      observe(h, "live_1", "今天的话", { peerId: "20001" });
+      observe(h, "live_2", "今天的话二", { peerId: "20001" });
+      const old = NOW_SECONDS - 15 * 24 * 60 * 60;
+      observe(h, "old_1", "半个月前", { peerId: "20002", occurredAtSeconds: old });
+      observe(h, "old_2", "半个月前二", { peerId: "20002", occurredAtSeconds: old });
+      const live: QqConversationScope = {
+        kind: "qq",
+        accountId: "10001",
+        conversationKind: "group",
+        peerId: "20001",
+        agentId: AGENT_ID,
+      };
+      const expired: QqConversationScope = { ...live, peerId: "20002" };
+
+      expect(pendingObservationCount(h.orm, expired, NOW)).toBe(0);
+      expect(scheduleQqMemory(h.orm, undefined, expired)).toEqual({ due: 0, enqueued: 0 });
+      expect(scheduleQqMemory(h.orm, undefined, live)).toEqual({ due: 1, enqueued: 1 });
+      const job = h.orm.select().from(schema.memoryJobs).get();
+      expect(
+        (JSON.parse(job?.configSnapshot ?? "{}") as { source_event_ids?: string[] })
+          .source_event_ids,
+      ).toEqual(["live_1", "live_2"]);
     } finally {
       h.business.close();
     }
