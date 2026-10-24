@@ -46,6 +46,33 @@ function field() {
   return screen.getByRole("combobox", { name: "Model id" }) as HTMLInputElement;
 }
 
+it("retains the clipped command label and caller accessibility when suggestions open", async () => {
+  const { container } = render(<Harness />);
+  const input = field();
+  const command = input.closest("[cmdk-root]");
+  const label = command?.querySelector<HTMLLabelElement>("label[cmdk-label]");
+  expect(command).toBeTruthy();
+  expect(label).toBeTruthy();
+  expect(label!.id).not.toBe("");
+  expect(document.getElementById(label!.id)).toBe(label);
+  expect(label!.textContent).toBe("Model id");
+  expect(label!.style.position).toBe("absolute");
+  expect(label!.style.width).toBe("1px");
+  expect(label!.style.height).toBe("1px");
+  expect(label!.style.overflow).toBe("hidden");
+  expect(label!.style.clip).not.toBe("");
+  expect(getComputedStyle(label!).display).not.toBe("none");
+  expect(getComputedStyle(label!).visibility).not.toBe("hidden");
+  expect(input.id).toBe("model-id");
+  expect(input.getAttribute("aria-label")).toBe("Model id");
+  expect(container.querySelectorAll("[cmdk-label]")).toHaveLength(1);
+
+  await userEvent.click(input);
+  expect(screen.getByRole("listbox", { name: "Model id" })).toBeTruthy();
+  expect(command!.querySelector("[cmdk-label]")).toBe(label);
+  expect(field()).toBe(input);
+});
+
 it("keeps freeform typing as the value and leaves the field editable", async () => {
   const onChange = vi.fn();
   render(<Harness onChange={onChange} />);

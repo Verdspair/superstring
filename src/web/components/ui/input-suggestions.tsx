@@ -217,6 +217,7 @@ export function InputSuggestions({ suggestions, ...props }: InputSuggestionsProp
       shouldFilter={false}
       vimBindings={false}
       label={typeof props["aria-label"] === "string" ? props["aria-label"] : undefined}
+      className="[&>[cmdk-label]]:top-0 [&>[cmdk-label]]:left-0"
       style={{ display: "contents" }}
     >
       <Field suggestions={suggestions} {...props} />

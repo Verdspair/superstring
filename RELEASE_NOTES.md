@@ -38,6 +38,8 @@
 
 以下功能属于 main 源码更新，未重发 v0.4.0-alpha-2 安装包。
 
+- **QQ 设置滚动修复**：进入连接设置后，只滚动内容区，应用顶栏与方案页签保持固定；模型建议输入框、键盘选择与未保存草稿行为保持不变。
+
 - **QQ 账号切换保护**：在 QQ 连接设置中更换绑定的账号时提供安全检查。若原账号或新账号历史关联的会话中存在正在执行的任务、仍在处理的后台工作、正在发送或发送结果未知的消息，系统会拒绝切换，避免在未结清工作时改变账号归属；相同账号保存、无变更操作或修改普通设置不会误拦截。
 - **托管偏好与连接说明**：支持保存托管启用偏好，但托管偏好不代表 QQ 已启动；当前仍需使用外部 OneBot 服务，不提供内置扫码登录。单应用直接集成 QQ 仍在推进中，原有外部连接能力完整保留。
 - **消息记录按需加载**：首次从服务器只读取最新 100 条，旧记录按需分页加载；新消息仍即时显示，刷新和回复完成保留已加载旧页与阅读位置，不删除保存的历史。优化消息详情、启动记录核对与权限读取中的重复工作。
@@ -113,6 +115,8 @@ Fully exit the application and back up your data directory before updating. The 
 ### Current source updates on main (not a packaged release)
 
 These features are source updates on main. The v0.4.0-alpha-2 packages have not been reissued.
+
+- **QQ settings scrolling**: Connection settings now scroll only within their content area, keeping the application header and scheme tabs fixed. Model suggestions, keyboard selection, and unsaved drafts keep their existing behavior.
 
 - **QQ account switching protection**: Updating or switching the bound QQ account includes safeguards before changing accounts. If historical sessions associated with either the old or new account contain tasks in progress, ongoing background work, or messages being sent or with unknown delivery results, the switch is refused to avoid changing account ownership while work is outstanding. Same-account updates, no-op saves, and ordinary setting edits are not blocked.
 - **Managed preference and connection notes**: Supports saving a managed-mode preference, but the preference does not mean QQ is running; connecting to QQ still requires an external OneBot service and does not offer built-in QR code login. Direct single-application QQ integration remains in progress, and existing external connection capabilities remain fully operational.
