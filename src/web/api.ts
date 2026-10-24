@@ -134,6 +134,11 @@ import {
   type UpdateQqGroupConfigRequest,
 } from "../shared/contracts/qq-group-config";
 import {
+  QqManagedConfigSnapshotSchema,
+  QqManagedStatusSchema,
+  type UpdateQqManagedConfigRequest,
+} from "../shared/contracts/qq-managed";
+import {
   type QqStorageCleanupRequest,
   QqStorageCleanupSelectionResponseSchema,
   type QqStorageItemsQuery,
@@ -801,6 +806,22 @@ export const api = {
   updateQqTransport: (body: UpdateQqTransportRequest) =>
     requestJson("/qq/transport", QqSettingsResponseSchema, json("PUT", body)),
   getQqStatus: () => requestJson("/qq/status", QqStatusResponseSchema),
+  getQqManagedConfig: (signal?: AbortSignal) =>
+    requestJson("/v2/qq/managed-component/config", QqManagedConfigSnapshotSchema, {
+      signal,
+      cache: "no-store",
+    }),
+  updateQqManagedConfig: (body: UpdateQqManagedConfigRequest) =>
+    requestJson(
+      "/v2/qq/managed-component/config",
+      QqManagedConfigSnapshotSchema,
+      json("PUT", body),
+    ),
+  getQqManagedStatus: (signal?: AbortSignal) =>
+    requestJson("/v2/qq/managed-component/status", QqManagedStatusSchema, {
+      signal,
+      cache: "no-store",
+    }),
   listQqConversations: () => requestJson("/qq/conversations", QqConversationListItemSchema.array()),
   listQqBindings: () => requestJson("/qq/bindings", QqBindingResponseSchema.array()),
   createQqBinding: (body: CreateQqBindingRequest) =>

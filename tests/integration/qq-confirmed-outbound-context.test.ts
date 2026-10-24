@@ -17,8 +17,8 @@
 //   5. **强负（过期/跨 scope）**：同 scope 过期的 confirmed part 表达 expired（不混 missing、
 //      不泄正文）；stale epoch 的 scope 恒 missing，不泄存在。
 //   6. **单条正文只出现一次**（§4.3）：已确认出站件的原话只由 `qq_message_facts` 承载，
-//      附近期群聊时间线里不再重复一份。**本例当前为红**，等产品侧建立 speech 行 ↔ 出站
-//      part 的精确身份关联（按 `legacy_send_id`，无新表列）后转绿。
+//      附近期群聊时间线里不再重复一份；用例验证 speech 行与出站 part 的
+//      `legacy_send_id` 精确关联，不按正文或时间猜测。
 //
 // fixture 全部走生产同序公开 API：outbox.commit → journal 计划事件 →
 // recordQqOutboundMessageFact 身份快照 → **真实 OutboundDelivery** + 合成端口回执。

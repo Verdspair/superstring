@@ -346,7 +346,7 @@ describe("typed media read task identity: budget semantics", () => {
     }
   });
 
-  it("expired succeeded: old body not served, re-claim spends the remaining attempt, old ref invalidated, no 503", async () => {
+  it("expired succeeded: old body not served and re-claim cannot reset the exhausted attempt budget", async () => {
     const { h, seed } = identityFixture();
     try {
       const noteId = seed({ sourceRef: "url-a" });

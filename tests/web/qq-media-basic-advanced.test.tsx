@@ -214,7 +214,7 @@ describe("QQ 图片输入基本区与高级折叠（实际界面）", () => {
     expect(sent.rhythm).toMatchObject({ media_frame_count: 3, media_max_dimension: 512 });
   });
 
-  it("展开/收起高级设置不是草稿改动、不重置已填值；导航守卫照常拦住带草稿的方案切换", async () => {
+  it("展开/收起高级设置保留已填图数；导航守卫拦住带草稿的方案切换", async () => {
     await renderPage({
       listQqSchemes: vi.fn().mockResolvedValue([scheme(), scheme({ id: OTHER, name: "其他方案" })]),
     });
@@ -222,7 +222,7 @@ describe("QQ 图片输入基本区与高级折叠（实际界面）", () => {
     // 带草稿：改图数。
     fireEvent.change(screen.getByLabelText("每次调用自动图片上限"), { target: { value: "6" } });
     expect(editor().mediaInput.max_images).toBe(6);
-    // 展开高级设置：mode/stages 控件出现在可访问面；折叠开关本身不改草稿。
+    // 展开高级设置后 mode/stages 控件可访问，已填图数保持不变。
     await openAdvanced();
     expect(screen.getByLabelText("图片输入模式")).toBeTruthy();
     expect(screen.getByRole("checkbox", { name: "评估阶段" })).toBeTruthy();

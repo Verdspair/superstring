@@ -1,5 +1,5 @@
 /**
- * Windows Electron desktop candidate builder (slice 1, synthetic first).
+ * Windows Electron desktop candidate builder.
  *
  * It assembles a self-contained candidate tree in an isolated output directory:
  *   <out>/app/                      pinned Electron runtime (electron.exe + resources)
@@ -182,7 +182,9 @@ export async function buildElectronDesktop(options) {
     throw new Error(`--project-root is not a Superstring project tree: ${declaredRoot}`);
   }
   if (declaredRoot !== root) {
-    throw new Error(`This slice builds against the development tree it lives in: ${root}`);
+    throw new Error(
+      `This candidate builder targets the development tree that contains it: ${root}`,
+    );
   }
   const declaredService = serviceRoot ? assertAbsolute("service-root", serviceRoot) : "";
   if (declaredService) {

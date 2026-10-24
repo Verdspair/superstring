@@ -1,12 +1,8 @@
 // P2i/P5a/P3b-1: named chat schemes (ADR0018).
 //
-// The point of the first stage was what it does NOT store: the plan labels the scheme's
-// field groups "design labels, not frozen API fields", so 0010 carried no parameter column
-// at all. Three groups have since been decided — the four speech switches (P5a), the rhythm
-// parameters (P3b-1) and the judgement/reply context budgets (P3b-2) — and those are frozen.
-// The rest (prompt text, relevance thresholds, and the remaining §5.2 values) still have no
-// column, and the column test below pins that both ways: the decided ones are there, nothing
-// else is.
+// The column test pins the complete current scheme layout, including prompts, speech
+// switches, rhythm, context, media, sticker, output, task-limit and antispam settings.
+// Separate migration cases preserve the older layouts and upgrade defaults.
 //
 // These tests also pin the two integrity rules that a naive implementation would miss:
 // a binding may only name a scheme that exists, and an in-use scheme cannot be deleted.
@@ -134,7 +130,7 @@ describe("context limit caps (0047)", () => {
 });
 
 describe("scheme identity", () => {
-  it("stores exactly the two decided parameter groups, and nothing still pending", () => {
+  it("stores exactly the current scheme columns in migration order", () => {
     const h = setup();
     try {
       const created = createQqScheme(h.orm, { name: "默认方案" });
@@ -142,10 +138,8 @@ describe("scheme identity", () => {
         .query("PRAGMA table_info(qq_schemes)")
         .all()
         .map((row) => (row as { name: string }).name);
-      // The decided groups are frozen here; the undecided ones (prompts, relevance
-      // thresholds, the remaining §5.2 values) must NOT be — hence the exact list rather
-      // than a "contains" check. The parameter columns sit after the switch columns because
-      // SQLite can only append a column, so this is the table's real order.
+      // Compare the complete column list, including order, rather than only checking
+      // that selected settings exist. SQLite migrations append columns.
       expect(columns).toEqual([
         "id",
         "name",

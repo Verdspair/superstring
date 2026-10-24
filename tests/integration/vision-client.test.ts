@@ -220,10 +220,6 @@ describe("the multimodal request shape", () => {
     }
   });
 
-  /**
-   * 413（输入超长）不是 schema 形状问题：与网关共用同一条降级资格谓词，视觉链同样只有
-   * 一次失败，不把图字节重传、不降 schema 档。
-   */
   it("does not start the shared deadline until the first permit is granted", async () => {
     const originalTimeout = AbortSignal.timeout;
     const timeoutSpy = spyOn(AbortSignal, "timeout").mockImplementation(originalTimeout);
@@ -353,6 +349,10 @@ describe("the multimodal request shape", () => {
     }
   });
 
+  /**
+   * 413（输入超长）不是 schema 形状问题：与网关共用同一条降级资格谓词，视觉链同样只有
+   * 一次失败，不把图字节重传、不降 schema 档。
+   */
   it("does not fall back on a 413 (input too long): one failure, generic code", async () => {
     const formats: (string | undefined)[] = [];
     const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
@@ -420,12 +420,6 @@ it("does not begin a vision request after its caller has cancelled", async () =>
   expect(calls).toBe(0);
 });
 
-/**
- * 真实传输层回归：宿主机器设置了 HTTP_PROXY 且未设 NO_PROXY 时，Bun 的全局 fetch 连
- * 127.0.0.1 也会送进代理，图片理解全部 "Unable to connect"。视觉客户端的默认传输必须
- * 像网关一样绕开代理直达本地服务。本用例自带 stub 与环境变量（try/finally 还原），
- * 不改变其他用例的运行环境。
- */
 it("releases a send permit after fetch failure so the next vision request can proceed", async () => {
   let active = false;
   let calls = 0;
@@ -460,6 +454,12 @@ it("releases a send permit after fetch failure so the next vision request can pr
   expect(calls).toBe(2);
 });
 
+/**
+ * 真实传输层回归：宿主机器设置了 HTTP_PROXY 且未设 NO_PROXY 时，Bun 的全局 fetch 连
+ * 127.0.0.1 也会送进代理，图片理解全部 "Unable to connect"。视觉客户端的默认传输必须
+ * 像网关一样绕开代理直达本地服务。本用例自带 stub 与环境变量（try/finally 还原），
+ * 不改变其他用例的运行环境。
+ */
 it("reaches the local model service directly despite a dead HTTP_PROXY", async () => {
   const saved = {
     HTTP_PROXY: process.env.HTTP_PROXY,

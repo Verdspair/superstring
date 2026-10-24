@@ -15,8 +15,6 @@ import type { QqOwnerIdentity } from "../services/qq-binding-contract";
 import type { Orm } from "./repositories";
 import * as schema from "./schema";
 
-export type QqOwnerIdentityRow = typeof schema.qqOwnerIdentities.$inferSelect;
-
 /**
  * The stored owner identity, or `null` when the user has not configured one.
  *

@@ -45,8 +45,8 @@ export interface DesktopElectronBuildResult {
 /**
  * Assembles `<out>/app` (pinned runtime + resources/app.asar package) and `<out>/stage`
  * (desktop-host.json + the headless C# host) without touching dist/, the release tree
- * or any real data path. Wired into the slice-1 sequence; promoted only after the
- * fuses/asar route and the native acceptance run are in place.
+ * or any real data path. Candidate promotion is separate and requires explicit
+ * acceptance of the staged build.
  */
 export function buildElectronDesktop(
   options: DesktopElectronBuildOptions,

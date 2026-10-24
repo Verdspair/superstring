@@ -173,8 +173,6 @@ const MediaModelConfigSchema = z.strictObject({
   transcriptionModelName: z.string().nullable(),
 });
 
-export type QqMediaModelConfig = Readonly<z.output<typeof MediaModelConfigSchema>>;
-
 export type QqMediaModelChoice =
   | { readonly kind: "configured"; readonly model: string }
   | { readonly kind: "not_configured" };

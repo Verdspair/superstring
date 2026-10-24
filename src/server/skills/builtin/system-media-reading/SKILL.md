@@ -32,8 +32,11 @@ Four actions cover conversation media, plus `sticker.search` for stickers:
      to queue a vision description task. Use the detail-result read path
      advertised by the host; do not substitute a baseline note for the
      requested detail. Baseline and detail are separate read tasks, each with
-     at most two attempts; an exhausted task is not reset by model or settings
-     changes.
+     one bounded attempt per task identity. Failures are recorded and reused;
+     repeated calls or replays do not retry that identity, and model or settings
+     changes do not reset spent attempts. Only a genuinely new explicit detail
+     request resolved by the host gets a new identity and budget;
+     `questionMessageId` alone does not grant one.
    - `questionMessageId` must match the already-seen real platform message ID
      (as printed in `qq_message_facts`), not an internal fact UUID. The host
      re-verifies source, classification, focus, capability, stage, and expiry.

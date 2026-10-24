@@ -10,6 +10,7 @@ import {
   type QqSettingsResponse,
   type QqStickerCollectionResponse,
 } from "../../../shared/contracts/qq";
+import type { QqManagedConfigSnapshot } from "../../../shared/contracts/qq-managed";
 import { QqMediaInputSettingsSchema } from "../../../shared/contracts/qq-media-input";
 import { QqMessageSettingsSchema } from "../../../shared/contracts/qq-message";
 import { msg, translate } from "../../i18n";
@@ -40,6 +41,10 @@ export interface QqInputs {
     endpoint: string;
     accountId: string;
     token: string;
+  } | null;
+  managed: {
+    source: QqManagedConfigSnapshot;
+    enabled: boolean;
   } | null;
   /** 保留设置草稿；数字以原文保存（空/非法原文也要能表示），空闲时 null。 */
   storage: QqStorageSettingsDraft | null;
@@ -92,6 +97,7 @@ export const emptyQqInputs = (): QqInputs => ({
   schemeNewName: "",
   schemeCopyName: "",
   connection: null,
+  managed: null,
   storage: null,
   choices: {},
   attention: {},
@@ -603,6 +609,16 @@ export function qqDraftChanges(
       ],
     });
   }
+  if (inputs.managed && inputs.managed.enabled !== inputs.managed.source.config.enabled) {
+    const draft = inputs.managed;
+    rows.push({
+      id: "managed-component",
+      resource: translate("connections.managed.title"),
+      changes: [
+        `${translate("connections.managed.enable")}: ${translate(draft.source.config.enabled ? "connections.on" : "connections.off")} → ${translate(draft.enabled ? "connections.on" : "connections.off")}`,
+      ],
+    });
+  }
   if (storageDirty(inputs.storage) && inputs.storage)
     rows.push({
       id: "storage",
@@ -773,6 +789,10 @@ export function createQqDraftActions(
         )
           return false;
         patchInputs({ connection: null });
+      }
+      const managed = get().qqInputs.managed;
+      if (managed && managed.enabled !== managed.source.config.enabled) {
+        if (!(await get().saveQqManagedConfig())) return false;
       }
       for (const [id, draft] of Object.entries(get().qqInputs.choices)) {
         if (!choiceDirty(draft) || !draft.source) continue;

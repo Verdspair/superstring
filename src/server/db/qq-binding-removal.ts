@@ -12,6 +12,7 @@
 import type { Database } from "bun:sqlite";
 import { fail } from "../errors";
 import { OutboundIntentRepository } from "./outbound-intent-repository";
+import { readQqBindingLiveWork } from "./qq-binding-work-guard";
 import { removeQqDispatchCandidate } from "./qq-dispatch-repository";
 import { cancelQqConversationTask } from "./qq-task-repository";
 import { nowIso, type Orm } from "./repositories";
@@ -28,11 +29,6 @@ function clientOf(orm: Orm): Database {
 
 function placeholders(count: number): string {
   return Array.from({ length: count }, () => "?").join(",");
-}
-
-function count(db: Database, sql: string, args: readonly string[]): number {
-  const row = db.query(sql).get(...args) as { n: number } | null;
-  return row?.n ?? 0;
 }
 
 /**
@@ -63,52 +59,18 @@ export function deleteQqBinding(orm: Orm, id: string, expectedRevision: number):
     const inConversations =
       conversationIds.length === 0 ? null : placeholders(conversationIds.length);
 
-    if (inConversations) {
-      const runningTasks = count(
-        db,
-        `SELECT COUNT(*) AS n FROM qq_conversation_tasks
-         WHERE status='running' AND conversation_id IN (${inConversations})`,
-        conversationIds,
-      );
-      if (runningTasks > 0) {
-        fail("MEMORY_STATE_CONFLICT", "该会话仍有正在进行的QQ任务，请稍后再删除");
-      }
-
-      // Unfinished by outcome, not by status list: any run without an end stamp is live.
-      const unfinishedRuns = count(
-        db,
-        `SELECT COUNT(*) AS n FROM agent_runs
-         WHERE conversation_id IN (${inConversations}) AND ended_at IS NULL`,
-        conversationIds,
-      );
-      if (unfinishedRuns > 0) {
-        fail("MEMORY_STATE_CONFLICT", "该会话仍有未完成的Agent运行，请稍后再删除");
-      }
-
-      const leasedWakes = count(
-        db,
-        `SELECT COUNT(*) AS n FROM wake_signals
-         WHERE status='leased' AND conversation_id IN (${inConversations})`,
-        conversationIds,
-      );
-      if (leasedWakes > 0) {
-        fail("MEMORY_STATE_CONFLICT", "该会话仍有进行中的唤醒，请稍后再删除");
-      }
-
-      // A sending part, or one whose outcome is unknown, is not ours to abandon.
-      const unsafeOutbox = count(
-        db,
-        `SELECT COUNT(*) AS n FROM outbound_intents i
-         WHERE i.conversation_id IN (${inConversations})
-           AND (i.status='unknown' OR EXISTS(
-             SELECT 1 FROM outbound_parts p
-             WHERE p.intent_id=i.id AND p.status IN ('sending','unknown')
-           ))`,
-        conversationIds,
-      );
-      if (unsafeOutbox > 0) {
-        fail("MEMORY_STATE_CONFLICT", "该会话仍有消息在发送或发送结果未知，请稍后再删除");
-      }
+    const liveWork = readQqBindingLiveWork(db, conversationIds);
+    if (liveWork === "task") {
+      fail("MEMORY_STATE_CONFLICT", "该会话仍有正在进行的QQ任务，请稍后再删除");
+    }
+    if (liveWork === "run") {
+      fail("MEMORY_STATE_CONFLICT", "该会话仍有未完成的Agent运行，请稍后再删除");
+    }
+    if (liveWork === "wake") {
+      fail("MEMORY_STATE_CONFLICT", "该会话仍有进行中的唤醒，请稍后再删除");
+    }
+    if (liveWork === "outbound") {
+      fail("MEMORY_STATE_CONFLICT", "该会话仍有消息在发送或发送结果未知，请稍后再删除");
     }
 
     // No refusal can happen from here on: settle the queued work first, delete the binding last.

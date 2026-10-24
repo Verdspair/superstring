@@ -7,6 +7,7 @@ import {
   render as renderView,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -233,10 +234,15 @@ describe("system and QQ model scope UI", () => {
       target: { value: "vision-b" },
     });
     expect(store.getState().organizationEditor?.visionModelName).toBe("vision-b");
-    const saveButtons = screen.getAllByRole("button", { name: translate("library.save") });
-    // QQ 模型组的保存按钮是第一个（QQ 辅助组其后）。
+    const modelGroup = screen
+      .getByRole("combobox", { name: translate("models.purpose.vision") })
+      .closest("section");
+    expect(modelGroup).not.toBeNull();
+    const save = within(modelGroup as HTMLElement).getByRole("button", {
+      name: translate("library.save"),
+    });
     await act(async () => {
-      fireEvent.click(saveButtons[0]);
+      fireEvent.click(save);
     });
     await waitFor(() => expect(store.getState().organizationEditor?.source.revision).toBe(2));
     const savedPayload = vi.mocked(client.saveOrganizationSettings).mock.calls[0][0];

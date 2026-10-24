@@ -652,7 +652,7 @@ it("[S53_1] an unknown delivery receipt is never resent, and a part stranded in 
 //   50 → none 时恰好 1 次调用、零视觉调用、零发送、零意图、零 prepared 副本（图真在库）
 //        ＋对照夹具：同一图在生成轮确有 variant 但仍零独立视觉调用
 //   51 → 纯文字：pending_plan 只在第 2 次决策相之后出现、reason=new_observation、不含旧画面正文
-//        带图：第 2 次决策相只见新图、旧图不复活、只发新草稿
+//        带图：新图只以事实标记进入决策，自动画面仍限原焦点，只发新草稿
 //   52 → 新相关图（真图）使已提交计划 status==="stale"、零发送、零 attempted
 //        ＋已 confirmed 的旧意图遇新相关消息 sends 不增、意图数不增、幂等重跑不增
 //   53 → unknown 入账（意图与部件两层）、恢复再投递 sends 不增

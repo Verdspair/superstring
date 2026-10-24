@@ -57,7 +57,7 @@ const BRAND_SOURCES = [
 
 /**
  * Build-time SVG adaptation only; all geometry lives in the shared brand source.
- * `source` defaults to the plain master because the retiring C# shell still embeds it.
+ * `source` defaults to the plain master glyph; pass "icon" for OS icon frames.
  */
 export function renderBrandAssets(root, outputDirectory, { source = "master" } = {}) {
   const brand = BRAND_SOURCES.find((candidate) => candidate.source === source);

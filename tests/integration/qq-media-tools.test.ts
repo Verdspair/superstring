@@ -1,8 +1,7 @@
 // 0.4.0 P5 媒体工具（ADR0019 §8.11）的宿主边界测试：合成库＋合成网关，零隐式视觉。
 //
 // 这里断言的全部是宿主事实：list/note.read 不碰模型、每 run 引用披露（未披露/跨会话拒绝）、
-// 过期逐次复验、取消不写、成功 describe 返回有界正文、重试至多两次且只认"更晚、在窗口内、晚于上一次
-// 尝试"的补充事实。
+// 过期逐次复验、取消不写、成功 describe 返回有界正文；同一任务身份只尝试一次，失败后复用结果。
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";

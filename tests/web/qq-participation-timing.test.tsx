@@ -242,7 +242,7 @@ describe("QQ Participation Timing Mode (participation_timing)", () => {
     expect(derivedCard.textContent).toContain("时间 40 ~ 80 秒");
   });
 
-  it("Scheme Studio: switching mode preserves existing fields (M, X, Y, A, B, switches, caps)", async () => {
+  it("Scheme Studio: switching mode preserves the merge window and message/time target values", async () => {
     await renderSchemePage();
     await openParticipationTab();
 

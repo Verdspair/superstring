@@ -192,6 +192,22 @@
       "version": "3.3.3",
       "license": "MIT",
       "sha256": "22bcbbbacd739b026a8dc484f62a31484ce4c4e31f3408b60b29b4e41d62b290"
+    },
+    {
+      "file": "qrcode-react-ISC.txt",
+      "source": "npm:qrcode.react@4.2.0/LICENSE",
+      "component": "qrcode.react",
+      "version": "4.2.0",
+      "license": "ISC",
+      "sha256": "908a4454d01d77cd6a0ae1eea0bafaa74a2e3befdbc4b7b714de2499a22351ce"
+    },
+    {
+      "file": "qrcodegen-MIT.txt",
+      "source": "https://raw.githubusercontent.com/zpao/qrcode.react/v4.2.0/src/third-party/qrcodegen/index.ts",
+      "component": "qrcode.react bundled QR Code Generator",
+      "version": "qrcode.react 4.2.0",
+      "license": "MIT",
+      "sha256": "24383adb2dd65b322803fcd577cbd3b8892ac4f3e19d0ae619eb1a0322258c3f"
     }
   ]
 }

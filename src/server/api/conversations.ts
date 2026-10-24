@@ -315,8 +315,6 @@ export function conversationRoutes(
   return router;
 }
 
-/** T13 Step6：按事件种类分派详情组（入站事实 / 出站 delivery 确认部件）。 */
-
 /** 本请求内按真实 event conversationId（epoch/owner）缓存 ownerScope；跨请求不持久。 */
 function requestScope(
   db: Database,
@@ -337,6 +335,7 @@ function requestScope(
   return located;
 }
 
+/** 按事件种类分派详情组（入站事实 / 出站 delivery 确认部件）。 */
 function qqEventFacts(
   db: Database,
   store: EvidenceStore,

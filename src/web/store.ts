@@ -74,6 +74,7 @@ export const useSuperstringStore = create<SuperstringState>()((set, get) => ({
   resetForTests: (client = api, effects = {}) =>
     set({
       ...initial,
+      qqManagedLifecycleId: get().qqManagedLifecycleId + 1,
       qqInputs: emptyQqInputs(),
       apiClient: client,
       effects: { ...defaultEffects, ...effects },

@@ -49,7 +49,6 @@ const InputSchema = z.strictObject({
   /** 同会话中观察到且已由宿主复验的引用消息 ID。 */
   replyToMessageId: z.string().min(1).optional(),
 });
-export type QqOutputPlanInput = Readonly<z.input<typeof InputSchema>>;
 
 export type QqOutputShape = "text_only" | "sticker_only" | "mixed";
 

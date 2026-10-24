@@ -28,9 +28,7 @@ const NameSchema = z.string().trim().min(1).max(200);
 const OptionalTextSchema = z.string().max(2000).nullable();
 const TagsSchema = z.array(z.string().trim().min(1).max(40)).max(50);
 
-export type QqStickerCollectionRow = typeof schema.qqStickerCollections.$inferSelect;
 export type QqStickerAssetRow = typeof schema.qqStickerAssets.$inferSelect;
-export type QqStickerItemRow = typeof schema.qqStickerCollectionItems.$inferSelect;
 
 /**
  * §9.1's undecided material operations, recorded in one place.

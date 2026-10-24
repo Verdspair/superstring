@@ -303,7 +303,7 @@ describe("QQ conversation business-task foundation", () => {
     expect(new Set(keys).size).toBe(4);
   });
 
-  it("maps all ordinary causes into ordinary capacity and skips a full conversation", () => {
+  it("maps follow-up and idle-topic tasks into ordinary capacity and skips a full conversation", () => {
     const h = setup();
     const first = scope(h, "20003");
     const other = scope(h, "20004");

@@ -314,7 +314,7 @@ export const QQ_MEDIA_TOOL_DESCRIPTIONS: Record<
     capability: "media.describe",
     effect: "write",
     description:
-      "Ask the configured vision model to read one listed image id (only images; only ids from media.list in this run; single-flight, reused from cache, at most two attempts per read task). On success returns {status,described,attempt,id,model,text,offset,nextOffset} with one context-fitted text page (up to 2048 Unicode characters); use media.note.read with the returned nextOffset when more text is needed. A failed read is recorded but never announced in the conversation; a second attempt waits for a later addressed supplement, and switching model or settings never resets the attempts a task has spent. Cancels with the run.",
+      "Read one image id listed by media.list in this run using the configured vision model. Single-flight and cached; at most one attempt per task identity. Failures are recorded, reused and not automatically announced. Model/settings changes do not reset attempts. Only a host-resolved new explicit detail request gets a new identity and budget; questionMessageId alone grants neither. Success returns {status,described,attempt,id,model,text,offset,nextOffset}, fitted to context and at most 2048 Unicode characters. Continue via media.note.read at nextOffset. Cancels with the run.",
     parameters: z.toJSONSchema(QQ_MEDIA_TOOL_SCHEMAS["media.describe"]),
   },
   "media.read": {

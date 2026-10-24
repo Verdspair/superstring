@@ -60,6 +60,8 @@ QQ 接入前置步骤与运行要求：
 - Superstring 作为客户端主动连接上游 OneBot 正向 WebSocket 服务，不内置、不拉起，也不停止 QQ 或 NapCat 进程。QQ 客户端与 NapCat 需在后台独立保持运行。
 - Superstring 不代登录 QQ，自动化受到平台规则与账号状态约束，建议使用测试账号并妥善保管端点与凭据。
 - 连接就绪不代表消息一定送达；连接断开时保持 QQ 与 NapCat 正常运行，程序会间隔重试连接，不承诺立即恢复连接或补发遗漏回复。
+- **账号切换安全保护**：在 QQ 连接设置中更换绑定的账号时提供安全检查。若原账号或新账号历史关联的会话中存在正在执行的任务、仍在处理的后台工作、正在发送或发送结果未知的消息，程序会拒绝切换，避免在未结清工作时改变账号归属；相同账号保存、无变更操作或修改普通设置不会误拦截。
+- **托管偏好与连接说明**：支持保存托管启用偏好，但托管偏好不代表 QQ 已启动；当前仍需使用外部 OneBot 服务，不提供内置扫码登录。单应用直接集成 QQ 仍在推进中，原有外部连接方式完整保留并继续可用。
 
 ### 多模态与媒体处理
 
@@ -197,6 +199,8 @@ Operational details:
 - Superstring acts as a client connecting to an upstream OneBot forward WebSocket service. It does not bundle, launch, or stop QQ or NapCat processes. Both QQ and NapCat must run independently in the background.
 - Superstring does not handle QQ login. Automation is subject to platform and account policies; use a dedicated test account and protect your endpoints and credentials.
 - An active connection does not guarantee message delivery. If the connection drops while QQ and NapCat remain running, the application retries periodically, but does not guarantee immediate reconnection or backfilled replies.
+- **Account switching protection**: Updating or switching the bound QQ account includes safeguards before changing accounts. If historical sessions associated with either the old or new account contain tasks in progress, ongoing background work, or messages being sent or with unknown delivery results, the application refuses the switch to avoid changing account ownership while work is outstanding. Same-account updates, no-op saves, and ordinary setting edits are not blocked.
+- **Managed preference and connection notes**: Supports saving a managed-mode preference, but the preference does not mean QQ is running; connecting to QQ still requires an external OneBot service and does not offer built-in QR code login. Direct single-application QQ integration remains in progress, and existing external connection workflows remain fully operational.
 
 ### Multimodal and media processing
 

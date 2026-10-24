@@ -574,7 +574,7 @@ function isLoopbackHost(host: string): boolean {
  * Why this exists: Bun's global `fetch` honours `HTTP_PROXY` even for
  * 127.0.0.1, so on machines where `HTTP_PROXY` is set (and `NO_PROXY` is unset)
  * every call to the local LM Studio endpoint can be silently sent to the proxy
- * and fail. Empirically (probe under artifacts/validation): with
+ * and fail. In a loopback check with
  * `HTTP_PROXY=http://127.0.0.1:1` (dead), `fetch` to 127.0.0.1 fails with
  * "Unable to connect", while `node:http` reaches the stub — and Bun 1.4.2's
  * `fetch` ignores `NO_PROXY`, so that is not a reliable bypass.

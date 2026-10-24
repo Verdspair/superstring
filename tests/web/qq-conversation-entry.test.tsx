@@ -483,7 +483,7 @@ describe("重复、失败与成功", () => {
     expect(fake.createQqBinding).not.toHaveBeenCalled();
   });
 
-  it("私聊绑定后立即加入对话目录，空会话也能查看，目录失败重试不重复添加", async () => {
+  it("私聊绑定后可重试刷新对话目录并查看空会话，不重复创建绑定", async () => {
     const saved = bindingOf(SCHEME_A, BINDING_A, "60006", "private");
     const summary = {
       id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",

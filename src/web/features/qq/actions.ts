@@ -1141,6 +1141,10 @@ export function createQqAccessActions(
   | "updateQqBindingRow"
   | "removeQqConversation"
   | "organiseQqMemoryRow"
+  | "loadQqManaged"
+  | "saveQqManagedConfig"
+  | "refreshQqManaged"
+  | "patchQqManagedDraft"
 > {
   const report = (error: unknown) =>
     set({ error: error instanceof Error ? error.message : String(error), feedback: "" });
@@ -1198,6 +1202,66 @@ export function createQqAccessActions(
     if (currentWriteOp?.token === op.token && get().apiClient === op.api) {
       currentWriteOp = null;
       set({ qqAccessSaving: false });
+    }
+  };
+
+  let managedLoadInFlight: {
+    promise: Promise<void>;
+    api: SuperstringApi;
+    readId: number;
+    token: number;
+    lifecycleId: number;
+  } | null = null;
+  let managedReadToken = 0;
+  const beginManagedRead = () => {
+    const state = get();
+    managedReadToken += 1;
+    const operation = {
+      api: state.apiClient,
+      id: state.qqManagedReadId + 1,
+      token: managedReadToken,
+      lifecycleId: state.qqManagedLifecycleId,
+    };
+    set({ qqManagedReadId: operation.id });
+    return operation;
+  };
+  const isCurrentManagedRead = (operation: ReturnType<typeof beginManagedRead>) =>
+    get().qqManagedReadId === operation.id &&
+    managedReadToken === operation.token &&
+    get().qqManagedLifecycleId === operation.lifecycleId &&
+    get().apiClient === operation.api;
+  const invalidateManagedReads = () => {
+    managedLoadInFlight = null;
+    managedReadToken += 1;
+    set({ qqManagedReadId: get().qqManagedReadId + 1, qqManagedLoading: false });
+  };
+
+  let managedWriteToken = 0;
+  let currentManagedWriteOp: {
+    token: number;
+    api: SuperstringApi;
+    lifecycleId: number;
+  } | null = null;
+  const beginManagedWrite = () => {
+    managedWriteToken += 1;
+    const op = {
+      token: managedWriteToken,
+      api: get().apiClient,
+      lifecycleId: get().qqManagedLifecycleId,
+    };
+    currentManagedWriteOp = op;
+    set({ qqManagedSaving: true, qqManagedError: null, error: null, feedback: "" });
+    invalidateManagedReads();
+    return op;
+  };
+  const isCurrentManagedWriteApi = (op: ReturnType<typeof beginManagedWrite>) =>
+    currentManagedWriteOp?.token === op.token &&
+    get().qqManagedLifecycleId === op.lifecycleId &&
+    get().apiClient === op.api;
+  const endManagedWrite = (op: ReturnType<typeof beginManagedWrite>) => {
+    if (isCurrentManagedWriteApi(op)) {
+      currentManagedWriteOp = null;
+      set({ qqManagedSaving: false });
     }
   };
   /**
@@ -1747,6 +1811,143 @@ export function createQqAccessActions(
       } finally {
         endAccessWrite(op);
       }
+    },
+    loadQqManaged: async () => {
+      const state = get();
+      const api = state.apiClient;
+      if (
+        managedLoadInFlight &&
+        managedLoadInFlight.api === api &&
+        managedLoadInFlight.readId === state.qqManagedReadId &&
+        managedLoadInFlight.token === managedReadToken &&
+        managedLoadInFlight.lifecycleId === state.qqManagedLifecycleId
+      ) {
+        return managedLoadInFlight.promise;
+      }
+      const operation = beginManagedRead();
+      set({ qqManagedLoading: true, qqManagedError: null });
+      const promise = (async () => {
+        try {
+          const [status, config] = await Promise.all([
+            operation.api.getQqManagedStatus(),
+            operation.api.getQqManagedConfig(),
+          ]);
+          if (!isCurrentManagedRead(operation)) return;
+          set({
+            qqManagedStatus: status,
+            qqManagedConfig: config,
+            qqManagedLoading: false,
+            qqManagedError: null,
+          });
+        } catch (error) {
+          if (!isCurrentManagedRead(operation)) return;
+          set({
+            qqManagedLoading: false,
+            qqManagedError: errorText(error),
+          });
+        } finally {
+          if (managedLoadInFlight?.token === operation.token) {
+            managedLoadInFlight = null;
+          }
+        }
+      })();
+      managedLoadInFlight = {
+        promise,
+        api,
+        readId: operation.id,
+        token: operation.token,
+        lifecycleId: operation.lifecycleId,
+      };
+      return promise;
+    },
+    refreshQqManaged: async () => {
+      managedLoadInFlight = null;
+      const operation = beginManagedRead();
+      set({ qqManagedLoading: true, qqManagedError: null });
+      try {
+        const [config, status] = await Promise.all([
+          operation.api.getQqManagedConfig(),
+          operation.api.getQqManagedStatus(),
+        ]);
+        if (!isCurrentManagedRead(operation)) return;
+        set((state) => {
+          const currentDraft = state.qqInputs.managed;
+          return {
+            qqManagedConfig: config,
+            qqManagedStatus: status,
+            qqManagedLoading: false,
+            qqManagedError: null,
+            qqInputs: {
+              ...state.qqInputs,
+              managed: currentDraft
+                ? {
+                    source: config,
+                    enabled:
+                      currentDraft.enabled !== currentDraft.source.config.enabled
+                        ? currentDraft.enabled
+                        : config.config.enabled,
+                  }
+                : null,
+            },
+          };
+        });
+      } catch (error) {
+        if (!isCurrentManagedRead(operation)) return;
+        set({ qqManagedLoading: false, qqManagedError: errorText(error) });
+      }
+    },
+    saveQqManagedConfig: async () => {
+      const draft = get().qqInputs.managed;
+      if (!draft || get().qqManagedSaving) return false;
+      const op = beginManagedWrite();
+      try {
+        const saved = await op.api.updateQqManagedConfig({
+          expected_revision: draft.source.revision,
+          config: { version: 1, enabled: draft.enabled },
+        });
+        if (!isCurrentManagedWriteApi(op)) return false;
+        invalidateManagedReads();
+        set((state) => ({
+          qqManagedConfig: saved,
+          qqInputs: {
+            ...state.qqInputs,
+            managed:
+              state.qqInputs.managed && state.qqInputs.managed !== draft
+                ? { source: saved, enabled: state.qqInputs.managed.enabled }
+                : null,
+          },
+          feedback: msg("已保存接入设置"),
+        }));
+        try {
+          const status = await op.api.getQqManagedStatus();
+          if (isCurrentManagedWriteApi(op)) {
+            set({ qqManagedStatus: status, qqManagedError: null });
+          }
+        } catch (statusError) {
+          if (isCurrentManagedWriteApi(op)) {
+            set({ qqManagedError: errorText(statusError) });
+          }
+        }
+        return true;
+      } catch (error) {
+        if (isCurrentManagedWriteApi(op)) {
+          set({ qqManagedError: errorText(error) });
+        }
+        return false;
+      } finally {
+        endManagedWrite(op);
+      }
+    },
+    patchQqManagedDraft: (enabled: boolean) => {
+      const config = get().qqManagedConfig;
+      const source = get().qqInputs.managed?.source ?? config;
+      if (!source) return;
+      set((state) => ({
+        qqInputs: {
+          ...state.qqInputs,
+          managed: { source, enabled },
+        },
+      }));
     },
   };
 }

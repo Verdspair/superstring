@@ -55,6 +55,8 @@
 
 本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **72**，新增迁移 0055–0072。
 
+在 QQ 连接设置中切换绑定的 QQ 账号时提供安全检查。若原账号或新账号历史关联的会话中存在正在执行的任务、仍在处理的后台工作、正在发送或发送结果未知的消息，系统会拒绝切换，避免在未结清工作时改变账号归属；相同账号保存、无变更操作或修改普通设置不会误拦截。新增托管启用偏好保存，但托管偏好不代表 QQ 已启动；当前仍需使用外部 OneBot 服务，不提供内置扫码登录。既有 QQ 连接配置无需迁移即可继续正常使用，不引入新的安装包或数据库结构变更。
+
 QQ群聊与私聊现共用会话配置页；已有配置与草稿保留，私聊详细策略默认跟随所选方案，未主动自定义的项目不改写。会话菜单可解除绑定并移除目录入口，不删除Agent、方案或平台聊天。私聊添加需填写联系人的QQ号，不能填写机器人自身账号。这些界面与绑定操作不新增数据库迁移。
 
 聊天记录首次从服务器只读取最新 100 条，点击“加载更早消息”分页查看旧记录；保存的历史不会被删除或截断。新消息仍逐条即时显示，刷新和回复完成保留已加载的旧页及阅读位置。优化消息详情、启动记录核对与权限读取中的重复工作。
@@ -139,6 +141,8 @@ Unknown schemas or downgrade attempts are rejected to protect data safety. Rolli
 #### Current source updates on main
 
 This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **72**, with migrations 0055–0072.
+
+Switching the bound QQ account in QQ connection settings includes safeguards before changing accounts. If historical sessions associated with either the old or new account contain tasks in progress, ongoing background work, or messages being sent or with unknown delivery results, the switch is refused to avoid changing account ownership while work is outstanding. Same-account updates, no-op saves, and ordinary setting edits are not blocked. Adds saving of managed-mode preferences, but the preference does not mean QQ is running; the application still requires an external OneBot service and does not offer built-in QR code login. Existing QQ connection configurations continue to work without migration, requiring no new installer or schema changes.
 
 QQ groups and private chats now share one conversation policy editor. Existing configuration and drafts remain; private settings follow the selected scheme unless explicitly overridden. Conversation menus can remove a binding and its directory entry without deleting the Agent, scheme, or platform chat. Enter the contact’s QQ number when adding a private chat, not the bot’s own account. These interface and binding changes add no database migration.
 

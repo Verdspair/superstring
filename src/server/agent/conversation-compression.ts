@@ -97,7 +97,7 @@ export class ConversationCompressor {
      */
     requireFacts?: boolean;
     /**
-     * 任务描述（QQ 方案的 compress 槽位，）。省略＝只用下面的程序规则，
+     * 任务描述（QQ 方案的 compress 槽位）。省略＝只用下面的程序规则，
      * 保持网页调用点的提示词一字不变；结构性规则（枚举、白名单、预算、禁止执行记录）由程序附加。
      */
     task?: string;

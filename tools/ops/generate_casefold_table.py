@@ -108,7 +108,7 @@ export function caseFoldCodePoint(codePoint: number): string {{
 }}
 
 /** Python `str.casefold()` for a whole string (code-point iteration, not UTF-16). */
-export function pythonCasefold(text: string): string {{
+export function fullCasefold(text: string): string {{
   let out = "";
   for (const char of text) out += caseFoldCodePoint(char.codePointAt(0) as number);
   return out;

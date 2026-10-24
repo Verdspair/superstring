@@ -1455,13 +1455,8 @@ export class BotContextSource {
     };
   }
   /**
-   * 本批冻结窗口里**真实成员入站事件**的 seq → 冻结来源引用。模型给出的 sourceSeqs 只能引用
-   * 这里出现过的 seq；引用不授予权限，真实授权仍由宿主在发送边界复验。
-   */
-  /**
-   * 本批可引用的**冻结来源**：从 cause 游标 `chimingInObservedSeq` 到本 wake `throughSeq`
-   * 之间的真实成员入站事件 seq → qq_event 引用（引用不授权）。不是"窗口保留的全部 seq"，
-   * 也不是"最新 source"——只有这一冻结范围里的 seq 可被模型引用。
+   * 本次冻结来源范围内的真实成员入站 seq → qq_event 引用：从 sourceFromSeq 到 throughSeq。
+   * 模型只能引用此范围，不是窗口保留的全部 seq 或最新来源；引用不授权，发送边界仍由宿主复验。
    */
   private frozenMemberSourceSeqs(throughSeq: number): Map<number, SourceRef> {
     if (this.options.path === "chiming_in" && this.options.sourceFromSeq === undefined)
@@ -3840,16 +3835,6 @@ ${intent.trim()}`,
     return { status: "unavailable", code, items: [] };
   }
   /**
-   * 本档窗口在 journal 里的真实 seq 区间——出站候选枚举的上界真源（§4.3「不扩成通用
-   * 历史预载」；seq 下界由投影事实的真实时间裁剪承担，见 confirmedOutboundPartCandidates）。
-   *
-   * 窗口是「哪些消息进这一轮」，seq 区间就是它的稳定投影：下界取窗口里最早一条**带真实
-   * journal seq** 的消息（本档已投影事实的入站事件，或本档已列入 timeline 的助手出站意图
-   * 的 delivery 事件），上界取同一批 seq 的最大值。不按时间猜、不整表扫，也不用入站
-   * eventKey 与出站 part 混键；窗口里一条可定位 seq 的消息都没有时返回 null（=没有候选，
-   * 而不是"退化成全会话历史"）。
-   */
-  /**
    * 并发任务投影的唯一装配入口：本会话其他在飞任务的极小状态元数据（data_only 资料）。
    * 无其他任务时不产生消息。已接受的评分意图复用完整来源守卫；缺失、到期或撤权保持未知。
    * 来源与快照身份留在本 run 的视图中，供发送边界再次复验，不进入模型资料正文。
@@ -3973,6 +3958,16 @@ ${intent.trim()}`,
     };
   }
 
+  /**
+   * 本档窗口在 journal 里的真实 seq 区间——出站候选枚举的上界真源（§4.3「不扩成通用
+   * 历史预载」；seq 下界由投影事实的真实时间裁剪承担，见 confirmedOutboundPartCandidates）。
+   *
+   * 窗口是「哪些消息进这一轮」，seq 区间就是它的稳定投影：下界取窗口里最早一条**带真实
+   * journal seq** 的消息（本档已投影事实的入站事件，或本档已列入 timeline 的助手出站意图
+   * 的 delivery 事件），上界取同一批 seq 的最大值。不按时间猜、不整表扫，也不用入站
+   * eventKey 与出站 part 混键；窗口里一条可定位 seq 的消息都没有时返回 null（=没有候选，
+   * 而不是"退化成全会话历史"）。
+   */
   private outboundSeqWindow(
     conversationId: string,
     window: readonly QqContextMessage[],

@@ -1,12 +1,12 @@
 // Drizzle ORM schema: the initial core tables plus the additive knowledge, QQ
 // transport and feature tables (count lives in schema-gate's table list, not here).
 // The business tables are mapped 1:1 onto Drizzle + SQLite.
-// Source of truth: docs/reference/data-model.md (golden). Every column name
-// type, NOT NULL, default, primary key, composite unique key, foreign key (with
-// ON DELETE strategy) and CHECK constraint below mirrors that document. The
-// authoritative DDL that actually builds the database is
-// migrations/versions/0001_initial.sql through 0005_qq_transport.sql — stay in
-// lock-step with it (see tests/integration/db-schema.test.ts for the drift guard).
+// Core-table source of truth: docs/reference/data-model.md is the golden
+// reference for the initial core tables only. The authoritative, complete DDL is
+// the ordered schema-gate chain in BUSINESS_MIGRATION_FILES (see
+// src/server/db/schema-gate.ts and migrations/versions/); Drizzle stays
+// lock-step with that current migration set. See
+// tests/integration/db-schema.test.ts for the drift guard.
 // Type mapping (data-model.md §0):
 // String(N)/Text -> text() -> TEXT
 // Integer/BigInteger -> integer() -> INTEGER (SQLite INTEGER is 8 bytes)
@@ -2729,5 +2729,3 @@ export const businessTables = {
   qqMediaReadTasks,
   qqGroupNames,
 } as const;
-
-export type BusinessTables = typeof businessTables;

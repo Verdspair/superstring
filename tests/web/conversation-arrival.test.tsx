@@ -1000,7 +1000,7 @@ describe("conversation arrival instant update", () => {
     unmount();
   });
 
-  it("task detail background refresh failure clears invalid detail and displays error", async () => {
+  it("task detail background refresh failure displays an error", async () => {
     const listTasksSpy = vi.fn().mockResolvedValue({
       items: [mockTaskSummary("t-fail", "conv-fail", "waiting_approval")],
       nextCursor: null,
@@ -1035,7 +1035,7 @@ describe("conversation arrival instant update", () => {
     });
     expect(getTaskSpy).toHaveBeenCalledTimes(2);
 
-    // Invalid detail is cleared from view and error is rendered
+    // The background refresh error is rendered.
     expect(await screen.findByRole("alert")).toBeTruthy();
 
     view.unmount();

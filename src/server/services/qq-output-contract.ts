@@ -74,7 +74,6 @@ const PartSchema = z
   });
 
 const AttemptSchema = z.strictObject({ parts: z.array(PartSchema).min(1) });
-export type QqSendAttempt = Readonly<z.input<typeof AttemptSchema>>;
 
 function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
   const result = schema.safeParse(input);
@@ -95,16 +94,6 @@ const OutcomeSchema = z.enum([
   "not_submitted",
 ]);
 export type QqSendOutcome = z.output<typeof OutcomeSchema>;
-
-/** Every outcome the store accepts, in the order the table lists them. */
-export const QQ_SEND_OUTCOMES: readonly QqSendOutcome[] = Object.freeze([
-  "sent",
-  "partially_sent",
-  "sticker_failed",
-  "text_failed",
-  "unknown",
-  "not_submitted",
-]);
 
 export interface QqSendSummary {
   readonly outcome: QqSendOutcome;

@@ -56,8 +56,6 @@ export const QQ_DISPATCH_PENDING_GOVERNANCE = Object.freeze({
   ] as const),
 });
 
-/** The lease paths the queue may carry. Direct `@` replies stay on the immediate path. */
-export const QQ_DISPATCH_QUEUE_PATHS = Object.freeze(["chiming_in", "idle_topic"] as const);
 const StoredPath = z.enum(["direct_reply", "follow_up", "chiming_in", "idle_topic"]);
 
 export function readQqDispatchSettings(orm: Orm): QqDispatchSettingsRow {

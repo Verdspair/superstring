@@ -236,7 +236,7 @@ describe("fresh assistant studio", () => {
     expect(client.updateAgent).not.toHaveBeenCalled();
   });
   it.each(["full_catalog", "full_body"] as const)(
-    "displays %s as broad without mutating drafts on visits, tab changes or reloads",
+    "displays the stored %s mode without mutating drafts on visits, tab changes or reloads",
     async (mode) => {
       const editor = store.getState().pageEditor;
       if (!editor) throw new Error("Missing editor");

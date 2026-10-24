@@ -73,7 +73,7 @@ HEADER = """// CPython `str.isalnum()` code points — GENERATED, DO NOT EDIT BY
 //   this implementation call the suppression model where the contract
 //   short-circuits, and in the worst case publish a memory the contract drops.
 //
-//   So the set is frozen here and `isPythonAlnum()` binary-searches it. The
+//   So the set is frozen here and `isAlnum()` binary-searches it. The
 //   result does not depend on the host engine's Unicode tables at all.
 //
 // Generated from: CPython __PYTHON__
@@ -117,7 +117,7 @@ function table(): Range[] {
 }
 
 /** CPython `str.isalnum()` for a single code point. */
-export function isPythonAlnum(codePoint: number): boolean {
+export function isAlnum(codePoint: number): boolean {
   const ranges = table();
   let low = 0;
   let high = ranges.length - 1;
@@ -136,10 +136,10 @@ export function isPythonAlnum(codePoint: number): boolean {
 }
 
 /** Number of frozen ranges — the drift guard in the tests reads this. */
-export const PYTHON_ALNUM_RANGE_COUNT = __RANGES__;
+export const ALNUM_RANGE_COUNT = __RANGES__;
 
 /** Number of code points the frozen table accepts. */
-export const PYTHON_ALNUM_CODE_POINT_COUNT = __COUNT__;
+export const ALNUM_CODE_POINT_COUNT = __COUNT__;
 """
 
 

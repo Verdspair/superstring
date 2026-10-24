@@ -17,10 +17,10 @@ import { loadStartupLayout } from "../../src/server/startup-layout";
 
 const versionsDir = path.join(import.meta.dir, "../../migrations/versions");
 
-// Test-owned golden inventory: the exact 71 business migration files in install
-// order. Deliberately not derived from any production list (such as schema-gate's
-// BUSINESS_MIGRATION_FILES) so the exact-71 checks below can catch a missing or
-// extra production migration resource independently.
+// Test-owned complete ordered business-migration inventory. Deliberately not
+// derived from any production list (such as schema-gate's
+// BUSINESS_MIGRATION_FILES), so the checks below can catch a missing or extra
+// production migration resource independently of the list under test.
 const BUSINESS_MIGRATION_FILE_NAMES = [
   "0001_initial.sql",
   "0002_knowledge.sql",

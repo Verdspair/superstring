@@ -54,6 +54,7 @@ export function resolveAppPaths(options: AppPathOptions) {
     privateRoot,
     dataDir: path.join(privateRoot, "data"),
     configDir: path.join(privateRoot, "config"),
+    napcatConfig: path.join(privateRoot, "config", "napcat.json"),
     stateDir: path.join(privateRoot, "state"),
     database: path.join(privateRoot, "data", "superstring.sqlite"),
     browserStateKey: path.join(privateRoot, "state", "browser-state.key"),

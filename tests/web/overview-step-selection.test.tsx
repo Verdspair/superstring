@@ -369,7 +369,7 @@ afterEach(() => {
 });
 
 describe("overview step selection", () => {
-  it("renders every step as a pressed toggle button, selects the first by default and auto-opens only its full input/output with no manual inspect gate", async () => {
+  it("selects the first step by default, prefetches bounded evidence and shows its input/output when expanded", async () => {
     const inspect = inspectGate();
     install({
       run: runSnapshot([

@@ -6,7 +6,7 @@
  *   R/build-manifest.json         schema 1 manifest: identity + every file under app/
  *   R/app/**                      promoted desktop candidate: pinned Electron runtime with the
  *                                 applied fuse wire, resources/app.asar, the compiled installed
- *                                 entry, the 71 business migrations, web assets and notices
+ *                                 entry, the business migrations, web assets and notices
  *   R/app/desktop-host.json       installed host config (projectRoot ".." = R, electron.exe beside it)
  *   R/app/superstring.ico         plate icon: the setup EXE resource and the shortcut icon source
  *

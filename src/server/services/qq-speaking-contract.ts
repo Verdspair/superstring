@@ -65,7 +65,6 @@ const TriggerInputSchema = z.strictObject({
   /** The newest recorded message from a real conversation partner, or null if none. */
   newestMemberMessageSeconds: z.number().int().nonnegative().nullable(),
 });
-export type QqSpeechTriggerInput = Readonly<z.input<typeof TriggerInputSchema>>;
 
 const SendInputSchema = z.strictObject({
   kind: SpeechKindSchema,
@@ -73,7 +72,6 @@ const SendInputSchema = z.strictObject({
   conversationPaused: z.boolean(),
   disabledKinds: z.array(SpeechKindSchema),
 });
-export type QqSpeechSendInput = Readonly<z.input<typeof SendInputSchema>>;
 
 export type QqSpeechBlockReason =
   | "feature_off"

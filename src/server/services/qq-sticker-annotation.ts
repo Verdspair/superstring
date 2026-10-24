@@ -6,10 +6,9 @@
 //
 // Two seams are injected rather than decided here:
 //
-//   * the MULTIMODAL TRANSPORT (`annotate` receives the model, the prompt and the images). The
-//     gateway's `complete()` carries text only, so an image call needs a protocol decision that
-//     §7.1 still lists as pending (image encoding, multi-image handling) — the same pending piece
-//     the media reader's adapter marks. Without an injected annotator the route says so.
+//   * the MULTIMODAL TRANSPORT (`annotate` receives the model, prompt and images). Production
+//     wiring adapts the vision-capable leaf runtime; execution stays behind this injected
+//     seam, while this module validates and stores drafts.
 //   * nothing about the model NAME: it comes from the shared settings row, because "which model
 //     looks at pictures" has one answer for the whole QQ side. An unset name means "cannot
 //     annotate" — never a fallback to the conversation model, which would describe a picture it

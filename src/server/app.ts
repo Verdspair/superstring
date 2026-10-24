@@ -20,7 +20,7 @@ import { memoryRoutes } from "./api/memories";
 import { modelRoutes } from "./api/models";
 import { observabilityRoutes } from "./api/observability";
 import { permissionRoutes } from "./api/permissions";
-import { qqRoutes } from "./api/qq";
+import { qqManagedComponentRoutes, qqRoutes } from "./api/qq";
 import { runRoutes } from "./api/runs";
 import { sessionRoutes } from "./api/sessions";
 import { skillsRoutes } from "./api/skills";
@@ -40,6 +40,7 @@ import {
 } from "./modules/composition";
 import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
 import { systemToolDefinitions } from "./modules/tool-definitions";
+import type { NapCatManagementPort } from "./napcat/management";
 import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
 import { type PermissionService, unconfiguredPermissions } from "./permissions/service";
 import { projectToolDirectory } from "./permissions/tool-directory";
@@ -83,6 +84,8 @@ export interface CreateAppOptions {
   qqStickerAnnotator?: QqStickerAnnotator;
   /** The live QQ transport state, so the settings page can report connected / not connected. */
   qqConnectionState?: () => { readonly phase: string; readonly reason?: string };
+  /** Optional managed-component config and status; construction performs no component I/O. */
+  napcatManagement?: NapCatManagementPort;
   /** 外部（MCP）动作：每轮现取；没有登记时返回空表。 */
   externalActions?: () => readonly BuiltInAction[];
   toolDirectory?: () => readonly ToolDirectoryEntry[];
@@ -240,6 +243,7 @@ export function createApp(opts: CreateAppOptions): Hono {
         annotator: opts.qqStickerAnnotator ?? createQqStickerAnnotator(agentRuntime),
       }),
     );
+    app.route("/v2/qq/managed-component", qqManagedComponentRoutes(opts.napcatManagement));
     app.route("/", desktopRoutes(business));
     app.route("/", memoryRoutes(business.orm));
     app.route("/", knowledgeRoutes(business, modules.knowledge));

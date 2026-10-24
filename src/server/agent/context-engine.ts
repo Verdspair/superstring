@@ -27,12 +27,6 @@ export interface ContextMaterial {
   pending?: readonly ModelMessage[];
   sources?: readonly SourceRef[];
 }
-export interface ContextTokenMeasure {
-  method: "serialized_chat_token_estimate";
-  encoding: TextTokenEncoding;
-  textTokens: number;
-  mediaState: "none" | "unknown";
-}
 export interface RenderedContext {
   messages: ModelMessage[];
   sources: SourceRef[];

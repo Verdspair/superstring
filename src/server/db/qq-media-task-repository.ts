@@ -1,7 +1,7 @@
 // Typed media read tasks (T08; spec §8.1/§12, migration 0052).
 //
 // The 0012 ledger had one attempts counter per media row; §8.1 replaces it with
-// one task per (media, purpose, question) and two attempts per task. The task's
+// one task per identity with one bounded attempt. Legacy rows may retain historical attempts. The task's
 // stable identity is the media's identity + purpose (baseline | detail) + the
 // normalized question for details — deliberately NOT the model or policy: those
 // are result-cache matching dimensions, and switching either must not reset the
@@ -45,7 +45,6 @@ import * as schema from "./schema";
 
 export type QqMediaReadTaskRow = typeof schema.qqMediaReadTasks.$inferSelect;
 export type QqMediaReadPurpose = "baseline" | "detail";
-export type QqMediaReadTaskStatus = "pending" | "running" | "succeeded" | "failed";
 
 /**
  * 每个任务身份一次有界尝试（§5.7）：失败结果复用，同请求 invoke/replay 不自动重试；

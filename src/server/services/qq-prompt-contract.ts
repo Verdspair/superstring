@@ -12,11 +12,10 @@
 // "material is never system authority" rule is a property of the output rather than a
 // comment someone has to remember.
 //
-// The six editable prompts belong to the scheme (P3c decision): a scheme is a QQ-global
-// resource and prompts describe how that scheme talks, so switching the assistant does not
-// switch the wording. What a *path* needs beyond that is appended by this module, not
-// stored: the paths share one judgement call and one reply call, so six near-identical
-// editable fields would be a worse surface than one field plus a program-owned line.
+// Editable prompt slots belong to the QQ-global scheme, so switching the assistant does not
+// switch their wording. The six stage prompts are assembled here; the separate compression
+// slot is consumed by the background compressor. Path-specific output constraints are
+// appended by the program, not stored as another prompt slot.
 
 import { z } from "zod";
 import { readJsonBody } from "../../shared/contracts/agent-output";
@@ -42,7 +41,6 @@ export const QQ_PROMPT_SLOTS = [
   "media",
   "compress",
 ] as const;
-export type QqPromptSlot = (typeof QQ_PROMPT_SLOTS)[number];
 
 const STICKER_FREQUENCY_GUIDES = {
   low: "表情发送倾向（low）：以文字为主，也要自然使用贴切的表情；情绪回应、轻松互动时主动用 sticker.search 找候选，有合适的就用 reply.sticker，不必等到表情比文字更好。没有合适的就不用，不硬凑。",

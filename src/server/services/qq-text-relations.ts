@@ -1,4 +1,4 @@
-// hiddenwhy：过期事实整体跳过（失效不供私文），unavailable 只留最少稳定状态；纯投影不查 scope，宿主负责。
+// 投影规则：过期事实整体跳过（失效不供私文），unavailable 只留最少稳定状态；纯投影不查 scope，宿主负责。
 
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type {

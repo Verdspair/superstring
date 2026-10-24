@@ -13,6 +13,7 @@ import { QqJudgementModel } from "../environment/model-defaults";
 import { AllocationModelCapacity } from "./AllocationModelCapacity";
 import { ContextAllocationAuxiliary } from "./ContextAllocationAuxiliary";
 import { QqConversationEntry } from "./QqConversationEntry";
+import { QqManagedComponentCard, type QqManagedStatus } from "./QqManagedComponentCard";
 import { TransportSettings } from "./transport-settings";
 
 const connectionPhaseLabels: Record<string, string> = {
@@ -282,20 +283,30 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
     useShallow((state) => ({
       loadQqAccess: state.loadQqAccess,
       loadOrganization: state.loadOrganization,
+      loadQqManaged: state.loadQqManaged,
+      patchQqManagedDraft: state.patchQqManagedDraft,
       qqAccessLoading: state.qqAccessLoading,
       qqAccessSaving: state.qqAccessSaving,
       qqConnection: state.qqConnection,
+      managedDraft: state.qqInputs.managed,
+      qqManagedConfig: state.qqManagedConfig,
+      qqManagedError: state.qqManagedError,
+      qqManagedLoading: state.qqManagedLoading,
+      qqManagedSaving: state.qqManagedSaving,
+      qqManagedStatus: state.qqManagedStatus,
       qqSettings: state.qqSettings,
       refreshQqConnection: state.refreshQqConnection,
+      refreshQqManaged: state.refreshQqManaged,
+      saveQqManagedConfig: state.saveQqManagedConfig,
     })),
   );
-  const { loadQqAccess, loadOrganization } = s;
+  const { loadQqAccess, loadOrganization, loadQqManaged } = s;
   const [refreshing, setRefreshing] = useState(false);
   const refresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await s.refreshQqConnection();
+      await Promise.all([s.refreshQqConnection(), s.refreshQqManaged()]);
     } finally {
       setRefreshing(false);
     }
@@ -304,9 +315,29 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
     if (!active) return;
     // 整页读取是进入连接页的起载：只读设置与状态，绝不自动推进连接草稿的保存基线。
     void loadQqAccess();
+    void loadQqManaged();
     // QQ 多模态模型与辅助额度共用的组织编辑器：加载失败不伪装成「已停用」。
     void loadOrganization();
-  }, [active, loadQqAccess, loadOrganization]);
+  }, [active, loadQqAccess, loadOrganization, loadQqManaged]);
+
+  const managedDraft = s.managedDraft;
+  const isManagedDirty =
+    !!managedDraft && managedDraft.enabled !== managedDraft.source.config.enabled;
+  const managedEnabled = isManagedDirty
+    ? managedDraft.enabled
+    : (s.qqManagedConfig?.config.enabled ?? false);
+  const runtimeGatePassed = s.qqManagedStatus ? s.qqManagedStatus.apply !== "blocked" : false;
+  const cardStatus: QqManagedStatus = {
+    managedEnabled,
+    phase:
+      !s.qqManagedStatus || s.qqManagedStatus.unavailable_reason === "management_not_configured"
+        ? "unconfigured"
+        : "stopped",
+    accountId: null,
+    qrPayload: null,
+    runtimeGatePassed,
+    diagnosticCode: null,
+  };
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
@@ -328,7 +359,13 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
               tooltip={<Trans i18nKey="hints.complete.qqRefresh" />}
               variant="outline"
               size="sm"
-              disabled={s.qqAccessSaving || s.qqAccessLoading || refreshing}
+              disabled={
+                s.qqAccessSaving ||
+                s.qqAccessLoading ||
+                s.qqManagedSaving ||
+                s.qqManagedLoading ||
+                refreshing
+              }
               onClick={() => void refresh()}
               className="h-8 rounded-lg"
             >
@@ -336,6 +373,44 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
               {t("connections.refreshState")}
             </Button>
             <QqConversationEntry />
+          </div>
+          <div className="mb-6 space-y-2">
+            <QqManagedComponentCard
+              status={cardStatus}
+              loading={s.qqManagedLoading}
+              saving={s.qqManagedSaving}
+              onToggleManaged={(enabled) => s.patchQqManagedDraft(enabled)}
+              onRefreshQr={() => void s.refreshQqManaged()}
+              onRetry={() => void s.refreshQqManaged()}
+            />
+            {s.qqManagedError && (
+              <p role="alert" className="text-sm text-destructive">
+                {t("connections.managed.diag.unknown")}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center justify-end gap-2 px-1">
+              <Button
+                tooltip={t("models.discard")}
+                variant="outline"
+                size="sm"
+                disabled={!isManagedDirty || s.qqManagedSaving}
+                onClick={() =>
+                  useSuperstringStore.setState((state) => ({
+                    qqInputs: { ...state.qqInputs, managed: null },
+                  }))
+                }
+              >
+                {t("models.discard")}
+              </Button>
+              <Button
+                tooltip={t("library.save")}
+                size="sm"
+                disabled={!isManagedDirty || s.qqManagedSaving}
+                onClick={() => void s.saveQqManagedConfig()}
+              >
+                {t("library.save")}
+              </Button>
+            </div>
           </div>
           <TransportSettings active={active} />
           <div className="mt-6">

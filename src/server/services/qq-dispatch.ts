@@ -425,22 +425,6 @@ export function finishQqDispatchTask(
 }
 
 /**
- * Read-only view for tests and diagnostics: whether a conversation currently has a candidate
- * and whether the global slot is taken.
- */
-export function qqDispatchQueueState(orm: Orm, conversationKey: string, nowSeconds: number) {
-  const candidate = readQqDispatchCandidate(orm, conversationKey);
-  const lease = readQqDispatchLease(orm);
-  return {
-    hasCandidate: candidate !== null,
-    generation: candidate?.generation ?? null,
-    readyAtSeconds: candidate?.readyAtSeconds ?? null,
-    leaseHeld: qqDispatchLeaseIsHeld(lease, nowSeconds),
-    leaseConversationKey: lease.conversationKey,
-  };
-}
-
-/**
  * Why a conversation produced no idle-topic candidate: `QqIdleSweepSkipReason` in the shared
  * contract, because the settings surface now SHOWS these reasons rather than only logging a count.
  *

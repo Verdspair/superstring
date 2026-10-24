@@ -58,12 +58,6 @@ export const MemoryJobStatus = {
 } as const;
 export type MemoryJobStatus = (typeof MemoryJobStatus)[keyof typeof MemoryJobStatus];
 
-// memory_jobs.kind — free-form string, "merge" observed.
-// No CHECK enum; provided here only as the documented example literal.
-export const MemoryJobKind = {
-  Merge: "merge",
-} as const;
-
 // message_deletion_events.role (data-model.md:424)
 export const DeletionEventRole = {
   User: "user",
@@ -71,28 +65,11 @@ export const DeletionEventRole = {
 } as const;
 export type DeletionEventRole = (typeof DeletionEventRole)[keyof typeof DeletionEventRole];
 
-// message_deletion_events.reason — example literal
-export const DeletionEventReason = {
-  UserRequested: "user_requested",
-} as const;
-
-// session_summaries.template_version — written value "p5-1"
-export const SummaryTemplateVersion = {
-  P5_1: "p5-1",
-} as const;
-
 // memory_session_states.scope — legacy label, default "reality_user"
 export const MemoryScope = {
   RealityUser: "reality_user",
 } as const;
 export type MemoryScope = (typeof MemoryScope)[keyof typeof MemoryScope];
-
-// turns.invalidation_reason — example literals
-export const TurnInvalidationReason = {
-  MessageDeleted: "message_deleted",
-  GenerationLeaseExpired: "generation_lease_expired",
-  GenerationFailed: "generation_failed",
-} as const;
 
 // Boolean storage contract (data-model.md §0): INTEGER 0/1
 export const BOOL_TRUE = 1 as const;

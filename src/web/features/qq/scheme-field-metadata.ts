@@ -73,12 +73,6 @@ export const responseFields = [
   ],
 ] as const;
 
-/** 0059 并行任务上限组字段：属于回复方式分组。 */
-export const taskLimitsFields = [
-  ["mention_task_limit", "connections.mentionTaskLimit", "connections.mentionTaskLimitHint"],
-  ["ordinary_task_limit", "connections.ordinaryTaskLimit", "connections.ordinaryTaskLimitHint"],
-] as const;
-
 export const stickerFields = [
   ["stickers", "sticker_min_repeat_minutes", "connections.shortestRepeatIntervalPerStickerMinutes"],
   ["stickers", "sticker_recent_avoid_count", "connections.avoidTheLastFew"],

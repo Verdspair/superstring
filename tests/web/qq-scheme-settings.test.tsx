@@ -297,8 +297,8 @@ describe("Shared scheme studio", () => {
       }),
     );
   });
-  /** 水位压缩任务提示词槽位留在方案页「历史压缩」组，仍可编辑并随整体保存提交；预算三栏只读。 */
-  it("keeps the compress prompt editable on the scheme page while the budgets show read-only", async () => {
+  /** 水位压缩任务提示词在方案页「历史压缩」组编辑，并随整体方案保存。 */
+  it("keeps the compress prompt editable in the scheme's history compression section", async () => {
     const { fake } = await renderPage();
     await task("历史压缩");
     fireEvent.change(screen.getByLabelText("水位压缩任务"), { target: { value: "压事实" } });

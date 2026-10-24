@@ -351,7 +351,7 @@ it("collapses the directory for global activity and restores it", async () => {
   );
   expect(screen.getByRole("navigation", { name: key("workspace.chat_history") })).toBeTruthy();
 });
-it("keeps the message subtree, composer draft and in-flight send across collapse and view switches", async () => {
+it("keeps the composer node and draft across collapse and view switches", async () => {
   setup();
   selectConversation(webConversation);
   render(<ConversationWorkspace />);

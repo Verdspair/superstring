@@ -13,7 +13,7 @@
 //   * U13 stays the caller's argument — the same library under different `counts` presents
 //     differently.
 //
-// Every case asserts the send ledger and the speech log stay empty: `prepared_only` is not a send.
+// `prepared_only` does not send a reply; some cases seed earlier sends to test sticker reuse.
 
 import { describe, expect, it } from "bun:test";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";

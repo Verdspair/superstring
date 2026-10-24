@@ -86,6 +86,10 @@ Usage: open-when-ready.ts --port <n> [--timeout <ms>] [--path <path>] [--print-o
 All waits share --timeout, excluding runtime/OS scheduling and process-reaping overhead; never supervises the server.`);
 }
 
+export function remainingMs(deadline: number): number {
+  return Math.max(0, deadline - performance.now());
+}
+
 /**
  * One readiness probe. Returns true only for HTTP 200 on /health.
  *
@@ -96,10 +100,6 @@ All waits share --timeout, excluding runtime/OS scheduling and process-reaping o
  * must never be proxied. Bun 1.4.2 ignored NO_PROXY in isolated probes, so it
  * is not a reliable escape; node:http does not consult proxy environment vars.
  */
-export function remainingMs(deadline: number): number {
-  return Math.max(0, deadline - performance.now());
-}
-
 export function healthReady(port: number, deadline: number): Promise<boolean> {
   const budget = Math.min(ATTEMPT_TIMEOUT_MS, remainingMs(deadline));
   if (budget <= 0) return Promise.resolve(false);

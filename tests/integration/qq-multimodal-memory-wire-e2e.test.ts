@@ -5,15 +5,14 @@
 //   * memory 侧：真实 intake 落媒体行 → readQqMediaTaskOnce（真实 typed note 落库）→
 //     freezeQqFactScope/loadQqFactInputs（真实 restyleRecord）→ MemoryService worker
 //     （真实 loadInputs/generate/publish）→ 发布来源核验（qq_memory_sources/memory_entries）。
-//   * 水位侧：真实 OneBot wire→宿主→BotContextSource；判断档 before/after 行 hash 强负；
-//     回复档装配正测。真实后台压缩执行需要 harness 暴露 compression job/队列接口
-//     （bot-host enqueueCompression 未接线到夹具）——该正半按未执行如实记录，不 skip 冒充。
+//   * 水位侧：合成 OneBot wire 驱动宿主与 BotContextSource，覆盖判断档 hash 隔离、回复档
+//     装配，以及 compressionQueue / compressionRunOnce 的生产队列消费接线。
 //   * 跨源侧：同一业务库内造两个 scope（第二个 binding+conversation 经真实 journal），行
 //     确实存在的前提下断跨 owner/scope 拒 + 合法 pair available + owner-first fail closed 顺序。
 //   * wire 侧：真实 modelPort 捕获（scripted receivedMessages 深拷贝）断 role 顺序/有序片段/
 //     tools/schema 逐字形状；持久面扩扫（run/context/event/context_snapshots/出站请求/
-//     qq_send_log/qq_outbound_message_facts）；HTTP 边界字节级 wire 捕获（toGatewayMessages
-//     data URL）需 harness 网关捕获模式接口，本批用 toGatewayMessages 受控 resolver 单独面补充。
+//     qq_send_log/qq_outbound_message_facts）；同时通过 owned loopback 与真实 gateway 捕获
+//     HTTP data-URL 请求体，并用受控 resolver 校验 toGatewayMessages 的字节边界。
 //
 // 红线：业务测试不 import artifacts/（本文件自包含）；不建第二 harness/第二模型链；不读真实
 // data/密钥；不改产品代码与原 e2e 文件/harness。

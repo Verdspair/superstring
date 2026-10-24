@@ -47,10 +47,7 @@ export function handleError(err: unknown, c: Context): Response {
     return c.json(errorPayload(dbError.code, dbError.message), dbError.statusCode as 503);
   }
 
-  // Anything else uses the contract's default unhandled-exception response.
-  // Shape is marked `待实测确认` in api-contract.md §9: the contract has
-  // no custom handler for generic exceptions, so the body uses that default
-  // shape rather than the `error` envelope.
+  // Unhandled exceptions use the generic detail response, not the application error envelope.
   return c.json({ detail: "Internal Server Error" } satisfies InternalErrorBody, 500);
 }
 

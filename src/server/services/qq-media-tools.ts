@@ -1,7 +1,7 @@
 // 0.4.0 P5 媒体工具（ADR0019 §8.11）：list 列本会话已记录的图片元数据，note.read 读取
 // typed baseline 读取任务保存的描述，describe 显式花一次读取（effect=write；经真实
 // `readQqMediaTaskOnce` 消费 0052 的 typed 任务账本——同一媒体行一个 baseline 任务、
-// 每任务至多两次尝试，换模型/改策略不重置已消耗的尝试），read 取得当前 scope 的原生图像
+// 每任务身份一次有界尝试，失败复用不自动重试，换模型/改策略不重置已消耗的尝试），read 取得当前 scope 的原生图像
 // 输入（effect=read：初次下载/准备缓存是只读资源的派生缓存，不伪称外部写）。
 // addressed/relatedSupplement 等授权事实由宿主从 journal 得出，模型只给 id 与分页参数；
 // note.read/describe/read 只认本 run 由 media.list 披露过的 id。成功描述的来源引用是

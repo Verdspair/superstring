@@ -1,24 +1,11 @@
-// QQ 输入防刷屏事实投影（§5.4 派生策略单 owner 的投影桥）：把真实 journal 事件事实
-// （QqMessageFact，intake 已按平台三键证据归一 image.category）映射成
-// deriveQqInputAntispam 的输入事件。本模块只做映射，不复制第二套规则：
-// 纯表情判定、burst 分组、固定窗锚全部是 qq-input-antispam 的单一实现。
-//
-// 无时钟、无库、无模型、无 IO、无缓存/队列/计时器；不持久化第二事实。调用方按各自的
-// 冻结范围派生（资格计数在 claim 前、候选锚/自动媒体在 claim 时点），同一派生结果供
-// 三个消费者共用，不跨 snapshot 缓存。
-//
-// 输入合同（caller 责任，本模块不猜）：
-// * facts 由 caller 按来源顺序给出（投影按 journal seq 升序保持，不重排）；
-// * sourceAvailable 是 caller 对该事件来源 TTL/完整性的投影布尔（false＝硬边界）；
-// * explicitDirect 是 caller 已裁定的合法 direct 事实（显式 @ / 合法引用）；
-// * speaker.role 非 member 的事件（anonymous/system）不进入输入——与资格计数同口径，
-//   它们从来不是合格判定目标，也不打断任何发送者的分组。
-//
-// 部件映射（平台证据，不冒充）：text→text；face→face；image→image，expressionEvidence
-// 只认 intake 从平台 categoryEvidence 归一出的 category:"expression"（模型分类写在独立
-// 分类表，从不回写 fact.parts，因此 fact 上的 expression 恒为平台证据）；mention/reply
-// 地址元数据不进 parts（direct 与否已由 explicitDirect 承载）；unavailable 的
-// record/video/file 是真实其它媒体部件→otherMedia，其余不可核实部件→unsupported。
+// 将按 seq 排序的 journal 行投影为防刷屏输入，纯规则由 qq-input-antispam 维护。
+// 各调用方在自己的冻结范围内独立派生，不跨调用或快照缓存结果。
+// 调用方预筛成员行并核验 scope、TTL 和真实 fact；不可读行的 fact 为 null，
+// 投影只给空部件和来源失效边界，不虚构正文。它只结束该发送者的分组，不影响其他成员。
+// rows 的 isDirect 由调用方按真实 @ 或引用裁定，本模块不从模型措辞猜测。
+// 资格筛选在派生后执行；取舍只影响自动候选，不改原文或限制显式媒体读取。
+// 图片类别只认入站平台证据，模型分类不回写事实；mention/reply 不作为内容部件。
+// unavailable 的 record/video/file 保留为其他媒体，无法核实的部件标为 unsupported。
 
 import type { QqMessageFact, QqMessagePart } from "../../../shared/contracts/qq-message";
 import {
@@ -51,50 +38,6 @@ function projectPart(part: QqMessagePart): QqAntispamPart | null {
     default:
       return null;
   }
-}
-
-function projectFact(
-  fact: QqMessageFact,
-  input: QqAntispamProjectionInput,
-): QqAntispamEvent | null {
-  if (fact.speaker.role !== "member") return null;
-  const parts = fact.parts.map(projectPart).filter((part): part is QqAntispamPart => part !== null);
-  return {
-    seq: fact.seq,
-    eventId: fact.id,
-    speakerId: fact.speaker.qq ?? fact.id,
-    occurredAtSeconds: fact.occurredAtSeconds,
-    sourceAvailable: input.sourceAvailable(fact),
-    explicitDirect: input.explicitDirect(fact),
-    parts,
-  };
-}
-
-export interface QqAntispamProjectionInput {
-  readonly facts: readonly QqMessageFact[];
-  readonly burstMinMessages: number;
-  readonly burstWindowSeconds: number;
-  /** caller 对该事件来源 TTL/完整性的投影布尔；false＝硬边界（结算该发送者当前组）。 */
-  readonly sourceAvailable: (fact: QqMessageFact) => boolean;
-  /** caller 已裁定的合法 direct（显式 @ / 合法引用）；direct 事件不入组、不进排除。 */
-  readonly explicitDirect: (fact: QqMessageFact) => boolean;
-}
-
-/** 一条共享派生管线：三消费者各自按当次冻结范围调用，输出直接喂 deriveQqInputAntispam。 */
-export function projectQqAntispamDerivation(
-  input: QqAntispamProjectionInput,
-): QqAntispamDerivation {
-  const events: QqAntispamEvent[] = [];
-  for (const fact of input.facts) {
-    const event = projectFact(fact, input);
-    if (event !== null) events.push(event);
-  }
-  return deriveQqInputAntispam({
-    enabled: true,
-    events,
-    burstMinMessages: input.burstMinMessages,
-    burstWindowSeconds: input.burstWindowSeconds,
-  });
 }
 
 // ---------------------------------------------------------------------------

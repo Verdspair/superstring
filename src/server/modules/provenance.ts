@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { memoryRevision } from "../db/memory-content-repository";
@@ -24,21 +23,6 @@ export function turnSources(orm: Orm, ids: readonly string[]): SourceRef[] {
 /** Long-term memory is its own durable source; it does not inherit the raw QQ text lifetime. */
 export function memoryEntrySources(_orm: Orm, rows: readonly MemoryEntryRow[]): SourceRef[] {
   return rows.map((row) => ({ kind: "memory", id: row.id, revision: memoryRevision(row) }));
-}
-
-export function observationSourcesForRun(orm: Orm, ids: readonly string[]): SourceRef[] {
-  if (ids.length === 0) return [];
-  return orm
-    .select()
-    .from(schema.qqObservationText)
-    .where(inArray(schema.qqObservationText.eventKey, [...new Set(ids)]))
-    .all()
-    .map((row) => ({
-      kind: "qq_observation",
-      id: row.eventKey,
-      revision: createHash("sha256").update(row.body).digest("hex"),
-      expiresAt: row.expiresAt,
-    }));
 }
 
 /** Candidate snapshots keep the grant token so revoke/regrant cannot authorize old snapshots. */

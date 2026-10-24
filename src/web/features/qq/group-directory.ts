@@ -54,22 +54,3 @@ export function projectQqGroupRows({
     };
   });
 }
-
-/**
- * 按群显示名、群号、账号、方案名或 Agent 名过滤。
- */
-export function filterQqGroupRows(
-  rows: readonly QqGroupRow[],
-  query: string,
-  language?: string,
-): QqGroupRow[] {
-  const needle = query.trim().toLocaleLowerCase(language);
-  if (!needle) return [...rows];
-  return rows.filter((row) => {
-    const text =
-      `${row.title ?? ""} ${row.peerId} ${row.accountId} ${row.schemeName} ${row.agentName}`.toLocaleLowerCase(
-        language,
-      );
-    return text.includes(needle);
-  });
-}

@@ -33,7 +33,7 @@ export interface BrandFrame {
 }
 
 export interface BrandAssetOptions {
-  /** Defaults to "master", the frames the retiring C# shell embeds. */
+  /** Defaults to "master", the plain themed glyph frames. */
   source?: BrandAssetSource;
 }
 

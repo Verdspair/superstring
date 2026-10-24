@@ -2,8 +2,8 @@ import type { ErrorCode } from "../shared/contracts/errors";
 
 /**
  * Runtime error type
- * `AppError` carries the machine-readable `code` (one of the 66 declared in
- * `src/shared/contracts/errors.ts`) plus the HTTP status. The Hono error
+ * `AppError` carries the machine-readable `code` (a code declared by
+ * `shared/contracts/errors.ts`) plus the HTTP status. The Hono error
  * handler (`src/server/api/error-handler.ts`) turns it into the JSON envelope
  * `{ error: { code, message } }`. Status codes come from
  * `docs/reference/api-contract.md` §6.2. Two rules callers must respect:

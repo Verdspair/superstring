@@ -660,7 +660,7 @@ describe("生成说明和标签 (§9.2): one picture call, two drafts", () => {
     }
   });
 
-  it("samples an animation into three frames rather than sending one picture", async () => {
+  it("sends the two-frame animation as two sampled PNGs rather than the original animation", async () => {
     const mimes: string[] = [];
     const h = fixture({
       annotator: async (input) => {

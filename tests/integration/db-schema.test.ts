@@ -1,9 +1,9 @@
-// Integration tests for the 16-table business data layer (R2).
+// Initial 16-core-table golden checks and current migration-chain drift guards.
 //
 // Coverage:
 //  - migrations/versions/0001_initial.sql runs on an empty DB and is idempotent
 //    across repeated execution.
-//  - The ACTUAL structure of all 16 tables (verified via PRAGMA table_info /
+//  - The ACTUAL structure of the 16 initial core tables (verified via PRAGMA table_info /
 //    index_list / foreign_key_list) matches the golden contract in
 //    docs/reference/data-model.md exactly (columns, types, NOT NULL, PK, indexes,
 //    composite unique keys, foreign keys + ON DELETE).
@@ -13,7 +13,7 @@
 //  - Schema / version gate: unknown version rejected, structure mismatch rejected,
 //    correct version accepted.
 //  - json-text.ts: object key sorting + array order preservation.
-//  - Anti-drift: src/server/db/schema.ts column definitions match the SQL DB.
+//  - Anti-drift: all current businessTables match the complete ordered migration chain.
 
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";

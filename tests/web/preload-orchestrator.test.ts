@@ -132,16 +132,13 @@ describe("startChunkPreload", () => {
   it("keeps draining after a chunk load fails: the failed entry does not block later items", async () => {
     const pump = makePump();
     const order: string[] = [];
-    const failing = {
-      promise: Promise.reject(new Error("chunk eval failed")).catch(() => undefined),
-    };
     const ok = { promise: Promise.resolve() };
     const items: ChunkPreloadItem[] = [
       {
         id: "broken",
         loadChunk: () => {
           order.push("broken");
-          return failing.promise;
+          return Promise.reject(new Error("chunk eval failed"));
         },
       },
       {

@@ -24,8 +24,7 @@
 
 import { z } from "zod";
 import { SourceRefSchema } from "../../shared/contracts/evidence";
-// 存储与接口共用同一份契约。这里曾经各留一份，结果"上限放宽到 1 万"只改到了存储侧、
-// 接口那边仍卡在 200/500，所以改成直接复用 shared 的定义。
+// 存储与接口复用 shared 契约，避免两侧的字段与校验范围漂移。
 import {
   type QqSchemeCompression,
   QqSchemeCompressionSchema,

@@ -46,6 +46,11 @@ import {
 } from "../../shared/contracts/qq";
 import { UpdateQqGroupConfigRequestSchema } from "../../shared/contracts/qq-group-config";
 import {
+  QqManagedConfigSnapshotSchema,
+  QqManagedStatusSchema,
+  UpdateQqManagedConfigRequestSchema,
+} from "../../shared/contracts/qq-managed";
+import {
   QqStorageCleanupRequestSchema,
   QqStorageCleanupSelectionResponseSchema,
   QqStorageCursorSchema,
@@ -109,6 +114,7 @@ import {
 import { getAgentRow, newId, type Orm } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import type { NapCatManagementPort } from "../napcat/management";
 import { normalizeOneBotAccountId } from "../services/onebot-protocol";
 import { sampleQqAnimationFrames } from "../services/qq-animation-frames";
 import {
@@ -123,7 +129,7 @@ import { organiseQqMemoryNow } from "../services/qq-memory-enqueue";
 import { annotateQqSticker, type QqStickerAnnotator } from "../services/qq-sticker-annotation";
 import { importQqStickerCopy } from "../services/qq-sticker-import";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "../services/qq-sticker-store";
-import { managementGuard } from "./management";
+import { managementErrors, managementGuard } from "./management";
 import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
 
 function toStickerResponse(row: QqStickerAssetView) {
@@ -293,6 +299,55 @@ function toCollectionResponse(row: QqStickerCollectionView): QqStickerCollection
     revision: row.revision,
     asset_count: row.assetCount,
   });
+}
+
+const managedErrors = {
+  NAPCAT_CONFIG_CONFLICT: [409, "托管组件配置已变化，请重新读取后保存"],
+  NAPCAT_CONFIG_INVALID: [503, "托管组件配置不可用，请检查配置文件"],
+  NAPCAT_CONFIG_UNAVAILABLE: [503, "托管组件配置不可用，请检查配置文件"],
+  NAPCAT_MANAGEMENT_UNAVAILABLE: [503, "托管组件管理尚未配置"],
+} as const;
+
+/** Mounted separately so the existing QQ routes keep their paths and error handling. */
+export function qqManagedComponentRoutes(port?: NapCatManagementPort): Hono {
+  const router = new Hono();
+  router.onError(managementErrors(managedErrors));
+
+  function configured(): NapCatManagementPort {
+    if (!port) {
+      throw Object.assign(new Error("托管组件管理尚未配置"), {
+        code: "NAPCAT_MANAGEMENT_UNAVAILABLE",
+      });
+    }
+    return port;
+  }
+
+  router.get("/config", managementGuard(), (c) =>
+    c.json(QqManagedConfigSnapshotSchema.parse(configured().readConfig())),
+  );
+  router.put("/config", managementGuard(), async (c) => {
+    const input = parseBody(UpdateQqManagedConfigRequestSchema, await readJsonBody(c.req.raw));
+    return c.json(
+      QqManagedConfigSnapshotSchema.parse(
+        configured().replaceConfig(input.expected_revision, input.config),
+      ),
+    );
+  });
+  router.get("/status", managementGuard(), (c) => {
+    const status = port?.snapshot() ?? {
+      process: "unavailable",
+      apply: "blocked",
+      unavailable_reason: "management_not_configured",
+    };
+    return c.json(
+      QqManagedStatusSchema.parse({
+        process: status.process,
+        apply: status.apply,
+        unavailable_reason: status.unavailable_reason,
+      }),
+    );
+  });
+  return router;
 }
 
 export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {

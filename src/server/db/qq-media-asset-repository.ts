@@ -921,20 +921,3 @@ export function mediaAssetForMediaNote(
     expiresAt: earlier(earlier(media.mediaExpiresAt, hit.sourceExpiresAt), hit.asset.expiresAt),
   };
 }
-
-/** Sanity check used by tests and callers: a scope never sees another's rows. */
-export function countMediaAssetsInScope(orm: Orm, scope: QqMediaAssetScope): number {
-  const row = orm
-    .select({ total: sql<number>`count(*)` })
-    .from(schema.qqMediaAssets)
-    .where(
-      and(
-        eq(schema.qqMediaAssets.accountId, scope.accountId),
-        eq(schema.qqMediaAssets.conversationKind, scope.conversationKind),
-        eq(schema.qqMediaAssets.peerId, scope.peerId),
-        eq(schema.qqMediaAssets.agentId, scope.agentId),
-      ),
-    )
-    .get();
-  return row?.total ?? 0;
-}

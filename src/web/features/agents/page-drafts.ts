@@ -194,19 +194,9 @@ export function dirtyPages(editor: PageEditor | null): EditablePage[] {
       )
     : [];
 }
-export function mergeRetrievalPresets(
-  baseline: AgentDraft["p5_config"]["retrieval_presets"],
-  draft: AgentDraft["p5_config"]["retrieval_presets"],
-) {
-  const merged = { ...baseline };
-  for (const mode of ["conservative", "standard", "broad"] as const) {
-    merged[mode] = { ...baseline[mode], ...draft[mode] };
-  }
-  return merged;
-}
 export function pageAgentPayload(editor: PageEditor, page: EditablePage) {
   const p5 = editor.draft.p5_config;
-  // Intensity belongs to the persona endpoint; the generic agent endpoint rejects it.
+  // Expression-page saves send intensity through persona PUT, not this payload.
   return {
     ...Object.fromEntries(
       PAGE_AGENT_FIELDS[page]

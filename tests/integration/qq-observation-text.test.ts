@@ -443,7 +443,7 @@ describe("worker organises observation text", () => {
     }
   });
 
-  it("keeps an observation batch out of a web job's blocked list", () => {
+  it("marks an observation batch processed idempotently and excludes it from memory candidates", () => {
     const h = setup();
     try {
       observe(h, "evt_1", "群里的消息");

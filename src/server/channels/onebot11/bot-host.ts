@@ -2654,7 +2654,7 @@ export class OneBotHost {
       /** 每目标一条许可：allowed + 相关状态摘要 + 该目标的意图（供该目标回复任务首 call 用）。 */
       const licenses = new Map<string, { allowed: boolean; stateDigest: string; intent: string }>();
       /**
-       * Step5a 的"已验证 asset 重登记"实现：评分叶子的 image part 只带来源事实，字节在本
+       * 评分叶子的已验证 asset 重登记：评分叶子的 image part 只带来源事实，字节在本
        * 评分叶子的 run/owner 下从**已验证 asset**重新登记——variant 行按 id 取出后必须与投影
        * 声明的 assetId/variantPolicy 一致，且投影 sources（asset/任务 ref，含 scope+revision）
        * 过 guard+context-source 双复验；任何一项不成立即整相拒绝（fail closed），父 run 的
@@ -3226,7 +3226,7 @@ export class OneBotHost {
           outputId: intent.id,
         });
         // 出站身份快照（§3.2/§13.4）：commit 时存当前平台身份——真实发送账号（binding 的登录账号，
-        // 绝不用 Agent UUID 充当 QQ 号）＋优先昵称。私聊没有群名片语义：group_card 恒空（T03 Step6）。
+        // 绝不用 Agent UUID 充当 QQ 号）＋优先昵称。私聊没有群名片语义：group_card 恒空。
         const assistantNames = readQqMemberNames(
           o.orm,
           { accountId: binding.accountId, conversationKind: binding.kind, peerId: binding.peerId },
@@ -3399,7 +3399,7 @@ export class OneBotHost {
             usage,
             budget,
             outputMode: "buffered",
-            // 许可不通过（低于门槛）＝静默结束，不是整轮失败：见计划 §4.1 与 P0 基线里的那条待改进。
+            // 许可不通过（低于门槛）＝静默结束，不是整轮失败。
             // 许可被拒＝这一轮不开口（静默结束）；"模型犯错"类的 blocked 码不在此列，照旧失败。
             // 许可的时效由既有机制保证：相关变化会让这一轮重新观察（`refresh`），`assertCurrent` 再兜一层。
             silentBlockCodes: QQ_SILENT_BLOCK_CODES,
@@ -3428,7 +3428,7 @@ export class OneBotHost {
                 linkRun(ref.current, source.observedSeq, true);
               }
             },
-            // T10 准备钩子透传（决策/生成相）：actualModel 冻结后由网关调用一次；
+            // 准备钩子透传（决策/生成相）：actualModel 冻结后由网关调用一次；
             // 钩子闭包见 preparePhaseForModel（§9 严格 fallback + 相模式观测）。
             prepareWithResolved: (hook) => preparePhaseForModel(hook, ref.current),
             // 每次实际发送前（含 schema/tools 重试与 stream）复验当前授权真源。

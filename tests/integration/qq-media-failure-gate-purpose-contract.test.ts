@@ -115,7 +115,7 @@ function taskRow(orm: Orm, seed: TaskSeed) {
     .get();
 }
 
-/** A task retry succeeding is the ordinary resolution path: the SAME row turns servable. */
+/** Model a servable legacy row; historical attempt counts do not permit a current-task retry. */
 function succeedRow(orm: Orm, id: string) {
   orm
     .update(schema.qqMediaReadTasks)

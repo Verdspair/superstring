@@ -47,6 +47,8 @@ import {
   type ModuleSourceResolver,
 } from "./modules/composition";
 import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
+import { FileNapCatConfigStore } from "./napcat/config";
+import { createNapCatManagement } from "./napcat/management";
 import { RuntimeTelemetry } from "./observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
 import {
@@ -109,6 +111,8 @@ export interface RuntimeOptions {
   qqStickerDirectory?: string;
   /** MCP 服务器登记文件（0.4.0 P6）；缺省＝不启用 MCP（行为与不加这个功能一致）。 */
   mcpConfigPath?: string;
+  /** Private, application-owned NapCat managed config; omitted means no management port. */
+  napcatConfigPath?: string;
   permissionConfigPath?: string;
   /** 联网配置（web-access 单元）：端点文件；缺省＝工具只走必应、管理路由不挂载。 */
   webAccessConfigPath?: string;
@@ -264,6 +268,9 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   let bot: ReturnType<typeof createOneBotConversationRuntime>;
   let stopping = false;
   try {
+    const napcatManagement = options.napcatConfigPath
+      ? createNapCatManagement(new FileNapCatConfigStore(options.napcatConfigPath))
+      : undefined;
     // The external-provider resolver is bound to this database and its key file (0032): a model
     // name declared on the 外部模型API page routes to that provider, everything else stays local.
     // One resolver for every model call, vision included: a model name declared on the
@@ -524,6 +531,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       telemetryRetentionDays: () => execution().telemetry.retentionDays,
       webAccess,
       mcpManagement,
+      napcatManagement,
       skillsRoot: options.skillRoot,
       skillsEnabled: () => execution().modules.skills,
       webMaxSteps: () => execution().loop.maxSteps,

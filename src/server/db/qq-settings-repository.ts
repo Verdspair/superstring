@@ -4,11 +4,13 @@
 // current account id is stored alongside it, because the user's arrangement is a
 // single account whose identity is kept per account rather than per session.
 
+import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import { QQ_RETENTION_MAX_DAYS, QQ_RETENTION_MIN_DAYS } from "../../shared/contracts/qq";
 import { fail } from "../errors";
 import { DEFAULT_TRANSPORT_KEY_PATH, openSecret, sealSecret, transportSecret } from "../secret-box";
-import type { Orm } from "./repositories";
+import { readQqBindingLiveWork } from "./qq-binding-work-guard";
+import { immediate, type Orm } from "./repositories";
 import * as schema from "./schema";
 
 export type QqSettingsRow = typeof schema.qqSettings.$inferSelect;
@@ -33,27 +35,54 @@ export interface QqSettingsUpdate {
  * compare-and-swap discipline every other settings surface in this project uses.
  */
 export function updateQqSettings(orm: Orm, input: QqSettingsUpdate): QqSettingsRow {
-  const current = readQqSettings(orm);
-  if (current.revision !== input.expectedRevision) {
-    fail("MEMORY_STATE_CONFLICT", "设置已变化，请重新加载后保存");
+  const apply = (): QqSettingsRow => {
+    const current = readQqSettings(orm);
+    if (current.revision !== input.expectedRevision) {
+      fail("MEMORY_STATE_CONFLICT", "设置已变化，请重新加载后保存");
+    }
+    const enabled = input.enabled === undefined ? current.enabled : input.enabled ? 1 : 0;
+    const accountId = input.accountId === undefined ? current.accountId : input.accountId;
+    const judgementModelName =
+      input.judgementModelName === undefined
+        ? current.judgementModelName
+        : input.judgementModelName;
+    const changed =
+      enabled !== current.enabled ||
+      accountId !== current.accountId ||
+      judgementModelName !== current.judgementModelName;
+    if (!changed) return current;
+    if (accountId !== current.accountId) {
+      const db = (orm as unknown as { $client: Database }).$client;
+      // Existing bindings retain account ownership; every stored epoch can still hold live work.
+      const conversationIds = (
+        db
+          .query(
+            `SELECT c.id FROM conversations c JOIN qq_bindings b ON b.id=c.source_id
+             WHERE c.channel='onebot11' AND b.account_id IN (?,?)`,
+          )
+          .all(current.accountId, accountId) as { id: string }[]
+      ).map((row) => row.id);
+      if (readQqBindingLiveWork(db, conversationIds)) {
+        fail(
+          "MEMORY_STATE_CONFLICT",
+          "受影响账号仍有进行中的QQ任务或发送结果未知，请稍后再切换账号",
+        );
+      }
+    }
+    const row = orm
+      .update(schema.qqSettings)
+      .set({ enabled, accountId, judgementModelName, revision: current.revision + 1 })
+      .where(eq(schema.qqSettings.id, 1))
+      .returning()
+      .get();
+    if (!row) fail("DATABASE_UNAVAILABLE", "数据服务暂不可用，请检查数据库", 503);
+    return row;
+  };
+  if (input.accountId !== undefined) {
+    const db = (orm as unknown as { $client: Database }).$client;
+    return immediate(db, apply);
   }
-  const enabled = input.enabled === undefined ? current.enabled : input.enabled ? 1 : 0;
-  const accountId = input.accountId === undefined ? current.accountId : input.accountId;
-  const judgementModelName =
-    input.judgementModelName === undefined ? current.judgementModelName : input.judgementModelName;
-  const changed =
-    enabled !== current.enabled ||
-    accountId !== current.accountId ||
-    judgementModelName !== current.judgementModelName;
-  if (!changed) return current;
-  const row = orm
-    .update(schema.qqSettings)
-    .set({ enabled, accountId, judgementModelName, revision: current.revision + 1 })
-    .where(eq(schema.qqSettings.id, 1))
-    .returning()
-    .get();
-  if (!row) fail("DATABASE_UNAVAILABLE", "数据服务暂不可用，请检查数据库", 503);
-  return row;
+  return apply();
 }
 
 /** The stored retention window, in days, read on every new write so each row stamps the window in effect then. */

@@ -104,7 +104,7 @@ describe("AdminMembersEditor pure UI component", () => {
     expect(alerts.some((el) => el.textContent?.includes("已超出数量上限"))).toBe(true);
   });
 
-  it("respects disabled state by disabling delete and clear buttons", () => {
+  it("disables member deletion and omits the clear button when disabled", () => {
     render(<AdminMembersEditor value="10001 10002" disabled onChange={vi.fn()} />);
 
     const deleteBtn = screen.getByRole("button", { name: "删除管理员 10001" });

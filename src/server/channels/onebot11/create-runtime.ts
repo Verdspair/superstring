@@ -90,7 +90,6 @@ export const DEFAULT_BOT_CONVERSATION_POLICY: BotConversationPolicy = {
   modelCallConcurrency: 1,
 };
 
-/** Production composition of protocol ingress, Agent activation and durable delivery. */
 /**
  * BotHostDiagnostic → telemetry.record 形状的纯映射（B1）：宿主诊断一律落 bot.host.feedback
  * span；stage 按既有桶归类（media_mode 属 context 观测面，不新增业务枚举）。details 透传
@@ -138,6 +137,7 @@ export function mapBotHostDiagnosticTelemetry(event: BotHostDiagnostic): {
   };
 }
 
+/** Production composition of protocol ingress, Agent activation and durable delivery. */
 export function createOneBotConversationRuntime(options: {
   orm: Orm;
   telemetry?: RuntimeTelemetry;

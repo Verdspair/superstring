@@ -1,0 +1,324 @@
+import { describe, expect, it } from "bun:test";
+import { createApp } from "../../src/server/app";
+import { ensureDefaults } from "../../src/server/db/repositories";
+import { openBusinessDb } from "../../src/server/db/schema-gate";
+import type { NapCatManagementPort } from "../../src/server/napcat/management";
+
+const CONFIG = "/v2/qq/managed-component/config";
+const STATUS = "/v2/qq/managed-component/status";
+const MODEL = "qwen/qwen3-4b-2507";
+const NATIVE_BLOCKED = {
+  process: "unavailable",
+  apply: "blocked",
+  unavailable_reason: "native_validation_required",
+} as const;
+const PRIVATE_MARKERS = {
+  path: "/synthetic-private/napcat.json",
+  command: "synthetic-private-command",
+  token: "synthetic-control-token",
+  credential: "synthetic-session-credential",
+  qrcode: "synthetic-login-qr",
+  loginError: "synthetic-raw-login-error",
+  ready: true,
+};
+
+function storeError(code: string) {
+  return Object.assign(new Error(Object.values(PRIVATE_MARKERS).join(" ")), { code });
+}
+
+class FakePort implements NapCatManagementPort {
+  config = { version: 1 as const, enabled: false };
+  revision = "";
+  reads = 0;
+  snapshots = 0;
+  replaceAttempts = 0;
+  writes = 0;
+  readError?: Error;
+  replaceError?: Error;
+  extraStatus = {};
+
+  readConfig() {
+    this.reads += 1;
+    if (this.readError) throw this.readError;
+    return { config: { ...this.config }, revision: this.revision };
+  }
+
+  replaceConfig(expectedRevision: string, config: { version: 1; enabled: boolean }) {
+    this.replaceAttempts += 1;
+    if (this.replaceError) throw this.replaceError;
+    if (expectedRevision !== this.revision) throw storeError("NAPCAT_CONFIG_CONFLICT");
+    if (this.config.enabled !== config.enabled) {
+      this.config = { ...config };
+      this.revision = String(this.writes + 1).padStart(64, "0");
+      this.writes += 1;
+    }
+    return { config: { ...this.config }, revision: this.revision };
+  }
+
+  snapshot() {
+    this.snapshots += 1;
+    return { ...NATIVE_BLOCKED, ...this.extraStatus };
+  }
+}
+
+function setup(port?: NapCatManagementPort) {
+  const business = openBusinessDb();
+  ensureDefaults(business.orm, MODEL);
+  const app = createApp({
+    business,
+    napcatManagement: port,
+    qqConnectionState: () => ({ phase: "disconnected", reason: "synthetic_external_offline" }),
+  });
+  return { business, app };
+}
+
+type App = ReturnType<typeof createApp>;
+
+function put(app: App, payload: unknown, headers: Record<string, string> = {}) {
+  return app.request(CONFIG, {
+    method: "PUT",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(payload),
+  });
+}
+
+function update(enabled: boolean, expectedRevision = "") {
+  return { config: { version: 1, enabled }, expected_revision: expectedRevision };
+}
+
+async function expectSafeError(response: Response, status: number) {
+  expect(response.status).toBe(status);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const text = await response.text();
+  for (const marker of Object.values(PRIVATE_MARKERS)) {
+    if (typeof marker === "string") expect(text).not.toContain(marker);
+  }
+  const body = JSON.parse(text) as { error: { code: string; message: string } };
+  expect(body).toEqual({ error: { code: expect.any(String), message: expect.any(String) } });
+  expect(body.error.message.length).toBeGreaterThan(0);
+  return body;
+}
+
+async function businessView(app: App) {
+  return {
+    settings: await (await app.request("/qq/settings")).json(),
+    status: await (await app.request("/qq/status")).json(),
+  };
+}
+
+describe("NapCat management routes", () => {
+  it("constructs a pure app and reads without saving or changing QQ business state", async () => {
+    const port = new FakePort();
+    const h = setup(port);
+    try {
+      expect([port.reads, port.snapshots, port.replaceAttempts]).toEqual([0, 0, 0]);
+      const before = await businessView(h.app);
+      const changes = h.business.db.query("SELECT total_changes() AS n").get();
+      for (let i = 0; i < 2; i += 1) {
+        const config = await h.app.request(CONFIG);
+        expect(config.status).toBe(200);
+        expect(config.headers.get("cache-control")).toBe("no-store");
+        expect(await config.json()).toEqual({
+          config: { version: 1, enabled: false },
+          revision: "",
+        });
+        const status = await h.app.request(STATUS);
+        expect(status.status).toBe(200);
+        expect(status.headers.get("cache-control")).toBe("no-store");
+        expect(await status.json()).toEqual(NATIVE_BLOCKED);
+      }
+      expect(port.reads).toBe(2);
+      expect(port.snapshots).toBe(2);
+      expect(port.replaceAttempts).toBe(0);
+      expect(port.writes).toBe(0);
+      expect(await businessView(h.app)).toEqual(before);
+      expect(h.business.db.query("SELECT total_changes() AS n").get()).toEqual(changes);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("guards all three operations before invoking the port", async () => {
+    const port = new FakePort();
+    const h = setup(port);
+    try {
+      const operations = [
+        { route: CONFIG, method: "GET" },
+        { route: CONFIG, method: "PUT" },
+        { route: STATUS, method: "GET" },
+      ];
+      for (const operation of operations) {
+        const forbiddenHeaders: Record<string, string>[] = [
+          { origin: "https://evil.example" },
+          { "sec-fetch-site": "cross-site" },
+        ];
+        for (const headers of forbiddenHeaders) {
+          const response = await h.app.request(operation.route, {
+            method: operation.method,
+            headers: { "content-type": "application/json", ...headers },
+            body: operation.method === "PUT" ? JSON.stringify(update(true)) : undefined,
+          });
+          const error = await expectSafeError(response, 403);
+          expect(error.error.code).toBe("PERMISSION_MANAGEMENT_FORBIDDEN");
+        }
+        const remote = await h.app.request(`https://remote.example${operation.route}`, {
+          method: operation.method,
+          headers: { "content-type": "application/json" },
+          body: operation.method === "PUT" ? JSON.stringify(update(true)) : undefined,
+        });
+        expect((await expectSafeError(remote, 403)).error.code).toBe(
+          "PERMISSION_MANAGEMENT_FORBIDDEN",
+        );
+      }
+      const nonJson = await put(h.app, update(true), { "content-type": "text/plain" });
+      expect((await expectSafeError(nonJson, 422)).error.code).toBe("VALIDATION_ERROR");
+      expect([port.reads, port.snapshots, port.replaceAttempts, port.writes]).toEqual([0, 0, 0, 0]);
+
+      const sameOrigin = await h.app.request(`http://localhost${CONFIG}`, {
+        headers: { origin: "http://localhost", "sec-fetch-site": "same-origin" },
+      });
+      expect(sameOrigin.status).toBe(200);
+      expect(sameOrigin.headers.get("cache-control")).toBe("no-store");
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("rejects malformed or extra body fields with zero port writes", async () => {
+    const port = new FakePort();
+    const h = setup(port);
+    try {
+      for (const payload of [
+        null,
+        [],
+        {},
+        { config: { version: 1, enabled: true } },
+        { ...update(true), expected_revision: 1 },
+        { ...update(true), expected_revision: null },
+        { ...update(true), config: null },
+        { ...update(true), config: { version: 2, enabled: true } },
+        { ...update(true), config: { version: 1, enabled: "true" } },
+        { ...update(true), config: { version: 1 } },
+        { ...update(true), config: { version: 1, enabled: true, token: "not-allowed" } },
+        { ...update(true), account_id: "10001" },
+        { ...update(true), command: "not-allowed" },
+      ]) {
+        expect((await expectSafeError(await put(h.app, payload), 422)).error.code).toBe(
+          "VALIDATION_ERROR",
+        );
+      }
+      for (const raw of ["", "   ", "{bad-json"]) {
+        const response = await h.app.request(CONFIG, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: raw,
+        });
+        expect((await expectSafeError(response, 422)).error.code).toBe("VALIDATION_ERROR");
+      }
+      expect(port.replaceAttempts).toBe(0);
+      expect(port.writes).toBe(0);
+      expect(port.config.enabled).toBe(false);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("saves the preference while native apply stays blocked and external QQ remains unchanged", async () => {
+    const port = new FakePort();
+    const h = setup(port);
+    try {
+      const before = await businessView(h.app);
+      const changes = h.business.db.query("SELECT total_changes() AS n").get();
+      for (const enabled of [true, false]) {
+        const saved = await put(h.app, update(enabled, port.revision));
+        expect(saved.status).toBe(200);
+        expect(saved.headers.get("cache-control")).toBe("no-store");
+        const savedBody = await saved.json();
+        expect(savedBody).toEqual({ config: { version: 1, enabled }, revision: port.revision });
+        expect(savedBody.revision).not.toBe("");
+        expect(await (await h.app.request(CONFIG)).json()).toEqual(savedBody);
+        expect(await (await h.app.request(STATUS)).json()).toEqual(NATIVE_BLOCKED);
+        expect(await businessView(h.app)).toEqual(before);
+      }
+      expect(port.writes).toBe(2);
+      expect(h.business.db.query("SELECT total_changes() AS n").get()).toEqual(changes);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("maps stale CAS to 409 without changing the saved config", async () => {
+    const port = new FakePort();
+    const h = setup(port);
+    try {
+      expect((await put(h.app, update(true))).status).toBe(200);
+      const before = { config: { ...port.config }, revision: port.revision };
+      const stale = await put(h.app, update(false));
+      expect((await expectSafeError(stale, 409)).error.code).toBe("NAPCAT_CONFIG_CONFLICT");
+      expect(port.writes).toBe(1);
+      expect(await (await h.app.request(CONFIG)).json()).toEqual(before);
+      expect(await (await h.app.request(STATUS)).json()).toEqual(NATIVE_BLOCKED);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("sanitizes invalid and unreadable config errors without fake saves", async () => {
+    const port = new FakePort();
+    const h = setup(port);
+    try {
+      let stableMessage: string | undefined;
+      for (const code of ["NAPCAT_CONFIG_INVALID", "NAPCAT_CONFIG_UNAVAILABLE"]) {
+        port.readError = storeError(code);
+        const readError = await expectSafeError(await h.app.request(CONFIG), 503);
+        expect(readError.error.code).toBe(code);
+        if (stableMessage === undefined) stableMessage = readError.error.message;
+        expect(readError.error.message).toBe(stableMessage);
+        port.readError = undefined;
+        port.replaceError = storeError(code);
+        expect(await expectSafeError(await put(h.app, update(true)), 503)).toEqual(readError);
+        expect(port.writes).toBe(0);
+        expect(port.config.enabled).toBe(false);
+        port.replaceError = undefined;
+      }
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("does not expose private fields from a runtime snapshot", async () => {
+    const port = new FakePort();
+    port.extraStatus = PRIVATE_MARKERS;
+    const h = setup(port);
+    try {
+      const response = await h.app.request(STATUS);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toEqual(NATIVE_BLOCKED);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("refuses config operations without a port and reports management as unconfigured", async () => {
+    const h = setup();
+    try {
+      const before = await businessView(h.app);
+      const missingRead = await expectSafeError(await h.app.request(CONFIG), 503);
+      const missingSave = await expectSafeError(await put(h.app, update(true)), 503);
+      expect(missingRead.error.code).toBe("NAPCAT_MANAGEMENT_UNAVAILABLE");
+      expect(missingSave).toEqual(missingRead);
+      const status = await h.app.request(STATUS);
+      expect(status.status).toBe(200);
+      expect(status.headers.get("cache-control")).toBe("no-store");
+      expect(await status.json()).toEqual({
+        process: "unavailable",
+        apply: "blocked",
+        unavailable_reason: "management_not_configured",
+      });
+      expect(await businessView(h.app)).toEqual(before);
+    } finally {
+      h.business.close();
+    }
+  });
+});
