@@ -28,9 +28,7 @@ export const API_PREFIXES = [
   "/knowledge",
   "/organization",
   "/browser-state",
-  // QQ routes existed since P5a, but nothing in the web client called them until the sticker
-  // library page (P5e) — so this entry only became necessary now, and the proxy-coverage test
-  // is what pointed at it rather than a browser seeing an HTML 404.
+  // QQ management APIs must be forwarded by the dev proxy, not served as frontend routes.
   "/qq",
   // The desktop close preference (§12): the settings page reads and writes it, so the dev proxy
   // has to forward it even though the value only matters in desktop mode.

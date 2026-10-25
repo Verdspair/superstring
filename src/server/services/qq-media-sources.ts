@@ -1,17 +1,17 @@
-// T08 来源子单元 a2（R18 裁决）：`qq_media_source` 的 mint 与复验。
+// `qq_media_source` 的 mint、修订与访问复验。
 //
-// 语义锁定（execution-handoff R18 / progress R18）：
+// 来源契约：
 //   * `id` = 精确媒体行 id（绝不把 scope 塞进 id）；
 //   * `revision` = 完整 scope（含 conversationId）+ 实际 media/asset/link 现值的
 //     规范 JSON 数组哈希——旧 ref 在关会话/换绑/epoch/authority 变化后复算不等而失效，
 //     不能借另一条 live link 复活；描述尝试计数（attempts）属 read_task/note 自己的
-//     来源，不冻结进本 hash——纯描述认领不撤销未改原图的 ref（R21）。
+//     来源，不冻结进本 hash——纯描述认领不撤销未改原图的 ref。
 //   * `expiresAt` = 实际消费帽（media/link/asset 三到期最早值）；
 //   * access 复用统一证据模块的 `evidenceScopeExists`/`inTimeline`，不复制权限 SQL；
 //   * owner 授权先行：从 owner 精准定位唯一活 conversation/binding 重建当前 scope，
 //     多活 fail closed，不 LIMIT 1 猜；
 //   * 来源 ref 不是授权：群/global media 能力纪元仍由既有 `qq_group_capability`
-//     guard refs（T11）组合证明，本 kind 不独自证明 off/on。
+//     guard refs 组合证明，本 kind 不独自证明 off/on。
 //   * sha/bytes/签名 URL 不进外显字段：模型可见的只有 kind/id/revision/expiresAt。
 
 import type { Database } from "bun:sqlite";

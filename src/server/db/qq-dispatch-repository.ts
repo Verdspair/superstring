@@ -29,7 +29,7 @@ export type QqDispatchLeaseRow = typeof schema.qqDispatchLease.$inferSelect;
 export type QqSweepVerdictRow = typeof schema.qqSweepVerdicts.$inferSelect;
 
 /**
- * The lease bounds the user chose on 2026-09-24: default 120 s, editable 30–600 s, and a
+ * The lease bounds: default 120 s, editable 30–600 s, and a
  * renewal every quarter of the lease capped at 30 s. A long model call keeps renewing, so
  * only a process that actually disappeared lets the lease lapse.
  */

@@ -1,6 +1,5 @@
-// T14 visionCost 观测接线（prime-vision-cost-plan V3）：
 // ContextUsage.vision_cost 契约（strict/旧 payload 兼容/无伪精确字段）与 WebContextSource
-// 对 RenderedContext.visionCost 的透传。全链合成夹具，零真实网络；语义锁规格 §11：
+// 对 RenderedContext.visionCost 的透传。全链合成夹具，零真实网络：
 // unknown 不是 0、pixels 是准备元数据不是 token、不进 input_units/remaining 容量推导。
 import { describe, expect, it } from "bun:test";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";

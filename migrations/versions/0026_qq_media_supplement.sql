@@ -2,8 +2,8 @@
 --
 -- §7.1/§7.2: a picture that was addressed to the assistant and could not be read stays silent in
 -- the conversation, and one more understanding is attempted when a RELATED supplement arrives.
--- The user decided on 2026-09-24 what "related" means — the same speaker, within this window —
--- and that the window is a scheme parameter with a 10-minute default rather than a fixed number.
+-- A related supplement comes from the same speaker within this window. The
+-- window is a configurable scheme parameter with a 10-minute default.
 --
 -- 0 means "do not wait": the addressed read may still happen once, but nothing wakes it again.
 -- That is the same shape as §9.3's "0 = 不限" intervals, kept so an operator can turn the wait off

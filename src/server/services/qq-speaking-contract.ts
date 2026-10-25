@@ -10,7 +10,7 @@
 // The four kinds are the independently controllable speech paths the plan names. Only
 // two of them speak without being addressed, and only those two carry the confirmed
 // rule "an initiative that got no reply is not followed by another one". A continuation
-// is deliberately NOT initiative-taking (user decision 2026-09-23): a conversation the
+// is deliberately NOT initiative-taking: a conversation the
 // assistant is already part of keeps flowing as long as people talk, and any new message
 // from a real partner releases the rule anyway, so treating a continuation as an
 // initiative would buy nothing and risk silencing a live conversation.

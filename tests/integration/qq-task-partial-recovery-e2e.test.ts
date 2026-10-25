@@ -1,4 +1,4 @@
-// P3 独立端到端验证（qq-parallel-media 批次，P3-TASK-PARTIAL-RECOVERY-TEST-GO）：真实
+// durable 普通接话任务的部分提交恢复验证：真实
 // createOneBotConversationRuntime 装配 + AgentRuntime + ConversationHost + 业务库 + QqSendPort
 // 闭桩，验证**同一条 durable 普通接话任务在部分早提交后崩溃、再走真实恢复链**的行为——
 // 不是登记即止，也不是旧 legacyWakeHost 夹具所能代替：一条 ordinary/chiming_in 任务持有两人

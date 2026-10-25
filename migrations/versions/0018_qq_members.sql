@@ -1,9 +1,9 @@
 -- Member display names (ADR0018 P3c).
 --
--- Why this exists: the timeline a judgement reads identified speakers by QQ number only, so a
--- judgement could tell that two different people spoke but not who they were, and a reply had
--- to avoid addressing anyone. The user decided (2026-09-23) to keep the nickname as a separate
--- table rather than a column on the message row.
+-- Member display names let a judgement identify speakers and a reply address
+-- them without treating a nickname as a stable identity. Names live in a
+-- separate table rather than on each message row, so a rename updates one
+-- conversation-level fact instead of rewriting message history.
 --
 -- Not scoped by assistant, deliberately. A nickname is a platform fact about a conversation,
 -- not something one assistant observed about another: scoping it by `agent_id` would make two

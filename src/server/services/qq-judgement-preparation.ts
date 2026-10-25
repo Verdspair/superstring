@@ -60,7 +60,7 @@ const Input = z.strictObject({
   path: z.enum(["direct_reply", "follow_up", "chiming_in", "idle_topic"]),
   nowSeconds: z.number().int().nonnegative(),
   /**
-   * 哪一条消息挣来这一轮（立即路径给的事件键，2026-09-25）。
+   * 哪一条消息挣来这一轮（立即路径给的事件键）。
    *
    * 为什么需要：被 @ 的那条**可能不是最新的一条**——她开口之前别人又说了话，最新消息就换人了。回话对象
    * 必须是叫她的人，否则 `@` 会加在另一个人身上、回错人。主动路径不传它（目标是按人算出来的）。

@@ -525,7 +525,7 @@ export interface QqStickerBulkUpdate {
 }
 
 /**
- * §9.2's batch operations (归类、标签整理与启用), under the user's 2026-09-24 decision: VALIDATE first.
+ * §9.2's batch operations (归类、标签整理与启用): VALIDATE first.
  *
  * Every selected asset and every named collection is checked before the first write, and the
  * writes then run in one transaction. A batch that half-applied would leave the user comparing two

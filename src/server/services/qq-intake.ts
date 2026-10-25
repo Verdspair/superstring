@@ -7,11 +7,9 @@ import * as schema from "../db/schema";
 import { isAppError, QqObservationConflictError } from "../errors";
 // The intake runtime: connection events in, durable observations out.
 //
-// This is the assembly point the plan lists as P2's remaining item. It connects three
-// pieces that each already exist and are tested — the transport (`OneBotConnection`),
-// the storage boundary (`recordObservation`) and the trigger (`scheduleQqMemory`) — and
-// it owns nothing else. In particular it decides nothing about when to *speak*; that is
-// the reply state machine's job (P3).
+// This assembly point connects the transport (`OneBotConnection`), the storage boundary
+// (`recordObservation`) and the trigger (`scheduleQqMemory`). It decides nothing about
+// when to *speak*; that belongs to the reply runtime.
 //
 // Two rules are worth stating because they are easy to get backwards:
 //
@@ -109,7 +107,7 @@ function reportIntakeFailure(stage: "record" | "schedule", code: string, hasSink
  * taken down by a single bad message.
  */
 /**
- * 把"回复了我们的消息"折进 `mentionsSelf`（2026-09-25 后续）。
+ * 把"回复了我们的消息"折进 `mentionsSelf`。
  *
  * The reply target is looked up in the send ledger instead of guessed: only a message THIS assistant
  * delivered in THIS conversation turns a reply into a call. Everything downstream (the stored
@@ -271,7 +269,7 @@ export interface QqIntakeRuntimeOptions {
   nowSeconds?: () => number;
   onEvent?: (event: QqIntakeEvent) => void;
   /**
-   * 「有消息找她」的信号（2026-09-25）：记下一条**冲着她来的**消息（被 @、群内回复她、私聊）之后
+   * 「有消息找她」的信号：记下一条**冲着她来的**消息（被 @、群内回复她、私聊）之后
    * 调一次，让运行宿主不必等下一次轮询才开始跑链。这是用户能感觉到的那段延迟的主要来源。
    *
    * 只对"冲着她来的"发信号：那正是立即路径要处理的；其余消息走合并窗口，天然有等待，轮询足够。
@@ -420,7 +418,7 @@ export class QqIntakeRuntime {
               onEvent,
               conversationIngress: this.#options.conversationIngress,
             });
-            // 一条落库的、冲着她来的消息：叫醒运行宿主，别让"被 @ 了"干等下一次轮询（2026-09-25）。
+            // 一条落库的、冲着她来的消息：叫醒运行宿主，别让"被 @ 了"干等下一次轮询。
             if (
               outcome.kind === "recorded" &&
               message.kind === "message" &&

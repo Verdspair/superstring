@@ -1,10 +1,5 @@
-// T15 补块 P6（ids 48–53）：主动发言许可门槛、直答无评分、决策 none 的图片零额外调用、
+// 主动发言与投递链路验证（S48–S53）：许可门槛、直答无评分、图片零额外调用、
 // 生成中收到新消息的 pending plan、已提交意图遇新相关图 stale、unknown 投递不重发。
-//
-// 上位依据：计划 §T15 Step1 第 48–53 条、规格 §14.1、matrix `functional-matrix.ts` 的
-// requirement/negativeEvidence 逐字，以及 `resume-t15-matrix-review.md`（终版）对这 6 条的
-// not_executed 理由与 panel-D.md 的逐条 writer 任务。本文件是**独立补块**，不改
-// `qq-message-multimodal-e2e.test.ts`、不改 runner/映射/生产代码/夹具。
 //
 // 红线：全链走真实 OneBot wire → intake → 宿主 → AgentRuntime → OutboundDelivery
 // （createOneBotHarness + scriptedModel）；不建第二 harness/第二模型链；不 import artifacts/
@@ -106,7 +101,7 @@ const modelsByCall = (h: OneBotHarness): Array<string | null> =>
 
 it("[S48_1] initiative threshold comes from the scheme: 5 below it stays silent, 6 clears it, and a lower configured gate also lets 5 through", async () => {
   // --- 半边 A：默认门槛 6，score 5 → 静默 ---
-  // 强负面（Step2）：sends=0（真发送计数）、待发意图=0（真意图行数）、零生成相。
+  // 强负面：sends=0（真发送计数）、待发意图=0（真意图行数）、零生成相。
   const quiet = createOneBotHarness({
     accountId: "90001",
     member: "10001",
@@ -174,7 +169,7 @@ it("[S48_1] initiative threshold comes from the scheme: 5 below it stays silent,
   expect(speakIntents[0]?.status).toBe("confirmed");
   speak.close();
 
-  // --- 半边 C（面板 D 要求的缺口）：门槛可配置，不是常量 6 ---
+  // --- 半边 C：门槛可配置，不是常量 6 ---
   // 同一 score=5，把方案门槛降到 4 就必须放行。把"门槛写死 6"的实现改掉，本用例仍绿；
   // 把判定写成 `>`（严格大于）则半边 A 仍绿但半边 C 会红——两个方向都锁。
   const lowGate = createOneBotHarness({
@@ -229,7 +224,7 @@ it("[S49_1] the direct reply path never spends a score call, with or without a r
   expect(plain.sent).toHaveLength(1);
   plain.close();
 
-  // --- 半边 B（面板 D 要求的缺口）：带真图的直答，评分相计数仍为 0 ---
+  // --- 半边 B：带真图的直答，评分相计数仍为 0 ---
   // 关键点：必须给 `mediaInput:{mode:"native"}`，harness 只在
   // `mediaInput.mode==="native" && imageBytes 非空` 时才注入 mediaInputService
   // （tests/harness/onebot.ts:427），否则图根本不在链路上、`visionCalls===0` 恒真。
@@ -272,9 +267,8 @@ it("[S49_1] the direct reply path never spends a score call, with or without a r
 // ============================================================================
 
 it("[S50_1] a none decision with a real native image spends no extra call: one decision, no score, no generation, no vision read", async () => {
-  // 面板 D 指出的缺口：原 Base_8 只给了 imageBytes 没给 mediaInput，
-  // mediaService 为 null、图从头到尾不在链路上，`visionCalls===0` 偏恒真。
-  // 这里补 `mediaInput:{mode:"native"}`，让图真的进入决策相投影，再断"零额外调用"。
+  // native 夹具必须同时给 imageBytes 与 mediaInput:{mode:"native"}；缺少 mediaInput 时
+  // mediaService 为 null，图不会进入链路，visionCalls===0 也就无法证明零额外调用。
   const bytes = png();
   const h = createOneBotHarness({
     accountId: "90001",
@@ -382,7 +376,7 @@ it("[S50_2] the same image in a speaking round yields a prepared variant yet sti
 // ============================================================================
 
 it("[S51_1] a new message during generation restarts deciding, and the pending plan carries only still-valid drafts", async () => {
-  // --- 半边 A（纯文字，补面板 D 的 pending_plan 内容断言） ---
+  // --- 半边 A：纯文字 pending_plan 内容断言 ---
   const h = createOneBotHarness({
     model: [
       decideGenerate("20002"),
@@ -425,9 +419,8 @@ it("[S51_1] a new message during generation restarts deciding, and the pending p
   h.close();
 
   // --- 半边 B（带真图，补"未发送图片不得称已读"） ---
-  // 面板 D 的缺口：原 L_51 无图，"未发送图片不得称已读"无从覆盖。
-  // 这里首条消息带图（native 已准备），生成中又收到一条带新图的消息：
-  // 第二次决策相的输入里必须只出现**新**那张图，旧图的 image part 不得被当作已读素材重复供给。
+  // 首条消息与生成中收到的新消息都带图，才能验证「未发送图片不得称已读」。
+  // 自动画面仍受本轮焦点范围约束，新图是否已供给由实际 image part 断言。
   const oldBytes = png();
   const newBytes = pngB();
   const withImages = createOneBotHarness({
@@ -489,9 +482,9 @@ it("[S51_1] a new message during generation restarts deciding, and the pending p
 
 it("[S52_1] a committed plan goes stale on a new relevant image, and an already attempted intent is never resent", async () => {
   // --- 半边 A：新相关图（真图，不是纯文字）让已提交计划 stale ---
-  // 面板 D 指出的三处不足：①"新相关图"其实是文字；②`every(status!=="confirmed")` 对空数组
-  // 恒真、且"停在 planned（没投递过）"也会为真，无法区分 stale 与"没被尝试"；
-  // ③"已 attempted 不得重发"是空转（投递发生在新消息之后，旧意图从未被尝试过）。
+  // 必须用真实新图触发，并精确断 status==="stale"：every(status!=="confirmed")
+  // 对空数组及未投递的 planned 行也会成立，不能证明 stale。已 attempted 不重发
+  // 则在下方独立对照中先投递、再接收新消息，避免旧意图从未被尝试的空转。
   const firstBytes = png();
   const secondBytes = pngB();
   const h = createOneBotHarness({
@@ -607,7 +600,7 @@ it("[S53_1] an unknown delivery receipt is never resent, and a part stranded in 
   expect(h.sent).toHaveLength(1);
   h.close();
 
-  // --- 半边 B（面板 D 要求的缺口）：进程死在发送中途也不重发 ---
+  // --- 半边 B：进程死在发送中途也不重发 ---
   // 机制面：part 卡在 sending（`deliver()` 抛错前已 claim）→ 恢复把 sending→unknown、
   // 意图→unknown → 不再被 pending() 认领。
   // 这里用真实 claimPart/settlePart（生产仓储方法）把 part 放到 sending，
@@ -646,7 +639,7 @@ it("[S53_1] an unknown delivery receipt is never resent, and a part stranded in 
 });
 
 // ============================================================================
-// 子要求对照（写在这里，便于审阅时逐条核；不改矩阵文件）
+// 用例与行为断言对照
 //   48 → 5 静默（sends=0／意图=0／零生成相）＋ 6 生成（1 条 confirmed）＋ 门槛可配（4 放行 5）
 //   49 → 无图直答精确两相；有图直答精确两相、图真在链路（sha 对齐）、零视觉调用
 //   50 → none 时恰好 1 次调用、零视觉调用、零发送、零意图、零 prepared 副本（图真在库）

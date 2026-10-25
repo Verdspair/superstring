@@ -1,12 +1,11 @@
-// T15 P4（唯一切片）：spec §9 与矩阵 id 35–40——阶段/能力关闭、unsupported 降级与非 unsupported 故障。
+// 媒体故障链路验证（S35–S40）：阶段/能力关闭、unsupported 降级与非 unsupported 故障。
 //
-// 上位依据：原计划 §T15、原规格 §14.1/§9、`briefs/t15-brief.md`、独立审阅终表 P4 分区。
 //   id 35 阶段关闭矩阵；id 36 global/group 关闭后无 bytes/notes/fallback；
 //   id 37 off→on 已撤权（含 in-flight 迟到结果）；id 38 native unsupported 降级 description；
 //   id 39 401/403/413/429/5xx/timeout/schema/tools 400 一律不降级；
 //   id 40 备用无模型/无容量只走 unknown 文字。
 //
-// 三条硬纪律（父任务要求，逐条对应下面的实现）：
+// 链路与故障注入边界：
 //   1. 强负必须真实可失败。MODEL_IMAGE_UNSUPPORTED 与全部非 unsupported 码都由**真实
 //      LM Studio 网关**（createLmStudioClient）经 `createModelPort` 装进 harness 产出：桩只回
 //      HTTP 状态与 provider 原话，能力句式分类（imageRequestLifetime）、错误码映射
@@ -14,7 +13,7 @@
 //      本文件不构造带 code 的 error，也不 `as` 收窄任何错误类型。
 //   2. 整链。模型只经 harness 的 `createOneBotHarness`（不建第二 harness/第二模型链）；HTTP 桩是
 //      本机 port 0 合成服务，finally 关闭；不触 17861、不读真实 data/密钥、不接真实模型。
-//   3. 不 import artifacts/。矩阵结果由协调者汇总；本文件只跑行为、只输出自己的断言证据。
+//   3. 不 import artifacts/；本文件自包含，覆盖范围以实际执行的行为断言为限。
 //
 // 观测面：requestedMode/actualMode/why/code/omission 一律读**真实 run span**
 // （宿主 emitMediaMode → harness onDiagnostic → 测试内存），不新增 HTTP、不改生产字段。
@@ -580,9 +579,9 @@ function realPort(
       return createLmStudioClient(config).loadedContextCapacity(model, options);
     },
   };
-  // `createModelPort` **不会**把 factory options 里多余的键展到返回的 port 上，所以
-  // `capacityOf` 必须显式挂在返回值上（否则 `realPort(stub).capacityOf` 运行时是 undefined，
-  // 夹具会静默回落到常量容量 —— 那正是我第一版踩的坑）。
+  // createModelPort 不会把 factory options 里多余的键展到返回的 port 上，
+  // 因此 capacityOf 必须显式挂在返回值上；否则它会是 undefined，
+  // 夹具就会静默回落到常量容量，掩盖本块要测的拒绝语义。
   return {
     ...createModelPort({
       gateway: createLmStudioClient(config, {
@@ -1002,7 +1001,7 @@ describe("T15 P4 · id 38 native unsupported 降级 description（同阶段一�
       const sentBefore = h.sent.length;
       const mark = stub.wire.length;
       h.receive({ id: "2", speaker: "20002", addressed: true, text: "再看这张", image: IMAGE_REF });
-      // 真实终态：降级跑通且本轮真实发言，不吞错误（旧「必须 failed」要求是坏 stub 时代产物）。
+      // 真实终态：降级成功且本轮真实发言；不能只凭降级诊断记录推断主 run 成功。
       const activationResult: unknown = await h.activate("direct_reply");
       expect(isRunResult(activationResult)).toBe(true);
       if (!isRunResult(activationResult)) throw new Error("ACTIVATION_SHAPE_INVALID");
@@ -1918,14 +1917,9 @@ describe("T15 P4 · id 37 纪元变化：旧在飞结果在 off→on 之后不�
       // 强负三：纪元变化后旧在飞结果**不得**被采纳——零资产、零变体。
       // 这是规格要求的强负（关闭再恢复不复活旧纪元的任何产物），不是「记录现状」。
       //
-      // 记录分工（避免把「注释改动」与「断言改动」混为一谈）：
-      //  - **断言**：下面 `assets/variants/assetSha` 三条自 RED 阶段起**逐字未改**，
-      //    修复后直接变绿（日志 `p4-s37-3-epoch-green.log`；RED 原件 `p4-s37-3-epoch-red.log` 保留）。
-      //  - **注释**：只有这一段说明文字是修复后补写的，用于交代 RED->GREEN 的来历。
-      //
-      // 修复落点在 producer 侧：`assertConfiguration` 新增群 media 能力纪元检查
-      // （`MEDIA_CAPABILITY_EPOCH_CHANGED`），经 `assertAuthority -> source.assertCurrent
-      // -> 服务内 assertCurrent` 覆盖到真正的写入边界。我未改 prod/harness、未 restore。
+      // 写入边界必须检查群 media 能力纪元：assertConfiguration 的
+      // MEDIA_CAPABILITY_EPOCH_CHANGED 经 assertAuthority -> source.assertCurrent
+      // -> 服务内 assertCurrent 传到 producer，旧纪元的结果不能登记为资产或变体。
       const after = registered(h);
       expect(after.assets).toBe(0);
       expect(after.variants).toBe(0);
@@ -2054,8 +2048,8 @@ describe("T15 P4 · id 40 容量未知：明确拒绝，不静默缩预算、不
 // 的 store 落盘、再被 runtime 读出；那条链需要真实权限存储接线，不在本块范围。
 // 所以本块只声称「同宿主选项消费面」，**不**声称「设置已保存并生效」。
 //
-// 全局关闭时**媒体组件根本不注入**——那正是审阅点名的「组件未注入所以空」，
-// 所以本块必须同时给出**对照**：同一条链在全局开着时真 fetch、真登记，关掉才全 0。
+// 全局关闭时媒体组件不注入，因此必须给出同链对照：
+// 全局开启时实际 fetch、实际登记，关闭后才全为 0，避免「从未接线所以为空」的恒真断言。
 
 /** 带图入站（全局开/关两段完全相同的输入；消息 id 必须是 `^-?\d+$` 才过 OneBot wire 校验）。 */
 let globalOffMessageSeq = 0;

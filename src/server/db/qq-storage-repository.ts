@@ -1,7 +1,7 @@
 // QQ storage usage and the one cleanup entry (ADR0018 §11.1/§10, P5h).
 //
-// §11.1's 存储与诊断 answers "what does the QQ side keep, and what can I do about it". The user's
-// decision (2026-09-24) is that it reports only data that EXISTS: media notes hold references and
+// §11.1's 存储与诊断 answers "what does the QQ side keep, and what can I do about it".
+// It reports only data that EXISTS: media notes hold references and
 // descriptions rather than bytes, so there is no cache size to invent, and failure records are not
 // stored yet — the page says so instead of showing a zero that reads as "no failures".
 //

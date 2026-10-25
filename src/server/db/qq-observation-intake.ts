@@ -43,7 +43,7 @@ export function newestMemberEventFor(
   options: {
     readonly attentionMembers?: readonly string[];
     /**
-     * 只要"冲着助手来的"那一条（2026-09-25）。
+     * 只要"冲着助手来的"那一条。
      *
      * 为什么需要：立即路径此前只看**最新一条**消息，于是被 @ 之后、她开口之前只要群里又有人说了话，
      * 那条 @ 就不再是最新消息——这一轮会去回别人，或者（她还没说过话时）整轮跳过，@ 被静默丢掉。

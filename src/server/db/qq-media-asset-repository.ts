@@ -788,8 +788,7 @@ export function mediaAssetSourceProtected(alias: string): string {
 /**
  * Retention sweep — a MANUAL retention action in the same category as the
  * media notes' cleanup, with in-use protection, and it is NOT wired as an
- * automatic job (字节清理接线仍属 T14). Semantics (M2 裁决 2026-10, narrowed by
- * the T14 asset-retention protection): a sweep with NOTHING to delete is legal
+ * automatic job. With asset-retention protection, a sweep with NOTHING to delete is legal
  * and returns 0; unrelated live assets never block it, and neither do assets
  * that were already dead before the sweep (all their sources expired — there is
  * no readable access left to protect). The source delete only removes rows

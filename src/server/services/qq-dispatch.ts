@@ -1,9 +1,9 @@
-// P3 durable QQ dispatch: the scheduler that decides *when* a classified initiative runs.
+// Durable QQ dispatch: classify inbound events, retain each conversation's latest initiative
+// candidate, and guard scheduling and lease commits.
 //
-// The user's decisions on 2026-09-24 (see TEMP_PLAN_0.3.0 §13 / ADR0018):
+// Dispatch rules:
 //   * conservative event-driven classification - only a real inbound event may start a
 //     non-idle path, and a plain group message is only a *candidate* for chiming in;
-//   * one global QQ model task at a time; each conversation keeps only its latest candidate;
 //   * a lapsed lease is scrapped and re-judged from current facts, never resumed;
 //   * the lease is editable (default 120 s, 30-600 s) and renewed about every quarter.
 //
@@ -260,7 +260,7 @@ export function peekQqImmediateReplyTask(
     const behindUs = (at: number): boolean =>
       (lastSpeech !== null && at <= lastSpeech) || (lastAttempt !== null && at <= lastAttempt);
     const fresh = (at: number): boolean => now - at <= QQ_IMMEDIATE_REPLY_FRESHNESS_SECONDS;
-    // 被叫到的那一条**可能不是最新一条**（2026-09-25 修）：@ 之后、她开口之前只要有人又说了话，这条 @
+    // 被叫到的那一条**可能不是最新一条**：@ 之后、她开口之前只要有人又说了话，这条 @
     // 就不再是"最新消息"，而它仍然欠着一次回应。私聊里最新那条就是被叫到的那条，没有这个问题。
     const addressed =
       binding.kind === "private"
@@ -448,7 +448,7 @@ export interface QqIdleSweep {
  *
  * This is the timer side of the conservative event-driven decision. A room counts as quiet
  * only when a real partner spoke and then stopped — "how quiet is quiet" is the scheme's
- * `idle_quiet_minutes`, and the user decided on 2026-09-24 that a conversation where nobody
+ * `idle_quiet_minutes`. A conversation where nobody
  * has ever spoken is NOT quiet: the assistant's own speech and the binding's age are not
  * baselines either, so a newly bound group is left alone until someone actually talks.
  *

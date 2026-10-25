@@ -4,15 +4,15 @@
 --
 -- 1. §6.1 requires the judgement and the reply to be configured separately: judging only
 --    needs to know what the conversation is about right now, while a reply has to actually
---    join in. Three knobs each (recent message count, time window, token budget), decided by
---    the user on 2026-09-23. They live on the scheme like the rhythm parameters, so a scheme
+--    join in. Each has three settings: recent message count, time window and token
+--    budget. They live on the scheme like the rhythm parameters, so a scheme
 --    describes how this assistant reads a conversation as well as how it talks in one.
 --
--- 2. The assistant's own utterances had no body anywhere. OneBot delivers them as
---    `message_sent`, the protocol layer drops them as `self_message`, and 0011's speech log
---    deliberately stored order only (which kind, when). Judging "should I say something now"
---    without being able to see what this assistant just said means repeating itself or
---    losing its own thread, so the user asked for the text to be kept.
+-- 2. The assistant's own words need a body separate from the speech log. OneBot
+--    delivers them as `message_sent`, which is classified as `self_message` and
+--    dropped; 0011 stores only speech kind and time. Keeping the text lets a
+--    judgement or reply see what the assistant just said, reducing repetition
+--    and keeping the conversation thread visible.
 --
 -- Text goes in its own table, keyed by the speech row, for the same reason observation text
 -- (0007) is separate from `qq_events`: the two have different useful lifetimes. The speech

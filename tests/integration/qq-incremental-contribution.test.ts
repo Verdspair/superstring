@@ -1,6 +1,6 @@
-// 增量贡献口径（规格 §0 修正案第 3 条；ROOT-APPROVED-INTEGRATED-PLAN 决定 contribution）。
-// 红先于改：本文件只依赖既有导出（buildQqPrompt / qqPromptMessages / qqReplaceOutputRule /
-// 判断读取），按**行为不变量**断言新程序拥有的自主路径贡献指导，不钉整句文案。
+// 增量贡献指导：本文件只依赖既有导出（buildQqPrompt / qqPromptMessages /
+// qqReplaceOutputRule / 判断读取），按行为不变量断言程序拥有的自主路径指导，
+// 不钉整句文案。
 // 绿色不代表真实模型在语义上不再重复——语义判断仍归模型，本契约只保证指导真实进入
 // 判断与回复两档的自主路径，且不改既有评分、输出替换与用户可编辑提示词契约。
 
@@ -190,8 +190,8 @@ describe("incremental contribution guidance (autonomy paths, program-owned)", ()
   });
 
   it("does not clamp the score: a continuation still clears the scheme threshold like any verdict", () => {
-    // 语义去重不归程序：与真实第二样本同形（score 6 / frozen minScore 2）的判定仍由既有
-    // 阈值契约决定——指导只能影响模型，不能在程序侧放行或拦截。
+    // 语义去重不归程序：score 6 / frozen minScore 2 仍由既有阈值契约决定；
+    // 指导只能影响模型，不能在程序侧放行或拦截。
     const outcome = qqJudgeOutcome(JSON.stringify({ score: 6, reason: "接续补充" }));
     expect(qqJudgeAllowsSpeech(outcome, 2)).toBe(true);
     expect(qqJudgeAllowsSpeech(qqJudgeOutcome(JSON.stringify({ score: 1 })), 2)).toBe(false);

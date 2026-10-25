@@ -1,4 +1,4 @@
-// T08 跨 carrier 身份复用 + detail 问题指针的宿主边界（resume-media-tools-bridge）。
+// 跨 carrier 身份复用 + detail 问题指针的宿主边界。
 //
 // 这里钉的是「工具面」这一层的边界；账本、reader、来源签发的实体判据各有其主：
 //  * 跨 carrier 同内容：identity 账本只有一行预算。工具只消费受控的只读结果，绝不复制

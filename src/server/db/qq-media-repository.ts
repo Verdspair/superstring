@@ -128,7 +128,7 @@ export function mediaSegmentsForEvent(orm: Orm, eventKey: string): MediaSegmentR
  * An earlier message from the same speaker whose media was attempted and failed, so a later
  * message from that person can wake one more understanding (§7.1, P5m).
  *
- * The user's decision (2026-09-24) is what makes this query simple: a "related supplement" is the
+ * A "related supplement" is the
  * SAME SPEAKER within the scheme's window, so the facts needed are the speaker, the conversation
  * and a time bound — no text matching, no model call, and nothing to guess. `beforeSeconds` keeps
  * the message being handled out of its own answer, and `excludeEventKey` guards the same thing
@@ -149,7 +149,7 @@ export function pendingMediaSupplementFor(
   /** The caller's real ISO `at` (host clock injected); defaults to the storage clock. */
   at: string = nowIso(),
 ): { eventKey: string; segmentIndex: number } | null {
-  // 2026-09-25 后续：不再要求"原图是被@的"。重试的"许可"改由当下这次消息是否被叫到决定；
+  // 不要求"原图是被@的"。重试的"许可"由当下这次消息是否被叫到决定；
   // 这里只负责"最近有一次真正失败的读取"——与开口闸同一份 typed 账本真源（failed-only 口径，
   // 在途不是失败），次数上限（两次）仍然是硬闸门。
   const windowEvents = orm

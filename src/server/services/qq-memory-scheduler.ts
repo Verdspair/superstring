@@ -1,6 +1,6 @@
 // The automatic trigger: which QQ conversations should be organised right now.
 //
-// The user's decision (2026-09-22): organising is triggered by a message count, the
+// Organising is triggered by a message count, the
 // number is per conversation and configurable, it can be switched off, and a manual
 // "organise now" action exists alongside it. `qq_bindings.memory_batch_size` holds
 // that number; `NULL` means off.

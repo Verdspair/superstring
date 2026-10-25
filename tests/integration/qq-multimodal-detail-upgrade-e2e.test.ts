@@ -1,4 +1,4 @@
-// T10 细节升级（detail upgrade）整链验证 —— tool-first 既有契约，无新协议字段。
+// 细节升级（detail upgrade）整链验证 —— tool-first 既有契约，无新协议字段。
 //
 // 产品语义（规格 §7.4/§7.5：明确细问表情按普通规格、不改原分类；细问的关键图最优先）：
 // 已知表情默认规格 → 普通决策经既有工具按需补细节；宿主复验真实问题/来源/范围/能力；
@@ -8,7 +8,7 @@
 // 契约：normal decision invoke media.list → media.read{id, questionMessageId}（既有契约，
 // S28_2/S28_4 已证）；description 模式 media.describe / media.note.read 既有可选问题指针
 // （resolveQuestionAnchor，detail 与 baseline 两条独立预算）。无 detailRequests / 私有分类
-// 字段：决策 JSON 旧形状由本文件自带 objectport 直接脚本化，不改 tests/harness、不改产品。
+// 字段：决策 JSON 旧形状由本文件自带 objectport 直接脚本化，复用既有 harness 与产品接口。
 //
 // 用例（3+1 正交例；forged question / cross-scope 已由既有 [S28_3]/[S28_5]
 // （qq-multimodal-image-shape-e2e.test.ts）精准覆盖，引用不重写）：
@@ -20,9 +20,9 @@
 //   [DU_2] inline 回答必须发生在后续决策真实收到 ordinary 之后；none 决策零额外调用。
 //   [DU_3] tool 之后能力真实关闭（updateQqGroupConfig 真实 CAS 翻转，纪元推进）→ 真实
 //          MEDIA_CAPABILITY_EPOCH_CHANGED，绝不把 prepared-ok 当证明。本文件未覆盖的独立
-//          边界：①问题正文 revision 中途真实变更（仅限合法 fixture 的 action-pending 窗口，
-//          待 caller 接口建立后补例）；②native 相 stage-off（stages.generation/decision
-//          false）独立场景不在本文件，本文件不称覆盖。
+//          边界：①问题正文 revision 中途变更（需要合法 fixture 的 action-pending 窗口）；
+//          ②native 相 stage-off（stages.generation/decision false）。这两个独立场景
+//          不在本组用例的覆盖范围内。
 //   [DU_4] description 模式：media.describe{id, questionMessageId}（detail 预算）→
 //          media.note.read{id, 同 questionMessageId} 读出 detail 正文（新 detail 出口）；
 //          另一真实图 id-only baseline describe/note.read 作对照；两任务 purpose/
@@ -706,10 +706,9 @@ it("[DU_3] a real capability close after the tool call fails the same run with t
     refusal: refusal === null ? null : String(refusal.code),
     variants: variantRows(h),
   });
-  // blocked（已记，不在本文件伪造）：①问题正文 revision 中途真实变更——可用真实当前
-  // scope 的 DB 修改原 body rev，但仅限合法 fixture 的 action-pending 窗口、不产 mutant；
-  // 待前例建立 caller 接口后补例；②native 相 stage-off 独立场景需另 case/参数，
-  // 不在本文件伪称覆盖。
+  // 本组未覆盖：①问题正文 revision 中途变更（需要当前 scope 的合法 action-pending
+  // 窗口，不可用无关 DB 改写替代）；②native 相 stage-off 的独立场景。
+  // 以上场景不能由本组能力关闭断言推断为已覆盖。
   expect(pendingSteps()).toBeGreaterThan(0);
 });
 
@@ -720,8 +719,8 @@ it("[DU_4] in description mode the question-anchored detail note and the id-only
   // 走 detail 读取，media.note.read{id, 同 questionMessageId} 读出 detail 正文（新 detail
   // 出口）；另一张直连图 id-only baseline describe/note.read 作对照。两任务 purpose/
   // questionKey/attempts 独立不 reset——以真实 qq_media_read_tasks 账本行核对，不 SQL 伪造。
-  // vision 答复顺序不预先固定：自动 baseline 通常先于显式 describe 调用；outcomes 以首次
-  // 真实运行捕获的 vision 调用日志核对后按需 exact edit 校正，正文断言保持逐字。
+  // vision 答复顺序不预先固定：自动 baseline 通常先于显式 describe；
+  // outcomes 必须与真实 vision 调用顺序对齐，正文仍逐字断言。
   const exprBytes = pngOf(120, 1024, 512);
   const plainBytes = pngOf(90, 640, 320);
   const { port, captures, pendingSteps } = createCapturePort([
@@ -998,7 +997,7 @@ it("[DU_6] generation stage off sends no raw image after a successful detail dec
 });
 
 // ---- [DU_7..DU_9] question 锚宿主契约：选错可恢复 vs 授权源失效 fatal -----------------------
-// 宿主契约（QUESTION-ANCHOR-HOST-GO）：锚接口保持 anchor|null；模型指针不在 focus∪直接
+// 宿主问题锚契约：锚接口保持 anchor|null；模型指针不在 focus∪直接
 // 引用目标平台 ID 集合内＝选错 → resolver null（工具层给 selection 反馈，同 run 可纠正）；
 // 已授权的 focus/question/直接目标源失效（快照到期/撤权/缺失/正文空）＝源失效 → 宿主
 // CONTEXT_SOURCE_INVALID fatal（vision 0），绝不吞成可恢复反馈。
@@ -1141,7 +1140,7 @@ it("[DU_8] an authorized question source that expires mid-run fails the run with
 });
 
 it("[DU_9] a direct reply target image stays answerable as the question anchor at the original depth", async () => {
-  // 正例（原批准 depth1 不回退）：问题是 focus 消息本身，读取的直接引用目标图（-3101 的
+  // depth1 正例：问题是 focus 消息本身，读取的直接引用目标图（-3101 的
   // 普通图）作为问题锚成功——focus∪direct target 授权集合与同 run 纠正后路径共用同一门。
   const exprBytes = pngOf(120, 1024, 512);
   const plainBytes = pngOf(80, 800, 400);

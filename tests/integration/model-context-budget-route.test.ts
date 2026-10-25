@@ -9,7 +9,7 @@ import {
 } from "../../src/server/llm/model-gateway";
 import { loadTextTokenCounter } from "../../src/server/llm/text-token-counter";
 
-// 上下文预算（SOURCE GO）离线用例：只跑真实网关 + 本地 HTTP 桩，不连真实服务。
+// 上下文预算离线用例：只跑真实网关 + 本地 HTTP 桩，不连真实服务。
 // 覆盖：声明编码才有计数器（未知编码不导入）、请求模型落到实际模型的容量与 body model、
 // 准备后 provider 修订变化在任何模型 HTTP 之前拒绝、取消保留原 reason、以及不带预算的
 // 旧请求路径零变化（不多一次模型探测、不多一次计数）。

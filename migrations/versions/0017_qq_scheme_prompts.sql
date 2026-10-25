@@ -1,9 +1,9 @@
 -- Scheme prompts (ADR0018 P3c).
 --
--- §6.1 fixes the composition a QQ judgement or reply is built from, and §11.1 makes every QQ
--- prompt editable. The user decided (2026-09-23) that the prompts belong to the scheme, the
--- same layer as the switches and the rhythm values: a scheme is a QQ-global resource, so
--- "how this scheme talks" stays the same when the assistant behind it changes.
+-- A QQ judgement or reply is composed from editable prompts. The prompts belong
+-- to the scheme, alongside its switches and rhythm values. A scheme is a
+-- QQ-global resource, so "how this scheme talks" stays the same when the
+-- assistant behind it changes.
 --
 -- Six slots rather than one blob, because each answers a different question and a single text
 -- would force the user to edit all of them to change one. All six are NOT NULL with a
@@ -15,9 +15,9 @@
 -- statement (no repeating, no prying, no pretending to know unread media), so two copies of it
 -- drifting apart would mean the schema and the code disagree about what a scheme does.
 --
--- Two of the six have no caller yet (sticker, media). They are written down now because the
--- user chose to freeze the whole prompt set in one migration rather than add columns later;
--- their consumers are §8.1-5 (sticker choice) and §7.1 (media description / transcription).
+-- The prompt set includes sticker choice and media description / transcription
+-- alongside scene, judgement, reply and review. Separate columns keep their
+-- task descriptions independently editable.
 --
 --   prompt_scene            §6.1's QQ scene behaviour: the shared half of judgement and reply
 --   prompt_judge            whether to speak at all, for the two unprompted paths

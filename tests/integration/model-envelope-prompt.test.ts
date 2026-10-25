@@ -213,9 +213,9 @@ describe("decision phase: actual responseSchema == system declaration (§10)", (
 
 describe("generation phase: buffered envelope declares the body JSON (§10)", () => {
   it("renderOutput declares the structured schema and the runtime sends the same schema", async () => {
-    // 受控 stub 按调用序应答：第 1 次决策、第 2 次生成 envelope 正文（旧写法以
-    // generateRequest===undefined 判相，第二次调用仍命中决策分支，生成相拿到决策 JSON，
-    // structured.parse 的 text 为 undefined——joint3 三红之一的脚本错）。
+    // 受控 stub 按调用序应答：第 1 次决策、第 2 次生成 envelope 正文。
+    // 不能用 generateRequest===undefined 判相：两次调用都可能命中决策分支，
+    // 导致生成相收到决策 JSON，structured.parse 的 text 为 undefined。
     let calls = 0;
     let generateRequest: ModelRequest | undefined;
     const { runtime, base } = setup({

@@ -758,7 +758,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
             syncEventConnection();
         },
         memory: modules.memory,
-        // 「被 @ 了别等轮询」（2026-09-25）：入站路径记下一条冲着她来的消息就叫醒宿主跑一轮。
+        // 入站路径记下一条冲着助手来的消息就叫醒宿主，不必等待下一次轮询。
         onAddressedMessage: () => botWorker.wake(),
       });
     app = createApp({

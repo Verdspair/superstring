@@ -1,6 +1,6 @@
 // Web context allocation modes (0068) — history boundary + tool-result fit boundary.
 //
-// Contract (CONTRACT.json decisions.agent/auto + ROOT-INTEGRATED-DESIGN section 3/4):
+// Allocation contract:
 // p5_config.allocation { mode: fixed | auto }, absent = fixed (old protected fallback).
 // Auto: (1) history candidates are measured against the real full request — the
 // fixed-mode trigger policy (compression_trigger_ratio pushing history down even

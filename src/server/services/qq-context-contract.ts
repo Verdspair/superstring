@@ -6,9 +6,9 @@
 // failure mode this module exists to prevent — stuffing the whole group history into every
 // judgement.
 //
-// The user fixed both tiers on 2026-09-23 (20 messages / 1 hour / 2000 bytes to judge;
-// 60 messages / 6 hours / 6000 bytes to reply; and the assistant's own words are kept so it
-// can see what it just said). This module turns that into a selection: which messages, in
+// The tier defaults are 20 messages / 1 hour / 2000 bytes to judge and
+// 60 messages / 6 hours / 6000 bytes to reply; the assistant's own words are kept so it
+// can see what it just said. This module turns the tier settings into a selection: which messages, in
 // what order, and what had to be left out.
 //
 // It is pure — no database, no clock, no model. Budgets are counted with the project's single
@@ -86,10 +86,10 @@ export function qqPhaseTier(
 }
 
 /**
- * The values the user fixed on 2026-09-23, matching the DDL defaults. The window ceiling is
+ * The initial values, matching the DDL defaults. The window ceiling is
  * 14 days on purpose: observation text is deleted after that, so a longer window could only
  * select messages whose bodies are gone.
- * 2026-09-26 起：回复档的**条数**在运行时不取这里，而取绑定助手的「近期保留轮数」；
+ * 回复档的**条数**在运行时不取这里，而取绑定助手的「近期保留轮数」；
  * 这份默认值仍是列默认与新建方案的初值。
  */
 export const QQ_CONTEXT_DEFAULT: QqSchemeContext = Object.freeze({

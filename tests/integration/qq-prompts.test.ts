@@ -622,9 +622,9 @@ describe("QQ judgement output fails closed", () => {
   });
 
   /**
-   * 外部模型（实测 gemini 系，尤其经网页桥）习惯把 JSON 包进 ```json 围栏——围栏是传输层包装、
-   * 不是内容，决策与叶子解析早已用同一条规则（readJsonBody）。2026-09-29 经本地网页桥时判断路径
-   * 仍是裸 JSON.parse：干净的围栏输出被记成 JUDGEMENT_UNREADABLE，自主接话整批失败。
+   * 模型可把 JSON 包进完整的 ```json 围栏；围栏是包装，不是内容。
+   * 判断、决策与叶子解析共用 readJsonBody；不能仅用裸 JSON.parse，
+   * 否则合法围栏会被误记为 JUDGEMENT_UNREADABLE，使自主接话失败。
    */
   it("reads one complete fence, the same rule as decisions and leaves", () => {
     expect(qqJudgeOutcome('```json\n{"score":8,"reason":" 相关 "}\n```')).toEqual({
@@ -742,7 +742,7 @@ describe("the batch judgement contract (one call, one verdict per target)", () =
   }
 });
 
-// 表情发送倾向指导（2026-10-13 用户决定：三档整体上调，不只是拉开差距）。
+// 表情发送倾向指导：三档分别表达 low / medium / high 的使用倾向。
 // 只断言倾向关键词与契约形状，不钉整句文案；不从此处的字符串推断模型实际发送频率。
 describe("sticker frequency guide API (all three levels raised)", () => {
   const levels = ["low", "medium", "high"] as const;

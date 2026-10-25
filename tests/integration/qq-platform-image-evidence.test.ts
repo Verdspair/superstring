@@ -1,11 +1,11 @@
-// T03/规格 §7.2：平台扩展图片提示归一（market face 可靠结构证据 → 平台分类）。
+// 平台扩展图片提示归一（market face 可靠结构证据 → 平台分类）。
 //
-// 证据来源（内部报告 prime-platform-image-hint-plan.md，均实读核实）：
+// 协议与实现依据：
 //   * OneBot 11 官方标准 image 收侧仅 file/type(=flash)/url，无分类字段；
 //   * NapCat 实发 image 段：file/url/sub_type/summary/file_size；market face 被映射为
 //     image 段带 emoji_id/emoji_package_id/key/summary（NapNeko/NapCatQQ packages/napcat-onebot/api/msg.ts）；
 //   * go-cqhttp 实发驼峰 subType（Mrs4s/go-cqhttp coolq/cqcode.go，MiraiGo ImageBizType）。
-// 规则（已批最小方案）：emoji_id + emoji_package_id + summary 三键同现才判 expression，
+// 规则：emoji_id + emoji_package_id + summary 三键同现才判 expression，
 // 其中 emoji_package_id 接受非空 string 或有限整数 number（NapCat 直传形态）；
 // emoji_id/summary 仍要求非空 string；单字段/误形/跨实现 subtype 数值/flash/gif URL
 // 一律不猜，保持 unknown；

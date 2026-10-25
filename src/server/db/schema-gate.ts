@@ -403,9 +403,7 @@ function extractSchemaObjects(db: Database): Map<string, SchemaObject> {
 // reference database per chain is walked forward, snapshotting the schema objects after each step,
 // because a single open asks for every prefix at once — `validateResources` validates them all and
 // then each applied migration is verified against its own. Replaying "the first N migrations" into
-// a throwaway database per prefix, with the cache dropped every 8 entries, made every open cost the
-// whole chain over and over: `openBusinessDb()` measured ~1.23 s at 37 migrations (2026-09-25),
-// which is what pushed the backend suite past the gate's per-check ceiling. The walk replays a chain
+// a throwaway database per prefix repeats the whole chain for every open. The walk replays a chain
 // once per process instead.
 interface ReferenceChain {
   readonly key: string;
@@ -545,8 +543,8 @@ export function ensureBusinessSchema(
 /**
  * 已迁移的**内存库模板**（进程内缓存）。
  *
- * 测试每个文件、每个用例都开一次库，而每次真实迁移要重放 47 份 SQL 并在**每一步之后**做结构指纹
- * 校验（近似 O(版本²)，实测一次 `openBusinessDb()` 约 88ms）。第一次开库照常走真实迁移，成功后把
+ * 每次真实迁移都要重放整条 SQL 链并在**每一步之后**做结构指纹校验，重复开库会重复这些工作。
+ * 第一次开库照常走真实迁移，成功后把
  * 结果 `serialize()` 存下来；此后默认的内存开库直接还原这份快照（连接级 pragma 仍由
  * `openConnection` 施加）。
  *

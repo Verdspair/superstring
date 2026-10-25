@@ -1,4 +1,4 @@
-// T08 typed 媒体工具闭环（t08-typed-tools-finish2）：typed 账本是描述元数据的唯一真值。
+// Typed 媒体工具闭环：typed 账本是描述元数据的唯一真值。
 //
 // 这里钉的是 typed 语义的宿主边界：
 //  * list 的 described/attempts 只来自 typed baseline 任务按"当前有效结果"的匹配

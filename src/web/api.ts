@@ -878,6 +878,7 @@ export const api = {
     requestJson("/v2/qq/managed-component/qr", QqManagedQrSchema, {
       signal,
       cache: "no-store",
+      ...json("POST", {}),
     }),
   refreshQqManagedQr: (signal?: AbortSignal) =>
     requestJson("/v2/qq/managed-component/refresh-qr", QqManagedQrSchema, {

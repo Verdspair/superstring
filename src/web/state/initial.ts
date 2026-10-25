@@ -21,6 +21,8 @@ import { desktopSettingsInitial } from "../features/general/desktop-state";
 import { knowledgeInitial } from "../features/knowledge/types";
 import { emptyQqInputs } from "../features/qq/draft-state";
 import { qqGroupConfigInitial } from "../features/qq/group-config-state";
+import { qqManagedEventsInitial } from "../features/qq/managed-events-state";
+import { qqManagedInitial } from "../features/qq/managed-state";
 import {
   qqAccessInitial,
   qqSchemeInitial,
@@ -52,6 +54,9 @@ export const initial = {
   ...qqSchemeInitial,
   ...qqStorageInitial,
   ...qqAccessInitial,
+  ...qqManagedEventsInitial,
+  ...qqManagedInitial,
+  qqManagedLifecycleId: 0,
   ...qqGroupConfigInitial,
   qqInputs: emptyQqInputs(),
   ...desktopSettingsInitial,

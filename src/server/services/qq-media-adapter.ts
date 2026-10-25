@@ -5,8 +5,7 @@
 // injected parts, because the two transports it needs were decided separately:
 //
 //   * the SOURCE fetch — `qq-media-source.ts` plus the connection's `resolveMediaSource`;
-//   * the MODEL call — the vision client from P5i, whose request shape the user approved
-//     (data URLs, one entry per sampled frame, PNG).
+//   * the MODEL call — the vision client (data URLs, one entry per sampled frame, PNG).
 //
 // What it deliberately does not do: transcribe voice (the transcription protocol is still
 // undecided, so that purpose is configurable but not callable), and read video (§7.1 promises no

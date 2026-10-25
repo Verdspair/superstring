@@ -123,7 +123,7 @@ export const AgentKnowledgeSchema = KnowledgeDocumentSchema.pick({
   content_mode: true,
   organization_status: true,
 });
-// S3 first batch. Defaults preserve existing authorized-library behavior.
+// Defaults preserve existing authorized-library behavior.
 export const AgentKnowledgeReadConfigSchema = z
   .strictObject({
     enabled: z.boolean().default(true),

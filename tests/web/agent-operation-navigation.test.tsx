@@ -1,5 +1,5 @@
 // Agent 操作导航回归：目录里取消切换留在目录、标签页只同步落点路由、单对象删除保留多选。
-// 真实 store + 仅 mock API；本轮 NO_NATIVE，未执行任何命令/测试，执行状态见实施报告。
+// 真实 store + 仅 mock API。
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";

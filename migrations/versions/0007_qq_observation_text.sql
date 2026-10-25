@@ -1,7 +1,7 @@
 -- QQ observation text and processed markers (ADR0018 P2d).
 --
--- Retention decision (user, 2026-09-22): QQ message text is kept for two weeks by
--- default, and the received media cache is cleaned on the same clock.
+-- QQ message text is kept for two weeks by default, and the received media
+-- cache is cleaned on the same retention clock.
 --
 -- Message text lives in its own table on purpose. `qq_events.event_key` is the
 -- permanent dedup identity and the target of `qq_memory_sources`, so expiring a

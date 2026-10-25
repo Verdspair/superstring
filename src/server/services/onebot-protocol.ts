@@ -177,7 +177,7 @@ function normalizeSegment(value: z.infer<typeof WireSegment>): QqSegment | null 
         }
       }
       // 规格 §7.2 平台分类允许清单：NapCat market face 形态（emoji_id+emoji_package_id+
-      // summary 三键同现，报告 prime-platform-image-hint-plan.md §2/§4）。缺一不猜：
+      // summary 三键同现）。缺一不猜：
       // emoji_id/summary 非空 string，emoji_package_id 非空 string 或有限整数 number；
       // sub_type/subType 数值跨实现语义不同源，不映射；其余未知键维持丢弃。
       if (

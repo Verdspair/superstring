@@ -31,8 +31,7 @@ export const QqSpeechTriggersSchema = z.strictObject({
 export type QqSpeechTriggers = z.infer<typeof QqSpeechTriggersSchema>;
 
 /**
- * Rhythm parameters, decided by the user on 2026-09-23 (§5.2's "merge and cooldown" and
- * "idle topic" groups plus the two counts §5.1/§8.1 already named).
+ * Rhythm parameters: merge and cooldown, idle topics and speech counts.
  *
  * Units are in the field names because the plan mixes seconds, minutes and clock values: a
  * bare `window` would be read as whichever unit the reader assumed. The bounds here are the
@@ -54,9 +53,8 @@ export const QqSchemeRhythmSchema = z
     hourly_speech_limit: z.number().int().min(1).max(500),
     /**
      * The judge answers one initiative question with an interest score (0–10, §5.2's 接话倾向 made
-     * countable), and this is the number that score has to reach before the assistant speaks. The
-     * user asked for it on 2026-09-25 after finding "most messages get a reply" impossible to tune:
-     * the score decides *this message*, the threshold decides *how eager she is*, and both
+     * countable), and this is the number that score has to reach before the assistant speaks.
+     * The score decides *this message*, the threshold decides *how eager she is*, and both
      * unprompted paths (自主接话, 冷场发起) share it because they share the judgement.
      *
      * 0 = "any readable score speaks" — the noisiest setting, not "judgement off". Direct replies,
@@ -128,7 +126,7 @@ export const QqSchemeRhythmSchema = z
 export type QqSchemeRhythm = z.infer<typeof QqSchemeRhythmSchema>;
 
 /**
- * The two context tiers §6.1 requires to be configured separately (P3b-2, decided 2026-09-23).
+ * The two context tiers are configured separately.
  * Judging only needs to know what the conversation is about right now; a reply has to join in,
  * so it gets a larger window. Budgets are in the project's estimator unit — UTF-8 bytes, the
  * same yardstick as the web context budgets — and the window ceiling is 14 days because
@@ -167,7 +165,7 @@ export const QQ_COMPRESSION_DEFAULT: QqSchemeCompression = Object.freeze({
 /** QQ-global scheme settings, distinct from the recent-message context budget. */
 export const QqSchemeOutputReserveSchema = z.strictObject({
   // 上限 32768：思考型外部模型（如 DeepSeek V4.1 Flash 默认思考）会把思考 token 也算进
-  // max_tokens，预留太小就会出现"正文 0 字节 + finish=length"（2026-09-29 实测 1024/2048 必爆）。
+  // max_tokens，预留太小可能出现"正文 0 字节 + finish=length"。
   // 再大就要同时抬在用模型的声明窗口（预留+安全余量+输入预算必须装进窗口），当前 64k 声明下
   // 32k 是安全上限。
   judgement_output_reserved: z.number().int().min(256).max(32768),
@@ -219,8 +217,7 @@ export const QQ_STICKER_DEDUP_DEFAULT: QqSchemeStickers = Object.freeze({
  *
  * A set rather than one id: §9.1 says "方案授权其中任一集合即可候选", and a scheme that wanted two
  * sticker styles — everyday and holiday, say — would otherwise have to be duplicated, copying its
- * prompts, rhythm and context along with it. The user chose multi-select over a single column on
- * 2026-09-23.
+ * prompts, rhythm and context along with it.
  *
  * Empty is a real state and means "this scheme uses no stickers". A new scheme therefore starts
  * empty rather than pointing at a collection nobody chose, which is also why there is no default
@@ -294,7 +291,7 @@ export type QqSweepVerdictEntry = z.infer<typeof QqSweepVerdictEntrySchema>;
 /**
  * §11.1's 存储与诊断 (P5h).
  *
- * Reports only data that EXISTS (user decision, 2026-09-24). The received-media cache holds
+ * Reports only data that EXISTS. The received-media cache holds
  * references and descriptions rather than bytes, so there is no cache size to report; failure
  * records are not stored yet, and the surface says so rather than showing a zero that reads as
  * "no failures". `retention.days` is the one window every QQ expiry derives from
@@ -517,8 +514,8 @@ export type ReplaceQqStickerCollectionsRequest = z.infer<
  * to say which of the four reasons applies — in either interface language.
  */
 /**
- * §9.2's batch operations — 批量归类、标签整理与启用 — under the decision that they VALIDATE first
- * (2026-09-24): every selected asset and every named collection must exist before anything is
+ * §9.2's batch operations — 批量归类、标签整理与启用 — VALIDATE first:
+ * every selected asset and every named collection must exist before anything is
  * written, and the write itself is one transaction. A batch that half-applied would leave the
  * user comparing two lists to find out what actually happened.
  *

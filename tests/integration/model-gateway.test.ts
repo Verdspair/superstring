@@ -392,8 +392,8 @@ describe("model gateway API token", () => {
       for await (const _chunk of gateway.streamChat({ messages })) {
         /* consume */
       }
-      // 2026-09-25（模型替补）：聊天调用会先问一次"本地加载了哪些模型"，所以序列里多了一个
-      // /v1/models。这个用例真正要钉的性质没变——**每一个**请求都带配置的令牌。
+      // 聊天调用会先查询本地已加载模型，序列中包含 /v1/models；
+      // 每一个请求都必须带配置的令牌。
       expect(seen.map((entry) => entry.authorization)).toEqual(
         seen.map(() => "Bearer secret-token"),
       );
@@ -1051,9 +1051,8 @@ describe("原生 tool calling（issue #10）：外部路由声明 tools，调用
   });
 
   /**
-   * 文本路径也要能回答"服务端说了什么"：唤醒失败以前只记映射后的码（"本地模型调用失败"），
-   * 而中继/服务端的原文被映射吞掉——2026-09-29 那轮 kanglives 5xx 就是这么卡住的。视觉路径已经
-   * 把原文记进日志（状态码 + 截断的响应体），文本路径现在保持一致：码与用户文案不变，原文进日志。
+   * 文本与视觉路径一致：状态码与截断的服务端响应体进入日志，便于诊断中继/服务端故障。
+   * 错误码与用户文案仍按网关映射，不以服务端原文替换。
    */
   it("服务端 5xx：码保持通用，provider 原文进日志", async () => {
     const warnings: string[] = [];

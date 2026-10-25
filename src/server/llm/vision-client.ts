@@ -2,9 +2,9 @@
 //
 // The gateway's `complete()` carries text only, so a picture cannot travel through it. This module
 // is the smallest thing that can: an OpenAI-compatible chat completion whose user message holds the
-// prompt and the images as data URLs. The protocol pieces are the ones the user approved on
-// 2026-09-24 for U05 — data URLs, PNG for animations, one entry per sampled frame — and they are
-// the reason this lives beside the gateway rather than inside the sticker feature.
+// prompt and the images as data URLs. The wire format uses PNG for animations and one entry
+// per sampled frame; this shared transport lives beside the gateway rather than inside the
+// sticker feature.
 //
 // The conventions match the gateway, because the two talk to the same service: the Bearer token is
 // always sent (LM Studio rejects unauthenticated calls once it requires a token), the timeout is

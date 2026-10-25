@@ -1,4 +1,4 @@
-// P3 独立端到端验证（qq-parallel-media 批次，p3-task-execution-tests）：真实
+// 同一发送人 mention 任务的端到端并行验证：真实
 // createOneBotConversationRuntime 装配 + AgentRuntime + ConversationHost + 业务库 +
 // QqSendPort 闭桩，验证**同一发送人的两条 @ 消息作为两条 mention 任务真实并行执行**——
 // 不是登记即止：两条任务同时 running、各自冻结的执行快照互相独立、模型调用与出站提交/

@@ -473,8 +473,8 @@ export function expandQqReplies(input: QqReplyInput): QqReplyProjection {
   // ---- 登记 bodyRef（M3）---------------------------------------------------------------
   // 给出不完整 page 的候选 ＋ 被裁直接层：登记真实 evidence（原正文＋sources）。
   // 同 target（fact.id）复用同一真实 handle，绝不返回伪造值；被裁深层不登记。
-  // 注意：受限读取的最终尺寸边界（字节预算、引用上限、来源复验）由真实 registry
-  // （T05c 接线）保证——本纯函数只有注入桩，无法实测真实 registry，不得声称已保证。
+  // 受限读取的字节预算、引用上限与来源复验由真实 registry 负责；
+  // 本纯函数仅消费注入的 load/register/fits，不独立建立这些保证。
 
   const refsByFactId = new Map<string, string>();
   function registerOnce(candidate: BodyCandidate & { body: string }): string {

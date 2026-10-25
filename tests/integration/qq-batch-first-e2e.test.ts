@@ -1,7 +1,7 @@
-// BATCHQA 独立端到端验证（qq-flow-and-project-concurrency 批次）：真实 OneBotHost +
-// AgentRuntime + 业务库合成夹具，验证批量优先（batch-first）自主批次的**最终批准行为**。
+// 批量优先（batch-first）自主批次的端到端验证：真实 OneBotHost +
+// AgentRuntime + 业务库合成夹具。
 // 本文件使用独立的最小生产组合夹具；X2/Y0 是显式合法方案值，
-// 用于让两条合格成员事件构成一个批次机会——生产默认门槛（15/5）由 D1 专测，此处不重复。
+// 用于让两条合格成员事件构成一个批次机会；此处不重复验证生产默认门槛（15/5）。
 // 不接真实 QQ/模型/网络：模型是受控 ModelPort 桩，阀门用 Promise，无 shell sleep。
 
 import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
@@ -1112,7 +1112,7 @@ it("an own chiming intent confirmed during the crash still resumes the frozen ba
   } finally {
     releaseSlow();
   }
-  // 发送之后的新成员输入解除 no-reply 等待（既批准规则：只有晚于我们发言的成员消息
+  // 发送之后的新成员输入解除 no-reply 等待（只有晚于我们发言的成员消息
   // 放行下一次主动）；租约到期后同 wake 恢复。
   f.clock.seconds += 60;
   f.receive("3", "20004");

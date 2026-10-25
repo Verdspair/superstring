@@ -13,10 +13,10 @@
 -- answers "did anyone speak after us", and the assistant's own words are the least
 -- useful thing to keep.
 --
--- `kind` covers the four independently controllable speech paths of the plan: a direct
+-- `kind` covers four independently controllable speech paths: a direct
 -- reply, a continuation of the conversation, chiming in unprompted, and opening a topic
 -- into silence. Only the last two take the initiative, and only those two are subject
--- to the no-reply rule (user decision 2026-09-23: a continuation is not).
+-- to the no-reply rule; a continuation is not.
 --
 -- `expires_at` follows the same single retention window as message text
 -- (qq-retention.ts). Expiring a row can only mean that a very old initiative is

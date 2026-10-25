@@ -13,11 +13,9 @@
 // partsJSON "复活"过期/删除的内容——正文与事实到期时给明确的不可读，不猜。当前昵称
 // 只作为 `currentName` 单列映射（仅目录有效来源），不写回发送时快照。
 //
-// 2026-10-04 leaf 依赖边界修复：本文件自 channels/onebot11/message-projection.ts 机械迁出，
-// 函数体/判断/默认/来源 guards 原文未改；channel 侧对 `loadQqMessageFact` /
-// `loadQqMessageFactState` / `projectQqMessageFacts` 经 re-export 保持原 public API。
-// `botScope` 与 `collectMentions` 为入站与出站投影共用，唯一实现在本文件，出站路径
-// 按原逻辑引用。
+// `loadQqMessageFact` / `loadQqMessageFactState` / `projectQqMessageFacts` 在此实现，
+// channel 侧经 re-export 提供投影 API。`botScope` 与 `collectMentions` 为入站与出站
+// 投影共用，唯一实现在本文件。
 
 import { and, eq } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";

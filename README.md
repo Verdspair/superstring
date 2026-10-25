@@ -49,19 +49,60 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 
 打开「方案」，在 QQ 任务入口中选择「会话与绑定」「QQ连接」或「数据与保留」，也可直接打开共用方案。方案详情只显示当前方案的设置与使用会话；各任务有明确的返回入口。进入群聊可编辑**本群配置**。群聊的参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。群聊与私聊共用同一套会话配置页，分别显示“本群配置”和“本私聊配置”。可按会话与 Agent 自定义策略，未自定义的项目跟随方案；私聊不显示群成员、群能力停用或按群内发言人拆分等专属项。配置入口位于会话顶部、会话菜单和绑定管理。网页对话不使用 QQ 方案。QQ 会话菜单中的“移除会话”解除绑定并从目录移除，不删除 Agent、方案或 QQ 平台聊天；本机历史资料按原规则保留但不再由这个入口访问。运行中任务或发送结果未知时会拒绝移除，避免中断或误重发。
 
-无本机托管运行环境时，使用外部 OneBot 服务：
+#### QQ 接入方式选择与版本说明
 
-1. 安装 QQ NT 客户端并登录。QQ 需保持登录在线；QQ 与 OneBot 实现的版本配套以上游说明为准（见 [NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases)；NapCat v4.18.28 与 QQ 9.9.26.44343 为过去曾验证过的组合，非官方支持列表或最新测试结论）。
-2. 安装 OneBot 11 实现（例如 [NapCat](https://github.com/NapNeko/NapCatQQ) 作为已验证参考，程序不排斥其他 OneBot 11 实现，但不保证全部兼容）。以 NapCat Shell 包为例：在 Windows 上解压并运行 `launcher.bat`（Windows 10 运行 `launcher-win10.bat`），按控制台输出打开 WebUI 面板。
-3. QQ 客户端与 NapCat 各自保持常驻运行。在 NapCat WebUI 中确认 QQ 处于登录在线状态，开启**正向 WebSocket 服务端**并设置访问令牌，记录连接地址与端口（WebUI 能打开不代表 QQ 已登录或 WebSocket 服务已就绪）。
-4. 在 Superstring 的**方案**页进入 QQ 连接设置，填写 WebSocket 地址（同机部署填 `ws://127.0.0.1:端口/`，跨机部署填实际可达地址）、访问令牌与 Agent 账号（填写机器人 QQ 号，非 Superstring 助手 ID），勾选「启用 QQ」并保存；再将群或私聊绑定到 Agent 与方案。
+- **版本与界面差异**：当前从源码运行时提供集成的「QQ连接」任务工作区（包含「连接」「消息事件」「运行设置」三项任务与 NapCat 本机托管组件）；已发布的 `v0.4.0-alpha-2` 桌面安装包未包含该新版托管界面，仅提供外部 OneBot 连接设置。使用已发布 `v0.4.0-alpha-2` 安装包的用户，请以「方式二：外部 OneBot 服务独立连接」为准；从源码运行可使用「方式一：本机托管 QQ 运行环境」。
+- **两种接入方式**：
+  - **方式一（推荐，限 Windows x64 源码运行）**：使用内置的 NapCat 本机托管组件，由 Superstring 协同管理 NapCat 进程、扫码/快捷登录与本地正向 WebSocket 服务配置。
+  - **方式二（跨平台 / 外部独立运行 / 已发布安装包）**：独立运行 QQ 客户端与 OneBot 11 服务（如 NapCat、LLOneBot 等），Superstring 仅作为客户端连接用户指定的 WebSocket 服务端。
+
+#### 方式一：本机托管 QQ 运行环境（当前源码版，限 Windows x64）
+
+1. **准备官方运行时发行包**：
+   - 本机托管仅支持 **Windows x64** 系统。macOS、Linux 或其他架构请使用方式二。
+   - 前往 [NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases) 下载官方 `v4.18.41` Release 中的 **Windows.Node 独立运行包** `NapCat.Shell.Windows.Node.zip`。必须选用带有 Windows.Node 标识的独立运行包，不能使用普通 Shell 包或非 Node 架构版本。该运行包不随 Superstring 安装包附带，程序亦不提供后台静默下载，需用户自行从官方渠道获取。
+   - **无需另装 QQNT 桌面客户端**：该官方 Node 运行包已内嵌 QQ NT 核心与必要运行库，**使用该运行包时不需要在系统上另行安装 QQ NT 客户端**。
+   - 将下载的压缩包完整解压到一个专用的本地运行目录（例如 `D:\NapCat`）。
+   - **目录结构与路径要求**：解压后的根目录必须完整包含 `node.exe`、`index.js`、`wrapper.node`、`crypto.dll`、`ssl.dll`、`package.json`（name 属性为 `qq-chat` 且架构为 `x64`）、`config.json`，以及包含 `express` 和 `ws` 依赖的 `napcat` 子目录。配置路径必须指向该**解压后的根目录**，不要选择未解压的 `.zip` 压缩文件、内部子目录或 `launcher.bat` 脚本（Superstring 直接通过 `node.exe index.js` 拉起进程，以确保生命周期受控）。
+   - **配置初始化提示**：准备资源时除在私有目录生成描述文件外，若检测到 `napcat/config/webui.json` 缺失，会生成默认回环配置（`127.0.0.1:6099` 与随机生成的控制令牌，该令牌仅用于底层管理，非业务通信令牌）；若已有配置中绑定为 IPv6 通配符 `::`，会将其规范化为 `127.0.0.1` 并保留其他已有字段。建议使用干净专用的官方运行目录，避免影响个人其他用途的 NapCat 配置。
+2. **在 Superstring 中配置资源路径与刷新**：
+   - 打开主导航的「方案」，在 QQ 任务入口中点击「QQ连接」，进入「连接」视图。
+   - 首次未配置时，「QQ 托管组件」中的「运行时路径」输入区域为**默认展开状态**（此时「路径设置」折叠按钮处于禁用状态）。直接在展开的输入框中输入或粘贴 NapCat 解压根目录的绝对路径，点击「更新路径」。（若后续需要修改路径，可点击「路径设置」展开）。
+   - 点击「更新路径」校验成功后，面板立即显示“运行时文件验证有效”；随后点击页面右上方的**「刷新状态」**（Refresh state）读回组件状态，以解锁「启用托管服务」开关。
+3. **设置 OneBot 目标连接参数**：
+   - 在下方的「OneBot 连接」设置组中配置所需的业务连接字段：
+     - **Agent 账号**：填写准备登录的机器人 QQ 账号。
+     - **WebSocket 地址**：填写正向 WebSocket 回环端点（例如 `ws://127.0.0.1:3001`）。
+     - **访问令牌**：填写自定义的通信访问令牌（由用户自行设定，留空表示保持原有令牌）。
+     - 点击「保存接入设置」。
+   - *说明*：用户需在 OneBot 连接设置中显式指定目标账号、端点与令牌；托管服务启动后将据此匹配并写入 NapCat 的监听配置。若上述字段未填完整，托管组件将提示需要网络配置。
+4. **启用托管服务并保存**：
+   - 在「QQ 托管组件」面板中勾选「启用托管服务」，点击面板底部的「保存」按钮（卡片底部的「保存」仅用于提交托管偏好）。
+   - 保存后应用会自动调度启动或停止本地托管服务。保存操作仅记录偏好并触发激活，**保存成功不等于服务已就绪（Ready）**，界面亦不会实时自动推进。
+   - 点击「刷新状态」读回当前阶段。若之前已有登录且核心有效，可能直接恢复为核心在线；若为全新登录，状态会推进至“等待扫码”。
+5. **登录 QQ 账号**：
+   - **手机 QQ 扫码**：状态进入“等待扫码”后，点击「刷新二维码」，面板中将显示临时登录二维码。使用手机 QQ 扫描该二维码并在手机上确认登录。
+   - **本机快捷登录**：在服务运行中并等待扫码时使用；若账号列表未出现，可先点击「刷新状态」。从列表中选择已知账号并点击「快速登录」发起登录请求（若有换号操作，应用先保存账号并在受在途任务保护时拦截）。发起快速登录仅代表请求已受理，**不保证绕过手机端确认，请留意手机 QQ 上的登录确认或安全验证**；若状态仍停留在等待扫码，请改用二维码扫码登录。
+   - *账号列表说明*：快捷登录列表来自当前受管运行时的控制接口查询，应用不会另行扫描整机账号。可用账号与凭据实际保存位置由 QQ NT 与 NapCat 运行时管理；专用运行目录用于避免影响其他用途的 NapCat 配置文件，但这不等于底层 QQ 账号资料的物理隔离。
+   - 完成扫码或快速登录后，点击「刷新状态」确认 QQ 核心是否已登录在线。
+6. **开启业务总开关与连接就绪**：
+   - 核心在线后，Superstring 自动向 NapCat 的监听列表中注入名为 `superstring` 的正向 WebSocket 监听器；若已存在参数完全匹配（包含端口、令牌、回环地址、消息格式与自身上报等）的现有监听器，则采取只读复用。
+   - 在页面顶部勾选「参与第三方聊天 / 启用 QQ」（业务总开关），勾选后系统会自动保存（无需另点击保存按钮，卡片底部的「保存」仅用于提交托管开关，下方的「保存接入设置」仅用于提交连接参数）。待保存完成后，底层才会建立 OneBot 连接并完成身份握手核验。
+   - 随后点击「刷新状态」，当托管进程正常、QQ 核心在线、OneBot 监听匹配验证通过，且「参与第三方聊天」处于开启状态时，连接状态才最终显示为“已连接”。两个开关相互独立。
+
+#### 方式二：外部 OneBot 服务独立连接（适用于 macOS / Linux、已发布安装包或自行管理服务）
+
+1. **安装并运行 QQ 客户端**：安装 QQ NT 客户端并登录。QQ 需保持登录在线；QQ 与 OneBot 实现的版本配套以上游说明为准（见 [NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases)；NapCat v4.18.28 与 QQ 9.9.26.44343 为过去曾验证过的组合，非官方支持列表或最新测试结论）。
+2. **安装并运行 OneBot 11 实现**：以 NapCat Shell 包为例，在 Windows 上解压并运行 `launcher.bat`（Windows 10 运行 `launcher-win10.bat`），按控制台输出打开 WebUI 面板（程序不排斥其他 OneBot 11 实现，但不保证全部兼容）。
+3. **配置正向 WebSocket**：在 NapCat WebUI 中确认 QQ 处于登录在线状态，开启**正向 WebSocket 服务端**并设置访问令牌，记录连接地址与端口（WebUI 能打开不代表 QQ 已登录或 WebSocket 服务已就绪）。
+4. **在 Superstring 中配置连接**：在 Superstring 的连接设置中（已发布安装包位于「QQ 设置」，源码版位于「QQ连接」），填写 WebSocket 地址（同机部署填 `ws://127.0.0.1:端口/`，跨机部署填实际可达的 ws/wss 地址）、访问令牌与 Agent 账号（填写机器人 QQ 号），点击「保存接入设置」保存连接参数；随后在页面顶部开启「参与第三方聊天 / 启用 QQ」（当前源码版勾选即自动保存，已发布旧安装包按界面保存按钮操作）；再将群或私聊绑定到 Agent 与方案。外部服务由用户独立管理，Superstring 保持纯客户端连接，不管理、不重启、不停止外部已有进程。
 
 运行与连接说明：
 - 外部连接方式下，QQ 与 OneBot 服务由用户独立运行；Superstring 不停止已有外部运行环境。
 - 自动化受到平台规则与账号状态约束，建议使用测试账号并妥善保管端点与凭据。
 - 连接就绪不代表消息一定送达；连接断开时保持 QQ 与 NapCat 正常运行，程序会间隔重试连接，不承诺立即恢复连接或补发遗漏回复。
 - **账号切换安全保护**：在 QQ 连接设置中更换绑定的账号时提供安全检查。若原账号或新账号历史关联的会话中存在正在执行的任务、仍在处理的后台工作、正在发送或发送结果未知的消息，程序会拒绝切换，避免在未结清工作时改变账号归属；相同账号保存、无变更操作或修改普通设置不会误拦截。
-- **QQ 托管与消息观察**：在“方案 → QQ连接 → 连接”选择本地已解压的官方 NapCat 运行目录，准备资源后启用托管。可选择该运行时已记录的账号快速登录，或获取临时二维码并用手机 QQ 扫码确认。登录后，应用配置所需的本地 WebSocket 服务，或只读复用已有的匹配配置；托管开关与 QQ 业务开关分开保存。“消息事件”任务提供紧凑的通信事件列表，可按类型筛选、展开详情，并在向上翻看时暂停自动跟随。正文预览遵守原会话绑定、来源修订与保留期限，未绑定或失效的消息只显示元数据。Windows 上自有组件随桌面启动和退出，原有外部 OneBot 连接方式保留；运行包需另行从官方获取，不包含在安装包中。
+- **消息事件即时排障**：在「方案 → QQ连接 → 消息事件」任务中提供紧凑的通信事件列表，专司底层通信与协议排障。可按消息、通知、请求与元事件类型筛选，展开结构化字段详情，并在向上翻看历史记录时自动暂停跟随。正文预览遵守原会话绑定、来源修订与保留期限，未绑定或失效的消息仅展示元数据。
 
 ### 多模态与媒体处理
 
@@ -121,8 +162,8 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 2. 打开**模型服务**配置连接与可用模型；本地默认端点为 `http://127.0.0.1:1234/v1`。各任务模型在 Agent、QQ 或知识设置中配置，跨任务整理默认模型在系统执行设置中管理。原生图片输入由服务实际处理；明确拒绝图片时回退文本描述并记住当前进程内的拒绝结果，普通网络错误不自动降级。已知不支持原生图片时可选择文本描述模式，无需配置逐模型视觉或代码执行开关。
 3. 创建或选择 Agent，导入并授权所需知识。
 4. 新建网页对话即可开始使用。
-5. 接入 QQ：使用已部署并配置的本机托管运行环境；没有时按上文步骤独立运行 QQ NT 与 OneBot 11 服务（如 NapCat），开启正向 WebSocket 服务端。
-6. 在「方案 → QQ连接 → 连接」配置账号；使用外部服务时填入 WebSocket 地址、访问令牌与 Agent 账号（机器人 QQ 号）。开启「启用 QQ」，再将群或私聊绑定到 Agent 与方案。
+5. 接入 QQ：从源码运行时可使用 Windows x64 本机托管环境（详见「QQ 群聊与私聊」中的方式一）；使用已发布安装包或 macOS/Linux 时，独立运行 QQ 与 OneBot 11 服务（如 NapCat），开启正向 WebSocket 服务端。
+6. 在「方案」的 QQ 连接设置中配置账号（源码版位于「QQ连接」任务，已发布安装包位于「QQ 设置」）；填入 WebSocket 地址、访问令牌与 Agent 账号（机器人 QQ 号），开启「启用 QQ」，再将群或私聊绑定到 Agent 与方案。
 
 LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务凭据在本地加密存储，备份时需将资料目录与密钥一同保管。
 
@@ -188,19 +229,60 @@ Use **New / add** at the top of the conversation list to start a web conversatio
 
 Open **Schemes** to find shared schemes and the equally visible QQ tasks: **Conversations & bindings**, **QQ connection**, and **Data & retention**. Scheme details focus on the selected scheme and its conversations. Each task has a clear return path. Groups have **Group settings** with overrides for participation, replies, context, media, and prompts. Overrides stay with the group/Agent pair and return when switching back; per-group capability restrictions take effect immediately. Groups and private chats use the same conversation policy editor, titled Group settings or Private chat settings. Customize policy for the conversation and Agent, while other fields follow the scheme. Private chats omit group members, group-only capability restrictions, and splitting replies by group speaker. Open settings from the conversation header, its menu, or binding management. Web conversations do not use QQ schemes. Remove conversation in a QQ conversation menu removes its binding and directory entry, not the Agent, scheme, or QQ chat. Local history keeps its retention rules but is no longer accessible through that entry. Removal is refused while work is active or a send result is unknown.
 
-Without a local managed runtime, use an external OneBot service:
+#### QQ connection options and version notes
 
-1. Install and log into a QQ NT client. QQ must remain logged in and online. Version compatibility between QQ and the OneBot implementation follows upstream documentation ([NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases); NapCat v4.18.28 with QQ 9.9.26.44343 is a previously validated combination, not an official support list or recent verification result).
-2. Install an OneBot 11 implementation (such as [NapCat](https://github.com/NapNeko/NapCatQQ) as a validated example; other OneBot 11 implementations are not excluded, but universal compatibility is not guaranteed). Taking the NapCat Shell package as an example: extract it on Windows, run `launcher.bat` (`launcher-win10.bat` on Windows 10), and open the WebUI panel printed in the console.
-3. Keep the QQ client and NapCat running independently in the background. In the NapCat WebUI, confirm that QQ remains logged in, enable a **forward WebSocket server**, configure an access token, and record the address and port (opening the WebUI panel does not mean QQ is online or the WebSocket server is ready).
-4. In Superstring, open **Schemes**, navigate to QQ connection settings, and enter the WebSocket address (e.g. `ws://127.0.0.1:port/` for local deployment, or an accessible network address for cross-machine setups), access token, and Agent account (enter the bot's QQ number, not the Superstring assistant ID). Check **Enable QQ** and save; then bind groups or private chats to an Agent and a scheme.
+- **Version and interface differences**: When running from source, Superstring includes an integrated QQ Connection workspace with three tasks (**Connection**, **Message events**, and **Runtime settings**) alongside a local managed NapCat component. The published `v0.4.0-alpha-2` desktop installers do not include this new managed interface and provide external OneBot connection settings only. Users running the published `v0.4.0-alpha-2` installer should follow Option 2: External OneBot service connection directly. Running from source supports Option 1: Managed QQ runtime.
+- **Two connection options**:
+  - **Option 1 (Recommended, Windows x64 source builds)**: Use Superstring's built-in managed NapCat component, letting the app supervise the NapCat process, QR-code/quick login, and local forward WebSocket listener configuration.
+  - **Option 2 (Cross-platform / External standalone / Published installers)**: Run your QQ client and OneBot 11 service (such as NapCat, LLOneBot, etc.) independently; Superstring connects strictly as a client to your specified WebSocket server.
+
+#### Option 1: Managed QQ runtime (current source builds, Windows x64)
+
+1. **Prepare the official runtime bundle**:
+   - Managed mode supports **Windows x64** only. On macOS, Linux, or other architectures, use Option 2.
+   - Obtain the official Windows.Node bundle `NapCat.Shell.Windows.Node.zip` from the `v4.18.41` Release on [NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases). You must use a package specifically labeled Windows.Node; generic Shell packages or non-Node versions cannot be used. This runtime bundle is not included in Superstring installers, and the application does not provide silent background downloads; you must download it from the official upstream source.
+   - **No separate QQ NT client required**: This official Node bundle embeds the QQ NT core and required runtime; you do **not need to install a separate QQ NT desktop client** on your computer.
+   - Extract the downloaded package completely into a dedicated local directory (for example, `D:\NapCat`).
+   - **Directory structure requirements**: The extracted root folder must contain `node.exe`, `index.js`, `wrapper.node`, `crypto.dll`, `ssl.dll`, `package.json` (where `name` is `qq-chat` and `eleArch` is `x64`), `config.json`, and the `napcat` subfolder containing `express` and `ws` dependencies. The path must point to this **extracted root directory**; do not select the unextracted `.zip` file, inner subfolders, or `launcher.bat` (Superstring executes `node.exe index.js` directly to ensure predictable process lifecycle control).
+   - **Configuration initialization**: When preparing resources, Superstring records a local descriptor. If `napcat/config/webui.json` is missing, it creates a default loopback configuration (`127.0.0.1:6099` with a generated random control token; this token is used for low-level management only and is distinct from the business communication token); if an existing configuration binds to IPv6 wildcard `::`, it normalizes it to `127.0.0.1` while preserving other fields. Use a dedicated folder to avoid changing other NapCat configurations.
+2. **Configure the runtime path and refresh in Superstring**:
+   - Open **Schemes** in the main navigation, click the QQ task **QQ connection**, and navigate to the **Connection** view.
+   - On initial setup when not yet configured, the **Runtime path** input area in the **QQ Managed Component** card is **expanded by default** (the "Path settings" toggle button is disabled). Enter or paste the absolute path to the extracted NapCat root directory directly in the expanded input box, then click **Update Path**. (To modify the path later, click "Path settings" to expand).
+   - Once validated upon clicking "Update Path", the badge immediately indicates **Runtime files verified**; then click **Refresh state** in the top right of the page to read back the component status and unlock the **Enable Managed Service** checkbox.
+3. **Set target OneBot connection parameters**:
+   - In the **OneBot connection** group below, configure the required fields:
+     - **Agent account**: Enter the QQ number of the bot account you intend to use.
+     - **WebSocket address**: Enter your desired forward WebSocket loopback endpoint (e.g. `ws://127.0.0.1:3001`).
+     - **Access token**: Enter a custom access token for communication security (set by you; leaving it blank keeps any previously saved token).
+     - Click **Save access settings**.
+   - *Note*: Explicitly set your target account, endpoint, and token in the OneBot connection settings; once started, the managed service matches and merges this listener into NapCat's configuration. If any required field is missing, the managed component indicates that network configuration is required.
+4. **Enable managed mode and save**:
+   - Check the **Enable Managed Service** checkbox in the QQ Managed Component card, and click **Save** in the card footer (the "Save" button in the card footer only submits the managed preference).
+   - Saving will schedule starting or stopping the local managed service. Saving records configuration and triggers activation, but **saving does not mean the service is already ready (Ready)**, and the interface does not automatically update in real time.
+   - Click **Refresh state** to read back the current stage. If an existing login is still valid, the core may restore directly to online; for a fresh setup, the status progresses to waiting for scan.
+5. **Log in to QQ**:
+   - **Mobile QR code**: When the status reaches "Waiting for scan", click **Refresh QR Code** to display the temporary login QR code in the card. Scan it with mobile QQ and confirm the login on your phone.
+   - **Quick login**: Available while the service is running and in waiting for scan; if the account list has not appeared yet, click **Refresh state** first. Select a known account from the **Local Quick Login** dropdown and click **Quick Login** to initiate a login request (if switching accounts, the app saves the account first under in-flight protection). Initiating quick login acknowledges the request but **does not guarantee bypassing mobile confirmation—watch for confirmation or security verification prompts in mobile QQ**; if the state remains waiting for scan, switch to QR code login.
+   - *Account list note*: The quick login list is retrieved from the current managed runtime's control interface; the app does not scan system-wide accounts. Available accounts and credential storage locations are managed by the QQ NT and NapCat runtime. A dedicated directory prevents overwriting other NapCat configurations, but this is not physical profile isolation for QQ data.
+   - After completing login, click **Refresh state** to confirm whether the QQ core is online.
+6. **Enable business switch and complete connection**:
+   - Once the core is online, Superstring injects a forward WebSocket listener named `superstring` into NapCat's listener list; if an existing listener matches all parameters completely (including port, token, loopback host, message format, and self-reporting), it is reused read-only.
+   - Check **Participate in external chats / Enable QQ** (the business master switch) at the top of the page; checking it saves automatically (no additional save button is needed: the "Save" button in the card footer only submits the managed switch, and "Save access settings" below only submits connection parameters). Wait for the save to complete, then the underlying OneBot connection and identity handshake will proceed.
+   - Then click **Refresh state**. The status displays "Connected" once the managed process is healthy, the QQ core is online, the OneBot listener is verified, and "Participate in external chats" is enabled. Both switches are mutually independent.
+
+#### Option 2: External OneBot service connection (macOS / Linux, published installers, or self-managed setups)
+
+1. **Install and run QQ client**: Install and log into a QQ NT client. QQ must remain logged in and online. Version compatibility between QQ and the OneBot implementation follows upstream documentation ([NapCat Releases](https://github.com/NapNeko/NapCatQQ/releases); NapCat v4.18.28 with QQ 9.9.26.44343 is a previously validated combination, not an official support list or recent verification result).
+2. **Install and run an OneBot 11 implementation**: Taking the NapCat Shell package as an example: extract it on Windows, run `launcher.bat` (`launcher-win10.bat` on Windows 10), and open the WebUI panel printed in the console (other OneBot 11 implementations are not excluded, but universal compatibility is not guaranteed).
+3. **Configure forward WebSocket**: In the NapCat WebUI, confirm that QQ remains logged in, enable a **forward WebSocket server**, configure an access token, and record the address and port (opening the WebUI panel does not mean QQ is online or the WebSocket server is ready).
+4. **Configure connection in Superstring**: In Superstring's connection settings (under "QQ settings" in published installers, or under "QQ connection" in source builds), enter the WebSocket address (e.g. `ws://127.0.0.1:port/` for local deployment, or an accessible ws/wss address for cross-machine setups), access token, and Agent account (the bot's QQ number), and click **Save access settings** to save connection parameters. Then enable **Participate in external chats / Enable QQ** at the top of the page (in current source builds, checking it saves automatically; in published older installers, follow the interface save button). Finally, bind groups or private chats to an Agent and a scheme. External services are managed independently by the user; Superstring maintains a pure client connection without restarting or stopping existing external processes.
 
 Operational details:
 - In external connection mode, run QQ and the OneBot service independently. Superstring does not stop an existing external runtime.
 - Automation is subject to platform and account policies; use a dedicated test account and protect your endpoints and credentials.
 - An active connection does not guarantee message delivery. If the connection drops while QQ and NapCat remain running, the application retries periodically, but does not guarantee immediate reconnection or backfilled replies.
 - **Account switching protection**: Updating or switching the bound QQ account includes safeguards before changing accounts. If historical sessions associated with either the old or new account contain tasks in progress, ongoing background work, or messages being sent or with unknown delivery results, the application refuses the switch to avoid changing account ownership while work is outstanding. Same-account updates, no-op saves, and ordinary setting edits are not blocked.
-- **Managed QQ and message observation**: Under **Schemes → QQ connection → Connection**, select an extracted official NapCat runtime directory, prepare its resources, and enable managed mode. Choose an account saved by that runtime for quick login, or request a temporary QR code and confirm it in mobile QQ. After login, the app configures the required local WebSocket server or reuses a matching configuration read-only. Managed mode and the QQ business switch are saved separately. The Message events task provides a compact event list with type filters, expandable details, and paused autoscroll while reading older entries. Body previews follow the original conversation binding, source revision, and retention period; unbound or invalid sources show metadata only. On Windows, app-owned components start and stop with the desktop. Existing external OneBot connections remain available. Obtain the runtime package separately from its official source; installers do not include it.
+- **Message events diagnostics**: Under **Schemes → QQ connection → Message events**, a compact command-line-style event list provides low-level protocol inspection and troubleshooting. Filter by messages, notices, requests, or meta events, inspect structured details, and pause autoscroll while reviewing historical entries. Message body previews respect conversation bindings, source revisions, and retention limits; unbound or expired messages show metadata only.
 
 ### Multimodal and media processing
 
@@ -260,8 +342,8 @@ Application packages bundle their runtime. Inference requires a local server suc
 2. Open **Model services** to configure connections and available models. The default local endpoint is `http://127.0.0.1:1234/v1`. Configure task models in Agent, QQ, or knowledge settings, and the shared organization default in system execution settings. Native images are handled by the service; explicit image rejection triggers a text-description fallback and an in-process rejection cache, while ordinary network failures do not. Use description mode for models known not to accept native images. No per-model vision or code-execution switch is needed.
 3. Create or select an Agent, then import and authorize necessary knowledge.
 4. Start a web conversation.
-5. To connect QQ: use a locally deployed and configured managed runtime. Otherwise, follow the steps above to run QQ NT and a OneBot 11 service (such as NapCat) independently with a forward WebSocket server.
-6. Configure the account under **Schemes → QQ connection → Connection**. For an external service, enter its WebSocket address, access token, and bot QQ number. Turn on **Enable QQ** and bind groups or private chats to an Agent and a scheme.
+5. To connect QQ: when running from source, you can use the Windows x64 managed runtime (see Option 1 under "QQ groups and private chats"); when using published installers or on macOS/Linux, run QQ and an OneBot 11 service (such as NapCat) independently with a forward WebSocket server.
+6. In Schemes, configure the account under QQ connection settings (under the "QQ connection" task in source builds, or under "QQ settings" in published installers); enter the WebSocket address, access token, and Agent account (bot QQ number). Enable QQ, then bind groups or private chats to an Agent and scheme.
 
 If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider credentials are encrypted on disk; store the profile and encryption keys together.
 

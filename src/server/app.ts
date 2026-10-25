@@ -20,7 +20,7 @@ import { memoryRoutes } from "./api/memories";
 import { modelRoutes } from "./api/models";
 import { observabilityRoutes } from "./api/observability";
 import { permissionRoutes } from "./api/permissions";
-import { type QqManagedEventsPort, qqManagedComponentRoutes, qqRoutes } from "./api/qq";
+import { qqRoutes } from "./api/qq";
 import { runRoutes } from "./api/runs";
 import { sessionRoutes } from "./api/sessions";
 import { skillsRoutes } from "./api/skills";
@@ -41,6 +41,7 @@ import {
 import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
 import { systemToolDefinitions } from "./modules/tool-definitions";
 import type { NapCatManagementPort } from "./napcat/management";
+import { type QqManagedEventsPort, qqManagedComponentRoutes } from "./napcat/routes";
 import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
 import { type PermissionService, unconfiguredPermissions } from "./permissions/service";
 import { projectToolDirectory } from "./permissions/tool-directory";
@@ -159,9 +160,8 @@ export function createApp(opts: CreateAppOptions): Hono {
       "/models",
       modelRoutes(business.orm, gateway, opts.modelProviderKeyPath, opts.localModelEncodings),
     );
-    // The picture call goes through the vision client, which is the one place that knows how an
-    // image travels to the model service (U05's decision, 2026-09-24). The sticker annotation is
-    // its first caller; the media reader's adapter is the next one.
+    // Picture calls share the vision client, which owns image transport to the model service
+    // for sticker annotation and media reading.
     const vision = opts.vision ?? createLmStudioVisionClient(gateway.config);
     const runRepository = new AgentRunRepository(business.db);
     const agentRuntime =

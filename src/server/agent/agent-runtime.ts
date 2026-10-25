@@ -2253,7 +2253,7 @@ export class AgentRuntime {
               responses,
             }
           : undefined;
-    // T14 观测（已批 V4）：与 render 同一 visionCostOf 真源的三标量投影；unknown 不是 0、
+    // 与 render 同一 visionCostOf 真源的三标量投影；unknown 不是 0、
     // 不折算 token、不进预算——pixels 是准备尺寸的安全边界值，不是计费事实。
     const visionCost = visionCostOf(messages);
     return this.trace(

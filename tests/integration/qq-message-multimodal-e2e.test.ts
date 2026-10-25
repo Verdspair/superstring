@@ -1,23 +1,14 @@
-// T15 整链验证。
+// QQ 消息多模态整链与组件集成验证。
 //
-// 上位依据：原计划 docs/superpowers/plans/2026-10-02-qq-message-context-multimodal-plan.md §T15、
-// 原规格 §14.1、briefs/t15-brief.md、briefs/prime-t15-matrix-map.md、T15 独立审查最终口径
-// （16 passed / 0 failed / 42 not_executed，critical 5/22，2026-10-03）。
+// 结构：
+//   * [Base_anchor] = 无图两相整链锚点；
+//   * [Sxx] = OneBot→宿主→AgentRuntime 整链块；
+//   * [Biz_xx] = 六个业务组件集成块，调用真实 reader/repo，带真实 DB kind guard；
+//                这些辅助证据不等同于完整宿主链路覆盖。
 //
-// 结构（旧 50 块版本的重构；旧版快照见 functional-matrix.rev0/rev1.json 与旧 results.json）：
-//   * [Base_anchor]  = 无图两相整链锚点（冒烟基准，不对应矩阵条目）；
-//   * [Sxx]          = 独审 16 passed 对应的整链块（S03/S04/S05/S08/S13/S17/S22/S23/S24/S25/
-//                      S27/S34/S35/S48+S49/S53）——快照限定：该 16 passed 只对旧代码快照成立，
-//                      本文件重构后须经一次真实最小运行重新对账（runner results + matrix rev3）；
-//   * [Biz_xx]       = 六个合法业务面块（真实 reader/repo 生产调用，带真实 DB kind guard），
-//                      它们是 S41–47 相关语义的业务证据面，不作为矩阵整链 passed 依据
-//                      （对应矩阵条目 not_executed；伪造 token 类不存在 fault case 归 P4 新文件）。
-// 其余 42 条 not_executed 的补齐由后续批次按原 requirements 整合；
-// 内部 runner 聚合真实执行，每项必需正负断言齐才可记 passed。
-//
-// 红线：全链走真实 OneBot→宿主→AgentRuntime（createOneBotHarness + scriptedModel），不建第二
-// harness/第二模型链；业务测试不 import artifacts/；不读真实 data/密钥、不触网络；矩阵判定
-// 以 functional-matrix.json 为准，critical 未全过不称全通过。
+// 全链复用 createOneBotHarness + scriptedModel，不建第二 harness/第二模型链。
+// 业务测试不 import artifacts/；不读真实 data/密钥、不触网络。
+// 只有对应正负断言实际执行，才能说明该用例通过；本文件不证明所有场景均已覆盖。
 
 import { afterEach, expect, it } from "bun:test";
 import { createHash } from "node:crypto";

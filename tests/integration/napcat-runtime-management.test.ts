@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import type { Database } from "bun:sqlite";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -149,6 +150,44 @@ async function saveConfig(app: ReturnType<typeof createRuntime>["app"], enabled:
       expected_revision: "",
     }),
   });
+}
+
+async function measurePageReads<T>(db: Database, read: () => Promise<T>) {
+  const executions: { sql: string; method: string }[] = [];
+  const wrapped = new WeakMap<object, object>();
+  const proxies = new WeakSet<object>();
+  function wrap(statement: object, sql: string) {
+    if (proxies.has(statement)) return statement;
+    const existing = wrapped.get(statement);
+    if (existing) return existing;
+    const proxy = new Proxy(statement, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (key === "get" || key === "all" || key === "values" || key === "run") {
+            executions.push({ sql: sql.replace(/\s+/g, " ").trim(), method: key });
+          }
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+    wrapped.set(statement, proxy);
+    proxies.add(proxy);
+    return proxy;
+  }
+  const originalQuery = db.query.bind(db);
+  const originalPrepare = db.prepare.bind(db);
+  const queryTrace = spyOn(db, "query").mockImplementation(((sql: string, ...args: unknown[]) =>
+    wrap(Reflect.apply(originalQuery, db, [sql, ...args]), sql)) as typeof db.query);
+  const prepareTrace = spyOn(db, "prepare").mockImplementation(((sql: string, ...args: unknown[]) =>
+    wrap(Reflect.apply(originalPrepare, db, [sql, ...args]), sql)) as typeof db.prepare);
+  try {
+    return { value: await read(), executions };
+  } finally {
+    prepareTrace.mockRestore();
+    queryTrace.mockRestore();
+  }
 }
 
 describe("NapCat runtime management wiring", () => {
@@ -455,132 +494,175 @@ describe("NapCat event source runtime composition", () => {
       writable: true,
       value: EventSocket,
     });
-    const runtime = createRuntime({
-      business,
-      qqTransportKeyPath: keyPath,
-      browserStateSecret: "synthetic-event-runtime-secret",
-      gateway: {
-        ...gateway,
-        async complete() {
-          modelCalls += 1;
-          throw new Error("Unexpected model call");
-        },
-        async *streamChat() {
-          modelCalls += 1;
-          yield "Unexpected model call";
-        },
-      },
-    });
-    const page = async () => {
-      const response = await runtime.app.request("/v2/qq/managed-component/events?kind=message");
-      expect(response.status).toBe(200);
-      expect(response.headers.get("cache-control")).toBe("no-store");
-      return response.json();
-    };
+    const insertedAt = Math.floor(Date.now() / 1000) * 1000;
+    let clock = insertedAt;
+    const clockSpy = spyOn(Date, "now").mockImplementation(() => clock);
     try {
-      expect((await runtime.qqIntake.start()).phase).toBe("ready");
-      if (!socket) throw new Error("Expected one synthetic socket");
-      socket.deliver({
-        time: Math.floor(Date.now() / 1000),
-        self_id: 10001,
-        post_type: "message",
-        message_type: "group",
-        sub_type: "normal",
-        message_id: -991,
-        user_id: 20002,
-        group_id: 30003,
-        message: [{ type: "text", data: { text: "Synthetic committed preview" } }],
-      });
-      const initial = await page();
-      expect(initial.events).toHaveLength(1);
-      const sourceEntry = business.db
-        .query(
-          "SELECT c.id,c.binding_epoch,e.sources FROM conversations c JOIN conversation_events e ON e.conversation_id=c.id WHERE c.source_id=? AND e.kind='inbound'",
-        )
-        .get(bindingId) as { id: string; binding_epoch: number; sources: string };
-      const originalSource = (
-        JSON.parse(sourceEntry.sources) as {
-          kind: string;
-          id: string;
-          revision: string;
-          expiresAt?: string;
-        }[]
-      ).find((source) => source.kind === "qq_observation");
-      if (!originalSource?.expiresAt) throw new Error("Expected committed observation source");
-      const originalScope: BotEvidenceScope = {
-        channel: "onebot11",
-        conversationId: sourceEntry.id,
-        bindingEpoch: sourceEntry.binding_epoch,
-        accountId: "10001",
-        conversationKind: "group",
-        peerId: "30003",
-        agentId: DEFAULT_AGENT_ID,
-        bindingId,
-        authorityRevision: 1,
-      };
-      const readable = loadConversationEvidence(
+      const runtime = createRuntime({
         business,
-        originalScope,
-        "history",
-        `qq-message:${originalSource.id}`,
-        nowIso(),
-      );
-      expect(readable?.text).toBe("Synthetic committed preview");
-      const readableSource = readable?.sources.find((source) => source.kind === "qq_observation");
-      expect(readableSource?.revision).toBe(originalSource.revision);
-      expect(originalSource.expiresAt).toMatch(/\.\d{6}Z$/);
-      expect(readableSource?.expiresAt).toMatch(/\.\d{3}Z$/);
-      expect(Date.parse(readableSource?.expiresAt ?? "")).toBe(
-        Date.parse(originalSource.expiresAt),
-      );
-      expect(initial.events[0]).toMatchObject({
-        conversation_binding: "bound",
-        preview_state: "available",
-        message_preview: "Synthetic committed preview",
+        qqTransportKeyPath: keyPath,
+        browserStateSecret: "synthetic-event-runtime-secret",
+        gateway: {
+          ...gateway,
+          async complete() {
+            modelCalls += 1;
+            throw new Error("Unexpected model call");
+          },
+          async *streamChat() {
+            modelCalls += 1;
+            yield "Unexpected model call";
+          },
+        },
       });
-      const event = business.db
-        .query("SELECT event_key FROM qq_events WHERE message_id=?")
-        .get("-991") as { event_key: string };
-      const activation = business.db
-        .query("SELECT id,binding_epoch FROM conversations WHERE source_id=? AND closed_at IS NULL")
-        .get(bindingId) as { id: string; binding_epoch: number };
-      const body = business.db
-        .query("SELECT body FROM qq_observation_text WHERE event_key=?")
-        .get(event.event_key) as { body: string };
-      const facts = business.db
-        .query("SELECT parts FROM qq_message_facts WHERE event_key=?")
-        .get(event.event_key) as { parts: string };
-      business.db
-        .query("UPDATE qq_observation_text SET body=? WHERE event_key=?")
-        .run("Changed source revision", event.event_key);
-      business.db
-        .query("UPDATE qq_message_facts SET parts=? WHERE event_key=?")
-        .run(JSON.stringify([{ kind: "text", text: "Changed source revision" }]), event.event_key);
-      expect((await page()).events[0].message_preview).toBeNull();
-      business.db
-        .query("UPDATE qq_observation_text SET body=? WHERE event_key=?")
-        .run(body.body, event.event_key);
-      business.db
-        .query("UPDATE qq_message_facts SET parts=? WHERE event_key=?")
-        .run(facts.parts, event.event_key);
-      expect((await page()).events[0].message_preview).toBe("Synthetic committed preview");
-      business.db
-        .query(
-          "UPDATE qq_bindings SET revision=revision+1,authority_revision=authority_revision+1 WHERE id=?",
-        )
-        .run(bindingId);
-      expect((await page()).events[0].message_preview).toBeNull();
-      business.db
-        .query("UPDATE qq_bindings SET revision=1,authority_revision=1 WHERE id=?")
-        .run(bindingId);
-      business.db
-        .query("UPDATE conversations SET binding_epoch=binding_epoch+1 WHERE id=?")
-        .run(activation.id);
-      expect((await page()).events[0].message_preview).toBeNull();
-      expect(sockets).toBe(1);
-      expect(modelCalls).toBe(0);
+      const pageVectors: { scenario: string; executions: { sql: string; method: string }[] }[] = [];
+      const page = async (scenario: string) => {
+        const measured = await measurePageReads(business.db, async () => {
+          const response = await runtime.app.request(
+            "/v2/qq/managed-component/events?kind=message",
+          );
+          expect(response.status).toBe(200);
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          return response.json();
+        });
+        pageVectors.push({ scenario, executions: measured.executions });
+        return measured.value;
+      };
+      try {
+        expect((await runtime.qqIntake.start()).phase).toBe("ready");
+        if (!socket) throw new Error("Expected one synthetic socket");
+        socket.deliver({
+          // Original 14-day retention expires in one minute, before this new ring entry does.
+          time: insertedAt / 1000 - 14 * 24 * 60 * 60 + 60,
+          self_id: 10001,
+          post_type: "message",
+          message_type: "group",
+          sub_type: "normal",
+          message_id: -991,
+          user_id: 20002,
+          group_id: 30003,
+          message: [{ type: "text", data: { text: "Synthetic committed preview" } }],
+        });
+        const initial = await page("available");
+        expect(initial.events).toHaveLength(1);
+        const sourceEntry = business.db
+          .query(
+            "SELECT c.id,c.binding_epoch,e.sources FROM conversations c JOIN conversation_events e ON e.conversation_id=c.id WHERE c.source_id=? AND e.kind='inbound'",
+          )
+          .get(bindingId) as { id: string; binding_epoch: number; sources: string };
+        const originalSource = (
+          JSON.parse(sourceEntry.sources) as {
+            kind: string;
+            id: string;
+            revision: string;
+            expiresAt?: string;
+          }[]
+        ).find((source) => source.kind === "qq_observation");
+        if (!originalSource?.expiresAt) throw new Error("Expected committed observation source");
+        const originalScope: BotEvidenceScope = {
+          channel: "onebot11",
+          conversationId: sourceEntry.id,
+          bindingEpoch: sourceEntry.binding_epoch,
+          accountId: "10001",
+          conversationKind: "group",
+          peerId: "30003",
+          agentId: DEFAULT_AGENT_ID,
+          bindingId,
+          authorityRevision: 1,
+        };
+        const readable = loadConversationEvidence(
+          business,
+          originalScope,
+          "history",
+          `qq-message:${originalSource.id}`,
+          nowIso(),
+        );
+        expect(readable?.text).toBe("Synthetic committed preview");
+        const readableSource = readable?.sources.find((source) => source.kind === "qq_observation");
+        expect(readableSource?.revision).toBe(originalSource.revision);
+        expect(originalSource.expiresAt).toMatch(/\.\d{6}Z$/);
+        expect(readableSource?.expiresAt).toMatch(/\.\d{3}Z$/);
+        expect(Date.parse(readableSource?.expiresAt ?? "")).toBe(
+          Date.parse(originalSource.expiresAt),
+        );
+        expect(initial.events[0]).toMatchObject({
+          conversation_binding: "bound",
+          preview_state: "available",
+          message_preview: "Synthetic committed preview",
+        });
+        const event = business.db
+          .query("SELECT event_key FROM qq_events WHERE message_id=?")
+          .get("-991") as { event_key: string };
+        const activation = business.db
+          .query(
+            "SELECT id,binding_epoch FROM conversations WHERE source_id=? AND closed_at IS NULL",
+          )
+          .get(bindingId) as { id: string; binding_epoch: number };
+        const body = business.db
+          .query("SELECT body FROM qq_observation_text WHERE event_key=?")
+          .get(event.event_key) as { body: string };
+        const facts = business.db
+          .query("SELECT parts FROM qq_message_facts WHERE event_key=?")
+          .get(event.event_key) as { parts: string };
+        business.db
+          .query("UPDATE qq_observation_text SET body=? WHERE event_key=?")
+          .run("Changed source revision", event.event_key);
+        business.db
+          .query("UPDATE qq_message_facts SET parts=? WHERE event_key=?")
+          .run(
+            JSON.stringify([{ kind: "text", text: "Changed source revision" }]),
+            event.event_key,
+          );
+        expect((await page("revision_changed")).events[0].message_preview).toBeNull();
+        business.db
+          .query("UPDATE qq_observation_text SET body=? WHERE event_key=?")
+          .run(body.body, event.event_key);
+        business.db
+          .query("UPDATE qq_message_facts SET parts=? WHERE event_key=?")
+          .run(facts.parts, event.event_key);
+        expect((await page("revision_restored")).events[0].message_preview).toBe(
+          "Synthetic committed preview",
+        );
+        business.db
+          .query(
+            "UPDATE qq_bindings SET revision=revision+1,authority_revision=authority_revision+1 WHERE id=?",
+          )
+          .run(bindingId);
+        expect((await page("authority_revoked")).events[0].message_preview).toBeNull();
+        business.db
+          .query("UPDATE qq_bindings SET revision=1,authority_revision=1 WHERE id=?")
+          .run(bindingId);
+        business.db
+          .query("UPDATE conversations SET binding_epoch=binding_epoch+1 WHERE id=?")
+          .run(activation.id);
+        expect((await page("epoch_changed")).events[0].message_preview).toBeNull();
+        business.db
+          .query("UPDATE conversations SET binding_epoch=? WHERE id=?")
+          .run(activation.binding_epoch, activation.id);
+        expect((await page("epoch_restored")).events[0].message_preview).toBe(
+          "Synthetic committed preview",
+        );
+        const sourceExpiresAt = Date.parse(originalSource.expiresAt);
+        expect(sourceExpiresAt).toBe(insertedAt + 60_000);
+        expect(Date.parse(initial.events[0].expires_at)).toBeGreaterThan(sourceExpiresAt);
+        clock = sourceExpiresAt + 1;
+        const expired = await page("source_expired_ring_retained");
+        expect(expired.events).toHaveLength(1);
+        expect(expired.generation).toBe(initial.generation);
+        expect(expired.events[0].sequence).toBe(initial.events[0].sequence);
+        expect(expired.events[0]).toMatchObject({
+          conversation_binding: "bound",
+          message_preview: null,
+          preview_state: "expired",
+        });
+        expect(Date.parse(expired.events[0].expires_at)).toBeGreaterThan(clock);
+        console.log("NAPCAT_RUNTIME_PAGE_EXECUTION_VECTORS", JSON.stringify(pageVectors));
+        expect(sockets).toBe(1);
+        expect(modelCalls).toBe(0);
+      } finally {
+        await runtime.stop();
+      }
     } finally {
-      await runtime.stop();
+      clockSpy.mockRestore();
       if (originalSocket) Object.defineProperty(globalThis, "WebSocket", originalSocket);
       else Reflect.deleteProperty(globalThis, "WebSocket");
     }

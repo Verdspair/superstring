@@ -213,8 +213,8 @@ export function qqMediaModelFor(kind: unknown, config: unknown): QqMediaModelCho
  * v2（统一规格断版，§5.6）：静图长边（所有类别共用，null=原图）与动图帧数/边长
  * （所有类别共用 rhythm 真源）一起进修订组成；形状标识同时从 media/v1 升到 media/v2，
  * 所以旧表情规格产出的成功描述不可能在"规格字面恰好相同"时被静默复用——这一版是
- * 无条件断版，不依赖两份规格碰巧取值不同。旧调用方仍传 v1 的三个字段会缺 stillMaxDimension，
- * 由宿主（Root 单写者）按最终 API 同步。
+ * 无条件断版，不依赖两份规格碰巧取值不同。调用方必须提供 stillMaxDimension，
+ * 不能只传 v1 的三个字段。
  *
  * 键序固定 shape→prompt→still→frames→maxDimension：键序变了缓存键就变。
  */

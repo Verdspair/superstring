@@ -1,15 +1,15 @@
 -- The four speech triggers a scheme carries (ADR0018 P5a).
 --
--- User decision (2026-09-23): the trigger switches live in the scheme, not on the binding.
--- §5.2 already groups the four speech paths as the scheme's own field groups, and a scheme
--- that cannot say how its assistant speaks would describe only half of itself. Changing them
--- therefore follows the scheme's own discipline: edit and save as a new scheme, then rebind.
+-- The trigger switches belong to the scheme rather than to the binding.
+-- They describe the four speech paths alongside the scheme parameters.
+-- A binding selects a scheme; these columns describe whether each speech path
+-- is enabled for that scheme.
 --
--- They arrive before the rest of the scheme's parameters on purpose. A switch is a decision
--- that has already been made — "turning one off stops new triggers of that kind and blocks
--- content of that kind that has not been sent yet" is confirmed behaviour — while the
--- windows, cooldowns and idle times around them are still pending. Adding the switch that
--- exists is honest; freezing four numbers that do not is not.
+-- Turning off a speech trigger stops new triggers of that kind and blocks
+-- content of that kind that has not been sent yet. These switches are stored
+-- independently of windows, cooldowns and idle times: enabling a speech path
+-- and limiting when it may run are different scheme settings. Each speech
+-- path has its own boolean column.
 --
 -- Every one defaults to 0. That is the same stance the project already takes for a freshly
 -- bound conversation, which does not spend model calls on automatic organisation until the

@@ -1,4 +1,4 @@
-// T08 attempt clock (task 305): the media task ledger records WHEN an attempt
+// Attempt clock: the media task ledger records WHEN an attempt
 // was consumed, not just how many. `last_attempt_at` is the exact claim-time
 // stamp written by the same immediate-transaction CAS that consumes the
 // attempt — never a wall-clock backfill, never touched by result/failure

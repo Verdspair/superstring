@@ -196,7 +196,6 @@ export function createOrganizationActions(
             auxiliaryAllocation: nextAuxiliaryAllocation,
           },
           // 反馈只用已登记的 notices 键：「{0} 分区已保存」+ 已登记的「上下文」标签；
-          // 分配组专用文案的注册需改 notices.json（非本轮授权文件），已在交付报告申请。
           feedback: saveAllocation
             ? msg("{0} 分区已保存", msg("上下文"))
             : msg("默认模型已保存；已有明确覆盖和其他草稿保持不变。"),

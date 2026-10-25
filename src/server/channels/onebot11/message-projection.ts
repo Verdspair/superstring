@@ -361,8 +361,7 @@ export function loadQqOutboundMessageFactState(
  * the confirmed part texts with their platform message IDs. Unconfirmed parts are omitted
  * from the projection entirely — they are not "sent原文" (§13.4).
  *
- * T03b 边界（2026-10-02 批次）：本函数尚无 scope 参数，不能作为已授权读取入口；本轮
- * 入站投影不改它、不调用它绕绑定，scope 化的重写在 T03b 落地。
+ * 本函数无 scope 参数，不能作为已授权读取入口，也不能绕过绑定授权。
  */
 export function projectQqOutboundMessageFacts(
   orm: Orm,

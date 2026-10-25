@@ -23,6 +23,8 @@ import type { ConversationDirectoryState } from "../features/conversations/direc
 import type { DesktopSettingsState } from "../features/general/desktop-state";
 import type { KnowledgeState, KnowledgeTarget } from "../features/knowledge/types";
 import type { QqDraftState } from "../features/qq/draft-state";
+import type { QqManagedEventsState } from "../features/qq/managed-events-state";
+import type { QqManagedState } from "../features/qq/managed-state";
 import type {
   QqAccessState,
   QqGroupConfigState,
@@ -127,9 +129,13 @@ export interface SuperstringState
     QqSchemeState,
     QqStorageState,
     QqAccessState,
+    QqManagedEventsState,
+    QqManagedState,
     QqGroupConfigState,
     QqDraftState,
     DesktopSettingsState {
+  /** Reset identity: pending managed reads and writes belong to the store lifecycle that started them. */
+  qqManagedLifecycleId: number;
   modelCapacityTarget: string | null;
   contextAllocationTarget: ContextAllocationTarget;
   allocationInvalidInputs: Record<string, string>;

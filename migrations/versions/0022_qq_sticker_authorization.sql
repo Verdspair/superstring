@@ -3,11 +3,11 @@
 --
 -- Two changes, both of which the sticker library needed before it could be used at all:
 --
---   * WHICH collections a scheme authorizes. §9.1 says "方案授权其中任一集合即可候选", so the
---     relation is many-to-many and belongs in a join table rather than a column. Until this
---     existed, `resolveQqStickerLibrary` took the authorized collection ids as a caller input and
---     nothing in the project could produce them — a rule with no source of truth. The user chose
---     multi-select over a single column (2026-09-23).
+--   * WHICH collections a scheme authorizes. A scheme can authorize multiple
+--     collections, and each collection can be authorized by multiple schemes.
+--     The many-to-many join table supplies the authorized collection IDs to
+--     `resolveQqStickerLibrary` without reducing the selection to one column.
+--     Each scheme/collection pair records one authorization.
 --   * WHICH asset a sent sticker part was. §9.3's repetition rules are "历史按群独立", and the
 --     send ledger recorded that a sticker went out without recording which one — so the per
 --     conversation history those rules compare against could not be computed.
@@ -19,11 +19,11 @@
 -- disappear, and a ledger row naming an asset that is not there would put a sticker in a
 -- conversation's history that the library never had.
 --
--- The consequence for §9.1's undecided asset/collection deletion (U11) is that history blocks it
--- rather than being silently rewritten: an asset that was sent cannot be removed while the send
--- ledger still mentions it, and the ledger's own retention window (two weeks, qq-retention.ts) is
--- what eventually releases it. Since neither deletion path is implemented, nothing is blocked today;
--- the point is that whoever implements U11 has to answer the question instead of erasing the answer.
+-- Sent-asset history constrains asset deletion: an asset that was sent cannot
+-- be removed while the send ledger still references it. The ledger's retention
+-- window (two weeks, qq-retention.ts) eventually releases that reference.
+-- Deletion must respect these foreign keys rather than silently rewrite history
+-- or erase the evidence needed for per-conversation repetition checks.
 
 -- A scheme's authorized collections. The pair is the key: authorizing the same collection twice is
 -- the same fact, and §9.1's "同一素材只算一个候选" depends on a set, not a list.

@@ -1,10 +1,6 @@
-// T15 P1 slice：身份与触发面补块。
+// 身份与触发面链路验证。
 //
-// 覆盖矩阵 id 1,2,6,7,9,10,11,12（原计划 §T15 Step1 逐字；判定三态口径见
-// artifacts/.../resume-t15-matrix-review.md，panel-A 的逐条补块要求见其 §P1 分区）。
-//
-// 块标题 → 矩阵 id（标题按内部 runner 的 [Sxx] 前缀协议，第二个数字是本切片内的子块序号；
-// 协调方按下面的对照把子块对号到真实矩阵 id，runner 本身不解析 id）：
+// 用例标签与覆盖内容：
 //   [S01_1] → id 1   普通成员双昵称
 //   [S02_1] → id 2   空白 card fallback
 //   [S06_1] → id 6   anonymous（渲染面）
@@ -15,7 +11,7 @@
 //   [S11_1] → id 11  @self 真触发 + 关闭直接回应零调用
 //   [S12_1] → id 12  回复他人带原文
 //
-// 纪律（沿用批次约定）：
+// 链路与断言边界：
 //   * 全部走真实 OneBot wire → intake → 宿主 → AgentRuntime → 投递（createOneBotHarness
 //     + scriptedModel）。断言面是「模型可见材料」＋「真实库行」，不是「调用了某函数」就算；
 //   * 每条至少一条真实可失败的强负（call counter / sends / addressing.reasons / 事实库逐字段
@@ -23,7 +19,7 @@
 //   * 触发结论一律读真实 `conversation_events.addressing`、`qq_events.addressed` 与 wake cause，
 //     不用夹具自带 addressed:true 遮蔽真实判定；
 //   * 逐行断言（按 platformMessageId 索引）而不是整串 toContain，避免同名两条互相顶替；
-//   * 不 import artifacts/（本文件自包含）；不改产品代码与 harness。
+//   * 不 import artifacts/（本文件自包含），复用生产代码与既有 harness。
 //
 // 夹具接口（tests/harness/onebot.ts，本文件只读消费）：
 //   ReceiveInput.anonymous?: boolean（group 时 wire sub_type="anonymous"）

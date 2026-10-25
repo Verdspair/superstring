@@ -1,4 +1,4 @@
--- 按发言人分开回答 + 判断打分口径（用户 2026-09-25，schema 34→35）。
+-- 按发言人分开回答与判断打分口径，schema 34→35。
 --
 -- 1) `split_reply_by_speaker`：新开关，默认开。开＝回复任务用程序提供的「按发言人分条」文案
 --    （QQ_REPLY_SPLIT_PROMPT）；关＝用程序内置默认文案（QQ_PROMPT_DEFAULTS.reply）。两套都是

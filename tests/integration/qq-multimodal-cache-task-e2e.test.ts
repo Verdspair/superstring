@@ -1,7 +1,4 @@
-//
-// T15 P5 补块（resume-t15-cache-tasks）：矩阵 ids 41–47（读取任务预算/缓存/取消/跨 scope/
-// expiry）的链路验证。唯一新文件；不改 qq-message-multimodal-e2e.test.ts、tests/harness
-// 或任何生产代码。
+// 读取任务预算、缓存、取消、跨 scope 与到期的链路验证（S41–S47）。
 //
 // 链路分层（如实标注，不冒充整链）：
 //  * [S41]/[S42]/[S44-run 级] 整链 = createOneBotHarness 真实 OneBot wire→intake→宿主→
@@ -15,7 +12,7 @@
 //    abort（生产工具边界拒绝 claim，不烧尝试）。
 //  * [S41] 尝试语义（§5.7）：baseline 与 detail 各自一次有界尝试；失败结果复用，同身份
 //    重复 invoke 零视觉不重开，"更晚补充解锁 attempt 2"的旧时间流已退役；真实新显式
-//    请求由宿主 trusted requestId 走新的独立身份行（源侧接线在制品），旧普通 7 元组
+//    请求由宿主 trusted requestId 走新的独立身份行，旧普通 7 元组
 //    身份语义不变。正例与强负例见下方 [S41] 与 [S41-neg]。
 //
 // 红线：不 import artifacts；不触真实数据/网络/服务；结果撤销走真实清理入口
@@ -579,13 +576,10 @@ describe("QQ multimodal cache/task P5 (ids 41-47)", () => {
     expect(baselineRow1.questionKey).toBeNull();
     expect(detailRow1.id).not.toBe(baselineRow1.id);
     const baselineStampRun1 = baselineRow1.lastAttemptAt;
-    // Run2（focus=无 @ 闲聊，没有 addressed 回应机会）：**负触发对照**。本轮宿主没有可
-    // 回答的机会，根本不会走到模型——所以零模型收件、零工具、零视觉、账本原样。上一版在
-    // 这里预置 media.list 脚本并期待一次 baseline describe（detailValues expected 1）是
-    // 错误流程前提：未被触发的 run 不产生任何 describe，把期望改成 0 不是给产品失败放行，
-    // 而是把负触发明示出来；预置脚本若不被消耗还会留在队列里污染 run3 的脚本队列。因此
-    // 本轮**不预置任何脚本步骤**，只静读脚本队列余量做前后对照；run 的真实返回与模型收件
-    // 前后数（scripted 端口 receivedMessages 公开面）由 runTrace 原样落盘。
+    // Run2（focus=无 @ 闲聊，没有 addressed 回应机会）：负触发对照。宿主没有可回答的
+    // 机会，模型收件、工具与视觉调用均应为零，账本不变。不能预置脚本步骤：未触发的
+    // run 不会消费它们，残留步骤会污染 run3。这里只静读队列余量作前后对照；
+    // run 的真实返回与模型收件前后数（receivedMessages）由 runTrace 原样记录。
     h.advance(1);
     const scriptBeforeRun2 = nonNull(h.model, "h.model").remaining();
     h.receive({ id: "-412", speaker: "20002", addressed: false, text: "刚才那张怎么了" });

@@ -28,9 +28,6 @@ export type UpdateSessionRequest = z.infer<typeof UpdateSessionRequestSchema>;
 
 /**
  * SessionResponse.
- * NOTE: `agent_id` is declared `str`; it is absent (no value) when no agent is bound
- * (api-contract.md §4.1 / 【待实测确认-1】). It is modelled
- * as `str` per the contract; see report for the open uncertainty.
  */
 export const SessionResponseSchema = z.strictObject({
   id: z.string(),

@@ -1,7 +1,6 @@
-// QQ conversation retention policy (ADR0018 / U03, decided 2026-09-22; window made
-// configurable later, migration 0050).
+// QQ conversation retention policy with a configurable window (migration 0050).
 //
-// The user's decision: QQ group and private message text is kept for two weeks by
+// QQ group and private message text is kept for two weeks by
 // default, and the received media cache is cleaned on a time basis too, following
 // the message it belongs to. The window is now a stored setting; the default and its
 // bounds live in the shared contract (`QQ_RETENTION_*`), which the settings surface

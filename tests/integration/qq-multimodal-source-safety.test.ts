@@ -1,4 +1,4 @@
-// T14 Step1/Step2 汇总负测：QQ 双模态全 kind 来源安全红线（Z1）。
+// QQ 双模态全 kind 来源安全汇总负测。
 //
 // 与既有域 access 测试只增不重：不重复各 kind 的 mint/owner/scope 细节，而在一个真实
 // 持久 run 上做跨 kind 汇总——六类 QQ 域 kind（qq_message_fact / qq_observation /
@@ -19,7 +19,7 @@
 //      base64/data URL/来源 file/url/path/凭据标记；sha256/宽高/帧序等元数据保留。
 //   6. wire：bytes 只在发送边界经 resolver 组装（fixture 内可捕），不进任何持久面。
 //
-// 只用稳定仓储/inspect API；不碰 runtime/bot/context-source（T11 在制写区）。
+// 本文件仅验证稳定仓储/inspect API 的来源裁决，不覆盖 runtime/bot/context-source 装配。
 
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
 import { createHash } from "node:crypto";
@@ -255,7 +255,7 @@ async function readTaskFixture(
     purpose: "baseline",
     modelName: "vision-synthetic",
     policy: "p1",
-    // 内容身份是必填（T08 §8.1），取本 fixture 真实存进 qq_media_assets 的那批字节
+    // 内容身份是必填，取本 fixture 真实存进 qq_media_assets 的那批字节
     // （mediaFixture 的 `bytes: IMAGE_BYTES`，仓储写入时即
     // createHash("sha256").update(bytes)）——同一份 bytes 的真实 sha，不是占位值，
     // 所以 claim 的 identity key 与生产链按受控字节算出的 key 一致。

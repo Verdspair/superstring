@@ -91,7 +91,7 @@ describe("R6 局部 bootstrap", () => {
       apiClient: fakeClient({
         listAgents: vi.fn().mockResolvedValue([]),
         listSessions: vi.fn().mockResolvedValue([]),
-        // LM Studio 关着：这正是报的场景（对话模型已切到外部 API）。
+        // 本地模型服务不可用，但已登记的外部 API 模型仍可使用。
         listModels: vi
           .fn()
           .mockRejectedValue(
@@ -100,7 +100,7 @@ describe("R6 局部 bootstrap", () => {
         listModelProviders: vi.fn().mockResolvedValue([
           {
             id: "44444444-4444-4444-8444-444444444444",
-            name: "kanglives",
+            name: "Cloud provider",
             base_url: "https://example.invalid/v1",
             has_api_key: true,
             models: [{ name: "gpt-6-luna", context_window: 32768 }],

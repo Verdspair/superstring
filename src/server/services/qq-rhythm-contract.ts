@@ -1,16 +1,14 @@
 // Rhythm rules for QQ (ADR0018 P3b-1).
 //
-// §5.2 listed the field groups but left every value pending, so nothing downstream could be
-// built: "how quiet is quiet" and "how soon is too soon" are the whole content of those
-// rules. The user fixed the values on 2026-09-23, and this module is where they act. It is
-// pure — no clock, no database, no model: every function takes the numbers it needs,
+// These pure rules define "how quiet is quiet" and "how soon is too soon":
+// no clock, no database, no model. Every function takes the numbers it needs,
 // including the current time, so a test can place itself anywhere on a timeline.
 //
-// The four time gates bind UNPROMPTED speech only (user decision 2026-09-23): a direct
+// The four time gates bind UNPROMPTED speech only: a direct
 // reply must be answerable at any hour and however recently the assistant last spoke,
 // otherwise being addressed — the one case where an answer is unambiguously expected —
 // could be silently swallowed. "Unprompted" here means the two initiative paths of
-// qq-speaking-contract.ts; a continuation is not gated either, matching the P3a decision
+// qq-speaking-contract.ts; a continuation is not gated either. The reason is
 // that it is not initiative-taking.
 //
 // Two degenerate shapes are defined rather than left to chance:
@@ -30,7 +28,7 @@ const SECONDS_PER_MINUTE = 60;
 const MINUTES_PER_DAY = 24 * 60;
 
 /**
- * The values the user fixed on 2026-09-23. A new scheme starts here, and they are what the
+ * A new scheme starts with these values, and they are what the
  * DDL defaults say, so an old scheme and a fresh one behave the same.
  */
 export const QQ_RHYTHM_DEFAULT: QqSchemeRhythm = Object.freeze({
@@ -55,14 +53,14 @@ export const QQ_RHYTHM_DEFAULT: QqSchemeRhythm = Object.freeze({
   initiative_time_target_seconds: 60,
   initiative_time_jitter_seconds: 20,
   /**
-   * 0034 (user decision 2026-09-25): the interest score the judge has to reach for the assistant
+   * 0034: the interest score the judge has to reach for the assistant
    * to open her mouth unprompted. 6 keeps the behaviour the boolean verdict had — a message the
    * old verdict called worth answering still clears it — while leaving room to go quieter by
    * raising it; 0 and 10 are the two ends of "chatty" and "almost never".
    */
   initiative_min_score: 6,
   /**
-   * 0036 (user decision 2026-09-25): how many new member messages must arrive before the judge is
+   * 0036: how many new member messages must arrive before the judge is
    * asked again. 3 keeps a short burst of messages from paying for three identical questions while
    * still re-judging quickly in a quiet conversation; 1 re-asks as soon as one new message
    * arrives, which is the closest thing to the behaviour before this column existed.

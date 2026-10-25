@@ -37,14 +37,6 @@ import {
   type QqStorageUsageResponse,
 } from "../../../shared/contracts/qq";
 import type {
-  QqManagedAccounts,
-  QqManagedConfigSnapshot,
-  QqManagedQr,
-  QqManagedResourceSnapshot,
-  QqManagedStatus,
-} from "../../../shared/contracts/qq-managed";
-import type { QqManagedEventsPage } from "../../../shared/contracts/qq-managed-events";
-import type {
   QqConversationKind,
   QqStorageCategory,
   QqStorageCleanupRequest,
@@ -53,7 +45,6 @@ import type {
   QqStorageSettingsResponse,
   QqStorageStatusFilter,
 } from "../../../shared/contracts/qq-storage";
-import type { QqManagedEventQueryInput } from "../../api";
 
 export interface QqStickerEditor {
   /** The row this editor was opened from; the save compares against it, not against the list. */
@@ -578,45 +569,7 @@ export interface QqAccessState {
   qqBindingsError: string | null;
   qqAccessLoading: boolean;
   qqAccessSaving: boolean;
-  qqManagedConfig: QqManagedConfigSnapshot | null;
-  qqManagedStatus: QqManagedStatus | null;
-  qqManagedResources: QqManagedResourceSnapshot | null;
-  qqManagedResourcesLoading: boolean;
-  qqManagedResourcesReadId: number;
-  qqManagedResourceError: string | null;
-  qqManagedAccounts: QqManagedAccounts["accounts"];
-  qqManagedAccountsLoaded: boolean;
-  qqManagedAccountsLoading: boolean;
-  qqManagedAccountsReadId: number;
-  qqManagedAccountsError: string | null;
-  qqManagedEventsPage: QqManagedEventsPage | null;
-  qqManagedEventsLoading: boolean;
-  qqManagedEventsError: string | null;
-  qqManagedLoading: boolean;
-  qqManagedSaving: boolean;
-  qqManagedReadId: number;
-  /** Reset identity: pending managed reads and writes belong to the store lifecycle that started them. */
-  qqManagedLifecycleId: number;
-  qqManagedError: string | null;
-  qqManagedQrPayload: string | null;
   loadQqAccess: () => Promise<void>;
-  loadQqManaged: () => Promise<void>;
-  loadQqManagedResources: () => Promise<void>;
-  refreshQqManagedResources: () => Promise<void>;
-  saveQqManagedResources: () => Promise<boolean>;
-  patchQqManagedResourceDraft: (root: string) => void;
-  loadQqManagedAccounts: () => Promise<void>;
-  quickLoginQqManaged: (accountId: string) => Promise<boolean>;
-  loadQqManagedEvents: (query?: QqManagedEventQueryInput) => Promise<void>;
-  setQqManagedEventsActive: (active: boolean) => void;
-  clearQqManagedEventsView: () => void;
-  saveQqManagedConfig: () => Promise<boolean>;
-  refreshQqManaged: () => Promise<void>;
-  patchQqManagedDraft: (enabled: boolean) => void;
-  retryQqManaged: () => Promise<boolean>;
-  getQqManagedQr: () => Promise<QqManagedQr | null>;
-  refreshQqManagedQr: () => Promise<QqManagedQr | null>;
-  clearQqManagedQr: () => void;
   /**
    * Bindings only, without the rest of the access page. The 长期记忆 page needs to
    * know whether the assistant being edited is bound to any QQ conversation, and pulling the whole
@@ -725,26 +678,6 @@ export const qqAccessInitial = {
   qqBindingsError: null as string | null,
   qqAccessLoading: false,
   qqAccessSaving: false,
-  qqManagedConfig: null as QqManagedConfigSnapshot | null,
-  qqManagedStatus: null as QqManagedStatus | null,
-  qqManagedResources: null as QqManagedResourceSnapshot | null,
-  qqManagedResourcesLoading: false,
-  qqManagedResourcesReadId: 0,
-  qqManagedResourceError: null as string | null,
-  qqManagedAccounts: [] as QqManagedAccounts["accounts"],
-  qqManagedAccountsLoaded: false,
-  qqManagedAccountsLoading: false,
-  qqManagedAccountsReadId: 0,
-  qqManagedAccountsError: null as string | null,
-  qqManagedEventsPage: null as QqManagedEventsPage | null,
-  qqManagedEventsLoading: false,
-  qqManagedEventsError: null as string | null,
-  qqManagedLoading: false,
-  qqManagedSaving: false,
-  qqManagedReadId: 0,
-  qqManagedLifecycleId: 0,
-  qqManagedError: null as string | null,
-  qqManagedQrPayload: null as string | null,
 };
 
 // ---- 本群配置 ------------------------------------------------------------------------------

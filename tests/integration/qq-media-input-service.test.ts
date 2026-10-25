@@ -1,6 +1,6 @@
-// T10 接力（r303）：prepareQqMediaProjection / describeAfterUnsupported 定向合成验证。
+// prepareQqMediaProjection / describeAfterUnsupported 定向合成验证。
 // 全合成 bytes（encodeQqFramePng / omggif 编码 GIF），无真实 QQ/模型/网络；分类消费段
-// （consumeModelMediaData）不在本文件重测（accepted 节点）。
+// （consumeModelMediaData）不在本文件重测。
 
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
@@ -1305,12 +1305,11 @@ describe("createQqMediaInputService unsupported_animation omission (§7.5)", () 
   });
 
   /**
-   * T14 real-worker cap-off fixture: a bounded GIF on a 64x64 canvas, encoded with the
-   * existing omggif writer and grown by block concat to this test's OWN 4 MiB self-limit
-   * (the T14 lifecycle experiment uses the same shape; neither number is a product cap —
-   * the production 64 MiB decode boundary and the 30 s deadline are untouched). The frame
-   * count is orders of magnitude above the 3 frames requested, so sampling has to walk the
-   * whole container inside the worker.
+   * Real-worker cap-off fixture: a bounded GIF on a 64x64 canvas, encoded with the
+   * existing omggif writer and grown by block concat to this test's own 4 MiB self-limit.
+   * That limit is not a product cap: the production 64 MiB decode boundary and the
+   * 30 s deadline are untouched. The frame count is orders of magnitude above the
+   * 3 frames requested, so sampling has to walk the whole container inside the worker.
    */
   function boundedSustainedGif(): Uint8Array {
     const canvas = 64;
@@ -1507,7 +1506,7 @@ describe("createQqMediaInputService unsupported_animation omission (§7.5)", () 
 });
 
 // ---------------------------------------------------------------------------
-// T08 原生按需媒体准备（计划 T08 Step8 / 规格 §7.5、§8.2、§9、§12）：
+// 原生按需媒体准备：
 // `prepareByMediaId` 是工具主动读取背后的受控准备服务——真建 asset/link/variant、
 // 真 mint 来源、零模型调用、零 raw 字节外泄；与自动范围共用同一条准备实现。
 // ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ import { RunAttempts, RunWorkspace } from "../../src/web/screens/runs/RunEntry";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { render } from "./helpers/render-with-providers";
 
-// 用户 2026-10-17 最新要求（LATEST-BOTH-VIEWS-COLLAPSIBLE-REQUEST / RUN-LOCAL-PREFETCH-AND-TWO-BOARD-SHARING）：
+// 运行详情证据预读与看板共享：
 // 运行详情加载时，两块看板共用的同一次模型调用证据在全部行收起的状态下就自动读取真实调用体（并发上限 3）；
 // 切换选中步 / 切到步骤与技术追踪 / 展开任一行都只是视觉效果，不再发 inspect 请求；
 // 状态只存在于当前组件内存，运行或 API 身份变化、窗口隐藏后旧响应不得发布到新作用域。

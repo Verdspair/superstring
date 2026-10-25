@@ -1,11 +1,11 @@
 -- Named chat schemes: identity only (ADR0018 P2i).
 --
--- The plan deliberately labels the scheme's field groups "design labels, not frozen API
--- fields", and almost every value in them is still pending (trigger windows, idle times,
--- merge windows, cooldowns, media counts). Freezing those into columns now would decide
--- product parameters the user has not decided, so this migration stores ONLY the scheme's
--- identity and ownership; the parameter columns arrive with the decisions that define
--- them.
+-- This migration stores only the scheme identity and ownership. Trigger windows,
+-- idle times, merge windows, cooldowns and media counts are separate scheme
+-- parameters, added by later migrations. The row records the name, description,
+-- revision and creation/update timestamps. Bindings refer to the scheme by ID,
+-- and the scheme can be reused across assistants without assistant ownership.
+-- Parameter columns are not part of this migration.
 --
 -- A scheme is a QQ-global named resource that can be reused across assistants, so it is
 -- not owned by an assistant here. `name` is unique because two identically named schemes
@@ -16,9 +16,9 @@
 -- it is enforced with triggers:
 --   * a binding may only reference a scheme that exists, and
 --   * a scheme that a binding refers to cannot be deleted (rebind first).
--- The second one matters because the plan says changing a scheme must not silently
--- re-point existing bindings; deleting an in-use scheme is the destructive version of
--- exactly that, so it is refused rather than cascaded.
+-- An in-use scheme cannot be deleted: doing so would remove the target of an
+-- existing binding. Refusing the delete, rather than cascading it, keeps bindings
+-- attached to their selected scheme until explicitly rebound.
 --
 -- Triggers rather than a table rebuild: `qq_bindings.scheme_id` was already stored as an
 -- opaque reference before schemes existed, and adding a real foreign key would require

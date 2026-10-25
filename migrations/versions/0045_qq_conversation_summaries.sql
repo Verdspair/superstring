@@ -1,4 +1,4 @@
--- QQ 会话的滚动摘要（用户 2026-09-26）：窗口/条数之外的老消息不再直接消失，而是压成事实存在这里。
+-- QQ 会话滚动摘要：窗口或条数之外的老消息压成事实保存在这里。
 --
 -- 与网页的 session_summaries 是同一套事实契约（conversation_summary 证据：kind/lossy/coverage/facts），
 -- 但会话维度不同——QQ 没有 session，所以**按 conversation 存一行**，窗口滑动时续写同一行

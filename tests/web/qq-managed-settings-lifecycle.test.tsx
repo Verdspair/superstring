@@ -971,6 +971,234 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
     expect(store.getState().qqManagedError).toBeNull();
   });
 
+  it.each(["success", "failure"] as const)(
+    "keeps the fresh resource read owner when an old %s settles after same-API reset",
+    async (outcome) => {
+      const oldRead = deferred<QqManagedResourceSnapshot>();
+      const freshRead = deferred<QqManagedResourceSnapshot>();
+      const getResources = vi
+        .fn()
+        .mockReturnValueOnce(oldRead.promise)
+        .mockReturnValueOnce(freshRead.promise);
+      const client = { ...store.getState().apiClient, getQqManagedResources: getResources };
+      store.getState().resetForTests(client);
+      const oldLoads = [
+        store.getState().loadQqManagedResources(),
+        store.getState().loadQqManagedResources(),
+      ];
+      expect(getResources).toHaveBeenCalledTimes(1);
+
+      store.getState().resetForTests(client);
+      const freshLoads = [
+        store.getState().loadQqManagedResources(),
+        store.getState().loadQqManagedResources(),
+      ];
+      expect(getResources).toHaveBeenCalledTimes(2);
+      if (outcome === "success") oldRead.resolve(mockResourceSnapshot);
+      else oldRead.reject(new Error("old resource failure"));
+      await Promise.all(oldLoads);
+      expect(store.getState()).toMatchObject({
+        qqManagedResources: null,
+        qqManagedResourcesLoading: true,
+        qqManagedResourceError: null,
+      });
+
+      const joinedFresh = store.getState().loadQqManagedResources();
+      expect(getResources).toHaveBeenCalledTimes(2);
+      const freshResource = { ...mockResourceSnapshot, revision: "rev-resource-fresh" };
+      freshRead.resolve(freshResource);
+      await Promise.all([...freshLoads, joinedFresh]);
+      expect(store.getState()).toMatchObject({
+        qqManagedResources: freshResource,
+        qqManagedResourcesLoading: false,
+        qqManagedResourceError: null,
+      });
+    },
+  );
+
+  it.each(["success", "failure"] as const)(
+    "keeps the fresh accounts read owner when an old %s settles after same-API reset",
+    async (outcome) => {
+      const oldRead = deferred<QqManagedAccounts>();
+      const freshRead = deferred<QqManagedAccounts>();
+      const listAccounts = vi
+        .fn()
+        .mockReturnValueOnce(oldRead.promise)
+        .mockReturnValueOnce(freshRead.promise);
+      const client = { ...store.getState().apiClient, listQqManagedAccounts: listAccounts };
+      store.getState().resetForTests(client);
+      const oldLoads = [
+        store.getState().loadQqManagedAccounts(),
+        store.getState().loadQqManagedAccounts(),
+      ];
+      expect(listAccounts).toHaveBeenCalledTimes(1);
+
+      store.getState().resetForTests(client);
+      const freshLoads = [
+        store.getState().loadQqManagedAccounts(),
+        store.getState().loadQqManagedAccounts(),
+      ];
+      expect(listAccounts).toHaveBeenCalledTimes(2);
+      if (outcome === "success") oldRead.resolve(mockAccounts);
+      else oldRead.reject(new Error("old accounts failure"));
+      await Promise.all(oldLoads);
+      expect(store.getState()).toMatchObject({
+        qqManagedAccounts: [],
+        qqManagedAccountsLoaded: false,
+        qqManagedAccountsLoading: true,
+        qqManagedAccountsError: null,
+      });
+
+      const joinedFresh = store.getState().loadQqManagedAccounts();
+      expect(listAccounts).toHaveBeenCalledTimes(2);
+      const freshAccounts: QqManagedAccounts = {
+        accounts: [{ account_id: "30003", display_name: "Fresh Bot" }],
+      };
+      freshRead.resolve(freshAccounts);
+      await Promise.all([...freshLoads, joinedFresh]);
+      expect(store.getState()).toMatchObject({
+        qqManagedAccounts: freshAccounts.accounts,
+        qqManagedAccountsLoaded: true,
+        qqManagedAccountsLoading: false,
+        qqManagedAccountsError: null,
+      });
+    },
+  );
+
+  it("saves the changed account through settings CAS before quick-login with the saved revision", async () => {
+    const settingsPut = deferred<QqSettingsResponse>();
+    const order: string[] = [];
+    const savedSettings: QqSettingsResponse = {
+      ...mockQqSettings,
+      account_id: "20002",
+      revision: 6,
+    };
+    const waitingConfirm: QqManagedStatus = {
+      process: "running",
+      apply: "ready",
+      ownership: "owned",
+      phase: "waiting_confirm",
+      core_ready: false,
+      network_apply: "pending",
+      transport_phase: "idle",
+      diagnostic_code: null,
+    };
+    const updateSettings = vi.fn(() => {
+      order.push("settings PUT");
+      return settingsPut.promise;
+    });
+    const quickLogin = vi.fn(async () => {
+      order.push("quick-login POST");
+      return waitingConfirm;
+    });
+    const updateTransport = vi.fn();
+    const updateConfig = vi.fn();
+    const updateResources = vi.fn();
+    const connectionDraft = {
+      source: mockQqSettings,
+      accountId: "20002",
+      endpoint: "ws://127.0.0.1:4002",
+      token: "synthetic-unsaved-token",
+    };
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        updateQqSettings: updateSettings,
+        updateQqTransport: updateTransport,
+        updateQqManagedConfig: updateConfig,
+        updateQqManagedResources: updateResources,
+        quickLoginQqManaged: quickLogin,
+      },
+      qqSettings: mockQqSettings,
+      qqInputs: { ...store.getState().qqInputs, connection: connectionDraft },
+      qqManagedResources: mockResourceSnapshot,
+      qqManagedAccounts: mockAccounts.accounts,
+      qqManagedAccountsLoaded: true,
+      qqManagedStatus: { ...waitingConfirm, phase: "waiting_scan" },
+    });
+
+    const login = store.getState().quickLoginQqManaged("20002");
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith({ account_id: "20002", expected_revision: 5 });
+    expect(quickLogin).not.toHaveBeenCalled();
+    expect(order).toEqual(["settings PUT"]);
+    settingsPut.resolve(savedSettings);
+    expect(await login).toBe(true);
+
+    expect(order).toEqual(["settings PUT", "quick-login POST"]);
+    expect(quickLogin).toHaveBeenCalledTimes(1);
+    expect(quickLogin).toHaveBeenCalledWith({
+      account_id: "20002",
+      expected_settings_revision: 6,
+    });
+    expect(updateTransport).not.toHaveBeenCalled();
+    expect(updateConfig).not.toHaveBeenCalled();
+    expect(updateResources).not.toHaveBeenCalled();
+    expect(store.getState().qqSettings).toEqual(savedSettings);
+    expect(store.getState().qqInputs.connection).toEqual({
+      ...connectionDraft,
+      source: savedSettings,
+    });
+    expect(store.getState().qqManagedStatus).toEqual(waitingConfirm);
+    expect(store.getState().qqManagedSaving).toBe(false);
+    expect(store.getState().qqAccessSaving).toBe(false);
+  });
+
+  it("does not quick-login or save transport when the changed account settings CAS returns 409", async () => {
+    const conflict = Object.assign(new Error("Account settings conflict"), { status: 409 });
+    const updateSettings = vi.fn(async () => {
+      throw conflict;
+    });
+    const quickLogin = vi.fn();
+    const updateTransport = vi.fn();
+    const updateConfig = vi.fn();
+    const updateResources = vi.fn();
+    const connectionDraft = {
+      source: mockQqSettings,
+      accountId: "20002",
+      endpoint: "ws://127.0.0.1:4002",
+      token: "synthetic-unsaved-token",
+    };
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        updateQqSettings: updateSettings,
+        updateQqTransport: updateTransport,
+        updateQqManagedConfig: updateConfig,
+        updateQqManagedResources: updateResources,
+        quickLoginQqManaged: quickLogin,
+      },
+      qqSettings: mockQqSettings,
+      qqInputs: { ...store.getState().qqInputs, connection: connectionDraft },
+      qqManagedResources: mockResourceSnapshot,
+      qqManagedAccounts: mockAccounts.accounts,
+      qqManagedAccountsLoaded: true,
+      qqManagedStatus: {
+        process: "running",
+        apply: "ready",
+        ownership: "owned",
+        phase: "waiting_scan",
+        core_ready: false,
+        network_apply: "pending",
+        transport_phase: "idle",
+        diagnostic_code: null,
+      },
+    });
+
+    expect(await store.getState().quickLoginQqManaged("20002")).toBe(false);
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith({ account_id: "20002", expected_revision: 5 });
+    expect(quickLogin).not.toHaveBeenCalled();
+    expect(updateTransport).not.toHaveBeenCalled();
+    expect(updateConfig).not.toHaveBeenCalled();
+    expect(updateResources).not.toHaveBeenCalled();
+    expect(store.getState().qqSettings).toEqual(mockQqSettings);
+    expect(store.getState().qqInputs.connection).toEqual(connectionDraft);
+    expect(store.getState().error).toBe(conflict.message);
+    expect(store.getState().qqManagedSaving).toBe(false);
+    expect(store.getState().qqAccessSaving).toBe(false);
+  });
+
   it("executes quick-login for the selected saved account only after explicit runtime/account discovery", async () => {
     const waitingConfirm: QqManagedStatus = {
       process: "running",

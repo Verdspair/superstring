@@ -322,7 +322,7 @@ export function qqStickerUsageByConversation(
 }
 
 /**
- * 这条平台消息是不是本助手在这个会话里发出去的？(2026-09-25 后续)
+ * 这条平台消息是不是本助手在这个会话里发出去的？
  *
  * The QQ "reply" segment carries the id of the message it answers. Answering one of OUR messages is
  * the same act of calling as an @ — but only when we can prove the target was ours: a reply to

@@ -1,7 +1,5 @@
-// T15 P7 补块：水位压缩与记忆链路。
+// 水位压缩与记忆链路验证（S54–S58）：
 //
-// 覆盖矩阵 id54/55/56/57/58 中原 qq-message-multimodal-e2e.test.ts 未真实执行到的子面
-// （依据 resume-t15-matrix-review.md Panel E 与 §4 P7 分区），全部走真实链路：
 //   * memory 侧：真实 intake 落媒体行 → readQqMediaTaskOnce（真实 typed note 落库）→
 //     freezeQqFactScope/loadQqFactInputs（真实 restyleRecord）→ MemoryService worker
 //     （真实 loadInputs/generate/publish）→ 发布来源核验（qq_memory_sources/memory_entries）。
@@ -15,7 +13,7 @@
 //     HTTP data-URL 请求体，并用受控 resolver 校验 toGatewayMessages 的字节边界。
 //
 // 红线：业务测试不 import artifacts/（本文件自包含）；不建第二 harness/第二模型链；不读真实
-// data/密钥；不改产品代码与原 e2e 文件/harness。
+// data/密钥；复用生产代码与既有 harness。
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
@@ -1014,7 +1012,7 @@ describe("raw wire 保留（id58 补块）", () => {
 });
 
 // ============================================================================
-// [S58_2] 真实 HTTP 边界捕获（T15 58 项 id58 字节面）：owned loopback + 真实 Runtime port
+// [S58_2] 真实 HTTP 字节边界捕获：owned loopback + 真实 Runtime port
 // ============================================================================
 
 // P4 已实证的入口形状：createModelPort({ gateway: createLmStudioClient(owned loopback) }) 作为

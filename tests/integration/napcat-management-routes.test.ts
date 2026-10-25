@@ -79,6 +79,8 @@ class FakeManagedSession extends FakePort implements NapCatManagedSession {
   resourcePrepares = 0;
   accountReads = 0;
   quickLoginAttempts = 0;
+  starts = 0;
+  stops = 0;
   resource = {
     revision: "resources-0",
     status: "ready" as const,
@@ -107,8 +109,12 @@ class FakeManagedSession extends FakePort implements NapCatManagedSession {
     this.quickLoginAttempts += 1;
     if (this.actionError) throw this.actionError;
   }
-  async start() {}
-  async stop() {}
+  async start() {
+    this.starts += 1;
+  }
+  async stop() {
+    this.stops += 1;
+  }
 
   async retry() {
     this.retries += 1;
@@ -128,9 +134,37 @@ class FakeManagedSession extends FakePort implements NapCatManagedSession {
   }
 }
 
+function methodCalls(session: FakeManagedSession) {
+  return {
+    readConfig: session.reads,
+    snapshot: session.snapshots,
+    replaceConfig: session.replaceAttempts,
+    readResources: session.resourceReads,
+    prepareResources: session.resourcePrepares,
+    listAccounts: session.accountReads,
+    quickLogin: session.quickLoginAttempts,
+    retry: session.retries,
+    getQr: session.qrReads,
+    refreshQr: session.qrRefreshes,
+    start: session.starts,
+    stop: session.stops,
+  };
+}
+
+function expectMethodDelta(
+  session: FakeManagedSession,
+  before: ReturnType<typeof methodCalls>,
+  expected: Partial<ReturnType<typeof methodCalls>> = {},
+) {
+  const after = methodCalls(session);
+  for (const key of Object.keys(after) as (keyof typeof after)[]) {
+    expect(after[key] - before[key]).toBe(expected[key] ?? 0);
+  }
+}
+
 function setup(
   port?: NapCatManagementPort,
-  events?: import("../../src/server/api/qq").QqManagedEventsPort,
+  events?: import("../../src/server/napcat/routes").QqManagedEventsPort,
 ) {
   const business = openBusinessDb();
   ensureDefaults(business.orm, MODEL);
@@ -217,8 +251,8 @@ describe("NapCat management routes", () => {
     }
   });
 
-  it("guards all three operations before invoking the port", async () => {
-    const port = new FakePort();
+  it("guards management operations before invoking any port method", async () => {
+    const port = new FakeManagedSession();
     const h = setup(port);
     try {
       const operations = [
@@ -228,7 +262,12 @@ describe("NapCat management routes", () => {
         { route: RETRY, method: "POST" },
         { route: QR, method: "POST" },
         { route: REFRESH_QR, method: "POST" },
+        { route: "/v2/qq/managed-component/resources", method: "GET" },
+        { route: "/v2/qq/managed-component/resources", method: "PUT" },
+        { route: "/v2/qq/managed-component/accounts", method: "GET" },
+        { route: "/v2/qq/managed-component/quick-login", method: "POST" },
       ];
+      const before = methodCalls(port);
       for (const operation of operations) {
         const forbiddenHeaders: Record<string, string>[] = [
           { origin: "https://evil.example" },
@@ -263,6 +302,7 @@ describe("NapCat management routes", () => {
         expect((await expectSafeError(response, 422)).error.code).toBe("VALIDATION_ERROR");
       }
       expect([port.reads, port.snapshots, port.replaceAttempts, port.writes]).toEqual([0, 0, 0, 0]);
+      expectMethodDelta(port, before);
 
       const sameOrigin = await h.app.request(`http://localhost${CONFIG}`, {
         headers: { origin: "http://localhost", "sec-fetch-site": "same-origin" },
@@ -275,9 +315,10 @@ describe("NapCat management routes", () => {
   });
 
   it("rejects malformed or extra body fields with zero port writes", async () => {
-    const port = new FakePort();
+    const port = new FakeManagedSession();
     const h = setup(port);
     try {
+      const before = methodCalls(port);
       for (const payload of [
         null,
         [],
@@ -308,6 +349,7 @@ describe("NapCat management routes", () => {
       expect(port.replaceAttempts).toBe(0);
       expect(port.writes).toBe(0);
       expect(port.config.enabled).toBe(false);
+      expectMethodDelta(port, before);
     } finally {
       h.business.close();
     }
@@ -467,6 +509,105 @@ describe("NapCat management routes", () => {
     }
   });
 
+  it("invokes only each requested management method and its original status snapshot", async () => {
+    const session = new FakeManagedSession();
+    const h = setup(session);
+    try {
+      expectMethodDelta(session, {
+        readConfig: 0,
+        snapshot: 0,
+        replaceConfig: 0,
+        readResources: 0,
+        prepareResources: 0,
+        listAccounts: 0,
+        quickLogin: 0,
+        retry: 0,
+        getQr: 0,
+        refreshQr: 0,
+        start: 0,
+        stop: 0,
+      });
+      const operations = [
+        [CONFIG, "GET", undefined, { readConfig: 1 }],
+        [STATUS, "GET", undefined, { snapshot: 1 }],
+        [CONFIG, "PUT", update(true), { replaceConfig: 1 }],
+        ["/v2/qq/managed-component/resources", "GET", undefined, { readResources: 1 }],
+        [
+          "/v2/qq/managed-component/resources",
+          "PUT",
+          {
+            expected_revision: "resources-0",
+            root: "/synthetic/runtime",
+          },
+          { prepareResources: 1 },
+        ],
+        ["/v2/qq/managed-component/accounts", "GET", undefined, { listAccounts: 1 }],
+        [
+          "/v2/qq/managed-component/quick-login",
+          "POST",
+          {
+            account_id: "10001",
+            expected_settings_revision: 1,
+          },
+          { quickLogin: 1, snapshot: 1 },
+        ],
+        [RETRY, "POST", {}, { retry: 1, snapshot: 1 }],
+        [QR, "POST", {}, { getQr: 1 }],
+        [REFRESH_QR, "POST", {}, { refreshQr: 1 }],
+      ] as const;
+      for (const [route, method, body, expected] of operations) {
+        const before = methodCalls(session);
+        const response = await h.app.request(route, {
+          method,
+          headers: { "content-type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        await response.json();
+        expectMethodDelta(session, before, expected);
+      }
+      for (const route of [RETRY, QR, REFRESH_QR]) {
+        for (const body of ["{bad-json", "null", "[]", '{"extra":true}']) {
+          const before = methodCalls(session);
+          const response = await h.app.request(route, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body,
+          });
+          expect((await expectSafeError(response, 422)).error.code).toBe("VALIDATION_ERROR");
+          expectMethodDelta(session, before);
+        }
+        const before = methodCalls(session);
+        expect(
+          (await expectSafeError(await post(h.app, `${route}?extra=1`, {}), 422)).error.code,
+        ).toBe("VALIDATION_ERROR");
+        expectMethodDelta(session, before);
+        for (const body of [undefined, "   "]) {
+          const validBefore = methodCalls(session);
+          const response = await h.app.request(route, {
+            method: "POST",
+            body,
+            ...(body === undefined ? {} : { headers: { "content-type": "application/json" } }),
+          });
+          expect(response.status).toBe(200);
+          await response.json();
+          expectMethodDelta(
+            session,
+            validBefore,
+            route === RETRY
+              ? { retry: 1, snapshot: 1 }
+              : route === QR
+                ? { getQr: 1 }
+                : { refreshQr: 1 },
+          );
+        }
+      }
+    } finally {
+      h.business.close();
+    }
+  });
+
   it("refuses config operations without a port and reports management as unconfigured", async () => {
     const h = setup();
     try {
@@ -567,6 +708,7 @@ describe("NapCat first-use management endpoints", () => {
     const session = new FakeManagedSession();
     const h = setup(session);
     try {
+      const before = methodCalls(session);
       for (const body of [
         {},
         { expected_revision: "resources-0", root: "" },
@@ -590,6 +732,7 @@ describe("NapCat first-use management endpoints", () => {
         );
       }
       expect([session.resourcePrepares, session.quickLoginAttempts]).toEqual([0, 0]);
+      expectMethodDelta(session, before);
       const list = await h.app.request(accounts);
       expect(list.status).toBe(200);
       expect(await list.json()).toEqual({
@@ -638,6 +781,7 @@ describe("NapCat bounded event management routes", () => {
   it("guards reads and emits only coalesced revision invalidation until cancellation", async () => {
     const generation = "00000000-0000-4000-8000-000000000001";
     let snapshotCalls = 0;
+    let subscribeCalls = 0;
     let listeners = 0;
     let listener:
       | ((notice: { generation: string; latest_sequence: number; revision: number }) => void)
@@ -659,6 +803,7 @@ describe("NapCat bounded event management routes", () => {
         };
       },
       subscribe(next: typeof listener) {
+        subscribeCalls += 1;
         listeners += 1;
         listener = next;
         return () => {
@@ -667,8 +812,30 @@ describe("NapCat bounded event management routes", () => {
         };
       },
     };
-    const h = setup(undefined, events);
+    const session = new FakeManagedSession();
+    const h = setup(session, events);
+    const before = methodCalls(session);
     try {
+      for (const route of [
+        "/v2/qq/managed-component/events",
+        "/v2/qq/managed-component/events/changes",
+      ]) {
+        const forbiddenHeaders: Record<string, string>[] = [
+          { origin: "https://evil.example" },
+          { "sec-fetch-site": "cross-site" },
+        ];
+        for (const headers of forbiddenHeaders) {
+          expect(
+            (await expectSafeError(await h.app.request(route, { headers }), 403)).error.code,
+          ).toBe("PERMISSION_MANAGEMENT_FORBIDDEN");
+        }
+        expect(
+          (await expectSafeError(await h.app.request(`https://remote.example${route}`), 403)).error
+            .code,
+        ).toBe("PERMISSION_MANAGEMENT_FORBIDDEN");
+      }
+      expect([snapshotCalls, subscribeCalls, listeners]).toEqual([0, 0, 0]);
+      expectMethodDelta(session, before);
       const forbidden = await h.app.request("/v2/qq/managed-component/events", {
         headers: { origin: "https://evil.example" },
       });
@@ -680,10 +847,23 @@ describe("NapCat bounded event management routes", () => {
       const badCursor = await h.app.request("/v2/qq/managed-component/events?cursor=not-json");
       expect(badCursor.status).toBe(422);
       expect(snapshotCalls).toBe(0);
+      for (const route of [
+        `/v2/qq/managed-component/events?cursor=${encodeURIComponent(JSON.stringify({ generation, sequence: -1 }))}`,
+        "/v2/qq/managed-component/events?extra=1",
+        "/v2/qq/managed-component/events/changes?extra=1",
+      ]) {
+        expect((await expectSafeError(await h.app.request(route), 422)).error.code).toBe(
+          "VALIDATION_ERROR",
+        );
+        expect([snapshotCalls, subscribeCalls, listeners]).toEqual([0, 0, 0]);
+        expectMethodDelta(session, before);
+      }
       const page = await h.app.request("/v2/qq/managed-component/events?kind=message&limit=10");
       expect(page.status).toBe(200);
       expect(page.headers.get("cache-control")).toBe("no-store");
       expect((await page.json()).events).toEqual([]);
+      expect([snapshotCalls, subscribeCalls, listeners]).toEqual([1, 0, 0]);
+      expectMethodDelta(session, before);
       const response = await h.app.request("/v2/qq/managed-component/events/changes");
       expect(response.headers.get("cache-control")).toBe("no-store");
       const reader = response.body!.getReader();
@@ -691,16 +871,32 @@ describe("NapCat bounded event management routes", () => {
         const ready = new TextDecoder().decode((await reader.read()).value);
         expect(ready).toContain("event: managed_events_ready");
         expect(ready).toContain('"revision":1');
+        expect(ready).not.toContain("body");
+        expect([snapshotCalls, subscribeCalls, listeners]).toEqual([1, 1, 1]);
         expect(listeners).toBe(1);
         listener!({ generation, latest_sequence: 1, revision: 2 });
         const changed = new TextDecoder().decode((await reader.read()).value);
         expect(changed).toContain("event: managed_events_changed");
         expect(changed).toContain('"revision":2');
         expect(changed).not.toContain("body");
+        expect([snapshotCalls, subscribeCalls, listeners]).toEqual([1, 1, 1]);
+        listener!({ generation, latest_sequence: 1, revision: 3 });
+        listener!({ generation, latest_sequence: 1, revision: 4 });
+        listener!({ generation, latest_sequence: 1, revision: 5 });
+        const coalesced = new TextDecoder().decode((await reader.read()).value);
+        expect(coalesced).toContain("event: managed_events_changed");
+        expect(coalesced).toContain('"revision":5');
+        expect(coalesced).not.toContain('"revision":3');
+        expect(coalesced).not.toContain('"revision":4');
+        expect(coalesced).not.toContain("body");
+        expect([snapshotCalls, subscribeCalls, listeners]).toEqual([1, 1, 1]);
+        expectMethodDelta(session, before);
       } finally {
         await reader.cancel();
       }
       expect(listeners).toBe(0);
+      expect([snapshotCalls, subscribeCalls]).toEqual([1, 1]);
+      expectMethodDelta(session, before);
     } finally {
       h.business.close();
     }

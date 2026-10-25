@@ -1,8 +1,8 @@
 -- Per-conversation trigger for organising a QQ conversation's memory (ADR0018 P2f).
 --
--- The user's decision (2026-09-22): organising is triggered by a message COUNT, the
--- number is configurable, it can be switched off, and a manual "organise now" action
--- exists alongside it.
+-- Organising is triggered by a configurable message COUNT. It can be switched
+-- off, and a manual "organise now" action exists alongside the automatic
+-- trigger.
 --
 -- `memory_batch_size` is therefore a per-binding nullable integer:
 --   * NULL  = automatic organising is OFF for this conversation (the default, so a

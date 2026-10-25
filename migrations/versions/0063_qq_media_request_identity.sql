@@ -1,4 +1,4 @@
--- QQ 媒体读取任务请求身份（规格 §5.7；ROOT-P4-REQUEST-LEDGER-SCHEMA63-DECISION）。
+-- QQ 媒体读取任务请求身份：区分显式请求与普通读取行。
 --
 -- 0052 的 uq_qq_media_read_task_detail 是 (media_note_id, question_key) 的 partial unique：
 -- 同一载体同一问题的显式请求（带宿主解析的 request_id）会与普通行冲突，onConflictDoNothing

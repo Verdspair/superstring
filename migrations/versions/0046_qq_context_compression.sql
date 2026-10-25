@@ -1,4 +1,4 @@
--- QQ 上下文压缩第二版（用户 2026-09-26）：水位缓冲、分包、装配冗余——都是 QQ 方案自己的旋钮。
+-- QQ 上下文压缩：水位缓冲、分包与装配冗余由 QQ 方案配置。
 --
 -- 与 0045 的关系：表还是"每会话一行"，但语义从"一份滚动摘要"改成"一个压缩包列表 + 两个书签"，
 -- 复用同两张表、不改表名：
@@ -8,9 +8,9 @@
 -- 两个书签是必要的：只用历史水位，窗口内被裁的那段会每轮重复计数；只用已覆盖水位，窗口里的消息
 -- 一旦滑出去就再也补不上。老行按"只压过历史段"解释（covered_seq 默认 -1 等于没记）。
 --
--- 方案上新增三栏与一个提示词槽位：攒够多少条压一次、最多留几个包、装配留多少冗余（前两项是本轮
--- 用户决定；冗余比例默认 5%），以及水位压缩的任务提示词——结构性规则（事实枚举、来源与说话人白
--- 名单、预算）仍由程序附加，槽位只放任务描述，与 judge 槽位 + 程序评分规则的分工一致。
+-- 方案保存三项数值与一个提示词槽位：水位触发条数、压缩包上限、装配冗余比例（默认 5%），
+-- 以及水位压缩的任务描述。事实枚举、来源与说话人白名单、预算等结构规则仍由程序附加，
+-- 与 judge 槽位保存任务描述、程序附加评分规则的分工一致。
 ALTER TABLE qq_schemes ADD COLUMN summary_watermark_trigger INTEGER NOT NULL DEFAULT 200 CHECK (summary_watermark_trigger >= 1 AND summary_watermark_trigger <= 10000);
 ALTER TABLE qq_schemes ADD COLUMN summary_package_limit INTEGER NOT NULL DEFAULT 8 CHECK (summary_package_limit >= 1 AND summary_package_limit <= 100);
 ALTER TABLE qq_schemes ADD COLUMN headroom_ratio REAL NOT NULL DEFAULT 0.05 CHECK (headroom_ratio >= 0 AND headroom_ratio <= 0.5);

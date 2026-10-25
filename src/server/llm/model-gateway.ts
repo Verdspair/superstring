@@ -346,8 +346,7 @@ function providerReason(error: unknown): string {
 
 /**
  * 文本调用失败时的一行诊断：码与用户文案不变，provider 自己说的话（HTTP 状态 + 被 `request()`
- * 装进原始错误消息里的响应体）只进日志。视觉路径早就这么做了，文本路径此前只剩映射后的
- * "本地模型调用失败"——中继站回 5xx 时无从查起（2026-09-29）。
+ * 装进原始错误消息里的响应体）只进日志，避免映射后的通用错误掩盖实际失败原因。
  * 取消（调用方 abort）不是模型故障，调用点先判 `signal.aborted` 再进这里。
  */
 function warnTextCallFailure(model: string, error: unknown, startedAt: number): void {
@@ -480,7 +479,7 @@ export function mapModelError(
   const message = error instanceof Error ? error.message : String(error);
   const status = (error as { status?: number } | null)?.status;
   const code = (error as { code?: unknown } | null)?.code;
-  // 把 HTTP 状态带到映射后的错误上（2026-09-25）：结构化输出的自动降级要能分辨"服务端拒绝了这个
+  // 把 HTTP 状态带到映射后的错误上：结构化输出的自动降级要能分辨"服务端拒绝了这个
   // 请求的形状"（4xx）与"服务坏了/超时"（5xx、网络），只靠文案猜是不行的。
   const withStatus = (mapped: ModelUnavailableError): ModelUnavailableError => {
     if (typeof status === "number") (mapped as { status?: number }).status = status;
