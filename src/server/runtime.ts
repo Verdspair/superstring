@@ -2,6 +2,7 @@
 // Kept separate from socket binding so tests can exercise startup and shutdown.
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
+import { spawn } from "bun";
 import type { Hono } from "hono";
 import { executionPolicy } from "../shared/contracts/permissions";
 import { ActionExecutor } from "./agent/action-executor";
@@ -48,7 +49,14 @@ import {
 } from "./modules/composition";
 import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
 import { FileNapCatConfigStore } from "./napcat/config";
-import { createNapCatManagement } from "./napcat/management";
+import { NapCatControlClient } from "./napcat/control-client";
+import {
+  createNapCatManagedSession,
+  createNapCatManagement,
+  type NapCatManagedSession,
+} from "./napcat/management";
+import { readNapCatProvision } from "./napcat/provision";
+import { NapCatRuntimeManager } from "./napcat/runtime-manager";
 import { RuntimeTelemetry } from "./observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
 import {
@@ -113,6 +121,8 @@ export interface RuntimeOptions {
   mcpConfigPath?: string;
   /** Private, application-owned NapCat managed config; omitted means no management port. */
   napcatConfigPath?: string;
+  napcatRuntimeConfigPath?: string;
+  napcatManagedSessionFactory?: typeof createNapCatManagedSession;
   permissionConfigPath?: string;
   /** 联网配置（web-access 单元）：端点文件；缺省＝工具只走必应、管理路由不挂载。 */
   webAccessConfigPath?: string;
@@ -140,6 +150,10 @@ export interface SuperstringRuntime {
 /** Transport budgets. Generous, because a stalled socket is worse than a slow answer. */
 export const QQ_CONNECT_TIMEOUT_MS = 10_000;
 export const QQ_REQUEST_TIMEOUT_MS = 20_000;
+
+export const NAPCAT_POLL_INTERVAL_MS = 5_000;
+export const NAPCAT_CONTROL_TIMEOUT_MS = 5_000;
+export const NAPCAT_STOP_DEADLINE_MS = 10_000;
 
 export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime {
   const business =
@@ -267,10 +281,56 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   let modules: ModuleComposition;
   let bot: ReturnType<typeof createOneBotConversationRuntime>;
   let stopping = false;
+  let napcatSession: NapCatManagedSession | undefined;
   try {
-    const napcatManagement = options.napcatConfigPath
-      ? createNapCatManagement(new FileNapCatConfigStore(options.napcatConfigPath))
+    const napcatStore = options.napcatConfigPath
+      ? new FileNapCatConfigStore(options.napcatConfigPath)
       : undefined;
+    const runtimeConfigPath = options.napcatRuntimeConfigPath;
+    if (napcatStore && runtimeConfigPath) {
+      napcatSession = (options.napcatManagedSessionFactory ?? createNapCatManagedSession)({
+        store: napcatStore,
+        manager: new NapCatRuntimeManager({
+          enabled: true,
+          spawnChild(command, args, spawnOptions) {
+            const child = spawn([command, ...args], {
+              cwd: spawnOptions.cwd,
+              env: spawnOptions.env,
+              windowsHide: spawnOptions.windowsHide,
+              stdin: "ignore",
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+            return {
+              pid: child.pid,
+              exited: child.exited,
+              stdout: child.stdout,
+              stderr: child.stderr,
+              kill: () => child.kill(),
+            };
+          },
+        }),
+        async loadRuntime() {
+          const provision = await readNapCatProvision(runtimeConfigPath);
+          if (!provision) throw new Error("NAPCAT_RUNTIME_NOT_PROVISIONED");
+          return {
+            client: new NapCatControlClient({
+              baseUrl: provision.controlOrigin,
+              timeoutMs: NAPCAT_CONTROL_TIMEOUT_MS,
+              fetch: (input, init) => fetch(input, init),
+            }),
+            launch: provision.launch,
+            token: provision.controlToken,
+          };
+        },
+        transportState: () => qqIntake.state,
+        identityMatches: () => qqIntake.state.phase === "ready",
+        pollIntervalMs: NAPCAT_POLL_INTERVAL_MS,
+        stopDeadlineMs: NAPCAT_STOP_DEADLINE_MS,
+      });
+    }
+    const napcatManagement =
+      napcatSession ?? (napcatStore ? createNapCatManagement(napcatStore) : undefined);
     // The external-provider resolver is bound to this database and its key file (0032): a model
     // name declared on the 外部模型API page routes to that provider, everything else stays local.
     // One resolver for every model call, vision included: a model name declared on the
@@ -581,6 +641,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       // Refuses on its own while the third-party switch is off or the saved configuration is
       // incomplete, so an unconfigured installation produces no traffic and no login.
       void qqIntake.start().catch(() => {});
+      void napcatSession?.start().catch(() => {});
     },
     stop(requestDrain: Promise<unknown> = Promise.resolve()): Promise<void> {
       if (stopPromise) return stopPromise;
@@ -595,6 +656,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       // 退订模型名额通知：停机后不再有复查通知，也不留活过 runtime 的订阅。
       bot.release();
       const settling = [
+        napcatSession?.stop() ?? Promise.resolve(),
         botWorker.stop(),
         bot.delivery.waitForIdle(),
         bot.compression.stop(),

@@ -65,6 +65,7 @@ if (BUSINESS_DB_PATH !== ":memory:") {
 }
 
 const runtimeFactory = createRuntime;
+const napcatConfigPath = layout?.paths.napcatConfig ?? path.resolve("local/config/napcat.json");
 const runtime = await (async () => {
   try {
     if (layout?.paths.mode === "desktop") await backupBeforeDesktopMigration(layout.paths);
@@ -75,7 +76,8 @@ const runtime = await (async () => {
       // The transport token is sealed with this key. Passing the resolved layout path is what keeps
       // it under the installation's own state directory instead of the development default.
       qqTransportKeyPath: layout?.paths.qqTransportKey,
-      napcatConfigPath: layout?.paths.napcatConfig ?? path.resolve("local/config/napcat.json"),
+      napcatConfigPath,
+      napcatRuntimeConfigPath: path.join(path.dirname(napcatConfigPath), "napcat-runtime.json"),
       mcpConfigPath: layout?.paths.mcpServers ?? path.resolve("local/config/mcp-servers.json"),
       permissionConfigPath:
         layout?.paths.permissions ?? path.resolve("local/config/permissions.json"),

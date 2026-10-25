@@ -13,7 +13,11 @@ import { QqJudgementModel } from "../environment/model-defaults";
 import { AllocationModelCapacity } from "./AllocationModelCapacity";
 import { ContextAllocationAuxiliary } from "./ContextAllocationAuxiliary";
 import { QqConversationEntry } from "./QqConversationEntry";
-import { QqManagedComponentCard, type QqManagedStatus } from "./QqManagedComponentCard";
+import {
+  QqManagedComponentCard,
+  type QqManagedPhase,
+  type QqManagedStatus,
+} from "./QqManagedComponentCard";
 import { TransportSettings } from "./transport-settings";
 
 const connectionPhaseLabels: Record<string, string> = {
@@ -294,13 +298,18 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
       qqManagedLoading: state.qqManagedLoading,
       qqManagedSaving: state.qqManagedSaving,
       qqManagedStatus: state.qqManagedStatus,
+      qqManagedQrPayload: state.qqManagedQrPayload,
+      retryQqManaged: state.retryQqManaged,
+      getQqManagedQr: state.getQqManagedQr,
+      refreshQqManagedQr: state.refreshQqManagedQr,
+      clearQqManagedQr: state.clearQqManagedQr,
       qqSettings: state.qqSettings,
       refreshQqConnection: state.refreshQqConnection,
       refreshQqManaged: state.refreshQqManaged,
       saveQqManagedConfig: state.saveQqManagedConfig,
     })),
   );
-  const { loadQqAccess, loadOrganization, loadQqManaged } = s;
+  const { loadQqAccess, loadOrganization, loadQqManaged, clearQqManagedQr } = s;
   const [refreshing, setRefreshing] = useState(false);
   const refresh = async () => {
     if (refreshing) return;
@@ -312,13 +321,28 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
     }
   };
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      clearQqManagedQr();
+      return;
+    }
     // 整页读取是进入连接页的起载：只读设置与状态，绝不自动推进连接草稿的保存基线。
     void loadQqAccess();
     void loadQqManaged();
     // QQ 多模态模型与辅助额度共用的组织编辑器：加载失败不伪装成「已停用」。
     void loadOrganization();
-  }, [active, loadQqAccess, loadOrganization, loadQqManaged]);
+  }, [active, loadQqAccess, loadOrganization, loadQqManaged, clearQqManagedQr]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        clearQqManagedQr();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [clearQqManagedQr]);
 
   const managedDraft = s.managedDraft;
   const isManagedDirty =
@@ -326,17 +350,41 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
   const managedEnabled = isManagedDirty
     ? managedDraft.enabled
     : (s.qqManagedConfig?.config.enabled ?? false);
-  const runtimeGatePassed = s.qqManagedStatus ? s.qqManagedStatus.apply !== "blocked" : false;
+
+  const managedStatus = s.qqManagedStatus;
+  let phase: QqManagedPhase = "unconfigured";
+  let runtimeGatePassed = false;
+  let diagnosticCode: string | null = null;
+  let ownership: "none" | "external" | "owned" = "none";
+
+  if (managedStatus) {
+    if (managedStatus.apply === "ready") {
+      runtimeGatePassed = true;
+      phase = managedStatus.phase;
+      ownership = managedStatus.ownership;
+      diagnosticCode = managedStatus.diagnostic_code;
+    } else {
+      runtimeGatePassed = false;
+      phase =
+        managedStatus.unavailable_reason === "management_not_configured"
+          ? "unconfigured"
+          : "stopped";
+    }
+  }
+
+  if (s.qqConnection?.phase === "ready" && ownership === "none" && phase === "stopped") {
+    phase = "transport_ready";
+    ownership = "external";
+  }
+
   const cardStatus: QqManagedStatus = {
     managedEnabled,
-    phase:
-      !s.qqManagedStatus || s.qqManagedStatus.unavailable_reason === "management_not_configured"
-        ? "unconfigured"
-        : "stopped",
-    accountId: null,
-    qrPayload: null,
+    phase,
+    accountId: s.qqSettings?.account_id ?? null,
+    qrPayload: s.qqManagedQrPayload,
     runtimeGatePassed,
-    diagnosticCode: null,
+    diagnosticCode,
+    ownership,
   };
 
   return (
@@ -380,8 +428,10 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
               loading={s.qqManagedLoading}
               saving={s.qqManagedSaving}
               onToggleManaged={(enabled) => s.patchQqManagedDraft(enabled)}
-              onRefreshQr={() => void s.refreshQqManaged()}
-              onRetry={() => void s.refreshQqManaged()}
+              onRefreshQr={() =>
+                void (s.qqManagedQrPayload ? s.refreshQqManagedQr() : s.getQqManagedQr())
+              }
+              onRetry={() => void s.retryQqManaged()}
             />
             {s.qqManagedError && (
               <p role="alert" className="text-sm text-destructive">

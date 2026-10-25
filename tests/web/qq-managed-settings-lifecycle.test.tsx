@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSettingsResponse, QqStatusResponse } from "../../src/shared/contracts/qq";
 import type {
   QqManagedConfigSnapshot,
+  QqManagedQr,
   QqManagedStatus,
 } from "../../src/shared/contracts/qq-managed";
 import { api } from "../../src/web/api";
@@ -85,7 +86,9 @@ describe("QQ Managed Component settings and actions lifecycle", () => {
     const s = store.getState();
     expect(s.qqManagedStatus).toEqual(mockManagedStatus);
     expect(s.qqManagedStatus?.apply).toBe("blocked");
-    expect(s.qqManagedStatus?.unavailable_reason).toBe("native_validation_required");
+    if (s.qqManagedStatus?.apply === "blocked") {
+      expect(s.qqManagedStatus.unavailable_reason).toBe("native_validation_required");
+    }
     expect(s.qqConnection).toEqual(mockQqConnection);
   });
 
@@ -320,8 +323,10 @@ describe("QQ Managed Component settings and actions lifecycle", () => {
 
     const s = store.getState();
     expect(s.qqManagedStatus?.apply).toBe("blocked");
-    expect(s.qqManagedStatus?.unavailable_reason).toBe("native_validation_required");
-    expect(s.qqManagedStatus?.process).toBe("unavailable");
+    if (s.qqManagedStatus?.apply === "blocked") {
+      expect(s.qqManagedStatus.unavailable_reason).toBe("native_validation_required");
+      expect(s.qqManagedStatus.process).toBe("unavailable");
+    }
   });
 });
 
@@ -576,4 +581,275 @@ describe("QQ managed read, write and draft ownership", () => {
       expect(store.getState().qqConnection).toEqual(mockQqConnection);
     },
   );
+});
+
+describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fencing", () => {
+  it("maps backend ready-branch status (core_online, running, owned) directly into runtime store and UI instead of hardcoded stopped/blocked", async () => {
+    const readyStatus: QqManagedStatus = {
+      process: "running",
+      apply: "ready",
+      ownership: "owned",
+      phase: "core_online",
+      core_ready: true,
+      transport_phase: "ready",
+      diagnostic_code: null,
+    };
+
+    const getStatus = vi.fn(async (): Promise<QqManagedStatus> => readyStatus);
+
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        getQqManagedStatus: getStatus,
+      },
+    });
+
+    await store.getState().loadQqManaged();
+
+    const s = store.getState();
+    expect(s.qqManagedStatus).toEqual(readyStatus);
+    expect(s.qqManagedStatus?.apply).toBe("ready");
+    if (s.qqManagedStatus?.apply === "ready") {
+      expect(s.qqManagedStatus.phase).toBe("core_online");
+      expect(s.qqManagedStatus.ownership).toBe("owned");
+    }
+
+    await act(async () => {
+      render(<QqConnectionTab active={false} />);
+    });
+
+    const badge = document.querySelector("[data-phase]");
+    expect(badge?.getAttribute("data-phase")).toBe("core_online");
+    expect(badge?.textContent).toBe(translate("connections.managed.phase.core_online"));
+    expect(badge?.textContent).not.toBe(translate("connections.managed.phase.stopped"));
+  });
+
+  it("handles external ownership without collapsing to false stopped badge when external OneBot is ready", async () => {
+    const externalStatus: QqManagedStatus = {
+      process: "disabled",
+      apply: "ready",
+      ownership: "external",
+      phase: "transport_ready",
+      core_ready: true,
+      transport_phase: "ready",
+      diagnostic_code: null,
+    };
+
+    const getExternalStatus = vi.fn(async (): Promise<QqManagedStatus> => externalStatus);
+
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        getQqManagedStatus: getExternalStatus,
+      },
+      qqConnection: { phase: "ready", reason: null },
+    });
+
+    await store.getState().loadQqManaged();
+
+    await act(async () => {
+      render(<QqConnectionTab active={false} />);
+    });
+
+    const badge = document.querySelector("[data-phase]");
+    expect(badge?.getAttribute("data-phase")).toBe("transport_ready");
+    expect(badge?.textContent).not.toBe(translate("connections.managed.phase.stopped"));
+  });
+
+  it("triggers explicit POST for retry and refresh-qr without invoking readonly GET or synthetic QR", async () => {
+    const retryStatus: QqManagedStatus = {
+      process: "running",
+      apply: "ready",
+      ownership: "owned",
+      phase: "core_online",
+      core_ready: true,
+      transport_phase: "ready",
+      diagnostic_code: null,
+    };
+    const retrySpy = vi.fn(async (): Promise<QqManagedStatus> => retryStatus);
+    const refreshQrSpy = vi.fn(
+      async (): Promise<QqManagedQr> => ({ qr_payload: "2ban://explicit-post-qr-token" }),
+    );
+    const getStatusSpy = vi.fn(async (): Promise<QqManagedStatus> => mockManagedStatus);
+
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        retryQqManaged: retrySpy,
+        refreshQqManagedQr: refreshQrSpy,
+        getQqManagedStatus: getStatusSpy,
+      },
+    });
+
+    await store.getState().retryQqManaged();
+    expect(retrySpy).toHaveBeenCalledTimes(1);
+
+    await store.getState().refreshQqManagedQr();
+    expect(refreshQrSpy).toHaveBeenCalledTimes(1);
+
+    expect(getStatusSpy).not.toHaveBeenCalled();
+  });
+
+  it("discards late-arriving QR response after store reset or API client switch to prevent QR leakage across lifecycles", async () => {
+    let resolveSlowQr: (val: QqManagedQr) => void = () => {};
+    const slowQrPromise = new Promise<QqManagedQr>((res) => {
+      resolveSlowQr = res;
+    });
+
+    const initialApi = {
+      ...store.getState().apiClient,
+      refreshQqManagedQr: vi.fn(() => slowQrPromise),
+      getQqManagedStatus: vi.fn(async (): Promise<QqManagedStatus> => mockManagedStatus),
+    };
+
+    store.setState({ apiClient: initialApi });
+    const inFlight = store.getState().refreshQqManagedQr();
+
+    const freshApi = {
+      ...store.getState().apiClient,
+      refreshQqManagedQr: vi.fn(async (): Promise<QqManagedQr> => ({ qr_payload: null })),
+      getQqManagedStatus: vi.fn(async (): Promise<QqManagedStatus> => mockManagedStatus),
+    };
+    store.getState().resetForTests(freshApi);
+
+    resolveSlowQr({ qr_payload: "2ban://stale-secret-qr-leak-token" });
+    await inFlight;
+
+    expect(store.getState().qqManagedQrPayload).toBeNull();
+  });
+
+  it("discards late-arriving QR response after clearQqManagedQr, ensuring zero payload and raw secret never reaches DOM", async () => {
+    let resolveSlowQr: (val: QqManagedQr) => void = () => {};
+    const slowQrPromise = new Promise<QqManagedQr>((res) => {
+      resolveSlowQr = res;
+    });
+
+    const secretPayload = "2ban://leak-secret-raw-token-never-in-dom";
+
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        refreshQqManagedQr: vi.fn(() => slowQrPromise),
+        getQqManagedStatus: vi.fn(
+          async (): Promise<QqManagedStatus> => ({
+            process: "running",
+            apply: "ready",
+            ownership: "owned",
+            phase: "waiting_scan",
+            core_ready: true,
+            transport_phase: "ready",
+            diagnostic_code: null,
+          }),
+        ),
+      },
+      qqManagedStatus: {
+        process: "running",
+        apply: "ready",
+        ownership: "owned",
+        phase: "waiting_scan",
+        core_ready: true,
+        transport_phase: "ready",
+        diagnostic_code: null,
+      },
+    });
+
+    const inFlight = store.getState().refreshQqManagedQr();
+
+    store.getState().clearQqManagedQr();
+    expect(store.getState().qqManagedQrPayload).toBeNull();
+
+    resolveSlowQr({ qr_payload: secretPayload });
+    await inFlight;
+
+    expect(store.getState().qqManagedQrPayload).toBeNull();
+
+    await act(async () => {
+      render(<QqConnectionTab active={true} />);
+    });
+    expect(document.body.innerHTML).not.toContain("leak-secret-raw-token-never-in-dom");
+  });
+
+  it("does not restore a late QR payload after status advances to waiting_confirm", async () => {
+    const qr = deferred<QqManagedQr>();
+    const waitingScan: QqManagedStatus = {
+      process: "running",
+      apply: "ready",
+      ownership: "owned",
+      phase: "waiting_scan",
+      core_ready: false,
+      transport_phase: "connecting",
+      diagnostic_code: null,
+    };
+    const waitingConfirm: QqManagedStatus = { ...waitingScan, phase: "waiting_confirm" };
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        refreshQqManagedQr: vi.fn(() => qr.promise),
+        getQqManagedStatus: vi.fn(async (): Promise<QqManagedStatus> => waitingConfirm),
+      },
+      qqManagedStatus: waitingScan,
+      qqManagedQrPayload: "2ban://previous-scan-payload",
+    });
+
+    const refreshQr = store.getState().refreshQqManagedQr();
+    await store.getState().loadQqManaged();
+    expect(store.getState().qqManagedStatus).toEqual(waitingConfirm);
+    expect(store.getState().qqManagedQrPayload).toBeNull();
+
+    qr.resolve({ qr_payload: "2ban://late-confirm-payload" });
+    await refreshQr;
+
+    expect(store.getState().qqManagedStatus).toEqual(waitingConfirm);
+    expect(store.getState().qqManagedQrPayload).toBeNull();
+  });
+
+  it("does not let a read started during retry overwrite the committed retry status", async () => {
+    const retry = deferred<QqManagedStatus>();
+    const read = deferred<QqManagedStatus>();
+    const oldStatus: QqManagedStatus = {
+      process: "running",
+      apply: "ready",
+      ownership: "owned",
+      phase: "error",
+      core_ready: false,
+      transport_phase: "closed",
+      diagnostic_code: "control_unavailable",
+    };
+    const retriedStatus: QqManagedStatus = {
+      process: "running",
+      apply: "ready",
+      ownership: "owned",
+      phase: "core_online",
+      core_ready: true,
+      transport_phase: "connecting",
+      diagnostic_code: null,
+    };
+    const retryManaged = vi.fn(() => retry.promise);
+    const getStatus = vi.fn(() => read.promise);
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        retryQqManaged: retryManaged,
+        getQqManagedStatus: getStatus,
+      },
+      qqManagedStatus: oldStatus,
+    });
+
+    const retryAction = store.getState().retryQqManaged();
+    expect(getStatus).not.toHaveBeenCalled();
+    const load = store.getState().loadQqManaged();
+    expect(getStatus).toHaveBeenCalledTimes(1);
+
+    retry.resolve(retriedStatus);
+    expect(await retryAction).toBe(true);
+    expect(store.getState().qqManagedStatus).toEqual(retriedStatus);
+
+    read.resolve(oldStatus);
+    await load;
+
+    expect(store.getState().qqManagedStatus).toEqual(retriedStatus);
+    expect(store.getState().qqManagedLoading).toBe(false);
+    expect(retryManaged).toHaveBeenCalledTimes(1);
+    expect(getStatus).toHaveBeenCalledTimes(1);
+  });
 });

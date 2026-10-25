@@ -135,6 +135,7 @@ import {
 } from "../shared/contracts/qq-group-config";
 import {
   QqManagedConfigSnapshotSchema,
+  QqManagedQrSchema,
   QqManagedStatusSchema,
   type UpdateQqManagedConfigRequest,
 } from "../shared/contracts/qq-managed";
@@ -821,6 +822,22 @@ export const api = {
     requestJson("/v2/qq/managed-component/status", QqManagedStatusSchema, {
       signal,
       cache: "no-store",
+    }),
+  retryQqManaged: (signal?: AbortSignal) =>
+    requestJson("/v2/qq/managed-component/retry", QqManagedStatusSchema, {
+      signal,
+      ...json("POST", {}),
+    }),
+  getQqManagedQr: (signal?: AbortSignal) =>
+    requestJson("/v2/qq/managed-component/qr", QqManagedQrSchema, {
+      signal,
+      cache: "no-store",
+    }),
+  refreshQqManagedQr: (signal?: AbortSignal) =>
+    requestJson("/v2/qq/managed-component/refresh-qr", QqManagedQrSchema, {
+      signal,
+      cache: "no-store",
+      ...json("POST", {}),
     }),
   listQqConversations: () => requestJson("/qq/conversations", QqConversationListItemSchema.array()),
   listQqBindings: () => requestJson("/qq/bindings", QqBindingResponseSchema.array()),

@@ -38,6 +38,7 @@ import {
 } from "../../../shared/contracts/qq";
 import type {
   QqManagedConfigSnapshot,
+  QqManagedQr,
   QqManagedStatus,
 } from "../../../shared/contracts/qq-managed";
 import type {
@@ -581,11 +582,16 @@ export interface QqAccessState {
   /** Reset identity: pending managed reads and writes belong to the store lifecycle that started them. */
   qqManagedLifecycleId: number;
   qqManagedError: string | null;
+  qqManagedQrPayload: string | null;
   loadQqAccess: () => Promise<void>;
   loadQqManaged: () => Promise<void>;
   saveQqManagedConfig: () => Promise<boolean>;
   refreshQqManaged: () => Promise<void>;
   patchQqManagedDraft: (enabled: boolean) => void;
+  retryQqManaged: () => Promise<boolean>;
+  getQqManagedQr: () => Promise<QqManagedQr | null>;
+  refreshQqManagedQr: () => Promise<QqManagedQr | null>;
+  clearQqManagedQr: () => void;
   /**
    * Bindings only, without the rest of the access page. The 长期记忆 page needs to
    * know whether the assistant being edited is bound to any QQ conversation, and pulling the whole
@@ -701,6 +707,7 @@ export const qqAccessInitial = {
   qqManagedReadId: 0,
   qqManagedLifecycleId: 0,
   qqManagedError: null as string | null,
+  qqManagedQrPayload: null as string | null,
 };
 
 // ---- 本群配置 ------------------------------------------------------------------------------

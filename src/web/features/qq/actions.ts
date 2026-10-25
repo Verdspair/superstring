@@ -1145,6 +1145,10 @@ export function createQqAccessActions(
   | "saveQqManagedConfig"
   | "refreshQqManaged"
   | "patchQqManagedDraft"
+  | "retryQqManaged"
+  | "getQqManagedQr"
+  | "refreshQqManagedQr"
+  | "clearQqManagedQr"
 > {
   const report = (error: unknown) =>
     set({ error: error instanceof Error ? error.message : String(error), feedback: "" });
@@ -1213,6 +1217,7 @@ export function createQqAccessActions(
     lifecycleId: number;
   } | null = null;
   let managedReadToken = 0;
+  let managedQrToken = 0;
   const beginManagedRead = () => {
     const state = get();
     managedReadToken += 1;
@@ -1833,11 +1838,16 @@ export function createQqAccessActions(
             operation.api.getQqManagedConfig(),
           ]);
           if (!isCurrentManagedRead(operation)) return;
+          const clearQr =
+            status.apply === "blocked" ||
+            (status.apply === "ready" && status.phase !== "waiting_scan");
+          if (clearQr) managedQrToken += 1;
           set({
             qqManagedStatus: status,
             qqManagedConfig: config,
             qqManagedLoading: false,
             qqManagedError: null,
+            ...(clearQr ? { qqManagedQrPayload: null } : {}),
           });
         } catch (error) {
           if (!isCurrentManagedRead(operation)) return;
@@ -1870,6 +1880,10 @@ export function createQqAccessActions(
           operation.api.getQqManagedStatus(),
         ]);
         if (!isCurrentManagedRead(operation)) return;
+        const clearQr =
+          status.apply === "blocked" ||
+          (status.apply === "ready" && status.phase !== "waiting_scan");
+        if (clearQr) managedQrToken += 1;
         set((state) => {
           const currentDraft = state.qqInputs.managed;
           return {
@@ -1877,6 +1891,7 @@ export function createQqAccessActions(
             qqManagedStatus: status,
             qqManagedLoading: false,
             qqManagedError: null,
+            ...(clearQr ? { qqManagedQrPayload: null } : {}),
             qqInputs: {
               ...state.qqInputs,
               managed: currentDraft
@@ -1921,7 +1936,15 @@ export function createQqAccessActions(
         try {
           const status = await op.api.getQqManagedStatus();
           if (isCurrentManagedWriteApi(op)) {
-            set({ qqManagedStatus: status, qqManagedError: null });
+            const clearQr =
+              status.apply === "blocked" ||
+              (status.apply === "ready" && status.phase !== "waiting_scan");
+            if (clearQr) managedQrToken += 1;
+            set({
+              qqManagedStatus: status,
+              qqManagedError: null,
+              ...(clearQr ? { qqManagedQrPayload: null } : {}),
+            });
           }
         } catch (statusError) {
           if (isCurrentManagedWriteApi(op)) {
@@ -1948,6 +1971,84 @@ export function createQqAccessActions(
           managed: { source, enabled },
         },
       }));
+    },
+    retryQqManaged: async () => {
+      if (get().qqManagedSaving) return false;
+      const op = beginManagedWrite();
+      try {
+        const status = await op.api.retryQqManaged();
+        if (!isCurrentManagedWriteApi(op)) return false;
+        invalidateManagedReads();
+        const clearQr =
+          status.apply === "blocked" ||
+          (status.apply === "ready" && status.phase !== "waiting_scan");
+        if (clearQr) managedQrToken += 1;
+        set({
+          qqManagedStatus: status,
+          qqManagedError: null,
+          ...(clearQr ? { qqManagedQrPayload: null } : {}),
+        });
+        return true;
+      } catch (error) {
+        if (isCurrentManagedWriteApi(op)) {
+          set({ qqManagedError: errorText(error) });
+        }
+        return false;
+      } finally {
+        endManagedWrite(op);
+      }
+    },
+    getQqManagedQr: async () => {
+      if (get().qqManagedSaving) return null;
+      managedQrToken += 1;
+      const currentToken = managedQrToken;
+      const op = beginManagedWrite();
+      try {
+        const qr = await op.api.getQqManagedQr();
+        if (!isCurrentManagedWriteApi(op) || managedQrToken !== currentToken) return null;
+        const currentStatus = get().qqManagedStatus;
+        const canAccept =
+          currentStatus?.apply === "ready" && currentStatus.phase === "waiting_scan";
+        if (canAccept) {
+          set({ qqManagedQrPayload: qr.qr_payload, qqManagedError: null });
+        }
+        return qr;
+      } catch (error) {
+        if (isCurrentManagedWriteApi(op) && managedQrToken === currentToken) {
+          set({ qqManagedError: errorText(error) });
+        }
+        return null;
+      } finally {
+        endManagedWrite(op);
+      }
+    },
+    refreshQqManagedQr: async () => {
+      if (get().qqManagedSaving) return null;
+      managedQrToken += 1;
+      const currentToken = managedQrToken;
+      const op = beginManagedWrite();
+      try {
+        const qr = await op.api.refreshQqManagedQr();
+        if (!isCurrentManagedWriteApi(op) || managedQrToken !== currentToken) return null;
+        const currentStatus = get().qqManagedStatus;
+        const canAccept =
+          currentStatus?.apply === "ready" && currentStatus.phase === "waiting_scan";
+        if (canAccept) {
+          set({ qqManagedQrPayload: qr.qr_payload, qqManagedError: null });
+        }
+        return qr;
+      } catch (error) {
+        if (isCurrentManagedWriteApi(op) && managedQrToken === currentToken) {
+          set({ qqManagedError: errorText(error) });
+        }
+        return null;
+      } finally {
+        endManagedWrite(op);
+      }
+    },
+    clearQqManagedQr: () => {
+      managedQrToken += 1;
+      set({ qqManagedQrPayload: null });
     },
   };
 }

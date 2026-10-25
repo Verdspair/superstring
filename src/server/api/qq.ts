@@ -14,6 +14,7 @@
 
 import type { Database } from "bun:sqlite";
 import { type Context, Hono } from "hono";
+import { z } from "zod";
 import {
   CreateQqBindingRequestSchema,
   CreateQqSchemeRequestSchema,
@@ -47,6 +48,7 @@ import {
 import { UpdateQqGroupConfigRequestSchema } from "../../shared/contracts/qq-group-config";
 import {
   QqManagedConfigSnapshotSchema,
+  QqManagedQrSchema,
   QqManagedStatusSchema,
   UpdateQqManagedConfigRequestSchema,
 } from "../../shared/contracts/qq-managed";
@@ -114,7 +116,7 @@ import {
 import { getAgentRow, newId, type Orm } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
-import type { NapCatManagementPort } from "../napcat/management";
+import type { NapCatManagedSession, NapCatManagementPort } from "../napcat/management";
 import { normalizeOneBotAccountId } from "../services/onebot-protocol";
 import { sampleQqAnimationFrames } from "../services/qq-animation-frames";
 import {
@@ -308,6 +310,42 @@ const managedErrors = {
   NAPCAT_MANAGEMENT_UNAVAILABLE: [503, "托管组件管理尚未配置"],
 } as const;
 
+const EmptyManagedActionRequestSchema = z.strictObject({});
+
+function isManagedSession(port: NapCatManagementPort): port is NapCatManagedSession {
+  return (
+    "start" in port &&
+    typeof port.start === "function" &&
+    "stop" in port &&
+    typeof port.stop === "function" &&
+    "retry" in port &&
+    typeof port.retry === "function" &&
+    "getQr" in port &&
+    typeof port.getQr === "function" &&
+    "refreshQr" in port &&
+    typeof port.refreshQr === "function"
+  );
+}
+
+function managedStatusResponse(status: ReturnType<NapCatManagementPort["snapshot"]>) {
+  if (status.apply === "blocked") {
+    return QqManagedStatusSchema.parse({
+      process: status.process,
+      apply: status.apply,
+      unavailable_reason: status.unavailable_reason,
+    });
+  }
+  return QqManagedStatusSchema.parse({
+    process: status.process,
+    apply: status.apply,
+    ownership: status.ownership,
+    phase: status.phase,
+    core_ready: status.core_ready,
+    transport_phase: status.transport_phase,
+    diagnostic_code: status.diagnostic_code,
+  });
+}
+
 /** Mounted separately so the existing QQ routes keep their paths and error handling. */
 export function qqManagedComponentRoutes(port?: NapCatManagementPort): Hono {
   const router = new Hono();
@@ -320,6 +358,29 @@ export function qqManagedComponentRoutes(port?: NapCatManagementPort): Hono {
       });
     }
     return port;
+  }
+
+  function configuredSession(): NapCatManagedSession {
+    const available = configured();
+    if (!isManagedSession(available)) {
+      throw Object.assign(new Error("托管组件管理尚未配置"), {
+        code: "NAPCAT_MANAGEMENT_UNAVAILABLE",
+      });
+    }
+    return available;
+  }
+
+  async function validateEmptyActionRequest(c: Context): Promise<void> {
+    if (new URL(c.req.url).searchParams.size > 0) throw validationFailed();
+    const raw = await c.req.raw.text();
+    if (raw.trim() === "") return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw validationFailed();
+    }
+    parseBody(EmptyManagedActionRequestSchema, parsed);
   }
 
   router.get("/config", managementGuard(), (c) =>
@@ -339,13 +400,23 @@ export function qqManagedComponentRoutes(port?: NapCatManagementPort): Hono {
       apply: "blocked",
       unavailable_reason: "management_not_configured",
     };
-    return c.json(
-      QqManagedStatusSchema.parse({
-        process: status.process,
-        apply: status.apply,
-        unavailable_reason: status.unavailable_reason,
-      }),
-    );
+    return c.json(managedStatusResponse(status));
+  });
+  router.post("/retry", managementGuard(), async (c) => {
+    await validateEmptyActionRequest(c);
+    const session = configuredSession();
+    await session.retry();
+    return c.json(managedStatusResponse(session.snapshot()));
+  });
+  router.post("/qr", managementGuard(), async (c) => {
+    await validateEmptyActionRequest(c);
+    const result = await configuredSession().getQr();
+    return c.json(QqManagedQrSchema.parse({ qr_payload: result.qr_payload }));
+  });
+  router.post("/refresh-qr", managementGuard(), async (c) => {
+    await validateEmptyActionRequest(c);
+    const result = await configuredSession().refreshQr();
+    return c.json(QqManagedQrSchema.parse({ qr_payload: result.qr_payload }));
   });
   return router;
 }

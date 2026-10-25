@@ -3267,5 +3267,11 @@
   "connections.managed.retry": "重试",
   "connections.managed.scanWithMobileQq": "请使用手机 QQ 扫描二维码登录",
   "connections.managed.statusTitle": "组件状态",
-  "connections.managed.title": "QQ 托管组件"
+  "connections.managed.title": "QQ 托管组件",
+  "connections.managed.ownership.external": "独立运行的协议服务",
+  "connections.managed.ownership.externalHint": "此进程不由应用托管，应用不会替它停止服务。",
+  "connections.managed.ownership.owned": "由 Superstring 桌面协同托管",
+  "connections.managed.diag.stop_failed": "停止本地托管服务失败，请重试。",
+  "connections.managed.diag.control_unavailable": "管理控制端口不可用，正在等待就绪。",
+  "connections.managed.diag.account_mismatch": "协议端登录账号与系统配置的账号不一致。"
 }

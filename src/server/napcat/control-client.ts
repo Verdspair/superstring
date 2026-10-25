@@ -7,6 +7,7 @@ export type NapCatControlErrorCode =
   | "aborted"
   | "timeout"
   | "transport_error"
+  | "connection_refused"
   | "http_error"
   | "upstream_rejected"
   | "invalid_response";
@@ -210,6 +211,18 @@ export class NapCatControlClient {
       if (error instanceof NapCatControlError) throw error;
       if (callerSignal?.aborted) throw new NapCatControlError("aborted");
       if (timeoutController.signal.aborted) throw new NapCatControlError("timeout");
+      const directCode =
+        error !== null && typeof error === "object" && "code" in error ? error.code : undefined;
+      const cause =
+        error !== null && typeof error === "object" && "cause" in error ? error.cause : undefined;
+      const causeCode =
+        cause !== null && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+      if (
+        ["ECONNREFUSED", "ConnectionRefused"].includes(String(directCode)) ||
+        ["ECONNREFUSED", "ConnectionRefused"].includes(String(causeCode))
+      ) {
+        throw new NapCatControlError("connection_refused");
+      }
       throw new NapCatControlError("transport_error");
     } finally {
       clearTimeout(timer);

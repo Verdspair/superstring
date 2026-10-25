@@ -41,7 +41,7 @@
 - **QQ 设置滚动修复**：进入连接设置后，只滚动内容区，应用顶栏与方案页签保持固定；模型建议输入框、键盘选择与未保存草稿行为保持不变。
 
 - **QQ 账号切换保护**：在 QQ 连接设置中更换绑定的账号时提供安全检查。若原账号或新账号历史关联的会话中存在正在执行的任务、仍在处理的后台工作、正在发送或发送结果未知的消息，系统会拒绝切换，避免在未结清工作时改变账号归属；相同账号保存、无变更操作或修改普通设置不会误拦截。
-- **托管偏好与连接说明**：支持保存托管启用偏好，但托管偏好不代表 QQ 已启动；当前仍需使用外部 OneBot 服务，不提供内置扫码登录。单应用直接集成 QQ 仍在推进中，原有外部连接能力完整保留。
+- **应用内 QQ 登录**：已在本机部署并明确配置运行环境时，可在「方案 → QQ设置 → 连接」启用托管、查看登录和连接状态，并手动获取或刷新二维码、重试登录。托管默认关闭，与 QQ 业务总开关独立；账号在线不等于消息通道就绪。当前 Windows 配置支持随桌面启动、正常关窗退出和再次打开自动启动。运行环境不随包提供，仍须手动本机部署；外部 OneBot 连接保留。
 - **消息记录按需加载**：首次从服务器只读取最新 100 条，旧记录按需分页加载；新消息仍即时显示，刷新和回复完成保留已加载旧页与阅读位置，不删除保存的历史。优化消息详情、启动记录核对与权限读取中的重复工作。
 
 - **工作区布局与字体**：管理工作区统一标题、操作区和主标签的起始位置，窄屏按钮不会挤压标题；用途说明收进可悬停、聚焦或点击查看的帮助提示，错误与权限限制仍直接显示。偏好设置新增“典雅衬线”和“可爱圆润”两套中英文字体方案，保留当前默认字体；字体随程序提供，可离线使用，代码和技术标识保持等宽显示。
@@ -119,7 +119,7 @@ These features are source updates on main. The v0.4.0-alpha-2 packages have not 
 - **QQ settings scrolling**: Connection settings now scroll only within their content area, keeping the application header and scheme tabs fixed. Model suggestions, keyboard selection, and unsaved drafts keep their existing behavior.
 
 - **QQ account switching protection**: Updating or switching the bound QQ account includes safeguards before changing accounts. If historical sessions associated with either the old or new account contain tasks in progress, ongoing background work, or messages being sent or with unknown delivery results, the switch is refused to avoid changing account ownership while work is outstanding. Same-account updates, no-op saves, and ordinary setting edits are not blocked.
-- **Managed preference and connection notes**: Supports saving a managed-mode preference, but the preference does not mean QQ is running; connecting to QQ still requires an external OneBot service and does not offer built-in QR code login. Direct single-application QQ integration remains in progress, and existing external connection capabilities remain fully operational.
+- **In-app QQ login**: With a runtime deployed and explicitly configured locally, enable managed mode under **Schemes → QQ settings → Connection** to view login and connection status, manually request or refresh QR codes, and retry login. Managed mode is off by default and separate from the QQ business switch; an online account does not mean the message channel is ready. The current Windows setup starts with the desktop, exits on normal window close, and starts automatically when reopened. The runtime is not bundled and still requires manual local deployment; external OneBot connections remain available.
 - **Immediate messages**: New messages appear one by one as they arrive in bound conversations. Messages received while older history loads or a manual refresh runs are still shown, are not dropped by an earlier read, and do not wait for the next refresh; your reading position stays in place.
 
 - **Workspace layout and fonts**: Management workspaces align their headers, actions, and primary tabs; narrow-screen actions no longer squeeze titles. Page introductions move into help available by hover, focus, or click, while errors and permission limits stay visible. Preferences adds coordinated Chinese and Latin Elegant serif and Playful rounded font styles alongside the existing default. Fonts ship with the application for offline use; code and technical identifiers remain monospace.

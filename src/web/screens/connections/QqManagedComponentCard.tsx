@@ -17,6 +17,8 @@ export type QqManagedPhase =
   | "challenge"
   | "error";
 
+export type QqManagedOwnership = "none" | "external" | "owned";
+
 export interface QqManagedStatus {
   managedEnabled: boolean;
   phase: QqManagedPhase;
@@ -24,6 +26,7 @@ export interface QqManagedStatus {
   qrPayload: string | null;
   runtimeGatePassed: boolean;
   diagnosticCode: string | null;
+  ownership?: QqManagedOwnership;
 }
 
 export interface QqManagedCardProps {
@@ -50,8 +53,11 @@ const phaseLabelKeys: Record<QqManagedPhase, string> = {
 const diagnosticLabelKeys: Record<string, string> = {
   process_crashed: "connections.managed.diag.process_crashed",
   spawn_failed: "connections.managed.diag.spawn_failed",
+  stop_failed: "connections.managed.diag.stop_failed",
   handshake_timeout: "connections.managed.diag.handshake_timeout",
+  control_unavailable: "connections.managed.diag.control_unavailable",
   challenge_required: "connections.managed.diag.challenge_required",
+  account_mismatch: "connections.managed.diag.account_mismatch",
 };
 
 export function QqManagedComponentCard({
@@ -103,39 +109,61 @@ export function QqManagedComponentCard({
       <SettingsRow
         label={t("connections.managed.statusTitle")}
         description={
-          status.accountId ? (
+          status.ownership === "external" ? (
+            <span className="text-xs text-muted-foreground">
+              {t("connections.managed.ownership.externalHint")}
+            </span>
+          ) : status.accountId ? (
             <span className="text-xs text-muted-foreground">
               {t("connections.managed.currentAccount", { account: status.accountId })}
             </span>
           ) : undefined
         }
         action={
-          <Badge
-            variant={status.phase === "transport_ready" ? "secondary" : "outline"}
-            data-phase={status.phase}
-            role={status.phase === "error" ? undefined : "status"}
-            aria-live={status.phase === "error" ? undefined : "polite"}
-            className="rounded-md px-2 py-0.5 font-medium"
-          >
-            {t(phaseLabelKeys[status.phase] ?? "connections.managed.phase.unconfigured")}
-          </Badge>
+          <div className="flex flex-wrap items-center gap-2">
+            {status.ownership === "external" && (
+              <Badge
+                variant="outline"
+                className="rounded-md border-border px-2 py-0.5 font-medium text-muted-foreground"
+              >
+                {t("connections.managed.ownership.external")}
+              </Badge>
+            )}
+            <Badge
+              variant={status.phase === "transport_ready" ? "secondary" : "outline"}
+              data-phase={status.phase}
+              role={status.phase === "error" ? undefined : "status"}
+              aria-live={status.phase === "error" ? undefined : "polite"}
+              className="rounded-md px-2 py-0.5 font-medium"
+            >
+              {t(phaseLabelKeys[status.phase] ?? "connections.managed.phase.unconfigured")}
+            </Badge>
+          </div>
         }
       />
 
-      {status.phase === "waiting_scan" && status.qrPayload && (
+      {status.phase === "waiting_scan" && (
         <div className="flex flex-col items-center gap-3 border-t border-border p-4 sm:p-5">
-          {/* High-contrast white background is strictly an optical exception for camera scanning readability */}
-          <div className="rounded-lg border border-border bg-white p-3 shadow-xs">
-            <QRCodeSVG
-              value={status.qrPayload}
-              size={160}
-              level="M"
-              aria-label={t("connections.managed.scanWithMobileQq")}
-            />
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {t("connections.managed.scanWithMobileQq")}
-          </p>
+          {status.qrPayload ? (
+            <>
+              {/* High-contrast white background is strictly an optical exception for camera scanning readability */}
+              <div className="rounded-lg border border-border bg-white p-3 shadow-xs">
+                <QRCodeSVG
+                  value={status.qrPayload}
+                  size={160}
+                  level="M"
+                  aria-label={t("connections.managed.scanWithMobileQq")}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t("connections.managed.scanWithMobileQq")}
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {t("connections.managed.phase.waiting_scan")}
+            </p>
+          )}
           <Button
             tooltip={t("connections.managed.refreshQr")}
             variant="outline"

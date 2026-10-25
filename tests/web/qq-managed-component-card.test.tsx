@@ -345,4 +345,35 @@ describe("QqManagedComponentCard presentational unit tests", () => {
     expect(badgeError?.getAttribute("aria-live")).not.toBe("polite");
     expect(badgeError?.getAttribute("role")).not.toBe("status");
   });
+
+  it("distinguishes external ownership from local stopped component without presenting false stopped status", () => {
+    const externalStatus = baseStatus({
+      managedEnabled: false,
+      phase: "transport_ready",
+      ownership: "external",
+    });
+
+    renderCard(<QqManagedComponentCard status={externalStatus} onToggleManaged={vi.fn()} />);
+
+    expect(screen.getByText(i18n.t("connections.managed.ownership.external"))).toBeTruthy();
+    expect(screen.queryByText(i18n.t("connections.managed.phase.stopped"))).toBeNull();
+  });
+
+  it("renders QR refresh action button in waiting_scan phase even when qrPayload is not yet loaded", () => {
+    const onRefresh = vi.fn();
+    const status = baseStatus({
+      managedEnabled: true,
+      phase: "waiting_scan",
+      qrPayload: null,
+    });
+
+    renderCard(
+      <QqManagedComponentCard status={status} onToggleManaged={vi.fn()} onRefreshQr={onRefresh} />,
+    );
+
+    const refreshBtn = screen.getByRole("button", { name: /刷新|refresh/i });
+    expect(refreshBtn).toBeTruthy();
+    fireEvent.click(refreshBtn);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
 });

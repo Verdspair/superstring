@@ -2,10 +2,16 @@ import { describe, expect, it } from "bun:test";
 import { createApp } from "../../src/server/app";
 import { ensureDefaults } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
-import type { NapCatManagementPort } from "../../src/server/napcat/management";
+import type {
+  NapCatManagedSession,
+  NapCatManagementPort,
+} from "../../src/server/napcat/management";
 
 const CONFIG = "/v2/qq/managed-component/config";
 const STATUS = "/v2/qq/managed-component/status";
+const RETRY = "/v2/qq/managed-component/retry";
+const QR = "/v2/qq/managed-component/qr";
+const REFRESH_QR = "/v2/qq/managed-component/refresh-qr";
 const MODEL = "qwen/qwen3-4b-2507";
 const NATIVE_BLOCKED = {
   process: "unavailable",
@@ -61,6 +67,35 @@ class FakePort implements NapCatManagementPort {
   }
 }
 
+class FakeManagedSession extends FakePort implements NapCatManagedSession {
+  retries = 0;
+  qrReads = 0;
+  qrRefreshes = 0;
+  qrPayload = "synthetic-login-qr";
+  refreshedQrPayload = "synthetic-refreshed-login-qr";
+  actionError?: Error;
+
+  async start() {}
+  async stop() {}
+
+  async retry() {
+    this.retries += 1;
+    if (this.actionError) throw this.actionError;
+  }
+
+  async getQr() {
+    this.qrReads += 1;
+    if (this.actionError) throw this.actionError;
+    return { qr_payload: this.qrPayload };
+  }
+
+  async refreshQr() {
+    this.qrRefreshes += 1;
+    if (this.actionError) throw this.actionError;
+    return { qr_payload: this.refreshedQrPayload };
+  }
+}
+
 function setup(port?: NapCatManagementPort) {
   const business = openBusinessDb();
   ensureDefaults(business.orm, MODEL);
@@ -79,6 +114,14 @@ function put(app: App, payload: unknown, headers: Record<string, string> = {}) {
     method: "PUT",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(payload),
+  });
+}
+
+function post(app: App, route: string, payload?: unknown, headers: Record<string, string> = {}) {
+  return app.request(route, {
+    method: "POST",
+    headers: payload === undefined ? headers : { "content-type": "application/json", ...headers },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
   });
 }
 
@@ -146,6 +189,9 @@ describe("NapCat management routes", () => {
         { route: CONFIG, method: "GET" },
         { route: CONFIG, method: "PUT" },
         { route: STATUS, method: "GET" },
+        { route: RETRY, method: "POST" },
+        { route: QR, method: "POST" },
+        { route: REFRESH_QR, method: "POST" },
       ];
       for (const operation of operations) {
         const forbiddenHeaders: Record<string, string>[] = [
@@ -172,6 +218,14 @@ describe("NapCat management routes", () => {
       }
       const nonJson = await put(h.app, update(true), { "content-type": "text/plain" });
       expect((await expectSafeError(nonJson, 422)).error.code).toBe("VALIDATION_ERROR");
+      const nonJsonActions = await Promise.all(
+        [RETRY, QR, REFRESH_QR].map((route) =>
+          post(h.app, route, undefined, { "content-type": "text/plain" }),
+        ),
+      );
+      for (const response of nonJsonActions) {
+        expect((await expectSafeError(response, 422)).error.code).toBe("VALIDATION_ERROR");
+      }
       expect([port.reads, port.snapshots, port.replaceAttempts, port.writes]).toEqual([0, 0, 0, 0]);
 
       const sameOrigin = await h.app.request(`http://localhost${CONFIG}`, {
@@ -300,6 +354,80 @@ describe("NapCat management routes", () => {
     }
   });
 
+  it("guards and sanitizes all managed actions and rejects arbitrary action bodies", async () => {
+    const session = new FakeManagedSession();
+    session.extraStatus = {
+      process: "running",
+      apply: "ready",
+      ownership: "owned",
+      phase: "waiting_scan",
+      core_ready: false,
+      transport_phase: "idle",
+      diagnostic_code: null,
+      ...PRIVATE_MARKERS,
+      qr_payload: PRIVATE_MARKERS.qrcode,
+    };
+    const h = setup(session);
+    try {
+      const retry = await post(h.app, RETRY);
+      expect(retry.status).toBe(200);
+      expect(retry.headers.get("cache-control")).toBe("no-store");
+      expect(await retry.json()).toEqual({
+        process: "running",
+        apply: "ready",
+        ownership: "owned",
+        phase: "waiting_scan",
+        core_ready: false,
+        transport_phase: "idle",
+        diagnostic_code: null,
+      });
+      expect(session.retries).toBe(1);
+      expect(session.snapshots).toBe(1);
+
+      const status = await h.app.request(STATUS);
+      expect(status.status).toBe(200);
+      expect(status.headers.get("cache-control")).toBe("no-store");
+      expect(await status.json()).toEqual({
+        process: "running",
+        apply: "ready",
+        ownership: "owned",
+        phase: "waiting_scan",
+        core_ready: false,
+        transport_phase: "idle",
+        diagnostic_code: null,
+      });
+
+      const qr = await post(h.app, QR);
+      expect(qr.status).toBe(200);
+      expect(qr.headers.get("cache-control")).toBe("no-store");
+      expect(await qr.json()).toEqual({ qr_payload: session.qrPayload });
+      expect(session.qrReads).toBe(1);
+
+      const refreshed = await post(h.app, REFRESH_QR);
+      expect(refreshed.status).toBe(200);
+      expect(refreshed.headers.get("cache-control")).toBe("no-store");
+      expect(await refreshed.json()).toEqual({ qr_payload: session.refreshedQrPayload });
+      expect(session.qrRefreshes).toBe(1);
+
+      for (const route of [RETRY, QR, REFRESH_QR]) {
+        const response = await post(h.app, route, {
+          ...PRIVATE_MARKERS,
+          arbitrary: "must-not-reach-managed-component",
+        });
+        expect((await expectSafeError(response, 422)).error.code).toBe("VALIDATION_ERROR");
+      }
+      expect([session.retries, session.qrReads, session.qrRefreshes]).toEqual([1, 1, 1]);
+
+      session.actionError = storeError("NAPCAT_MANAGEMENT_UNAVAILABLE");
+      for (const route of [RETRY, QR, REFRESH_QR]) {
+        const error = await expectSafeError(await post(h.app, route), 503);
+        expect(error.error.code).toBe("NAPCAT_MANAGEMENT_UNAVAILABLE");
+      }
+    } finally {
+      h.business.close();
+    }
+  });
+
   it("refuses config operations without a port and reports management as unconfigured", async () => {
     const h = setup();
     try {
@@ -308,6 +436,10 @@ describe("NapCat management routes", () => {
       const missingSave = await expectSafeError(await put(h.app, update(true)), 503);
       expect(missingRead.error.code).toBe("NAPCAT_MANAGEMENT_UNAVAILABLE");
       expect(missingSave).toEqual(missingRead);
+      for (const route of [RETRY, QR, REFRESH_QR]) {
+        const missingAction = await expectSafeError(await post(h.app, route), 503);
+        expect(missingAction).toEqual(missingRead);
+      }
       const status = await h.app.request(STATUS);
       expect(status.status).toBe(200);
       expect(status.headers.get("cache-control")).toBe("no-store");

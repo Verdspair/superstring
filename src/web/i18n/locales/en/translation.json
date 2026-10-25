@@ -3267,5 +3267,11 @@
   "connections.managed.retry": "Retry",
   "connections.managed.scanWithMobileQq": "Please scan the QR code with mobile QQ to log in",
   "connections.managed.statusTitle": "Component Status",
-  "connections.managed.title": "QQ Managed Component"
+  "connections.managed.title": "QQ Managed Component",
+  "connections.managed.ownership.external": "Standalone protocol service",
+  "connections.managed.ownership.externalHint": "This process is not managed by the app and will not be stopped by it.",
+  "connections.managed.ownership.owned": "Managed by Superstring desktop",
+  "connections.managed.diag.stop_failed": "Failed to stop managed service, please retry.",
+  "connections.managed.diag.control_unavailable": "Control port unavailable, waiting for service.",
+  "connections.managed.diag.account_mismatch": "Logged in account does not match configured account."
 }

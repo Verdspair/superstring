@@ -200,6 +200,40 @@ describe("NapCat control client", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("distinguishes typed connection refusal from reset and untyped transport failures", async () => {
+    const failures = [
+      {
+        error: Object.assign(new Error("private refused"), { code: "ECONNREFUSED" }),
+        code: "connection_refused",
+      },
+      {
+        error: new Error("private wrapper", {
+          cause: Object.assign(new Error("private cause"), { code: "ECONNREFUSED" }),
+        }),
+        code: "connection_refused",
+      },
+      {
+        error: Object.assign(new Error("private Bun refusal"), { code: "ConnectionRefused" }),
+        code: "connection_refused",
+      },
+      {
+        error: Object.assign(new Error("private reset"), { code: "ECONNRESET" }),
+        code: "transport_error",
+      },
+      { error: new Error("ECONNREFUSED only in untrusted text"), code: "transport_error" },
+    ];
+    for (const failure of failures) {
+      const client = new NapCatControlClient({
+        baseUrl,
+        timeoutMs: 100,
+        fetch: async () => {
+          throw failure.error;
+        },
+      });
+      await expect(client.getLoginQrCode(credential)).rejects.toMatchObject({ code: failure.code });
+    }
+  });
+
   it("aborts at the caller-supplied deadline and does not retry", async () => {
     const calls: FetchCall[] = [];
     const fetcher: NapCatFetch = (input, init) => {
