@@ -3334,5 +3334,8 @@
   "schemes.bindings.triggers.immediateSave": "仅此会话 · 选择后立即保存。",
   "connections.managed.quickLogin.notReady": "组件需要处于运行中并等待扫码，才能快速登录。",
   "connections.managed.resources.configure": "路径设置",
-  "connections.managed.resources.officialLink": "获取官方运行包"
+  "connections.managed.resources.officialLink": "获取官方运行包",
+  "connections.stream.refresh": "刷新",
+  "connections.stream.retry": "重试",
+  "connections.stream.status.error": "错误"
 }

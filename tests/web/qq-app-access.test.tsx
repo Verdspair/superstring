@@ -406,17 +406,17 @@ describe("QQ connection page (本人身份依赖机器人账号)", () => {
     expect(described).toContain(i18n.t("connections.owner.accountRequired"));
   });
 
-  it("groups the immediate switch, the explicit access save and the independent owner card", async () => {
+  it("groups the immediate switch, the explicit access save and the independent owner section", async () => {
     await renderConnection({ accountSet: true });
-    // 即时参与开关自成一卡：开关与它的标题同卡，不与显式保存组混在一起。
+    // 即时参与开关与其标题同组，不与显式保存组混在一起。
     const enabled = screen.getByRole("checkbox", { name: i18n.t("connections.enableQq") });
-    const switchCard = enabled.closest('[data-slot="card"]');
+    const switchCard = enabled.closest("section");
     expect(switchCard?.textContent).toContain(i18n.t("connections.participateInExternalChats"));
     expect(switchCard?.textContent).not.toContain(i18n.t("connections.saveAccessSettings"));
-    // 账号/端点/令牌与「保存接入设置」同卡：显式保存域收尾于本组。
+    // 账号/端点/令牌与「保存接入设置」同组：显式保存域收尾于本组。
     const accessCard = screen
       .getByLabelText(i18n.t("connections.assistantAccount"))
-      .closest('[data-slot="card"]');
+      .closest("section");
     expect(accessCard?.textContent).toContain(i18n.t("connections.websocketAddress"));
     expect(accessCard?.textContent).toContain(i18n.t("connections.accessToken"));
     expect(
@@ -424,11 +424,9 @@ describe("QQ connection page (本人身份依赖机器人账号)", () => {
         name: i18n.t("connections.saveAccessSettings"),
       }),
     ).toBeTruthy();
-    // 本人身份属于运行设置；切换真实路由后独立保存，不在接入卡内。
+    // 本人身份属于运行设置；切换真实路由后独立保存，不在接入组内。
     await userEvent.click(screen.getByRole("tab", { name: i18n.t("schemes.qq.runtimeTitle") }));
-    const ownerCard = screen
-      .getByLabelText(i18n.t("connections.owner.title"))
-      .closest('[data-slot="card"]');
+    const ownerCard = screen.getByLabelText(i18n.t("connections.owner.title")).closest("section");
     expect(ownerCard).not.toBe(accessCard);
     expect(
       within(ownerCard as HTMLElement).getByRole("button", {

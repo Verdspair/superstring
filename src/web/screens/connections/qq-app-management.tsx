@@ -10,6 +10,7 @@ import { organizationDirty } from "../../features/knowledge/types";
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { QqJudgementModel } from "../environment/model-defaults";
 import { AllocationModelCapacity } from "./AllocationModelCapacity";
 import { ContextAllocationAuxiliary } from "./ContextAllocationAuxiliary";
@@ -99,7 +100,7 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
     <div className="space-y-6">
       <SettingsGroup
         title={t("qq.models.title")}
-        description={t("qq.models.hint")}
+        action={<WorkspaceHelp title={t("qq.models.title")} description={t("qq.models.hint")} />}
         icon={ImageIcon}
       >
         {editor && (
@@ -199,6 +200,7 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
       {editor && (
         <ContextAllocationAuxiliary
           scope="global"
+          presentation="settings"
           globalProfiles={editor.auxiliaryAllocation}
           globalRoles={mediaRoles}
           roleDetails={Object.fromEntries(
@@ -472,10 +474,10 @@ export function QqConnectionTab({
   const streamEvents = useMemo(() => [...rawEvents].reverse(), [rawEvents]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
+    <div className="min-h-0 flex-1 space-y-6 overflow-y-auto pb-1" data-workspace-scroll>
       {s.qqSettings ? (
         <>
-          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/80 bg-card/60 p-4">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 flex-wrap items-center gap-2.5">
               <Badge
                 variant={s.qqConnection?.phase === "ready" ? "secondary" : "outline"}
@@ -509,7 +511,7 @@ export function QqConnectionTab({
           <QqBusinessSwitch />
           {task === "connection" && (
             <>
-              <div className="my-6 space-y-2">
+              <div className="space-y-3">
                 <QqManagedComponentCard
                   status={cardStatus}
                   resources={s.qqManagedResources}
@@ -555,41 +557,43 @@ export function QqConnectionTab({
                     void s.saveQqManagedResources();
                   }}
                   onRetry={() => void s.retryQqManaged()}
+                  footer={
+                    <>
+                      <Button
+                        tooltip={t("models.discard")}
+                        variant="outline"
+                        size="sm"
+                        disabled={!isManagedDirty || s.qqManagedSaving}
+                        onClick={() =>
+                          useSuperstringStore.setState((state) => ({
+                            qqInputs: { ...state.qqInputs, managed: null },
+                          }))
+                        }
+                      >
+                        {t("models.discard")}
+                      </Button>
+                      <Button
+                        tooltip={t("library.save")}
+                        size="sm"
+                        disabled={!isManagedDirty || s.qqManagedSaving}
+                        onClick={() => void s.saveQqManagedConfig()}
+                      >
+                        {t("library.save")}
+                      </Button>
+                    </>
+                  }
                 />
                 {s.qqManagedError && (
                   <p role="alert" className="text-sm text-destructive">
                     {t("connections.managed.diag.unknown")}
                   </p>
                 )}
-                <div className="flex flex-wrap items-center justify-end gap-2 px-1">
-                  <Button
-                    tooltip={t("models.discard")}
-                    variant="outline"
-                    size="sm"
-                    disabled={!isManagedDirty || s.qqManagedSaving}
-                    onClick={() =>
-                      useSuperstringStore.setState((state) => ({
-                        qqInputs: { ...state.qqInputs, managed: null },
-                      }))
-                    }
-                  >
-                    {t("models.discard")}
-                  </Button>
-                  <Button
-                    tooltip={t("library.save")}
-                    size="sm"
-                    disabled={!isManagedDirty || s.qqManagedSaving}
-                    onClick={() => void s.saveQqManagedConfig()}
-                  >
-                    {t("library.save")}
-                  </Button>
-                </div>
               </div>
               <TransportSettings active={active} view="connection" />
             </>
           )}
           {task === "events" && (
-            <div className="mb-6 space-y-2">
+            <div className="space-y-3">
               <QqManagedMessageStream
                 key={s.qqManagedEventsPage?.generation ?? "empty"}
                 events={streamEvents}
@@ -605,12 +609,8 @@ export function QqConnectionTab({
           {task === "runtime" && (
             <>
               <TransportSettings active={active} view="runtime" />
-              <div className="mt-6">
-                <QqJudgementModel active={active} managed />
-              </div>
-              <div className="mt-6">
-                <QqMultimodalSettings active={active} />
-              </div>
+              <QqJudgementModel active={active} managed />
+              <QqMultimodalSettings active={active} />
             </>
           )}
         </>

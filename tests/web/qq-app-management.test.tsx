@@ -235,6 +235,21 @@ afterEach(() => {
 });
 
 describe("unified workspace QQ tasks", () => {
+  it("presents connection settings as named sections while retaining the independent business toggle", async () => {
+    await renderApp("qq-connection");
+    expect(
+      screen.getByRole("heading", { name: translate("connections.onebotConnection"), level: 2 }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: translate("connections.managed.title"), level: 2 }),
+    ).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: translate("connections.enableQq") })).toBeTruthy();
+    expect(
+      screen.getByRole("checkbox", { name: translate("connections.managed.enable") }),
+    ).toBeTruthy();
+    expect(screen.getByLabelText(translate("connections.websocketAddress"))).toBeTruthy();
+  });
+
   it("root shows three equally visible tasks and maps the app alias to the shared directory", async () => {
     const fake = await renderApp("qq-app-schemes");
     expect(

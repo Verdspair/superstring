@@ -552,7 +552,7 @@ function QqSettingsPane({ active, route }: { active: boolean; route: SettingsRou
         }}
         className="mb-4 min-w-0"
       >
-        <TabsList className="w-full justify-start gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:min-h-9 [&_[role=tab]]:h-auto [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-1 [&_[role=tab]]:whitespace-normal sm:w-auto sm:[&_[role=tab]]:flex-none">
+        <TabsList className="w-full max-w-full justify-start gap-1 rounded-[10px] border border-border bg-muted p-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:h-auto [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-1 [&_[role=tab]]:whitespace-normal [&_[role=tab]]:px-3 [&_[role=tab]]:text-[13px] sm:w-auto sm:[&_[role=tab]]:flex-none">
           {CONNECTION_TASK_ROUTES.map((entry) => (
             <TabsTrigger key={entry.task} value={entry.task} disabled={busy}>
               {t(entry.label)}

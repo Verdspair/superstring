@@ -5,6 +5,7 @@ import type {
   QqManagedEventKind,
   QqManagedEventView,
 } from "../../../shared/contracts/qq-managed-events";
+import { SettingsGroup } from "../../components/settings-group";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
@@ -227,14 +228,9 @@ export function QqManagedMessageStream({
   };
 
   return (
-    <div className="flex flex-col rounded-xl border border-border bg-card/60 shadow-xs">
-      {/* Header bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/80 px-4 py-2.5">
-        <div className="flex items-center gap-2">
-          <Terminal className="size-4 text-muted-foreground" />
-          <span className="text-xs font-semibold text-foreground">
-            {t("connections.stream.title", "QQ 协议事件流")}
-          </span>
+    <SettingsGroup title={t("connections.stream.title", "QQ 协议事件流")} icon={Terminal}>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 p-4 sm:p-5">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {error ? (
             <Badge
               variant="outline"
@@ -257,26 +253,25 @@ export function QqManagedMessageStream({
           </span>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           {onRefresh && (
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
               disabled={loading}
               onClick={onRefresh}
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-              title={t("connections.stream.refresh", "刷新")}
+              tooltip={t("connections.stream.refresh", "刷新")}
             >
-              <RefreshCw className={`size-3 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCw className={loading ? "animate-spin" : undefined} />
+              {t("connections.stream.refresh", "刷新")}
             </Button>
           )}
 
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             onClick={handleToggleFollow}
-            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-            title={
+            tooltip={
               autoFollow
                 ? t("connections.stream.pauseFollow", "暂停跟随")
                 : t("connections.stream.resumeFollow", "跟随最新")
@@ -297,13 +292,13 @@ export function QqManagedMessageStream({
 
           {onClear && (
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
               onClick={onClear}
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-destructive"
-              title={t("connections.stream.clear", "清空")}
+              tooltip={t("connections.stream.clear", "清空")}
             >
-              <Trash2 className="size-3" />
+              <Trash2 />
+              {t("connections.stream.clear", "清空")}
             </Button>
           )}
         </div>
@@ -331,22 +326,22 @@ export function QqManagedMessageStream({
       )}
 
       {/* Tabs */}
-      <div className="border-b border-border/60 bg-muted/20 px-3 py-1.5">
+      <div className="min-w-0 px-4 py-3 sm:px-5">
         <Tabs value={filterType} onValueChange={setFilterType} className="w-full">
-          <TabsList className="h-7 bg-transparent p-0 gap-1">
-            <TabsTrigger value="all" className="h-6 px-2 text-xs">
+          <TabsList className="flex h-auto w-fit max-w-full flex-wrap justify-start gap-1 group-data-horizontal/tabs:h-auto">
+            <TabsTrigger value="all" className="min-h-8 px-3 text-[12.5px]">
               {t("connections.stream.filter.all", "全部")}
             </TabsTrigger>
-            <TabsTrigger value="message" className="h-6 px-2 text-xs">
+            <TabsTrigger value="message" className="min-h-8 px-3 text-[12.5px]">
               {t("connections.stream.filter.message", "消息")}
             </TabsTrigger>
-            <TabsTrigger value="notice" className="h-6 px-2 text-xs">
+            <TabsTrigger value="notice" className="min-h-8 px-3 text-[12.5px]">
               {t("connections.stream.filter.notice", "通知")}
             </TabsTrigger>
-            <TabsTrigger value="request" className="h-6 px-2 text-xs">
+            <TabsTrigger value="request" className="min-h-8 px-3 text-[12.5px]">
               {t("connections.stream.filter.request", "请求")}
             </TabsTrigger>
-            <TabsTrigger value="meta_event" className="h-6 px-2 text-xs">
+            <TabsTrigger value="meta_event" className="min-h-8 px-3 text-[12.5px]">
               {t("connections.stream.filter.meta_event", "元事件")}
             </TabsTrigger>
           </TabsList>
@@ -384,7 +379,7 @@ export function QqManagedMessageStream({
                   key={view.sequence}
                   data-stream-row={view.sequence}
                   onClick={() => setSelectedSequence(view.sequence)}
-                  className="group flex w-full cursor-pointer items-baseline gap-2 rounded px-2 py-0.5 text-left hover:bg-muted/50 focus-visible:ring-1 focus-visible:ring-primary outline-none transition-colors"
+                  className="group flex w-full min-w-0 cursor-pointer flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded px-2 py-0.5 text-left hover:bg-muted/50 focus-visible:ring-1 focus-visible:ring-primary outline-none transition-colors"
                 >
                   <span className="shrink-0 text-muted-foreground/80">[{timeStr}]</span>
                   <Badge
@@ -399,7 +394,7 @@ export function QqManagedMessageStream({
                   {senderLabel && (
                     <span className="shrink-0 font-medium text-foreground">{senderLabel}</span>
                   )}
-                  <span className="truncate text-foreground/90 group-hover:text-foreground">
+                  <span className="min-w-0 flex-1 basis-36 truncate text-foreground/90 group-hover:text-foreground">
                     {summaryText}
                   </span>
                 </button>
@@ -433,7 +428,7 @@ export function QqManagedMessageStream({
       >
         <DialogContent className="max-w-lg font-mono text-xs">
           <DialogHeader>
-            <DialogTitle className="font-sans text-sm font-semibold">
+            <DialogTitle className="workspace-dialog-title font-sans">
               {t("connections.stream.detail.title", "事件结构详情")}
             </DialogTitle>
             <DialogDescription className="font-sans text-xs text-muted-foreground">
@@ -482,6 +477,6 @@ export function QqManagedMessageStream({
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </SettingsGroup>
   );
 }

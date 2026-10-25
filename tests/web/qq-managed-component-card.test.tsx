@@ -30,6 +30,29 @@ function renderCard(ui: React.ReactElement) {
 }
 
 describe("QqManagedComponentCard presentational unit tests", () => {
+  it("composes host save actions into the managed section without owning their state", () => {
+    const save = vi.fn();
+    renderCard(
+      <QqManagedComponentCard
+        status={baseStatus()}
+        onToggleManaged={vi.fn()}
+        footer={
+          <button type="button" onClick={save}>
+            Save managed preference
+          </button>
+        }
+      />,
+    );
+    const heading = screen.getByRole("heading", {
+      name: i18n.t("connections.managed.title"),
+      level: 2,
+    });
+    const action = screen.getByRole("button", { name: "Save managed preference" });
+    expect(heading.closest("section")?.contains(action)).toBe(true);
+    fireEvent.click(action);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
   it("maintains managed toggle independence without accepting or touching QQ business enabled field", () => {
     const onToggle = vi.fn();
     const status = baseStatus({ managedEnabled: false });

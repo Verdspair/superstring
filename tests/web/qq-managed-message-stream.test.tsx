@@ -108,6 +108,37 @@ const sampleEvents: QqManagedEventView[] = [
 ];
 
 describe("QqManagedMessageStream presentational unit tests", () => {
+  it("keeps stream actions visible and named alongside the section heading", async () => {
+    const onRefresh = vi.fn();
+    const onClear = vi.fn();
+    renderStream(
+      <QqManagedMessageStream
+        events={sampleEvents}
+        connected={true}
+        onRefresh={onRefresh}
+        onClear={onClear}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: i18n.t("connections.stream.title"), level: 2 }),
+    ).toBeTruthy();
+    const refresh = screen.getByRole("button", { name: i18n.t("connections.stream.refresh") });
+    const clear = screen.getByRole("button", { name: i18n.t("connections.stream.clear") });
+    expect(refresh.textContent).toContain(i18n.t("connections.stream.refresh"));
+    expect(clear.textContent).toContain(i18n.t("connections.stream.clear"));
+    await userEvent.click(refresh);
+    await userEvent.click(clear);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(onClear).toHaveBeenCalledTimes(1);
+    await userEvent.click(
+      screen.getByRole("button", { name: i18n.t("connections.stream.pauseFollow") }),
+    );
+    expect(
+      screen.getByRole("button", { name: i18n.t("connections.stream.resumeFollow") }),
+    ).toBeTruthy();
+  });
+
   it("renders dense CLI-style event stream rows with proper badges and summaries", () => {
     renderStream(<QqManagedMessageStream events={sampleEvents} connected={true} />);
 

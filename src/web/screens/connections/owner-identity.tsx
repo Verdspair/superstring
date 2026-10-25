@@ -2,14 +2,8 @@ import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import type { QqOwnerResponse } from "../../../shared/contracts/qq";
+import { SettingsGroup, SettingsRow } from "../../components/settings-group";
 import { Button } from "../../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { startRead } from "../../services/read-task";
 import { useSuperstringStore } from "../../store";
@@ -38,62 +32,60 @@ export function OwnerIdentity() {
   }, [apiClient]);
   const value = peer ?? owner?.peer_id ?? "";
   return (
-    <Card size="sm">
-      <CardHeader className="border-b bg-muted/50">
-        <CardTitle>{t("connections.owner.title")}</CardTitle>
-        <CardDescription id={hintId}>{t("connections.owner.hint")}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4 pt-(--card-spacing)">
-        <Input
-          value={value}
-          inputMode="numeric"
-          aria-label={t("connections.owner.title")}
-          aria-describedby={qqSettings?.account_id ? hintId : `${hintId} ${reasonId}`}
-          disabled={saving || !owner || !qqSettings?.account_id}
-          onChange={(e) => setPeer(e.target.value)}
-        />
-        {!qqSettings?.account_id && (
-          <p id={reasonId} className="text-xs text-muted-foreground">
-            {t("connections.owner.accountRequired")}
-          </p>
-        )}
-        <div className="flex justify-end pt-1">
-          <Button
-            variant="outline"
-            tooltip={t("hints.extensions.owner.save")}
-            disabled={
-              saving ||
-              !owner ||
-              !value.trim() ||
-              value === owner.peer_id ||
-              !qqSettings?.account_id
-            }
-            onClick={async () => {
-              setSaving(true);
-              setError("");
-              try {
-                const saved = await apiClient.updateQqOwner({
-                  peer_id: value.trim(),
-                  ...(owner?.revision ? { expected_revision: owner.revision } : {}),
-                });
-                setOwner(saved);
-                setPeer(null);
-              } catch (error) {
-                setError(error instanceof Error ? error.message : String(error));
-              } finally {
-                setSaving(false);
+    <SettingsGroup title={t("connections.owner.title")}>
+      <SettingsRow description={<span id={hintId}>{t("connections.owner.hint")}</span>}>
+        <div className="w-full space-y-3 sm:w-64">
+          <Input
+            value={value}
+            inputMode="numeric"
+            aria-label={t("connections.owner.title")}
+            aria-describedby={qqSettings?.account_id ? hintId : `${hintId} ${reasonId}`}
+            disabled={saving || !owner || !qqSettings?.account_id}
+            onChange={(e) => setPeer(e.target.value)}
+          />
+          {!qqSettings?.account_id && (
+            <p id={reasonId} className="text-xs text-muted-foreground">
+              {t("connections.owner.accountRequired")}
+            </p>
+          )}
+          <div className="flex justify-end pt-1">
+            <Button
+              variant="outline"
+              tooltip={t("hints.extensions.owner.save")}
+              disabled={
+                saving ||
+                !owner ||
+                !value.trim() ||
+                value === owner.peer_id ||
+                !qqSettings?.account_id
               }
-            }}
-          >
-            {t("connections.owner.save")}
-          </Button>
+              onClick={async () => {
+                setSaving(true);
+                setError("");
+                try {
+                  const saved = await apiClient.updateQqOwner({
+                    peer_id: value.trim(),
+                    ...(owner?.revision ? { expected_revision: owner.revision } : {}),
+                  });
+                  setOwner(saved);
+                  setPeer(null);
+                } catch (error) {
+                  setError(error instanceof Error ? error.message : String(error));
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            >
+              {t("connections.owner.save")}
+            </Button>
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
         </div>
-        {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
-      </CardContent>
-    </Card>
+      </SettingsRow>
+    </SettingsGroup>
   );
 }

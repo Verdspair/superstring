@@ -108,6 +108,28 @@ afterEach(() => {
 });
 
 describe("system and QQ model scope UI", () => {
+  it("keeps QQ auxiliary scope visible and makes role explanations available on demand", async () => {
+    const client = createClient();
+    resetStore(client);
+    render(<QqConnectionTab active={true} task="runtime" />);
+    await waitFor(() => expect(store.getState().organizationEditor).not.toBeNull());
+    const roleName = translate("schemes.allocation.aux.role.qq_sticker_annotate.name")
+      .replace(/\s*\([^)]*\)\s*$/, "")
+      .trim();
+    expect(screen.getByRole("heading", { name: translate("qq.aux.title"), level: 2 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: roleName, level: 3 })).toBeTruthy();
+    expect(screen.getByText(translate("qq.aux.saveScope"))).toBeTruthy();
+    const description = translate("schemes.allocation.aux.role.qq_sticker_annotate.desc");
+    expect(screen.queryByText(description)).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: translate("hints.field.learnAbout", roleName),
+      }),
+    );
+    expect((await screen.findByRole("tooltip")).textContent).toContain(description);
+    expect(client.getModelCapacity).toHaveBeenCalledTimes(1);
+  });
+
   it("QQ runtime reads settings and status once on entry and the judge group no longer double-reads", async () => {
     const client = createClient();
     resetStore(client);

@@ -4,16 +4,9 @@ import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { executionPolicy } from "../../../shared/contracts/permissions";
 import { Field } from "../../components/form-field";
-import { SettingsGroup } from "../../components/settings-group";
+import { SettingsGroup, SettingsRow } from "../../components/settings-group";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../components/ui/card";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import {
@@ -24,7 +17,7 @@ import {
 import { useQqInput } from "../../features/qq/use-qq-input";
 import type { ExecutionDraft, ExecutionDraftKey } from "../../features/runs/execution-draft";
 import { useSuperstringStore } from "../../store";
-
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { OwnerIdentity } from "./owner-identity";
 
 /**
@@ -80,23 +73,22 @@ export function QqBusinessSwitch() {
   );
   if (!settings) return null;
   return (
-    <Card size="sm">
-      <CardContent className="flex items-center justify-between gap-3 pt-(--card-spacing)">
-        <div className="min-w-0">
-          <p className="font-medium">{t("connections.participateInExternalChats")}</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {connection?.reason ??
-              t("connections.eachConversationSSchemeDeterminesHowTheAgentSpeaks")}
-          </p>
-        </div>
-        <Checkbox
-          aria-label={t("connections.enableQq")}
-          checked={settings.enabled}
-          disabled={saving}
-          onCheckedChange={(checked) => void save({ enabled: checked === true })}
-        />
-      </CardContent>
-    </Card>
+    <SettingsGroup>
+      <SettingsRow
+        label={t("connections.participateInExternalChats")}
+        description={
+          connection?.reason ?? t("connections.eachConversationSSchemeDeterminesHowTheAgentSpeaks")
+        }
+        action={
+          <Checkbox
+            aria-label={t("connections.enableQq")}
+            checked={settings.enabled}
+            disabled={saving}
+            onCheckedChange={(checked) => void save({ enabled: checked === true })}
+          />
+        }
+      />
+    </SettingsGroup>
   );
 }
 
@@ -146,14 +138,16 @@ export function TransportSettings({
         <>
           {view === undefined && <QqBusinessSwitch />}
 
-          <Card size="sm">
-            <CardHeader className="border-b bg-muted/50">
-              <CardTitle>{t("connections.onebotConnection")}</CardTitle>
-              <CardDescription>
-                {t("connections.connectYourBotServiceCredentialsRemainOnThisMachine")}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-5 pt-(--card-spacing)">
+          <SettingsGroup
+            title={t("connections.onebotConnection")}
+            action={
+              <WorkspaceHelp
+                title={t("connections.onebotConnection")}
+                description={t("connections.connectYourBotServiceCredentialsRemainOnThisMachine")}
+              />
+            }
+          >
+            <div className="space-y-5 p-4 sm:p-5">
               <Field label="connections.assistantAccount" tooltip={t("hints.fieldExtra.qqAccount")}>
                 <Input
                   inputMode="numeric"
@@ -162,7 +156,7 @@ export function TransportSettings({
                   onChange={(e) => patch("accountId", e.target.value)}
                 />
               </Field>
-              <div className="space-y-4 border-l-2 border-muted pl-4 sm:pl-5">
+              <div className="space-y-5">
                 <Field
                   label="connections.websocketAddress"
                   tooltip={t(
@@ -214,8 +208,8 @@ export function TransportSettings({
                   {t("connections.saveAccessSettings")}
                 </Button>
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </SettingsGroup>
         </>
       )}
       {view !== "connection" && (
@@ -404,48 +398,39 @@ function QqDeliveryLimits({ active = true }: { active?: boolean } = {}) {
           {t(notice)}
         </p>
       )}
-      <p className="px-1 text-xs text-muted-foreground">{t("capabilities.policy.globalScope")}</p>
-      <ul className="divide-y divide-border/60 overflow-hidden rounded-xl border border-border/80 bg-card text-card-foreground">
+      <SettingsGroup description={t("capabilities.policy.globalScope")}>
         {qqModules.map((entry) => (
-          <li
+          <SettingsRow
             key={entry.module}
-            className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
-          >
-            <div className="flex items-start gap-3 min-w-0">
-              <div className="space-y-0.5 min-w-0">
-                <div className="text-sm font-medium text-foreground">
-                  {t(`connections.execution.modules.${entry.module}`)}
-                </div>
-                <div className="text-xs text-muted-foreground leading-relaxed">
-                  {t(`connections.execution.modules.${entry.module}Hint`)}
-                </div>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
-              <Badge
-                variant="outline"
-                className="h-auto max-w-full whitespace-normal break-words text-left"
-              >
-                {t(
-                  savedModules
-                    ? savedModules[entry.module]
-                      ? "capabilities.state.on"
-                      : "capabilities.state.off"
-                    : "capabilities.state.unread",
-                )}
-              </Badge>
-              <Button
-                variant="outline"
-                size="sm"
-                tooltip={t("hints.qq.moduleConfigure")}
-                onClick={() => useSuperstringStore.getState().openSettingsRoute(entry.route)}
-              >
-                {t("connections.tools.configureFunction")}
-              </Button>
-            </div>
-          </li>
+            label={t(`connections.execution.modules.${entry.module}`)}
+            description={t(`connections.execution.modules.${entry.module}Hint`)}
+            action={
+              <>
+                <Badge
+                  variant="outline"
+                  className="h-auto max-w-full whitespace-normal break-words text-left"
+                >
+                  {t(
+                    savedModules
+                      ? savedModules[entry.module]
+                        ? "capabilities.state.on"
+                        : "capabilities.state.off"
+                      : "capabilities.state.unread",
+                  )}
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  tooltip={t("hints.qq.moduleConfigure")}
+                  onClick={() => useSuperstringStore.getState().openSettingsRoute(entry.route)}
+                >
+                  {t("connections.tools.configureFunction")}
+                </Button>
+              </>
+            }
+          />
         ))}
-      </ul>
+      </SettingsGroup>
     </div>
   );
 }

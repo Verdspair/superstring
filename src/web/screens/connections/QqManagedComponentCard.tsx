@@ -1,6 +1,6 @@
 import { Bot, ExternalLink, Folder, LogIn, RefreshCw } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   QqManagedAccounts,
@@ -49,6 +49,7 @@ export interface QqManagedCardProps {
   onPatchResourceDraftRoot?: (root: string) => void;
   onUpdateResourcePath?: (root: string) => void;
   onRetry?: () => void;
+  footer?: ReactNode;
 }
 
 const phaseLabelKeys: Record<QqManagedPhase, string> = {
@@ -102,6 +103,7 @@ export function QqManagedComponentCard({
   onPatchResourceDraftRoot,
   onUpdateResourcePath,
   onRetry,
+  footer,
 }: QqManagedCardProps) {
   const { t } = useTranslation();
   const [localPath, setLocalPath] = useState(resources?.root ?? "");
@@ -298,7 +300,7 @@ export function QqManagedComponentCard({
       {showQuickLogin && onSelectQuickLoginAccount && onExecuteQuickLogin && (
         <div className="border-t border-border px-4 py-3 sm:px-5">
           <div className="flex flex-col gap-2">
-            <span className="text-xs font-medium text-foreground">
+            <span className="text-[13.5px] font-medium text-foreground">
               {t("connections.managed.quickLogin.title", "本机快捷登录")}
             </span>
             {!canQuickLogin && (
@@ -314,13 +316,13 @@ export function QqManagedComponentCard({
                   {t("connections.managed.retry")}
                 </Button>
               )}
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <NativeSelect
                 size="sm"
                 value={selectedQuickLoginAccount ?? ""}
                 disabled={isBusy}
                 onChange={(e) => onSelectQuickLoginAccount(e.target.value)}
-                className="h-8 text-xs font-mono"
+                className="min-w-0 max-w-full flex-1 basis-48 font-mono"
               >
                 <option value="" disabled>
                   {t("connections.managed.quickLogin.selectPlaceholder", "选择已登录账号...")}
@@ -340,7 +342,7 @@ export function QqManagedComponentCard({
                   !accounts.some((account) => account.account_id === selectedQuickLoginAccount)
                 }
                 onClick={() => onExecuteQuickLogin()}
-                className="h-8 shrink-0 text-xs"
+                className="shrink-0"
               >
                 <LogIn className="mr-1.5 size-3.5" />
                 {t("connections.managed.quickLogin.loginButton", "快速登录")}
@@ -412,6 +414,9 @@ export function QqManagedComponentCard({
             </Button>
           </div>
         </div>
+      )}
+      {footer && (
+        <div className="flex flex-wrap items-center justify-end gap-2 p-4 sm:p-5">{footer}</div>
       )}
     </SettingsGroup>
   );

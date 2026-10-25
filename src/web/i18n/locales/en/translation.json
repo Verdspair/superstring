@@ -3334,5 +3334,8 @@
   "schemes.bindings.triggers.immediateSave": "This conversation only. Changes save immediately.",
   "connections.managed.quickLogin.notReady": "Quick login is available while the managed component is running and waiting for a QR scan.",
   "connections.managed.resources.configure": "Path settings",
-  "connections.managed.resources.officialLink": "Get the official runtime"
+  "connections.managed.resources.officialLink": "Get the official runtime",
+  "connections.stream.refresh": "Refresh",
+  "connections.stream.retry": "Retry",
+  "connections.stream.status.error": "Error"
 }

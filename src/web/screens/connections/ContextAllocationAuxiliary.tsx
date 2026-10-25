@@ -5,6 +5,7 @@ import type {
   AuxiliaryAllocationProfile,
   GlobalAuxiliaryAllocation,
 } from "../../../shared/contracts/context-allocation";
+import { SettingsGroup } from "../../components/settings-group";
 import { Button } from "../../components/ui/button";
 import {
   Card,
@@ -17,9 +18,12 @@ import {
 import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import { NativeSelect, NativeSelectOption } from "../../components/ui/native-select";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 
 export interface ContextAllocationAuxiliaryProps {
   scope?: "agent" | "global" | "all";
+  /** Global-only hosts can compose role editors into the common settings surface. */
+  presentation?: "cards" | "settings";
   agentProfiles?: AgentAuxiliaryAllocation;
   globalProfiles?: GlobalAuxiliaryAllocation;
   onAgentChange?: (next: AgentAuxiliaryAllocation) => void;
@@ -136,6 +140,7 @@ const renderFallback = (val: number | null | undefined): string => {
 
 export function ContextAllocationAuxiliary({
   scope = "all",
+  presentation = "cards",
   agentProfiles = {},
   globalProfiles = {},
   onAgentChange,
@@ -157,6 +162,7 @@ export function ContextAllocationAuxiliary({
   labels = {},
   globalRoles,
 }: ContextAllocationAuxiliaryProps) {
+  const settingsPresentation = presentation === "settings" && scope === "global";
   // Track raw drafts for inputs to allow temporary invalid/typing states without clobbering
   const [rawDrafts, setRawDrafts] = useState<RawDraftState>({});
 
@@ -346,14 +352,29 @@ export function ContextAllocationAuxiliary({
       <div
         key={meta.key}
         data-testid={`aux-card-${meta.key}`}
-        className="rounded-lg border bg-card/60 p-4 transition-colors space-y-3"
+        className={
+          settingsPresentation
+            ? "space-y-4 p-4 sm:p-5 transition-colors"
+            : "rounded-lg border bg-card/60 p-4 transition-colors space-y-3"
+        }
       >
         <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-center">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-semibold text-foreground">{cleanPrimaryName}</span>
-            <code className="rounded bg-muted/70 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground border border-border/40">
-              {meta.key}
-            </code>
+            {settingsPresentation ? (
+              <h3 className="workspace-card-title text-foreground">{cleanPrimaryName}</h3>
+            ) : (
+              <span className="text-sm font-semibold text-foreground">{cleanPrimaryName}</span>
+            )}
+            {settingsPresentation ? (
+              <WorkspaceHelp
+                title={cleanPrimaryName}
+                description={labels[`role.${meta.key}.desc`] ?? meta.description}
+              />
+            ) : (
+              <code className="rounded bg-muted/70 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground border border-border/40">
+                {meta.key}
+              </code>
+            )}
           </div>
           <label
             htmlFor={`aux-custom-${meta.key}`}
@@ -376,14 +397,22 @@ export function ContextAllocationAuxiliary({
           </label>
         </div>
 
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          {labels[`role.${meta.key}.desc`] ?? meta.description}
-        </p>
+        {!settingsPresentation && (
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {labels[`role.${meta.key}.desc`] ?? meta.description}
+          </p>
+        )}
 
         {roleDetails?.[meta.key]}
 
         {isConfigured ? (
-          <div className="ml-1 pl-3.5 sm:pl-4 border-l-2 border-primary/25 pt-2 space-y-3">
+          <div
+            className={
+              settingsPresentation
+                ? "space-y-4"
+                : "ml-1 pl-3.5 sm:pl-4 border-l-2 border-primary/25 pt-2 space-y-3"
+            }
+          >
             <div className="grid gap-4 sm:grid-cols-3">
               {/* Mode Select */}
               <div className="space-y-2">
@@ -419,8 +448,22 @@ export function ContextAllocationAuxiliary({
                   htmlFor={`aux-input-${meta.key}`}
                   className="text-xs font-medium text-muted-foreground flex justify-between"
                 >
-                  <span>{labels["inputLimit"] || "Input Limit"}</span>
-                  <span className="text-[10px] text-muted-foreground/75 font-mono">
+                  <span className="inline-flex items-center gap-1">
+                    {labels["inputLimit"] || "Input Limit"}
+                    {settingsPresentation && (
+                      <WorkspaceHelp
+                        title={labels["inputLimit"] || "Input Limit"}
+                        description={labels[`role.${meta.key}.inputDesc`] ?? meta.inputUnitDesc}
+                      />
+                    )}
+                  </span>
+                  <span
+                    className={
+                      settingsPresentation
+                        ? "text-xs text-muted-foreground font-mono"
+                        : "text-[10px] text-muted-foreground/75 font-mono"
+                    }
+                  >
                     {labels["unit"] || "Blank / null"}
                   </span>
                 </label>
@@ -437,7 +480,13 @@ export function ContextAllocationAuxiliary({
                   className={`h-8 text-xs font-mono ${!parsedInput.valid ? "border-destructive ring-destructive" : ""}`}
                 />
                 {!parsedInput.valid && (
-                  <p className="text-[10px] text-destructive">
+                  <p
+                    className={
+                      settingsPresentation
+                        ? "text-xs text-destructive"
+                        : "text-[10px] text-destructive"
+                    }
+                  >
                     {labels["invalidPositiveInt"] || "Must be a positive integer, null, or blank"}
                   </p>
                 )}
@@ -449,8 +498,22 @@ export function ContextAllocationAuxiliary({
                   htmlFor={`aux-output-${meta.key}`}
                   className="text-xs font-medium text-muted-foreground flex justify-between"
                 >
-                  <span>{labels["outputReserved"] || "Output Reserve (max_tokens)"}</span>
-                  <span className="text-[10px] text-muted-foreground/75 font-mono">
+                  <span className="inline-flex items-center gap-1">
+                    {labels["outputReserved"] || "Output Reserve (max_tokens)"}
+                    {settingsPresentation && (
+                      <WorkspaceHelp
+                        title={labels["outputReserved"] || "Output Reserve (max_tokens)"}
+                        description={labels[`role.${meta.key}.outputDesc`] ?? meta.outputDesc}
+                      />
+                    )}
+                  </span>
+                  <span
+                    className={
+                      settingsPresentation
+                        ? "text-xs text-muted-foreground font-mono"
+                        : "text-[10px] text-muted-foreground/75 font-mono"
+                    }
+                  >
                     {labels["hardContract"] || "Hard contract"}
                   </span>
                 </label>
@@ -467,14 +530,23 @@ export function ContextAllocationAuxiliary({
                   className={`h-8 text-xs font-mono ${!parsedOutput.valid ? "border-destructive ring-destructive" : ""}`}
                 />
                 {!parsedOutput.valid && (
-                  <p className="text-[10px] text-destructive">
+                  <p
+                    className={
+                      settingsPresentation
+                        ? "text-xs text-destructive"
+                        : "text-[10px] text-destructive"
+                    }
+                  >
                     {labels["invalidPositiveInt"] || "Must be a positive integer, null, or blank"}
                   </p>
                 )}
               </div>
             </div>
 
-            <div className="text-[11px] text-muted-foreground/80 space-y-1 bg-muted/30 border border-border/40 p-2.5 rounded">
+            <div
+              hidden={settingsPresentation}
+              className="text-[11px] text-muted-foreground/80 space-y-1 bg-muted/30 border border-border/40 p-2.5 rounded [&[hidden]]:hidden"
+            >
               <p className="leading-relaxed">
                 •{" "}
                 <span className="font-medium text-foreground/80">
@@ -492,7 +564,13 @@ export function ContextAllocationAuxiliary({
             </div>
           </div>
         ) : (
-          <div className="ml-1 pl-3.5 sm:pl-4 border-l-2 border-border/40 py-1 text-xs text-muted-foreground">
+          <div
+            className={
+              settingsPresentation
+                ? "text-xs text-muted-foreground"
+                : "ml-1 pl-3.5 sm:pl-4 border-l-2 border-border/40 py-1 text-xs text-muted-foreground"
+            }
+          >
             {labels["unconfiguredNote"] ||
               "No separate allocation configured; caller defaults stay in effect. Use the toggle above to set a custom cap or mode."}
           </div>
@@ -503,6 +581,62 @@ export function ContextAllocationAuxiliary({
 
   const showAgent = scope !== "global";
   const showGlobal = scope !== "agent";
+
+  if (settingsPresentation) {
+    return (
+      <div data-testid="context-allocation-auxiliary-root">
+        <SettingsGroup
+          title={labels["globalSectionTitle"] || "Global Auxiliary Tasks (Organization)"}
+          action={
+            <WorkspaceHelp
+              title={labels["globalSectionTitle"] || "Global Auxiliary Tasks (Organization)"}
+              description={
+                labels["globalSectionDesc"] ||
+                "Per-request limits for global knowledge organization and QQ visual annotation/description tasks. Shared by all conversations."
+              }
+            />
+          }
+        >
+          <div data-testid="aux-section-global" className="divide-y divide-border">
+            {visibleGlobalRoles.map((role) =>
+              renderRoleCard(role, "global", globalProfiles[role.key as GlobalRoleKey]),
+            )}
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5">
+            <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+              {labels["globalScopeNotice"] ||
+                "Saving updates organization settings for every feature using global vision/knowledge organization."}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {onDiscardGlobal && (
+                <Button
+                  tooltip={<Trans i18nKey="hints.complete.auxDiscard" />}
+                  data-testid="aux-discard-global-btn"
+                  variant="outline"
+                  size="sm"
+                  disabled={readOnly || !canDiscardGlobal}
+                  onClick={() => onDiscardGlobal()}
+                >
+                  {labels["discardGlobal"] || "Discard"}
+                </Button>
+              )}
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.auxGlobalSave" />}
+                data-testid="aux-save-global-btn"
+                size="sm"
+                disabled={readOnly || !canSaveGlobal || !globalValid || savingGlobal}
+                onClick={() => onSaveGlobal?.()}
+              >
+                {savingGlobal
+                  ? labels["saving"] || "Saving..."
+                  : labels["saveGlobal"] || "Save Global Aux Allocation"}
+              </Button>
+            </div>
+          </div>
+        </SettingsGroup>
+      </div>
+    );
+  }
 
   return (
     <div data-testid="context-allocation-auxiliary-root" className="space-y-6">

@@ -36,6 +36,8 @@
 
 ### 当前 main 源码更新（非安装包发布）
 
+- **QQ 连接界面**：连接、消息事件和运行设置采用一致的分组、标题、按钮和间距，减少重复边框与大段说明；关键状态、开关及保存操作保持可见，登录与配置行为不变。
+
 以下功能属于 main 源码更新，未重发 v0.4.0-alpha-2 安装包。
 
 - **QQ 设置滚动修复**：进入连接设置后，只滚动内容区，应用顶栏与方案页签保持固定；模型建议输入框、键盘选择与未保存草稿行为保持不变。
@@ -114,6 +116,8 @@ This release focuses on QQ replies, chat history, and desktop exit behavior. Cha
 Fully exit the application and back up your data directory before updating. The database schema upgrades from **53 to 54** (via migration `0054_qq_initiative_batches.sql`). Rolling back requires the older application executable and a matching pre-upgrade schema 53 database and key backup. See [UPGRADING.md](UPGRADING.md) for details.
 
 ### Current source updates on main (not a packaged release)
+
+- **QQ connection interface**: Connection, message events, and runtime settings now share consistent groups, headings, buttons, and spacing, with fewer nested borders and long descriptions. Key states, switches, and save actions remain visible; login and configuration behavior is unchanged.
 
 These features are source updates on main. The v0.4.0-alpha-2 packages have not been reissued.
 
