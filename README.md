@@ -47,7 +47,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 
 在「对话」列表顶部点击 **新建／添加**，可选择新建网页对话、添加 QQ 群聊或添加 QQ 私聊。QQ 会话可从已观察列表中按类型和已知名称／号码查找，也可手动填写群号或对方 QQ 号，再明确选择 Agent 和方案。群聊填写群号，私聊填写联系人的 QQ 号，不是 NapCat 登录的机器人账号；自身账号会被拦截并提示。添加只保存配置，不会创建群、添加好友、发送消息或自动开启 QQ、主动联系、记忆共享；已有绑定会指向管理入口，不会静默覆盖。添加成功即进入对话列表，没有消息也可打开空会话；目录读取失败时只重读目录，不会重复添加。添加时可原地新建并选中方案，保留号码与 Agent；新方案未开启参与方式会明确提示，不自动替你开启。QQ 连接设置和方案详情的使用会话页复用同一添加流程。
 
-在「方案 → 会话与绑定」中查看和管理群聊与私聊，进入群聊可编辑**本群配置**。群聊的参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。群聊与私聊共用同一套会话配置页，分别显示“本群配置”和“本私聊配置”。可按会话与 Agent 自定义策略，未自定义的项目跟随方案；私聊不显示群成员、群能力停用或按群内发言人拆分等专属项。配置入口位于会话顶部、会话菜单和绑定管理。网页对话不使用 QQ 方案。QQ 会话菜单中的“移除会话”解除绑定并从目录移除，不删除 Agent、方案或 QQ 平台聊天；本机历史资料按原规则保留但不再由这个入口访问。运行中任务或发送结果未知时会拒绝移除，避免中断或误重发。
+打开「方案」，在 QQ 任务入口中选择「会话与绑定」「QQ连接」或「数据与保留」，也可直接打开共用方案。方案详情只显示当前方案的设置与使用会话；各任务有明确的返回入口。进入群聊可编辑**本群配置**。群聊的参与、回应、上下文、媒体与提示词可跟随共享方案或保存为本群覆盖值；换绑不继承覆盖值，切回时自动恢复。页面支持针对单个群停用系统能力，停用即时生效。群聊与私聊共用同一套会话配置页，分别显示“本群配置”和“本私聊配置”。可按会话与 Agent 自定义策略，未自定义的项目跟随方案；私聊不显示群成员、群能力停用或按群内发言人拆分等专属项。配置入口位于会话顶部、会话菜单和绑定管理。网页对话不使用 QQ 方案。QQ 会话菜单中的“移除会话”解除绑定并从目录移除，不删除 Agent、方案或 QQ 平台聊天；本机历史资料按原规则保留但不再由这个入口访问。运行中任务或发送结果未知时会拒绝移除，避免中断或误重发。
 
 无本机托管运行环境时，使用外部 OneBot 服务：
 
@@ -61,7 +61,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 - 自动化受到平台规则与账号状态约束，建议使用测试账号并妥善保管端点与凭据。
 - 连接就绪不代表消息一定送达；连接断开时保持 QQ 与 NapCat 正常运行，程序会间隔重试连接，不承诺立即恢复连接或补发遗漏回复。
 - **账号切换安全保护**：在 QQ 连接设置中更换绑定的账号时提供安全检查。若原账号或新账号历史关联的会话中存在正在执行的任务、仍在处理的后台工作、正在发送或发送结果未知的消息，程序会拒绝切换，避免在未结清工作时改变账号归属；相同账号保存、无变更操作或修改普通设置不会误拦截。
-- **应用内 QQ 登录与状态**：在「方案 → QQ设置 → 连接」查看账号登录与 OneBot 连接状态；账号在线不等于消息通道就绪。托管默认关闭，须先手动部署并明确配置本机运行环境，再启用；QQ 业务总开关独立控制。可手动刷新状态、获取或刷新二维码、重试登录；页面隐藏或切换界面连接归属后清除二维码，状态读取不获取二维码，页面不定时轮询。当前 Windows 已配置的运行环境随桌面启动、正常关窗退出，再次打开自动启动。此功能不包含 QQ 运行环境安装包、下载向导或全平台安装支持。
+- **QQ 托管与消息观察**：在“方案 → QQ连接 → 连接”选择本地已解压的官方 NapCat 运行目录，准备资源后启用托管。可选择该运行时已记录的账号快速登录，或获取临时二维码并用手机 QQ 扫码确认。登录后，应用配置所需的本地 WebSocket 服务，或只读复用已有的匹配配置；托管开关与 QQ 业务开关分开保存。“消息事件”任务提供紧凑的通信事件列表，可按类型筛选、展开详情，并在向上翻看时暂停自动跟随。正文预览遵守原会话绑定、来源修订与保留期限，未绑定或失效的消息只显示元数据。Windows 上自有组件随桌面启动和退出，原有外部 OneBot 连接方式保留；运行包需另行从官方获取，不包含在安装包中。
 
 ### 多模态与媒体处理
 
@@ -87,7 +87,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 - **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地编排与聚合已授权的只读工具调用；默认关闭，在「系统能力 → 执行设置」开启，不需要逐模型许可。
 - **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
 - **任务与本地审批**：「扩展 → 工具」中的工具授权经批准后持续生效，修订变更时需重新确认；持久化任务中需审批的调用会生成等待审批票据，需在本地手动确认。
-- **调用与唤醒重试**：在「系统能力 → 执行设置」中可配置模型与只读工具调用失败重试（默认共 3 次尝试，含首次，间隔 2 秒，仅对明确的 HTTP 429／503 拒收重试，写操作与超时不盲目重试）；在「方案 → QQ 连接」中可配置唤醒失败重试（默认共 3 次尝试，含首次，间隔 15 秒）。
+- **调用与唤醒重试**：在「系统能力 → 执行设置」中可配置模型与只读工具调用失败重试（默认共 3 次尝试，含首次，间隔 2 秒，仅对明确的 HTTP 429／503 拒收重试，写操作与超时不盲目重试）；在「方案 → QQ连接 → 运行设置」中可配置唤醒失败重试（默认共 3 次尝试，含首次，间隔 15 秒）。
 - **运行概览与步骤选择**：运行概览聚焦结果与依据，采用竖列步骤卡片展示模型调用，打开时默认选定首个步骤并在下方展示详情。
 - **技术追踪与执行排查**：面向过程诊断，通过时间线查看执行顺序、耗时与错误，点击步骤直接联动下方详情；父任务下的实际模型调用也可查看，消除多余的重复列表。
 - **运行内容展开与按需读取**：选中步骤的输出、输入与关联来源分区呈现且输出在最前，各条目默认收起并支持按需独立展开；打开运行详情时自动预取当前运行全部实际调用，预取完成后切换或展开不再发起网络请求（预取未完成前显示加载状态；输入、输出与来源展示仍受访问权限与保留期限制，已过保留期或已撤回内容明确标示）；区分模型生成完成与平台送达，同一送达结果不重复读取；完整技术追踪记录与关联来源保留。
@@ -122,7 +122,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 3. 创建或选择 Agent，导入并授权所需知识。
 4. 新建网页对话即可开始使用。
 5. 接入 QQ：使用已部署并配置的本机托管运行环境；没有时按上文步骤独立运行 QQ NT 与 OneBot 11 服务（如 NapCat），开启正向 WebSocket 服务端。
-6. 在「方案 → QQ设置 → 连接」配置账号；使用外部服务时填入 WebSocket 地址、访问令牌与 Agent 账号（机器人 QQ 号）。开启「启用 QQ」，再将群或私聊绑定到 Agent 与方案。
+6. 在「方案 → QQ连接 → 连接」配置账号；使用外部服务时填入 WebSocket 地址、访问令牌与 Agent 账号（机器人 QQ 号）。开启「启用 QQ」，再将群或私聊绑定到 Agent 与方案。
 
 LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务凭据在本地加密存储，备份时需将资料目录与密钥一同保管。
 
@@ -186,7 +186,7 @@ Message history initially reads only the latest 100 records from the server. Use
 
 Use **New / add** at the top of the conversation list to start a web conversation, add a QQ group chat, or add a QQ private chat. For QQ, filter observed conversations by type and search known names or numbers, or enter a group/contact number manually, then explicitly select an Agent and a scheme. Enter a group number for groups and the contact’s QQ number for private chats, not the bot account signed into NapCat. A private chat targeting the bot itself is rejected with an explanation. Adding saves configuration only: it does not create a group, add a friend, send a message, or automatically enable QQ, proactive contact, or memory sharing. Existing bindings lead to management rather than being silently overwritten. Added conversations appear in the list immediately and can be opened even without messages. A directory-read failure offers a read-only retry, not another binding creation. Create and select a scheme in place without losing the target or Agent. A new scheme with no participation triggers is clearly marked; nothing is enabled automatically. QQ connection settings and a scheme’s usage page reuse the same flow.
 
-View and manage group and private chats under **Schemes → Conversations & bindings**. Groups have **Group settings** with overrides for participation, replies, context, media, and prompts. Overrides stay with the group/Agent pair and return when switching back; per-group capability restrictions take effect immediately. Groups and private chats use the same conversation policy editor, titled Group settings or Private chat settings. Customize policy for the conversation and Agent, while other fields follow the scheme. Private chats omit group members, group-only capability restrictions, and splitting replies by group speaker. Open settings from the conversation header, its menu, or binding management. Web conversations do not use QQ schemes. Remove conversation in a QQ conversation menu removes its binding and directory entry, not the Agent, scheme, or QQ chat. Local history keeps its retention rules but is no longer accessible through that entry. Removal is refused while work is active or a send result is unknown.
+Open **Schemes** to find shared schemes and the equally visible QQ tasks: **Conversations & bindings**, **QQ connection**, and **Data & retention**. Scheme details focus on the selected scheme and its conversations. Each task has a clear return path. Groups have **Group settings** with overrides for participation, replies, context, media, and prompts. Overrides stay with the group/Agent pair and return when switching back; per-group capability restrictions take effect immediately. Groups and private chats use the same conversation policy editor, titled Group settings or Private chat settings. Customize policy for the conversation and Agent, while other fields follow the scheme. Private chats omit group members, group-only capability restrictions, and splitting replies by group speaker. Open settings from the conversation header, its menu, or binding management. Web conversations do not use QQ schemes. Remove conversation in a QQ conversation menu removes its binding and directory entry, not the Agent, scheme, or QQ chat. Local history keeps its retention rules but is no longer accessible through that entry. Removal is refused while work is active or a send result is unknown.
 
 Without a local managed runtime, use an external OneBot service:
 
@@ -200,7 +200,7 @@ Operational details:
 - Automation is subject to platform and account policies; use a dedicated test account and protect your endpoints and credentials.
 - An active connection does not guarantee message delivery. If the connection drops while QQ and NapCat remain running, the application retries periodically, but does not guarantee immediate reconnection or backfilled replies.
 - **Account switching protection**: Updating or switching the bound QQ account includes safeguards before changing accounts. If historical sessions associated with either the old or new account contain tasks in progress, ongoing background work, or messages being sent or with unknown delivery results, the application refuses the switch to avoid changing account ownership while work is outstanding. Same-account updates, no-op saves, and ordinary setting edits are not blocked.
-- **In-app QQ login and status**: Open **Schemes → QQ settings → Connection** to view account login and OneBot connection status; an online account does not mean the message channel is ready. Managed mode is off by default: manually deploy and explicitly configure a local runtime before enabling it. The QQ business switch is separate. Manually refresh status, request or refresh a QR code, or retry login. Hiding the page or changing the UI connection ownership clears the QR code; reading status does not fetch one, and the page does not poll on a timer. The currently configured Windows runtime starts with the desktop, exits on normal window close, and starts automatically when reopened. This feature includes no QQ runtime bundle, download wizard, or all-platform installer support.
+- **Managed QQ and message observation**: Under **Schemes → QQ connection → Connection**, select an extracted official NapCat runtime directory, prepare its resources, and enable managed mode. Choose an account saved by that runtime for quick login, or request a temporary QR code and confirm it in mobile QQ. After login, the app configures the required local WebSocket server or reuses a matching configuration read-only. Managed mode and the QQ business switch are saved separately. The Message events task provides a compact event list with type filters, expandable details, and paused autoscroll while reading older entries. Body previews follow the original conversation binding, source revision, and retention period; unbound or invalid sources show metadata only. On Windows, app-owned components start and stop with the desktop. Existing external OneBot connections remain available. Obtain the runtime package separately from its official source; installers do not include it.
 
 ### Multimodal and media processing
 
@@ -226,7 +226,7 @@ The navigation organizes seven workspace sections across three groups: **Daily**
 - **Programmatic Tool Calling (PTC)**: An optional QuickJS WASM execution mode for orchestrating and aggregating authorized read-only tool calls locally. It is disabled by default and enabled under System capabilities → Execution settings, without a per-model opt-in.
 - **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
 - **Tasks and local approvals**: Tool authorizations under Extensions → Tools remain active once approved until revisions change; task calls requiring approval generate pending tickets that require manual local confirmation.
-- **Call and wake retries**: Configure model and read-only tool call retries under System capabilities → Execution settings (default: 3 attempts including the first, with a 2-second delay, retrying only explicit 429/503 rejections, without blind retries for writes or timeouts); configure wake retries under Schemes → QQ connection (default: 3 attempts including the first, with a 15-second delay).
+- **Call and wake retries**: Configure model and read-only tool call retries under System capabilities → Execution settings (default: 3 attempts including the first, with a 2-second delay, retrying only explicit 429/503 rejections, without blind retries for writes or timeouts); configure wake retries under Schemes → QQ connection → Runtime settings (default: 3 attempts including the first, with a 15-second delay).
 - **Run overview and step selection**: Run overviews focus on results and evidence, presenting model calls as vertical step cards, selecting the first step by default, and displaying its details below.
 - **Technical trace and execution inspection**: Focuses on process diagnosis, using a timeline to inspect execution order, duration, and errors. Selecting a step links directly to its details below, and actual model calls under parent runs can also be inspected, eliminating redundant duplicate step listings.
 - **Run detail content expansion and on-demand reading**: Outputs, inputs, and associated sources of the selected step are clearly separated with outputs shown first; all rows start collapsed and expand independently. When opening run details, all real calls for the current run are prefetched; once prefetched, switching steps or expanding sections requires no additional network requests (a loading indicator displays while prefetching; viewing inputs, outputs, and sources remains subject to access authorization and retention limits, with expired or revoked content clearly marked). Distinguishes model-generated content from platform delivery confirmation, avoiding duplicate reads for the same delivery result; full technical trace records and associated sources are preserved.
@@ -261,7 +261,7 @@ Application packages bundle their runtime. Inference requires a local server suc
 3. Create or select an Agent, then import and authorize necessary knowledge.
 4. Start a web conversation.
 5. To connect QQ: use a locally deployed and configured managed runtime. Otherwise, follow the steps above to run QQ NT and a OneBot 11 service (such as NapCat) independently with a forward WebSocket server.
-6. Configure the account under **Schemes → QQ settings → Connection**. For an external service, enter its WebSocket address, access token, and bot QQ number. Turn on **Enable QQ** and bind groups or private chats to an Agent and a scheme.
+6. Configure the account under **Schemes → QQ connection → Connection**. For an external service, enter its WebSocket address, access token, and bot QQ number. Turn on **Enable QQ** and bind groups or private chats to an Agent and a scheme.
 
 If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider credentials are encrypted on disk; store the profile and encryption keys together.
 

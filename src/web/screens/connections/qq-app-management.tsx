@@ -1,5 +1,5 @@
 import { ImageIcon, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { SettingsGroup, SettingsRow } from "../../components/settings-group";
@@ -7,18 +7,20 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { InputSuggestions } from "../../components/ui/input-suggestions";
 import { organizationDirty } from "../../features/knowledge/types";
+import { useQqInput } from "../../features/qq/use-qq-input";
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
 import { QqJudgementModel } from "../environment/model-defaults";
 import { AllocationModelCapacity } from "./AllocationModelCapacity";
 import { ContextAllocationAuxiliary } from "./ContextAllocationAuxiliary";
-import { QqConversationEntry } from "./QqConversationEntry";
 import {
   QqManagedComponentCard,
+  type QqManagedNetworkApply,
   type QqManagedPhase,
   type QqManagedStatus,
 } from "./QqManagedComponentCard";
-import { TransportSettings } from "./transport-settings";
+import { QqManagedMessageStream } from "./QqManagedMessageStream";
+import { QqBusinessSwitch, TransportSettings } from "./transport-settings";
 
 const connectionPhaseLabels: Record<string, string> = {
   unavailable: "connections.thisProcessHasNoTransportRuntime",
@@ -281,23 +283,49 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
   );
 }
 
-export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
+export type QqConnectionTask = "connection" | "events" | "runtime";
+
+export function QqConnectionTab({
+  active = true,
+  task = "connection",
+}: {
+  active?: boolean;
+  task?: QqConnectionTask;
+} = {}) {
   const { t } = useTranslation();
   const s = useSuperstringStore(
     useShallow((state) => ({
+      apiClient: state.apiClient,
+      qqManagedLifecycleId: state.qqManagedLifecycleId,
       loadQqAccess: state.loadQqAccess,
       loadOrganization: state.loadOrganization,
       loadQqManaged: state.loadQqManaged,
+      loadQqManagedResources: state.loadQqManagedResources,
+      loadQqManagedAccounts: state.loadQqManagedAccounts,
       patchQqManagedDraft: state.patchQqManagedDraft,
+      patchQqManagedResourceDraft: state.patchQqManagedResourceDraft,
+      saveQqManagedResources: state.saveQqManagedResources,
+      quickLoginQqManaged: state.quickLoginQqManaged,
       qqAccessLoading: state.qqAccessLoading,
       qqAccessSaving: state.qqAccessSaving,
       qqConnection: state.qqConnection,
       managedDraft: state.qqInputs.managed,
+      resourceDraft: state.qqInputs.managedResources,
       qqManagedConfig: state.qqManagedConfig,
       qqManagedError: state.qqManagedError,
       qqManagedLoading: state.qqManagedLoading,
       qqManagedSaving: state.qqManagedSaving,
       qqManagedStatus: state.qqManagedStatus,
+      qqManagedResources: state.qqManagedResources,
+      qqManagedResourcesLoading: state.qqManagedResourcesLoading,
+      qqManagedAccounts: state.qqManagedAccounts,
+      qqManagedAccountsLoading: state.qqManagedAccountsLoading,
+      qqManagedEventsPage: state.qqManagedEventsPage,
+      qqManagedEventsLoading: state.qqManagedEventsLoading,
+      qqManagedEventsError: state.qqManagedEventsError,
+      loadQqManagedEvents: state.loadQqManagedEvents,
+      setQqManagedEventsActive: state.setQqManagedEventsActive,
+      clearQqManagedEventsView: state.clearQqManagedEventsView,
       qqManagedQrPayload: state.qqManagedQrPayload,
       retryQqManaged: state.retryQqManaged,
       getQqManagedQr: state.getQqManagedQr,
@@ -306,43 +334,90 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
       qqSettings: state.qqSettings,
       refreshQqConnection: state.refreshQqConnection,
       refreshQqManaged: state.refreshQqManaged,
+      refreshQqManagedResources: state.refreshQqManagedResources,
       saveQqManagedConfig: state.saveQqManagedConfig,
     })),
   );
-  const { loadQqAccess, loadOrganization, loadQqManaged, clearQqManagedQr } = s;
+  const {
+    loadQqAccess,
+    loadOrganization,
+    loadQqManaged,
+    loadQqManagedResources,
+    loadQqManagedAccounts,
+    setQqManagedEventsActive,
+    clearQqManagedQr,
+  } = s;
+  const [connectionDraft, setConnectionDraft] = useQqInput("connection");
   const [refreshing, setRefreshing] = useState(false);
   const refresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await Promise.all([s.refreshQqConnection(), s.refreshQqManaged()]);
+      if (task === "events") await s.loadQqManagedEvents();
+      else if (task === "runtime") {
+        await Promise.all([s.loadQqAccess(), s.loadOrganization()]);
+      } else {
+        await Promise.all([
+          s.refreshQqConnection(),
+          s.refreshQqManaged(),
+          s.refreshQqManagedResources(),
+          s.loadQqManagedAccounts(),
+        ]);
+      }
     } finally {
       setRefreshing(false);
     }
   };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: API and lifecycle changes require a new shared-access read even when the action identity is stable.
   useEffect(() => {
-    if (!active) {
-      clearQqManagedQr();
-      return;
-    }
-    // 整页读取是进入连接页的起载：只读设置与状态，绝不自动推进连接草稿的保存基线。
-    void loadQqAccess();
-    void loadQqManaged();
-    // QQ 多模态模型与辅助额度共用的组织编辑器：加载失败不伪装成「已停用」。
-    void loadOrganization();
-  }, [active, loadQqAccess, loadOrganization, loadQqManaged, clearQqManagedQr]);
+    if (!active) return;
+    if (!document.hidden) void loadQqAccess();
+    const revalidateVisible = () => {
+      if (!document.hidden) void loadQqAccess();
+    };
+    document.addEventListener("visibilitychange", revalidateVisible);
+    return () => document.removeEventListener("visibilitychange", revalidateVisible);
+  }, [active, s.apiClient, s.qqManagedLifecycleId, loadQqAccess]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The task resources belong to the current API and managed lifecycle, not the stable action functions.
   useEffect(() => {
+    if (!active) return;
+    if (task === "connection") {
+      void loadQqManaged();
+      void loadQqManagedResources();
+      void loadQqManagedAccounts();
+    } else if (task === "runtime") {
+      void loadOrganization();
+    }
+  }, [
+    active,
+    task,
+    s.apiClient,
+    s.qqManagedLifecycleId,
+    loadOrganization,
+    loadQqManaged,
+    loadQqManagedResources,
+    loadQqManagedAccounts,
+  ]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Rebind the event owner when the API or managed lifecycle changes without switching tasks.
+  useEffect(() => {
+    setQqManagedEventsActive(active && task === "events");
+    return () => setQqManagedEventsActive(false);
+  }, [active, task, s.apiClient, s.qqManagedLifecycleId, setQqManagedEventsActive]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Cleanup must invalidate late QR responses from the previous API or managed lifecycle.
+  useEffect(() => {
+    if (!active || task !== "connection") clearQqManagedQr();
     const handleVisibilityChange = () => {
-      if (document.hidden) {
-        clearQqManagedQr();
-      }
+      if (document.hidden) clearQqManagedQr();
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
+      clearQqManagedQr();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [clearQqManagedQr]);
+  }, [active, task, s.apiClient, s.qqManagedLifecycleId, clearQqManagedQr]);
 
   const managedDraft = s.managedDraft;
   const isManagedDirty =
@@ -356,6 +431,7 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
   let runtimeGatePassed = false;
   let diagnosticCode: string | null = null;
   let ownership: "none" | "external" | "owned" = "none";
+  let networkApply: QqManagedNetworkApply | undefined;
 
   if (managedStatus) {
     if (managedStatus.apply === "ready") {
@@ -363,6 +439,7 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
       phase = managedStatus.phase;
       ownership = managedStatus.ownership;
       diagnosticCode = managedStatus.diagnostic_code;
+      networkApply = managedStatus.network_apply;
     } else {
       runtimeGatePassed = false;
       phase =
@@ -375,6 +452,7 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
   if (s.qqConnection?.phase === "ready" && ownership === "none" && phase === "stopped") {
     phase = "transport_ready";
     ownership = "external";
+    networkApply = "not_owned";
   }
 
   const cardStatus: QqManagedStatus = {
@@ -385,7 +463,13 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
     runtimeGatePassed,
     diagnosticCode,
     ownership,
+    process: managedStatus?.apply === "ready" ? managedStatus.process : undefined,
+    networkApply,
   };
+
+  const rawEvents = s.qqManagedEventsPage?.status === "ok" ? s.qqManagedEventsPage.events : [];
+  // Server returns newest-first; UI purely reverses once to display stable ascending order with newest at bottom
+  const streamEvents = useMemo(() => [...rawEvents].reverse(), [rawEvents]);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
@@ -401,74 +485,134 @@ export function QqConnectionTab({ active = true }: { active?: boolean } = {}) {
                   ? t(connectionPhaseLabels[s.qqConnection.phase] ?? "connections.unknown")
                   : t("connections.unknown")}
               </Badge>
-              <p className="text-xs text-muted-foreground">{t("connections.transportPage.hint")}</p>
             </div>
-            <Button
-              tooltip={<Trans i18nKey="hints.complete.qqRefresh" />}
-              variant="outline"
-              size="sm"
-              disabled={
-                s.qqAccessSaving ||
-                s.qqAccessLoading ||
-                s.qqManagedSaving ||
-                s.qqManagedLoading ||
-                refreshing
-              }
-              onClick={() => void refresh()}
-              className="h-8 rounded-lg"
-            >
-              <RefreshCw className="size-3.5" />
-              {t("connections.refreshState")}
-            </Button>
-            <QqConversationEntry />
-          </div>
-          <div className="mb-6 space-y-2">
-            <QqManagedComponentCard
-              status={cardStatus}
-              loading={s.qqManagedLoading}
-              saving={s.qqManagedSaving}
-              onToggleManaged={(enabled) => s.patchQqManagedDraft(enabled)}
-              onRefreshQr={() =>
-                void (s.qqManagedQrPayload ? s.refreshQqManagedQr() : s.getQqManagedQr())
-              }
-              onRetry={() => void s.retryQqManaged()}
-            />
-            {s.qqManagedError && (
-              <p role="alert" className="text-sm text-destructive">
-                {t("connections.managed.diag.unknown")}
-              </p>
-            )}
-            <div className="flex flex-wrap items-center justify-end gap-2 px-1">
+            {task !== "events" && (
               <Button
-                tooltip={t("models.discard")}
+                tooltip={<Trans i18nKey="hints.complete.qqRefresh" />}
                 variant="outline"
                 size="sm"
-                disabled={!isManagedDirty || s.qqManagedSaving}
-                onClick={() =>
-                  useSuperstringStore.setState((state) => ({
-                    qqInputs: { ...state.qqInputs, managed: null },
-                  }))
+                disabled={
+                  s.qqAccessSaving ||
+                  s.qqAccessLoading ||
+                  s.qqManagedSaving ||
+                  s.qqManagedLoading ||
+                  refreshing
                 }
+                onClick={() => void refresh()}
+                className="h-8 rounded-lg"
               >
-                {t("models.discard")}
+                <RefreshCw className="size-3.5" />
+                {t("connections.refreshState")}
               </Button>
-              <Button
-                tooltip={t("library.save")}
-                size="sm"
-                disabled={!isManagedDirty || s.qqManagedSaving}
-                onClick={() => void s.saveQqManagedConfig()}
-              >
-                {t("library.save")}
-              </Button>
+            )}
+          </div>
+          <QqBusinessSwitch />
+          {task === "connection" && (
+            <>
+              <div className="my-6 space-y-2">
+                <QqManagedComponentCard
+                  status={cardStatus}
+                  resources={s.qqManagedResources}
+                  resourceDraftRoot={
+                    s.resourceDraft ? s.resourceDraft.root : (s.qqManagedResources?.root ?? "")
+                  }
+                  accounts={s.qqManagedAccounts}
+                  selectedQuickLoginAccount={
+                    connectionDraft ? connectionDraft.accountId : (s.qqSettings?.account_id ?? "")
+                  }
+                  loading={
+                    s.qqManagedLoading || s.qqManagedResourcesLoading || s.qqManagedAccountsLoading
+                  }
+                  saving={s.qqManagedSaving}
+                  onToggleManaged={(enabled) => s.patchQqManagedDraft(enabled)}
+                  onRefreshQr={() =>
+                    void (s.qqManagedQrPayload ? s.refreshQqManagedQr() : s.getQqManagedQr())
+                  }
+                  onSelectQuickLoginAccount={(accId) => {
+                    const settings = s.qqSettings;
+                    if (!settings) return;
+                    const base = connectionDraft ?? {
+                      source: settings,
+                      endpoint: settings.transport.endpoint ?? "",
+                      accountId: settings.account_id ?? "",
+                      token: "",
+                    };
+                    setConnectionDraft({ ...base, accountId: accId });
+                  }}
+                  onExecuteQuickLogin={async () => {
+                    const effectiveId = (
+                      connectionDraft ? connectionDraft.accountId : (s.qqSettings?.account_id ?? "")
+                    ).trim();
+                    if (!effectiveId) return;
+                    // The existing action saves only a changed account through saveQqSurface before login.
+                    await s.quickLoginQqManaged(effectiveId);
+                  }}
+                  onPatchResourceDraftRoot={(root) => {
+                    s.patchQqManagedResourceDraft(root);
+                  }}
+                  onUpdateResourcePath={(root) => {
+                    s.patchQqManagedResourceDraft(root);
+                    void s.saveQqManagedResources();
+                  }}
+                  onRetry={() => void s.retryQqManaged()}
+                />
+                {s.qqManagedError && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {t("connections.managed.diag.unknown")}
+                  </p>
+                )}
+                <div className="flex flex-wrap items-center justify-end gap-2 px-1">
+                  <Button
+                    tooltip={t("models.discard")}
+                    variant="outline"
+                    size="sm"
+                    disabled={!isManagedDirty || s.qqManagedSaving}
+                    onClick={() =>
+                      useSuperstringStore.setState((state) => ({
+                        qqInputs: { ...state.qqInputs, managed: null },
+                      }))
+                    }
+                  >
+                    {t("models.discard")}
+                  </Button>
+                  <Button
+                    tooltip={t("library.save")}
+                    size="sm"
+                    disabled={!isManagedDirty || s.qqManagedSaving}
+                    onClick={() => void s.saveQqManagedConfig()}
+                  >
+                    {t("library.save")}
+                  </Button>
+                </div>
+              </div>
+              <TransportSettings active={active} view="connection" />
+            </>
+          )}
+          {task === "events" && (
+            <div className="mb-6 space-y-2">
+              <QqManagedMessageStream
+                key={s.qqManagedEventsPage?.generation ?? "empty"}
+                events={streamEvents}
+                connected={s.qqConnection?.phase === "ready"}
+                active={active}
+                loading={s.qqManagedEventsLoading}
+                error={s.qqManagedEventsError}
+                onRefresh={() => void s.loadQqManagedEvents()}
+                onClear={s.clearQqManagedEventsView}
+              />
             </div>
-          </div>
-          <TransportSettings active={active} />
-          <div className="mt-6">
-            <QqJudgementModel active={active} managed />
-          </div>
-          <div className="mt-6">
-            <QqMultimodalSettings active={active} />
-          </div>
+          )}
+          {task === "runtime" && (
+            <>
+              <TransportSettings active={active} view="runtime" />
+              <div className="mt-6">
+                <QqJudgementModel active={active} managed />
+              </div>
+              <div className="mt-6">
+                <QqMultimodalSettings active={active} />
+              </div>
+            </>
+          )}
         </>
       ) : s.qqAccessLoading ? (
         <p role="status" className="text-sm text-muted-foreground">

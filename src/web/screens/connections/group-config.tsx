@@ -65,6 +65,7 @@ import {
 import { translateNotice } from "../../i18n";
 import { useLiveResource } from "../../services/use-live-resource";
 import { useSuperstringStore } from "../../store";
+import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { BindingEditor } from "./binding-editor";
 import { QqMessagePreview } from "./qq-message-preview";
 import {
@@ -404,11 +405,7 @@ function TimezoneField({
   const showInvalid = showError && invalid;
   const errorId = "group-config-timezone-error";
   return (
-    <Field
-      label="connections.timezone"
-      info="connections.timezoneHint"
-      tooltip={t("connections.timezoneHint")}
-    >
+    <Field label="connections.timezone" tooltip={t("connections.timezoneHint")}>
       <InputSuggestions
         type="text"
         suggestions={timezoneSuggestions}
@@ -720,11 +717,7 @@ function PromptField({
   // 自定义字段保留原始输入：只有跟随显示才用派生文本。
   const display = raw ?? (custom ? String(value ?? "") : followText);
   return (
-    <Field
-      label={labelKey}
-      info={hintKey}
-      tooltip={hintKey ? t(hintKey) : t(`hints.qqPrompt.${slot}`)}
-    >
+    <Field label={labelKey} tooltip={hintKey ? t(hintKey) : t(`hints.qqPrompt.${slot}`)}>
       <Textarea
         className="min-h-36 font-mono text-xs leading-6"
         data-prompt={`prompts.${slot}`}
@@ -1318,7 +1311,7 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
             ),
           })}
           <Button
-            variant="link"
+            variant="outline"
             size="sm"
             tooltip={t("hints.qq.cancelPendingSwitch")}
             disabled={saving}
@@ -1405,6 +1398,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
       patchQqGroupConfigScheme: s.patchQqGroupConfigScheme,
       patchQqGroupOverride: s.patchQqGroupOverride,
       refreshQqGroupConfig: s.refreshQqGroupConfig,
+      returnQqGroupConfig: s.returnQqGroupConfig,
       openSettingsRoute: s.openSettingsRoute,
       requestConversationNavigation: s.requestConversationNavigation,
       saveQqGroupConfig: s.saveQqGroupConfig,
@@ -1489,9 +1483,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
   const schemeNameOf = (id: string) => state.qqSchemes.find((row) => row.id === id)?.name ?? id;
   const visible = (group: string, name: string) =>
     !onlyCustom || (!!visibleEditor && isCustomField(visibleEditor, group, name));
-  const back = () => {
-    state.openSettingsRoute("qq-app-groups");
-  };
+  const back = () => state.returnQqGroupConfig();
   const baseName = baseScheme ? baseScheme.name : (visibleEditor?.schemeId ?? "");
   const otherGroups = useMemo(() => {
     if (!state.qqBindingsLoaded) return [];
@@ -1512,107 +1504,120 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
   ]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label={configTitle}>
-      <header className="mb-[24px] flex shrink-0 flex-wrap items-start gap-[14px] border-b border-border pb-[20px]">
-        <Button
-          variant="outline"
-          size="sm"
-          tooltip={t("hints.qq.backToDirectory")}
-          aria-label={t("schemes.qq.groups.backToDirectory")}
-          onClick={back}
-        >
-          <ChevronLeft />
-          {t("schemes.qq.groups.backToDirectory")}
-        </Button>
-        <h1 className="workspace-page-title">{configTitle}</h1>
-        {visibleEditor && (
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-            <Badge variant="outline">
-              {t(
-                visibleEditor.source.binding.kind === "group"
-                  ? "connections.group"
-                  : "connections.privateChat",
-              )}
-            </Badge>
-            <span className="font-mono">{visibleEditor.source.binding.peer_id}</span>
-            {summary && <span className="max-w-40 truncate">{summary.title}</span>}
-            <span>
-              · {t("schemes.qq.groupConfig.account")} {visibleEditor.source.binding.account_id}
-            </span>
-            <span>
-              · {t("schemes.qq.groupConfig.agent")} {agentName}
-            </span>
-            <span>
-              · {t("schemes.qq.groupConfig.baseScheme")} {baseName}
-            </span>
-            {dirty && (
-              <Badge variant="secondary" className="gap-1 text-xs">
-                <span className="size-1.5 rounded-full bg-primary" />
-                {t("connections.valueUnsavedChanges", { "0": changes.length })}
-              </Badge>
-            )}
-            {otherGroups.length > 1 && (
-              <NativeSelect
-                className="h-auto min-h-8 text-xs"
-                value={visibleEditor.source.binding.id}
-                tooltip={t("hints.custom.qqGroupSwitcher")}
-                aria-label={t(
-                  isPrivate ? "qq.conversation.switch" : "schemes.qq.groups.switchGroup",
-                )}
-                disabled={saving || state.qqGroupConfigLoading}
-                onChange={(event) => state.openQqGroupConfig(event.target.value)}
-              >
-                {otherGroups.map((g) => (
-                  <option key={g.bindingId} value={g.bindingId}>
-                    {`${g.title ? `${g.title} (${g.peerId})` : g.peerId} · ${g.accountId}`}
-                  </option>
-                ))}
-              </NativeSelect>
-            )}
-          </div>
-        )}
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {visibleEditor && !isPrivate && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-auto min-h-8 max-w-full whitespace-normal break-words"
-              disabled={saving || state.qqGroupConfigLoading}
-              tooltip={t("hints.qq.groupAdministrators")}
-              onClick={() => setAdminEditorOpen(true)}
-            >
-              <Shield className="size-3.5" />
-              {t("connections.administrators")}
-            </Button>
-          )}
-          {summary && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-auto min-h-8 max-w-full whitespace-normal break-words"
-              tooltip={t("hints.qq.groupOpenConversation")}
-              onClick={() => void state.requestConversationNavigation(summary.id)}
-            >
-              <MessageSquare className="size-3.5" />
-              {t("schemes.qq.groups.viewConversation")}
-            </Button>
-          )}
+    <section
+      className="flex h-full min-h-0 flex-col overflow-y-auto"
+      aria-label={configTitle}
+      data-workspace-scroll
+    >
+      <WorkspacePageHeader
+        location={t("schemes.bindings.title")}
+        title={configTitle}
+        description={t("schemes.qq.groupConfig.pageHelp")}
+        backAction={
           <Button
-            variant="outline"
-            size="sm"
-            className="h-auto min-h-8 max-w-full whitespace-normal break-words"
-            disabled={saving || state.qqGroupConfigLoading}
-            tooltip={t("hints.qq.groupRefresh")}
-            onClick={() => {
-              void state.refreshQqGroupConfig();
-              // 显式刷新同时推进知识查询的已保存状态，不留在旧读取上。
-              knowledgeRead.refresh();
-            }}
+            variant="ghost"
+            size="icon-sm"
+            tooltip={t("schemes.qq.groupConfig.returnToOrigin")}
+            aria-label={t("schemes.qq.groupConfig.returnToOrigin")}
+            onClick={back}
           >
-            {t("capabilities.resources.refreshBaseline")}
+            <ChevronLeft />
           </Button>
+        }
+        actions={
+          dirty ? (
+            <Badge variant="secondary" className="gap-1 text-xs">
+              <span className="size-1.5 rounded-full bg-primary" />
+              {t("connections.valueUnsavedChanges", { "0": changes.length })}
+            </Badge>
+          ) : undefined
+        }
+      />
+      {visibleEditor && (
+        <div className="mb-6 shrink-0 space-y-3" data-group-context>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+            <Badge variant="outline">
+              {t(isPrivate ? "connections.privateChat" : "connections.group")}
+            </Badge>
+            {summary && <span className="min-w-0 break-words font-medium">{summary.title}</span>}
+            <span className="break-all font-mono text-sm">
+              {visibleEditor.source.binding.peer_id}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {t("schemes.qq.groupConfig.account")} {visibleEditor.source.binding.account_id}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {t("schemes.qq.groupConfig.agent")} {agentName}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {t("schemes.qq.groupConfig.baseScheme")} {baseName}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">{t("schemes.qq.groupConfig.localScope")}</p>
+          <div className="flex min-w-0 flex-wrap items-end justify-between gap-3">
+            {otherGroups.length > 1 && (
+              <Field label={isPrivate ? "qq.conversation.switch" : "schemes.qq.groups.switchGroup"}>
+                <NativeSelect
+                  className="min-w-0 w-full sm:max-w-80"
+                  value={visibleEditor.source.binding.id}
+                  tooltip={t("hints.custom.qqGroupSwitcher")}
+                  aria-label={t(
+                    isPrivate ? "qq.conversation.switch" : "schemes.qq.groups.switchGroup",
+                  )}
+                  disabled={saving || state.qqGroupConfigLoading}
+                  onChange={(event) => state.openQqGroupConfig(event.target.value)}
+                >
+                  {otherGroups.map((g) => (
+                    <option key={g.bindingId} value={g.bindingId}>
+                      {`${g.title ? `${g.title} (${g.peerId})` : g.peerId} · ${g.accountId}`}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </Field>
+            )}
+            <div className="flex min-w-0 flex-wrap items-center gap-2" data-group-actions>
+              {!isPrivate && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+                  disabled={saving || state.qqGroupConfigLoading}
+                  tooltip={t("hints.qq.groupAdministrators")}
+                  onClick={() => setAdminEditorOpen(true)}
+                >
+                  <Shield className="size-3.5" />
+                  {t("connections.administrators")}
+                </Button>
+              )}
+              {summary && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+                  tooltip={t("hints.qq.groupOpenConversation")}
+                  onClick={() => void state.requestConversationNavigation(summary.id)}
+                >
+                  <MessageSquare className="size-3.5" />
+                  {t("schemes.qq.groups.viewConversation")}
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+                disabled={saving || state.qqGroupConfigLoading}
+                tooltip={t("hints.qq.groupRefresh")}
+                onClick={() => {
+                  void state.refreshQqGroupConfig();
+                  knowledgeRead.refresh();
+                }}
+              >
+                {t("capabilities.resources.refreshBaseline")}
+              </Button>
+            </div>
+          </div>
         </div>
-      </header>
+      )}
       {visibleEditor?.identityConflict && (
         <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2 text-xs">
           <p role="status" className="text-muted-foreground">
@@ -1644,7 +1649,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           )}
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
+      <div className="min-w-0 flex-1">
         {!visibleEditor ? (
           state.qqGroupConfigLoading ? (
             <p role="status" className="text-sm text-muted-foreground">
@@ -1669,13 +1674,6 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           )
         ) : (
           <div className="w-full space-y-6">
-            <p className="text-xs text-muted-foreground">
-              {t("schemes.qq.groupConfig.scope", {
-                "0": visibleEditor.source.binding.account_id,
-                "1": visibleEditor.source.binding.peer_id,
-                "2": agentName,
-              })}
-            </p>
             <BaseSchemeSection editor={visibleEditor} />
             <div className="flex flex-wrap items-center justify-between gap-3">
               <Label>
@@ -1695,7 +1693,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             >
               <div className="flex min-w-0 flex-col items-stretch gap-[24px]">
                 <div className="min-w-0 w-full">
-                  <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:rounded-[6px] [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">
+                  <TabsList className="h-auto group-data-horizontal/tabs:h-auto w-full max-w-full flex-wrap justify-start gap-1 rounded-lg border border-border bg-muted p-1 [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal [&_[role=tab]]:rounded-lg [&_[role=tab]]:px-3 [&_[role=tab]]:text-[13px]">
                     {QQ_SCHEME_SECTIONS.map((section) => (
                       <TabsTrigger
                         key={section.id}
@@ -2325,7 +2323,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
         )}
       </div>
       {visibleEditor && (
-        <footer className="flex flex-wrap items-center gap-2 border-t px-4 py-3">
+        <footer className="mt-6 flex shrink-0 flex-wrap items-center gap-2 border-t py-3">
           <span
             role="status"
             className="order-last w-full text-xs text-muted-foreground sm:order-none sm:w-auto"

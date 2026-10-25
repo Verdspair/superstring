@@ -82,6 +82,7 @@ export type PendingNavigation =
       kind: "group-config";
       bindingId: string;
       settingsRoute?: SettingsRoute;
+      origin?: import("../features/qq/group-config-state").QqGroupConfigOrigin;
     }
   | { kind: "knowledge"; target: KnowledgeTarget };
 

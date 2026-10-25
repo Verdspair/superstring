@@ -3,7 +3,7 @@
 // 判定都在服务端：`expired` 用服务端时钟、`protected` 是服务端的保全规则，界面只负责展示与
 // 选择。清理先预览后确认，确认执行的是预览时冻结的请求快照；取消不产生任何写入。
 
-import { RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -42,7 +42,9 @@ import {
   qqStorageItemCleanable,
 } from "../../features/qq/types";
 import { useQqInput } from "../../features/qq/use-qq-input";
+import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
+import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 
 const CATEGORIES: readonly QqStorageCategory[] = [
   "observation_text",
@@ -71,47 +73,50 @@ function StorageRetentionCard() {
   const invalid = draft !== null && !qqStorageDaysValid(value.days);
   return (
     <section>
-      <Card size="sm">
-        <CardHeader className="border-b bg-muted/50">
-          <CardTitle>{t("connections.storage.manage.retentionTitle")}</CardTitle>
-          <CardDescription>{t("connections.storage.manage.retentionNote")}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4 pt-(--card-spacing)">
-          <p className="text-xs text-muted-foreground">
-            {t("connections.storage.manage.manualNote")}
-          </p>
-          <Field
-            label="connections.storage.manage.retentionDays"
-            info="connections.storage.manage.retentionDaysInfo"
-            tooltip={t("connections.storage.manage.retentionDaysInfo")}
-          >
-            <Input
-              className="w-32"
-              inputMode="numeric"
-              value={value.days}
-              disabled={saving}
-              aria-invalid={invalid || undefined}
-              onChange={(event) => setDraft({ source: value.source, days: event.target.value })}
-            />
-          </Field>
+      <Card size="sm" className="gap-0 py-3">
+        <CardContent className="space-y-2 px-3 sm:px-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-3">
+            <h2 className="workspace-card-title">
+              {t("connections.storage.manage.retentionTitle")}
+            </h2>
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <div className="min-w-0 max-w-full [&>[data-slot=field]]:flex-row [&>[data-slot=field]]:flex-wrap [&>[data-slot=field]]:items-center [&>[data-slot=field]>div]:w-auto [&_input]:w-28">
+                <Field
+                  label="connections.storage.manage.retentionDays"
+                  tooltip={t("connections.storage.manage.retentionDaysInfo")}
+                >
+                  <Input
+                    inputMode="numeric"
+                    value={value.days}
+                    disabled={saving}
+                    aria-invalid={invalid || undefined}
+                    onChange={(event) =>
+                      setDraft({ source: value.source, days: event.target.value })
+                    }
+                  />
+                </Field>
+              </div>
+              <Button
+                tooltip={t("hints.qq.saveRetention")}
+                disabled={saving || !dirty}
+                onClick={() =>
+                  void save().then((ok) => {
+                    if (ok) setDraft(null);
+                  })
+                }
+              >
+                {t("connections.storage.manage.saveRetention")}
+              </Button>
+            </div>
+          </div>
           {invalid && (
             <p role="alert" className="text-xs text-destructive">
               {t("connections.storage.manage.retentionInvalid")}
             </p>
           )}
-          <div className="flex justify-end pt-1">
-            <Button
-              tooltip={t("hints.qq.saveRetention")}
-              disabled={saving || !dirty}
-              onClick={() =>
-                void save().then((ok) => {
-                  if (ok) setDraft(null);
-                })
-              }
-            >
-              {t("connections.storage.manage.saveRetention")}
-            </Button>
-          </div>
+          <p className="text-xs text-muted-foreground">
+            {t("connections.storage.manage.retentionNote")}
+          </p>
         </CardContent>
       </Card>
     </section>
@@ -122,6 +127,8 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
   const { t, i18n } = useTranslation();
   const {
     qqStorageUsage: data,
+    error,
+    feedback,
     qqStorageLoading: loading,
     qqStorageSaving: saving,
     qqStorageItems: items,
@@ -142,6 +149,8 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
   } = useSuperstringStore(
     useShallow((state) => ({
       qqStorageUsage: state.qqStorageUsage,
+      error: state.error,
+      feedback: state.feedback,
       qqStorageLoading: state.qqStorageLoading,
       qqStorageSaving: state.qqStorageSaving,
       qqStorageItems: state.qqStorageItems,
@@ -285,26 +294,56 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
     void (preview ? runCleanup() : beginPreview(cleanupRequest));
   };
   return (
-    <div className="space-y-8 px-4 py-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold tracking-tight">{t("connections.storage.title")}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {data
+    <div className="min-w-0 space-y-6">
+      {active && (
+        <WorkspacePageHeader
+          location={t("schemes.qq.name")}
+          title={t("connections.dataRetention")}
+          description={
+            data
               ? t("connections.storage.retention", { "0": data.retention.days })
-              : t("connections.common.loading")}
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          disabled={loading || saving}
-          tooltip={t("hints.qq.storageRefresh")}
-          onClick={() => void refresh()}
-        >
-          <RefreshCw />
-          {t("connections.common.refresh")}
-        </Button>
+              : t("connections.storage.manage.manualNote")
+          }
+          backAction={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={loading || saving}
+              aria-label={t("schemes.backToCatalog")}
+              tooltip={t("hints.qq.backToCatalog")}
+              onClick={() => useSuperstringStore.getState().openSettingsRoute("scheme-library")}
+            >
+              <ArrowLeft />
+            </Button>
+          }
+          actions={
+            <Button
+              variant="outline"
+              disabled={loading || saving}
+              tooltip={t("hints.qq.storageRefresh")}
+              onClick={() => void refresh()}
+            >
+              <RefreshCw />
+              {t("connections.common.refresh")}
+            </Button>
+          }
+        />
+      )}
+      <div className="space-y-1 text-xs text-muted-foreground">
+        <p>{t("schemes.qq.scopeNote")}</p>
+        {data && <p>{t("connections.storage.retention", { "0": data.retention.days })}</p>}
       </div>
+      {active && (error || feedback) && (
+        <p
+          role={error ? "alert" : "status"}
+          className={error ? "text-sm text-destructive" : "text-sm text-muted-foreground"}
+        >
+          {translateNotice(error ?? feedback ?? "")}
+        </p>
+      )}
+      {loading && !data && (
+        <p className="text-sm text-muted-foreground">{t("connections.common.loading")}</p>
+      )}
 
       <StorageRetentionCard />
 
@@ -312,9 +351,9 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
         <Card size="sm">
           <CardHeader className="border-b bg-muted/50">
             <CardTitle>{t("connections.storage.manage.cleanupTitle")}</CardTitle>
-            <CardDescription>{t("connections.storage.manage.metaNote")}</CardDescription>
+            <CardDescription>{t("connections.storage.manage.manualNote")}</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-5 pt-(--card-spacing)">
+          <CardContent className="min-w-0 space-y-4 pt-(--card-spacing)">
             <Tabs
               value={category}
               onValueChange={(next) => switchCategory(next as QqStorageCategory)}
@@ -332,13 +371,13 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
               </TabsList>
             </Tabs>
 
-            <div className="flex flex-wrap items-end gap-3 rounded-lg border bg-muted/20 p-3">
+            <div className="grid min-w-0 grid-cols-1 items-end gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)_auto]">
               <Field
                 label="connections.storage.manage.statusLabel"
                 tooltip={t("hints.fieldExtra.storageStatus")}
               >
                 <NativeSelect
-                  className="w-32"
+                  className="w-full min-w-0"
                   value={status}
                   disabled={saving}
                   onChange={(event) => switchStatus(event.target.value as QqStorageStatusFilter)}
@@ -355,7 +394,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                 tooltip={t("hints.fieldExtra.storageKind")}
               >
                 <NativeSelect
-                  className="w-32"
+                  className="w-full min-w-0"
                   value={kind}
                   disabled={saving}
                   onChange={(event) => switchKind(event.target.value as QqConversationKind | "")}
@@ -370,7 +409,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                 tooltip={t("hints.fieldExtra.storagePeer")}
               >
                 <Input
-                  className="w-48"
+                  className="w-full min-w-0"
                   value={peerInput}
                   disabled={saving}
                   onChange={(event) => setPeerInput(event.target.value)}
@@ -418,6 +457,11 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
               </span>
             </div>
 
+            <div className="space-y-1 text-xs text-muted-foreground">
+              <p>{t("connections.storage.manage.metaNote")}</p>
+              <p>{t("connections.storage.manage.protectedHint")}</p>
+            </div>
+
             {itemsError && (
               <div
                 className="flex flex-wrap items-center gap-2 text-sm text-destructive"
@@ -444,7 +488,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
             )}
             {items.length > 0 && (
               <>
-                <div className="overflow-x-auto rounded-lg border">
+                <div className="max-h-[420px] min-w-0 overflow-x-auto overflow-y-auto rounded-lg border">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -540,7 +584,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
             <CardContent className="space-y-6 pt-(--card-spacing)">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {groups.map((group) => (
-                  <section key={group.key} className="space-y-3 rounded-lg border bg-muted/20 p-4">
+                  <section key={group.key} className="min-w-0 space-y-3 p-3">
                     <h3 className="font-medium">{t(`connections.storage.${group.key}`)}</h3>
                     <dl className="space-y-2">
                       {Object.entries(group.values).map(([key, value]) => (
@@ -606,7 +650,7 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
                     {t("connections.storage.viewTraces")}
                   </Button>
                 </div>
-                <div className="overflow-x-auto rounded-lg border">
+                <div className="max-h-[420px] min-w-0 overflow-x-auto overflow-y-auto rounded-lg border">
                   <Table>
                     <TableHeader>
                       <TableRow>

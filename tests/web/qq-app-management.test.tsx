@@ -179,7 +179,13 @@ function client(overrides: Partial<typeof api> = {}) {
 }
 
 async function renderApp(
-  settingsRoute: "qq-app-schemes" | "qq-connection" | "qq-storage" | "basic",
+  settingsRoute:
+    | "qq-app-schemes"
+    | "qq-connection"
+    | "qq-events"
+    | "qq-runtime"
+    | "qq-storage"
+    | "basic",
   settingsView: "workspace" | "operating-mode" = "workspace",
   overrides: Partial<typeof api> = {},
   prepare?: () => void,
@@ -213,103 +219,387 @@ beforeEach(() => {
   selectLocale("zh-CN");
 });
 
+const taskActions = {
+  loadQqAccess: store.getState().loadQqAccess,
+  setQqManagedEventsActive: store.getState().setQqManagedEventsActive,
+  clearQqManagedQr: store.getState().clearQqManagedQr,
+  loadQqManaged: store.getState().loadQqManaged,
+  loadQqManagedResources: store.getState().loadQqManagedResources,
+  loadQqManagedAccounts: store.getState().loadQqManagedAccounts,
+  loadOrganization: store.getState().loadOrganization,
+};
+
 afterEach(() => {
   cleanup();
+  store.setState(taskActions);
 });
 
-describe("unified workspace QQ sections", () => {
-  it("keeps the three sections on one workspace and maps the app alias onto the shared directory", async () => {
+describe("unified workspace QQ tasks", () => {
+  it("root shows three equally visible tasks and maps the app alias to the shared directory", async () => {
     const fake = await renderApp("qq-app-schemes");
-    expect(screen.getAllByRole("tab").map((node) => node.textContent)).toEqual([
-      translate("schemes.workspace.schemes"),
-      translate("schemes.workspace.bindings"),
-      translate("schemes.workspace.settings"),
-    ]);
-    expect(screen.getByRole("tab", { selected: true }).textContent).toBe(
-      translate("schemes.workspace.schemes"),
-    );
-    const tablist = screen.getByRole("tablist");
-    expect(within(tablist).getAllByRole("tab")).toHaveLength(3);
-    // 复用的目录组件：方案行与新建入口仍在；碎片快捷入口不再出现。
+    expect(
+      screen.queryByRole("tablist", { name: translate("schemes.workspace.navigation") }),
+    ).toBeNull();
+    for (const key of [
+      "schemes.workspace.bindings",
+      "schemes.qq.connectionTitle",
+      "connections.dataRetention",
+    ]) {
+      expect(screen.getByRole("button", { name: translate(key) })).toBeTruthy();
+    }
     expect(screen.getByText("默认方案")).toBeTruthy();
     expect(screen.getByRole("button", { name: translate("connections.newScheme") })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "本群配置" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "数据与保留" })).toBeNull();
-    // 作用域提示只服务连接与数据；方案目录不显示，也不假装在管理连接。
-    expect(screen.queryByText(translate("schemes.qq.scopeNote"))).toBeNull();
     expect(fake.getQqStatus).not.toHaveBeenCalled();
     expect(fake.getQqSettings).not.toHaveBeenCalled();
   });
 
-  it("switches sections and settings subtabs by route and shows the scope note there", async () => {
+  it("uses route-backed connection, events and runtime tasks, with storage separate", async () => {
     await renderApp("qq-app-schemes");
     await userEvent.click(
-      screen.getByRole("tab", { name: translate("schemes.workspace.bindings") }),
+      screen.getByRole("button", { name: translate("schemes.workspace.bindings") }),
     );
-    await act(async () => {});
     expect(store.getState().settingsRoute).toBe("scheme-bindings");
-    expect(screen.getByLabelText(translate("connections.searchConversationBindings"))).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
     await userEvent.click(
-      screen.getByRole("tab", { name: translate("schemes.workspace.settings") }),
+      screen.getByRole("button", { name: translate("schemes.qq.connectionTitle") }),
     );
-    await act(async () => {});
     expect(store.getState().settingsRoute).toBe("qq-connection");
-    expect(screen.getByText(translate("schemes.qq.scopeNote"))).toBeTruthy();
     expect(screen.getByLabelText(translate("connections.websocketAddress"))).toBeTruthy();
-    // 设置分区内的连接/数据子页保留双入口。
+    for (const [key, route] of [
+      ["schemes.qq.eventsTitle", "qq-events"],
+      ["schemes.qq.runtimeTitle", "qq-runtime"],
+    ]) {
+      await userEvent.click(screen.getByRole("tab", { name: translate(key) }));
+      expect(store.getState().settingsRoute).toBe(route);
+    }
+    expect(screen.queryByRole("tab", { name: translate("connections.dataRetention") })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
     await userEvent.click(
-      screen.getByRole("tab", { name: translate("connections.dataRetention") }),
+      screen.getByRole("button", { name: translate("connections.dataRetention") }),
     );
-    await act(async () => {});
     expect(store.getState().settingsRoute).toBe("qq-storage");
-    expect(screen.getByText(translate("connections.storage.title"))).toBeTruthy();
   });
 
-  it("returns to the shared scheme catalog through the primary schemes section", async () => {
+  it("returns through the single back action", async () => {
     await renderApp("qq-connection");
-    await userEvent.click(
-      screen.getByRole("tab", { name: translate("schemes.workspace.schemes") }),
-    );
-    await act(async () => {});
+    expect(
+      screen.getAllByRole("button", { name: translate("schemes.backToCatalog") }),
+    ).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
     expect(store.getState().settingsRoute).toBe("scheme-library");
     expect(screen.getByRole("heading", { name: translate("workspace.schemes") })).toBeTruthy();
   });
 
-  it("recognises the legacy operating-mode state instead of rendering an empty page", async () => {
+  it("recognises the legacy operating-mode state", async () => {
     await renderApp("basic", "operating-mode");
-    // 旧别名落到连接页：表单可见、QQ 设置分区选中，且不是死空。
-    // 双层 tab（primary 三分区 + 设置子页）：按可访问名逐层断言选中，不做全局 selected 查询。
     expect(
-      (
-        screen.getByRole("tab", {
-          name: translate("schemes.workspace.settings"),
-        }) as HTMLButtonElement
-      ).getAttribute("aria-selected"),
-    ).toBe("true");
+      screen.getByRole("heading", { name: translate("schemes.qq.connectionTitle") }),
+    ).toBeTruthy();
     expect(
-      (
-        screen.getByRole("tab", {
-          name: translate("connections.transportPage.tab"),
-        }) as HTMLButtonElement
-      ).getAttribute("aria-selected"),
+      screen
+        .getByRole("tab", { name: translate("connections.transportPage.tab") })
+        .getAttribute("aria-selected"),
     ).toBe("true");
     expect(screen.getByLabelText(translate("connections.websocketAddress"))).toBeTruthy();
   });
 
-  it("disables the section navigation while a save is in flight", async () => {
+  it("disables back and subtask navigation while a save is in flight", async () => {
     await renderApp("qq-connection");
-    act(() => {
-      store.setState({ qqAccessSaving: true });
-    });
-    for (const name of [
-      "schemes.workspace.schemes",
-      "schemes.workspace.bindings",
-      "schemes.workspace.settings",
+    act(() => store.setState({ qqAccessSaving: true }));
+    expect(
+      (
+        screen.getByRole("button", {
+          name: translate("schemes.backToCatalog"),
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    for (const key of [
+      "connections.transportPage.tab",
+      "schemes.qq.eventsTitle",
+      "schemes.qq.runtimeTitle",
     ]) {
       expect(
-        (screen.getByRole("tab", { name: translate(name) }) as HTMLButtonElement).disabled,
+        (screen.getByRole("tab", { name: translate(key) }) as HTMLButtonElement).disabled,
       ).toBe(true);
     }
+  });
+});
+
+describe("QQ connection task lifecycle", () => {
+  it("events alone owns the stream; switching tasks clears QR and does not start a second stream", async () => {
+    const fake = client();
+    store.getState().resetForTests(fake);
+    const eventsActive = vi.fn();
+    const qrClear = vi.fn(() => store.setState({ qqManagedQrPayload: null }));
+    const managedRead = vi.fn().mockResolvedValue(true);
+    const resourcesRead = vi.fn().mockResolvedValue(true);
+    const accountsRead = vi.fn().mockResolvedValue(true);
+    const organizationRead = vi.fn().mockResolvedValue(true);
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "qq-connection",
+      qqSettings: settings,
+      setQqManagedEventsActive: eventsActive,
+      clearQqManagedQr: qrClear,
+      loadQqManaged: managedRead,
+      loadQqManagedResources: resourcesRead,
+      loadQqManagedAccounts: accountsRead,
+      loadOrganization: organizationRead,
+    });
+    const rendered = render(<SchemesWorkspace />);
+    await act(async () => {});
+    expect(eventsActive).not.toHaveBeenCalledWith(true);
+    expect(managedRead).toHaveBeenCalledTimes(1);
+    expect(organizationRead).not.toHaveBeenCalled();
+    act(() => store.setState({ qqManagedQrPayload: "hidden-qr" }));
+    const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, "hidden");
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    fireEvent(document, new Event("visibilitychange"));
+    expect(store.getState().qqManagedQrPayload).toBeNull();
+    if (hiddenDescriptor) Object.defineProperty(document, "hidden", hiddenDescriptor);
+    else Reflect.deleteProperty(document, "hidden");
+    act(() => store.setState({ qqManagedQrPayload: "transient-qr" }));
+    await userEvent.click(screen.getByRole("tab", { name: translate("schemes.qq.eventsTitle") }));
+    expect(store.getState().settingsRoute).toBe("qq-events");
+    expect(store.getState().qqManagedQrPayload).toBeNull();
+    expect(eventsActive.mock.calls.filter(([active]) => active === true)).toHaveLength(1);
+    expect(screen.queryByLabelText(translate("connections.websocketAddress"))).toBeNull();
+    expect(screen.getByRole("checkbox", { name: translate("connections.enableQq") })).toBeTruthy();
+    await userEvent.click(screen.getByRole("tab", { name: translate("schemes.qq.runtimeTitle") }));
+    expect(store.getState().settingsRoute).toBe("qq-runtime");
+    expect(eventsActive.mock.lastCall).toEqual([false]);
+    expect(organizationRead).toHaveBeenCalledTimes(1);
+    expect(managedRead).toHaveBeenCalledTimes(1);
+    rendered.rerender(<SchemesWorkspace active={false} />);
+    await act(async () => {});
+    expect(eventsActive.mock.lastCall).toEqual([false]);
+    expect(store.getState().qqManagedQrPayload).toBeNull();
+  });
+
+  it("shared access reads once across subtasks, but revalidates on API, lifecycle, visibility and active changes", async () => {
+    const fake = await renderApp("qq-connection");
+    expect(fake.getQqSettings).toHaveBeenCalledTimes(1);
+    expect(fake.getQqStatus).toHaveBeenCalledTimes(1);
+    for (const key of [
+      "schemes.qq.eventsTitle",
+      "schemes.qq.runtimeTitle",
+      "schemes.qq.eventsTitle",
+    ]) {
+      await userEvent.click(screen.getByRole("tab", { name: translate(key) }));
+    }
+    expect(fake.getQqSettings).toHaveBeenCalledTimes(1);
+    expect(fake.getQqStatus).toHaveBeenCalledTimes(1);
+    expect(fake.listQqConversations).toHaveBeenCalledTimes(1);
+    expect(fake.listQqBindings).toHaveBeenCalledTimes(1);
+    expect(fake.listQqSchemes).toHaveBeenCalledTimes(1);
+    const replacement = client();
+    await act(async () => store.setState({ apiClient: replacement }));
+    expect(replacement.getQqSettings).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      store.setState({ qqManagedLifecycleId: store.getState().qqManagedLifecycleId + 1 }),
+    );
+    expect(replacement.getQqSettings).toHaveBeenCalledTimes(2);
+    const hiddenDescriptor = Object.getOwnPropertyDescriptor(document, "hidden");
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    fireEvent(document, new Event("visibilitychange"));
+    expect(replacement.getQqSettings).toHaveBeenCalledTimes(2);
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    await act(async () => fireEvent(document, new Event("visibilitychange")));
+    expect(replacement.getQqSettings).toHaveBeenCalledTimes(3);
+    if (hiddenDescriptor) Object.defineProperty(document, "hidden", hiddenDescriptor);
+    else Reflect.deleteProperty(document, "hidden");
+    await userEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
+    await userEvent.click(
+      screen.getByRole("button", { name: translate("schemes.qq.connectionTitle") }),
+    );
+    expect(replacement.getQqSettings).toHaveBeenCalledTimes(4);
+    await userEvent.click(
+      screen.getByRole("button", { name: translate("connections.refreshState") }),
+    );
+    expect(replacement.getQqSettings).toHaveBeenCalledTimes(5);
+  });
+
+  it("API replacement during a shared-access read starts the new owner once and rejects the old response", async () => {
+    let resolveOld!: (value: QqSettingsResponse) => void;
+    let resolveNew!: (value: QqSettingsResponse) => void;
+    const oldSettings = new Promise<QqSettingsResponse>((resolve) => {
+      resolveOld = resolve;
+    });
+    const newSettings = new Promise<QqSettingsResponse>((resolve) => {
+      resolveNew = resolve;
+    });
+    const old = await renderApp("qq-connection", "workspace", {
+      getQqSettings: vi.fn().mockReturnValue(oldSettings),
+    });
+    const replacement = client({
+      getQqSettings: vi.fn().mockReturnValue(newSettings),
+      listQqSchemes: vi.fn().mockResolvedValue([{ ...scheme, name: "新来源方案" }]),
+    });
+    await act(async () => store.setState({ apiClient: replacement }));
+    void store.getState().loadQqAccess();
+    expect(old.getQqSettings).toHaveBeenCalledTimes(1);
+    expect(replacement.getQqSettings).toHaveBeenCalledTimes(1);
+    expect(replacement.listQqBindings).toHaveBeenCalledTimes(1);
+    expect(replacement.listQqSchemes).toHaveBeenCalledTimes(1);
+    await act(async () => resolveOld({ ...settings, account_id: "old-account" }));
+    expect(old.getQqStatus).not.toHaveBeenCalled();
+    expect(replacement.getQqStatus).not.toHaveBeenCalled();
+    expect(store.getState().qqAccessLoading).toBe(true);
+    expect(store.getState().qqSettings).toBeNull();
+    await act(async () => resolveNew({ ...settings, account_id: "200", revision: 8 }));
+    expect(replacement.getQqSettings).toHaveBeenCalledTimes(1);
+    expect(replacement.listQqConversations).toHaveBeenCalledTimes(1);
+    expect(replacement.listQqBindings).toHaveBeenCalledTimes(1);
+    expect(replacement.listQqSchemes).toHaveBeenCalledTimes(1);
+    expect(replacement.getQqStatus).toHaveBeenCalledTimes(1);
+    expect(store.getState().qqSettings?.account_id).toBe("200");
+    expect(store.getState().qqSchemes[0]?.name).toBe("新来源方案");
+    expect(store.getState().qqAccessLoading).toBe(false);
+  });
+
+  it("a late status from the previous API cannot overwrite the replacement connection", async () => {
+    let resolveOldStatus!: (value: Awaited<ReturnType<typeof api.getQqStatus>>) => void;
+    const oldStatus = new Promise<Awaited<ReturnType<typeof api.getQqStatus>>>((resolve) => {
+      resolveOldStatus = resolve;
+    });
+    const old = await renderApp("qq-connection", "workspace", {
+      getQqStatus: vi.fn().mockReturnValue(oldStatus),
+    });
+    expect(old.getQqStatus).toHaveBeenCalledTimes(1);
+    const replacement = client({
+      getQqStatus: vi
+        .fn()
+        .mockResolvedValue({ connection: { phase: "ready", reason: "replacement" } }),
+    });
+    await act(async () => store.setState({ apiClient: replacement }));
+    expect(replacement.getQqStatus).toHaveBeenCalledTimes(1);
+    expect(store.getState().qqConnection?.reason).toBe("replacement");
+    await act(async () =>
+      resolveOldStatus({ connection: { phase: "closed", reason: "old-owner" } } as Awaited<
+        ReturnType<typeof api.getQqStatus>
+      >),
+    );
+    expect(store.getState().qqConnection?.reason).toBe("replacement");
+    expect(store.getState().qqAccessLoading).toBe(false);
+  });
+
+  it.each([false, true])(
+    "quick login only saves the necessary account CAS and keeps other drafts; CAS failure=%s",
+    async (failCas) => {
+      const ready = {
+        apply: "ready" as const,
+        process: "running" as const,
+        ownership: "owned" as const,
+        phase: "waiting_scan" as const,
+        core_ready: false,
+        network_apply: "pending" as const,
+        transport_phase: "idle" as const,
+        diagnostic_code: null,
+      };
+      const managedConfig = {
+        config: { version: 1 as const, enabled: false },
+        revision: "managed-1",
+      };
+      const resources = {
+        revision: "resources-1",
+        status: "ready" as const,
+        root: "C:/runtime",
+        diagnostic_code: null,
+      };
+      const updateSettings = failCas
+        ? vi.fn().mockRejectedValue(new Error("ACCOUNT_CAS_CONFLICT"))
+        : vi.fn().mockImplementation(async (body: { account_id: string }) => ({
+            ...settings,
+            account_id: body.account_id,
+            revision: 4,
+          }));
+      const quickLogin = vi.fn().mockResolvedValue(ready);
+      const managedSave = vi.fn();
+      const resourceSave = vi.fn();
+      const transportSave = vi.fn();
+      const schemeSave = vi.fn();
+      const fake = await renderApp("qq-connection", "workspace", {
+        getQqManagedStatus: vi.fn().mockResolvedValue(ready),
+        getQqManagedConfig: vi.fn().mockResolvedValue(managedConfig),
+        getQqManagedResources: vi.fn().mockResolvedValue(resources),
+        listQqManagedAccounts: vi
+          .fn()
+          .mockResolvedValue({ accounts: [{ account_id: "200", display_name: null }] }),
+        updateQqSettings: updateSettings,
+        updateQqTransport: transportSave,
+        updateQqManagedConfig: managedSave,
+        updateQqManagedResources: resourceSave,
+        updateQqScheme: schemeSave,
+        quickLoginQqManaged: quickLogin,
+      });
+      const schemeDraft = qqSchemeEditorFrom(scheme);
+      schemeDraft.name = "仍未保存的方案";
+      await act(async () =>
+        store.setState({
+          qqSchemeEditor: schemeDraft,
+          qqInputs: {
+            ...store.getState().qqInputs,
+            managed: { source: managedConfig, enabled: true },
+            managedResources: { source: resources, root: "C:/other-draft" },
+            connection: {
+              source: settings,
+              endpoint: "ws://unsaved-endpoint",
+              accountId: "200",
+              token: "unsaved-token",
+            },
+          },
+        }),
+      );
+      const beforeInputs = store.getState().qqInputs;
+      await userEvent.click(
+        screen.getByRole("button", {
+          name: translate("connections.managed.quickLogin.loginButton"),
+        }),
+      );
+      expect(fake.updateQqSettings).toHaveBeenCalledTimes(1);
+      expect(fake.updateQqSettings).toHaveBeenCalledWith({
+        account_id: "200",
+        expected_revision: 3,
+      });
+      expect(transportSave).not.toHaveBeenCalled();
+      expect(managedSave).not.toHaveBeenCalled();
+      expect(resourceSave).not.toHaveBeenCalled();
+      expect(schemeSave).not.toHaveBeenCalled();
+      expect(store.getState().qqInputs.managed).toBe(beforeInputs.managed);
+      expect(store.getState().qqInputs.managedResources).toBe(beforeInputs.managedResources);
+      expect(store.getState().qqSchemeEditor).toBe(schemeDraft);
+      expect(store.getState().qqInputs.connection?.endpoint).toBe("ws://unsaved-endpoint");
+      expect(store.getState().qqInputs.connection?.token).toBe("unsaved-token");
+      if (failCas) {
+        expect(quickLogin).not.toHaveBeenCalled();
+        expect(store.getState().qqInputs.connection?.source.revision).toBe(3);
+      } else {
+        expect(quickLogin).toHaveBeenCalledTimes(1);
+        expect(quickLogin).toHaveBeenCalledWith({
+          account_id: "200",
+          expected_settings_revision: 4,
+        });
+        expect(store.getState().qqInputs.connection?.source.revision).toBe(4);
+      }
+    },
+  );
+
+  it("dirty subtask change stays on the original route until the existing guard is resolved", async () => {
+    await renderApp("qq-connection");
+    fireEvent.change(screen.getByLabelText(translate("connections.websocketAddress")), {
+      target: { value: "ws://edited:3000" },
+    });
+    await userEvent.click(screen.getByRole("tab", { name: translate("schemes.qq.eventsTitle") }));
+    expect(store.getState()).toMatchObject({
+      settingsRoute: "qq-connection",
+      navigationConfirmOpen: true,
+      pendingNavigation: { kind: "page", settingsRoute: "qq-events" },
+    });
+    act(() => store.getState().cancelPendingNavigation());
+    expect(store.getState().settingsRoute).toBe("qq-connection");
+    expect(store.getState().qqInputs.connection?.endpoint).toBe("ws://edited:3000");
   });
 });
 
@@ -430,7 +720,28 @@ describe("QQ app data & retention", () => {
   it("keeps the inventory, scheduling verdicts, retention and one run-observability entry", async () => {
     const fake = await renderApp("qq-storage");
     expect(fake.getQqStorage).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(/消息正文保留 14 天/)).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: translate("connections.dataRetention"), level: 1 }),
+    ).toBeTruthy();
+    expect(
+      (
+        screen.getByLabelText(
+          translate("connections.storage.manage.retentionDays"),
+        ) as HTMLInputElement
+      ).value,
+    ).toBe("14");
+    expect(screen.getByText(translate("schemes.qq.scopeNote"))).toBeTruthy();
+    const pageHeader = screen
+      .getByRole("heading", { name: translate("connections.dataRetention"), level: 1 })
+      .closest("header") as HTMLElement;
+    const help = within(pageHeader).getByRole("button", {
+      name: translate("hints.field.learnAbout", translate("connections.dataRetention")),
+    });
+    await userEvent.click(help);
+    expect(screen.getByRole("tooltip").textContent).toContain(
+      translate("connections.storage.retention", "14"),
+    );
+    fireEvent.keyDown(help, { key: "Escape" });
     expect(screen.getByText("群 30003")).toBeTruthy();
     expect(screen.getByText("尚未冷场")).toBeTruthy();
     // 深链只在运行观测里：这里仅一个入口，不复制追踪详情。
@@ -453,9 +764,7 @@ describe("QQ app data & retention", () => {
     ) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "30" } });
     // 切到方案分区：共享 revision 链上的保留草稿触发三选确认，明细如实列出改动。
-    await userEvent.click(
-      screen.getByRole("tab", { name: translate("schemes.workspace.schemes") }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
     await act(async () => {});
     const dialog = screen.getByRole("alertdialog");
     expect(dialog.textContent).toContain("数据与保留");
@@ -470,9 +779,7 @@ describe("QQ app data & retention", () => {
     expect(input.value).toBe("30");
     expect(fake.updateQqStorageSettings).not.toHaveBeenCalled();
     // 保存并继续：独立 storage PUT 成功后清草稿，才切到方案分区。
-    await userEvent.click(
-      screen.getByRole("tab", { name: translate("schemes.workspace.schemes") }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
     await act(async () => {});
     await userEvent.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
@@ -494,9 +801,7 @@ describe("QQ app data & retention", () => {
     fireEvent.change(screen.getByLabelText(translate("connections.storage.manage.retentionDays")), {
       target: { value: "25" },
     });
-    await userEvent.click(
-      screen.getByRole("tab", { name: translate("schemes.workspace.schemes") }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
     await act(async () => {});
     await userEvent.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
@@ -514,15 +819,13 @@ describe("QQ app data & retention", () => {
     act(() => {
       store.setState({ qqStorageSaving: true });
     });
-    for (const name of [
-      "schemes.workspace.schemes",
-      "schemes.workspace.bindings",
-      "schemes.workspace.settings",
-    ]) {
-      expect(
-        (screen.getByRole("tab", { name: translate(name) }) as HTMLButtonElement).disabled,
-      ).toBe(true);
-    }
+    expect(
+      (
+        screen.getByRole("button", {
+          name: translate("schemes.backToCatalog"),
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
     // 路由请求同样被 navigationBusy 拦住，位置不变（统一判忙链路 requestPageNavigation）。
     store.getState().requestPageNavigation("settings", "hub");
     expect(store.getState().settingsRoute).toBe("qq-storage");

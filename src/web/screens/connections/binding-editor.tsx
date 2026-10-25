@@ -37,6 +37,7 @@ import { QQ_SCHEME_FIELD_LABELS, TRIGGER_LABELS } from "../../features/qq/scheme
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { msg, translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { BindingMemoryControls } from "../library/BindingMemoryControls";
 import { AdminMembersEditor } from "./admin-members-editor";
 import { SchemeFieldCard } from "./scheme-field-shared";
@@ -318,7 +319,7 @@ export function BindingEditor({
       }}
     >
       <SheetContent
-        className="w-full overflow-y-auto sm:max-w-xl"
+        className="w-full min-w-0 overflow-y-auto sm:max-w-xl"
         onOpenAutoFocus={(event) => {
           if (initialSection === "administrators" && adminSectionRef.current) {
             event.preventDefault();
@@ -337,7 +338,7 @@ export function BindingEditor({
         onCloseAutoFocus={onCloseAutoFocus}
       >
         <SheetHeader className="border-b px-6 py-4">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-start gap-3 pr-6">
             <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary font-mono text-sm font-semibold">
               {conversation.kind === "group" ? "Q" : "P"}
             </div>
@@ -347,13 +348,17 @@ export function BindingEditor({
                 {conversation.peer_id}
               </SheetTitle>
               <SheetDescription className="text-xs text-muted-foreground leading-relaxed">
-                {t(
-                  conversation.kind === "private"
-                    ? "qq.entry.private.bindingDescription"
-                    : "connections.conversationBindingAndOverrides",
-                )}
+                {t("schemes.qq.groupConfig.account")} {conversation.account_id}
               </SheetDescription>
             </div>
+            <WorkspaceHelp
+              title={t("connections.conversationBindingAndOverrides")}
+              description={t(
+                conversation.kind === "private"
+                  ? "qq.entry.private.bindingDescription"
+                  : "connections.conversationBindingAndOverrides",
+              )}
+            />
           </div>
         </SheetHeader>
         <div className="min-w-0 space-y-6 p-6">
@@ -385,7 +390,10 @@ export function BindingEditor({
                 setChoices((old) => ({ ...old, [key]: { ...choice, ...patch } }))
               }
             />
-            {/* 编辑方案直达的是共享方案本体：文案先说明会影响使用它的会话。 */}
+            <p className="text-xs text-muted-foreground">
+              {t("schemes.bindings.assignment.saveScope")}
+            </p>
+            {/* 共享方案影响多个会话；在跳转操作前明确范围。 */}
             <div className="space-y-1.5 pt-1">
               <p className="text-xs text-muted-foreground">
                 {t("connections.aSharedSchemeMayAffectSeveralConversationsReviewIts")}
@@ -479,6 +487,9 @@ export function BindingEditor({
                     : "schemes.bindings.triggers.hint"
                 }
               >
+                <p className="text-xs text-muted-foreground">
+                  {t("schemes.bindings.triggers.immediateSave")}
+                </p>
                 <div className="grid gap-4 sm:grid-cols-2">
                   {Object.entries(TRIGGER_LABELS).map(([key, label]) => {
                     const trigger = key as keyof typeof TRIGGER_LABELS;
@@ -811,7 +822,7 @@ export function BindingEditor({
                                     ）
                                   </span>
                                 )}
-                                <span className="text-[11px] text-muted-foreground">
+                                <span className="text-xs text-muted-foreground">
                                   ({t("connections.scopeHint")})
                                 </span>
                               </div>
@@ -842,7 +853,6 @@ export function BindingEditor({
                               <div className="space-y-4 pl-3 border-l-2 border-muted/60 sm:pl-4">
                                 <Field
                                   label="connections.attentionList"
-                                  info="connections.softPriorityHint"
                                   tooltip={t("connections.softPriorityHint")}
                                 >
                                   <Input
@@ -909,10 +919,8 @@ export function BindingEditor({
                   </div>
                 </>
               )}
-              <SchemeFieldCard
-                title={t("connections.memoryOrganising")}
-                description="schemes.bindings.memory.hint"
-              >
+              <SchemeFieldCard title={t("connections.memoryOrganising")}>
+                <p className="text-xs text-muted-foreground">{t("schemes.bindings.memory.hint")}</p>
                 <BindingMemoryControls
                   binding={{ ...binding, enabled: state.qqSettings?.enabled === true }}
                   pending={binding.pending_observations}
@@ -921,8 +929,9 @@ export function BindingEditor({
                 />
                 <div className="border-t pt-2 flex items-center justify-start">
                   <Button
-                    variant="link"
-                    className="h-auto p-0 text-xs"
+                    variant="outline"
+                    size="sm"
+                    className="h-auto min-h-8 whitespace-normal"
                     tooltip={t("hints.qq.openLongMemory")}
                     onClick={() => {
                       onClose();

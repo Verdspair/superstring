@@ -1,9 +1,18 @@
 import { z } from "zod";
 import {
+  type OneBotProtocolEvent,
+  OneBotProtocolEventSchema,
+} from "../../shared/contracts/onebot-events";
+import {
   OneBotAccountIdSchema as AccountId,
+  normalizeOneBotAccountId,
   OneBotWireIdSchema as WireId,
 } from "../../shared/contracts/onebot-identity";
 
+export {
+  type OneBotProtocolEvent,
+  OneBotProtocolEventSchema,
+} from "../../shared/contracts/onebot-events";
 export { normalizeOneBotAccountId } from "../../shared/contracts/onebot-identity";
 
 // External protocol types stay separate from published HTTP/Turn contracts.
@@ -290,6 +299,180 @@ export function classifyOneBotSendReceipt(input: unknown, expectedEcho: string):
 }
 
 /** NapCat may reject authorization AFTER the WebSocket open event, without an echo. */
+
+const ProtocolSubtype = z.string().regex(/^[A-Za-z0-9_]{1,32}$/);
+const NullableAccountId = z.unknown().transform((value) => normalizeOneBotAccountId(value));
+const NullableWireId = z.unknown().transform((value) => {
+  const parsed = WireId.safeParse(value);
+  return parsed.success ? parsed.data : null;
+});
+
+function protocolSubtype(value: unknown): string | null {
+  const parsed = ProtocolSubtype.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Project one already-decoded wire object to the shared diagnostic allowlist.
+ * `messageResult` is the result the normal connection is already about to deliver; this
+ * function never normalizes message segments a second time and never retains raw fields.
+ */
+function projectOneBotProtocolEventUnchecked(
+  input: unknown,
+  expectedAccountId: string,
+  messageResult?: QqMessageResult,
+  observedAtMs: number = Date.now(),
+): OneBotProtocolEvent | null {
+  const raw = record(input);
+  const expected = normalizeOneBotAccountId(expectedAccountId);
+  const accountId = raw && normalizeOneBotAccountId(raw.self_id);
+  if (
+    !raw ||
+    !expected ||
+    accountId !== expected ||
+    !Number.isSafeInteger(observedAtMs) ||
+    observedAtMs < 0
+  )
+    return null;
+  const occurredAtSeconds =
+    Number.isSafeInteger(raw.time) && Number(raw.time) >= 0
+      ? Number(raw.time)
+      : Math.floor(observedAtMs / 1000);
+  const base = {
+    account_id: accountId,
+    occurred_at_seconds: occurredAtSeconds,
+    observed_at: new Date(observedAtMs).toISOString(),
+  };
+  const nullableId = (value: unknown) => NullableAccountId.parse(value);
+  switch (raw.post_type) {
+    case "message":
+    case "message_sent": {
+      const messageType =
+        raw.message_type === "group" || raw.message_type === "private" ? raw.message_type : null;
+      const subtype = protocolSubtype(raw.sub_type);
+      const messageId = WireId.safeParse(raw.message_id);
+      const senderId = normalizeOneBotAccountId(raw.user_id);
+      const peerId = normalizeOneBotAccountId(messageType === "group" ? raw.group_id : raw.user_id);
+      if (!messageType || !subtype || !messageId.success || !senderId || !peerId) return null;
+      const counts = {
+        text: 0,
+        mention: 0,
+        reply: 0,
+        face: 0,
+        image: 0,
+        record: 0,
+        video: 0,
+        file: 0,
+        unsupported: 0,
+      };
+      if (Array.isArray(raw.message)) {
+        for (const segment of raw.message.slice(0, 256)) {
+          const type = record(segment)?.type;
+          if (
+            type === "text" ||
+            type === "at" ||
+            type === "reply" ||
+            type === "face" ||
+            type === "image" ||
+            type === "record" ||
+            type === "video" ||
+            type === "file"
+          ) {
+            const key = type === "at" ? "mention" : type;
+            counts[key]++;
+          } else counts.unsupported++;
+        }
+      }
+      const eventKey =
+        messageResult?.kind === "message" ? messageResult.observation.eventKey : null;
+      return OneBotProtocolEventSchema.parse({
+        kind: "message",
+        ...base,
+        event_key: eventKey,
+        message_id: messageId.data,
+        message_type: messageType,
+        sub_type: subtype,
+        peer_id: peerId,
+        sender_id: senderId,
+        segments: counts,
+      });
+    }
+    case "notice": {
+      const notice = protocolSubtype(raw.notice_type);
+      const subtype = protocolSubtype(raw.sub_type);
+      if (!notice) return null;
+      return OneBotProtocolEventSchema.parse({
+        kind: "notice",
+        ...base,
+        notice_type: notice,
+        sub_type: subtype,
+        user_id: nullableId(raw.user_id),
+        group_id: nullableId(raw.group_id),
+        operator_id: nullableId(raw.operator_id),
+        target_id: nullableId(raw.target_id),
+        message_id: NullableWireId.parse(raw.message_id),
+      });
+    }
+    case "request": {
+      const request = protocolSubtype(raw.request_type);
+      const subtype = protocolSubtype(raw.sub_type);
+      if (!request) return null;
+      return OneBotProtocolEventSchema.parse({
+        kind: "request",
+        ...base,
+        request_type: request,
+        sub_type: subtype,
+        user_id: nullableId(raw.user_id),
+        group_id: nullableId(raw.group_id),
+      });
+    }
+    case "meta_event": {
+      const type = protocolSubtype(raw.meta_event_type);
+      const subtype = protocolSubtype(raw.sub_type);
+      if (!type) return null;
+      const status = type === "heartbeat" ? record(raw.status) : null;
+      const interval =
+        Number.isSafeInteger(raw.interval) && Number(raw.interval) >= 0
+          ? Number(raw.interval)
+          : null;
+      return OneBotProtocolEventSchema.parse({
+        kind: "meta_event",
+        ...base,
+        meta_event_type: type,
+        sub_type: subtype,
+        heartbeat:
+          type === "heartbeat"
+            ? {
+                good: typeof status?.good === "boolean" ? status.good : null,
+                online: typeof status?.online === "boolean" ? status.online : null,
+                interval_ms: interval,
+              }
+            : null,
+      });
+    }
+    default:
+      return null;
+  }
+}
+
+export function projectOneBotProtocolEvent(
+  input: unknown,
+  expectedAccountId: string,
+  messageResult?: QqMessageResult,
+  observedAtMs: number = Date.now(),
+): OneBotProtocolEvent | null {
+  try {
+    return projectOneBotProtocolEventUnchecked(
+      input,
+      expectedAccountId,
+      messageResult,
+      observedAtMs,
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function isOneBotAuthenticationFailure(input: unknown): boolean {
   const raw = record(input);
   return (

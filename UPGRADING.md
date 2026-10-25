@@ -6,6 +6,10 @@
 
 **版本：** `0.4.0-alpha-2`。**对比基线：** 已发布的 `v0.4.0-alpha-1`。
 
+### 当前 main 源码更新：方案导航与 QQ 引用（不在已发布安装包中）
+
+方案目录以清楚、同等权重的 QQ 任务入口区分「会话与绑定」「QQ连接」和「数据与保留」，不再常驻跨任务胶囊。连接页分为连接、消息事件和运行设置；进入具体方案或会话后专注当前对象，并提供唯一返回。原有未保存草稿与保存冲突提示保留。仅艾特后附空白的消息现在可正常被引用回复；真实正文被删除、过期或改写时，来源校验仍会拒绝。
+
 ### 相对 v0.4.0-alpha-1 的变化
 
 | 领域 | v0.4.0-alpha-1 | 0.4.0-alpha-2 |
@@ -55,7 +59,7 @@
 
 本节针对 main 分支源码，不是新的安装包发布。已发布的 v0.4.0-alpha-2 安装包仍使用结构版本 54；当前源码使用 **72**，新增迁移 0055–0072。
 
-在 QQ 连接设置中切换绑定的 QQ 账号时提供安全检查。若原账号或新账号历史关联的会话中存在正在执行的任务、仍在处理的后台工作、正在发送或发送结果未知的消息，系统会拒绝切换，避免在未结清工作时改变账号归属；相同账号保存、无变更操作或修改普通设置不会误拦截。已部署并明确配置本机运行环境后，可在「方案 → QQ设置 → 连接」启用托管并使用登录看板与二维码；默认关闭，QQ 业务总开关独立。当前 Windows 配置可随桌面启动、正常关窗退出及再次打开自动启动。运行资源目前须手动本机部署，不是通用安装器或随包提供的运行环境。已有 QQ 配置保留，本次托管接通不新增数据库迁移；未部署者仍可使用外部 OneBot 连接。
+在 QQ 连接设置中切换绑定的 QQ 账号时提供安全检查。若原账号或新账号历史关联的会话中存在正在执行的任务、仍在处理的后台工作、正在发送或发送结果未知的消息，系统会拒绝切换，避免在未结清工作时改变账号归属；相同账号保存、无变更操作或修改普通设置不会误拦截。在“方案 → QQ连接 → 连接”选择本地已解压的官方 NapCat 运行目录，准备资源后启用托管。可选择该运行时已记录的账号快速登录，或获取临时二维码并用手机 QQ 扫码确认。登录后，应用配置所需的本地 WebSocket 服务，或只读复用已有的匹配配置；托管开关与 QQ 业务开关分开保存。“消息事件”任务提供紧凑的通信事件列表，可按类型筛选、展开详情，并在向上翻看时暂停自动跟随。正文预览遵守原会话绑定、来源修订与保留期限，未绑定或失效的消息只显示元数据。Windows 上自有组件随桌面启动和退出，原有外部 OneBot 连接方式保留；运行包需另行从官方获取，不包含在安装包中。本次更新保留已有 QQ 配置，不新增数据库迁移。
 
 QQ群聊与私聊现共用会话配置页；已有配置与草稿保留，私聊详细策略默认跟随所选方案，未主动自定义的项目不改写。会话菜单可解除绑定并移除目录入口，不删除Agent、方案或平台聊天。私聊添加需填写联系人的QQ号，不能填写机器人自身账号。这些界面与绑定操作不新增数据库迁移。
 
@@ -92,6 +96,10 @@ QQ 回复现在可自主选择文字、单张表情或组合，并可按方案�
 ## English
 
 **Version:** `0.4.0-alpha-2`. **Comparison baseline:** published `v0.4.0-alpha-1`.
+
+### Current main source: scheme navigation and QQ reply references (not in the published installers)
+
+The scheme catalog offers clear, equally weighted task entries for bindings, QQ connection, and data retention instead of persistent cross-task pills. Connection, message events, and runtime settings have separate views. Scheme and conversation details focus on the current object and provide one return path. Unsaved drafts and save-conflict handling remain unchanged. Messages containing only a mention and whitespace can now be quoted in replies; source validation still rejects deleted, expired, or rewritten nonempty bodies.
 
 ### What changes from v0.4.0-alpha-1
 
@@ -142,7 +150,7 @@ Unknown schemas or downgrade attempts are rejected to protect data safety. Rolli
 
 This section applies to source code on main, not a new packaged release. The published v0.4.0-alpha-2 packages still use schema 54; current source uses **72**, with migrations 0055–0072.
 
-Switching the bound QQ account in QQ connection settings includes safeguards before changing accounts. If historical sessions associated with either the old or new account contain tasks in progress, ongoing background work, or messages being sent or with unknown delivery results, the switch is refused to avoid changing account ownership while work is outstanding. Same-account updates, no-op saves, and ordinary setting edits are not blocked. After manually deploying and explicitly configuring a local runtime, enable managed mode under **Schemes → QQ settings → Connection** to use the login dashboard and QR codes. It is off by default; the QQ business switch is separate. The current Windows setup starts with the desktop, exits on normal window close, and starts automatically when reopened. Runtime resources currently require manual local deployment, not a universal installer or bundled runtime. Existing QQ configuration is retained; this managed connection update adds no database migration. External OneBot connections remain available without local deployment.
+Switching the bound QQ account in QQ connection settings includes safeguards before changing accounts. If historical sessions associated with either the old or new account contain tasks in progress, ongoing background work, or messages being sent or with unknown delivery results, the switch is refused to avoid changing account ownership while work is outstanding. Same-account updates, no-op saves, and ordinary setting edits are not blocked. Under **Schemes → QQ connection → Connection**, select an extracted official NapCat runtime directory, prepare its resources, and enable managed mode. Choose an account saved by that runtime for quick login, or request a temporary QR code and confirm it in mobile QQ. After login, the app configures the required local WebSocket server or reuses a matching configuration read-only. Managed mode and the QQ business switch are saved separately. The Message events task provides a compact event list with type filters, expandable details, and paused autoscroll while reading older entries. Body previews follow the original conversation binding, source revision, and retention period; unbound or invalid sources show metadata only. On Windows, app-owned components start and stop with the desktop. Existing external OneBot connections remain available. Obtain the runtime package separately from its official source; installers do not include it. Existing QQ configuration is retained without database migrations.
 
 QQ groups and private chats now share one conversation policy editor. Existing configuration and drafts remain; private settings follow the selected scheme unless explicitly overridden. Conversation menus can remove a binding and its directory entry without deleting the Agent, scheme, or platform chat. Enter the contact’s QQ number when adding a private chat, not the bot’s own account. These interface and binding changes add no database migration.
 

@@ -69,6 +69,18 @@ export const SETTINGS_ROUTES = [
     note: "schemes.qq.scopeNote",
   },
   {
+    id: "qq-events",
+    title: "schemes.qq.eventsTitle",
+    state: "transition",
+    note: "schemes.qq.scopeNote",
+  },
+  {
+    id: "qq-runtime",
+    title: "schemes.qq.runtimeTitle",
+    state: "transition",
+    note: "schemes.qq.scopeNote",
+  },
+  {
     id: "qq-storage",
     title: "connections.dataRetention",
     state: "transition",

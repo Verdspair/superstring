@@ -3,9 +3,17 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveAppPaths } from "../../src/server/app-paths";
-import { ensureDefaults } from "../../src/server/db/repositories";
+import {
+  readQqSettings,
+  updateQqSettings,
+  updateQqTransportConfig,
+} from "../../src/server/db/qq-settings-repository";
+import { DEFAULT_AGENT_ID, ensureDefaults, nowIso } from "../../src/server/db/repositories";
+import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import type { BotEvidenceScope } from "../../src/server/modules/conversation-evidence";
+import { loadConversationEvidence } from "../../src/server/modules/conversation-evidence-store";
 import type {
   createNapCatManagedSession,
   NapCatManagedSession,
@@ -95,6 +103,24 @@ function managedSessionHarness(onStop?: () => Promise<void>) {
         apply: "blocked",
         unavailable_reason: "native_validation_required",
       }),
+      readResources: () => ({
+        revision: "",
+        status: "missing",
+        root: null,
+        diagnostic_code: "runtime_not_selected",
+      }),
+      async prepareResources() {
+        return {
+          revision: "synthetic-resource",
+          status: "ready",
+          root: path.resolve("synthetic"),
+          diagnostic_code: null,
+        };
+      },
+      async listAccounts() {
+        return { accounts: [] };
+      },
+      async quickLogin() {},
       async start() {
         state.startCalls += 1;
       },
@@ -338,6 +364,225 @@ describe("NapCat runtime management wiring", () => {
     } finally {
       releaseDrain();
       await runtime.stop();
+    }
+  });
+});
+
+describe("NapCat event source runtime composition", () => {
+  it("links incoming tap to committed preview and rechecks source revision and original epoch", async () => {
+    const directory = temporaryDirectory();
+    const business = openBusinessDb();
+    ensureDefaults(business.orm, MODEL);
+    const keyPath = path.join(directory, "transport.key");
+    let settings = readQqSettings(business.orm);
+    updateQqSettings(business.orm, {
+      enabled: true,
+      accountId: "10001",
+      expectedRevision: settings.revision,
+    });
+    settings = readQqSettings(business.orm);
+    updateQqTransportConfig(business.orm, {
+      endpoint: "ws://127.0.0.1:3001/",
+      token: "synthetic-event-token",
+      expectedRevision: settings.revision,
+      keyPath,
+    });
+    const schemeId = "22222222-2222-4222-8222-222222222222";
+    const bindingId = "11111111-1111-4111-8111-111111111111";
+    business.orm
+      .insert(schema.qqSchemes)
+      .values({
+        id: schemeId,
+        name: "Synthetic event scheme",
+        revision: 1,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      })
+      .run();
+    business.orm
+      .insert(schema.qqBindings)
+      .values({
+        id: bindingId,
+        accountId: "10001",
+        conversationKind: "group",
+        peerId: "30003",
+        agentId: DEFAULT_AGENT_ID,
+        schemeId,
+        paused: 1,
+        shareWebMemory: 0,
+        memoryBatchSize: null,
+        ownerIdentityRevision: null,
+        revision: 1,
+        authorityRevision: 1,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      })
+      .run();
+    let socket: EventSocket | undefined;
+    let sockets = 0;
+    let modelCalls = 0;
+    class EventSocket extends EventTarget {
+      readyState = 0;
+      constructor() {
+        super();
+        sockets += 1;
+        socket = this;
+        queueMicrotask(() => {
+          this.readyState = 1;
+          this.dispatchEvent(new Event("open"));
+        });
+      }
+      send(payload: string) {
+        const request: { action: string; echo: string } = JSON.parse(payload);
+        const data =
+          request.action === "get_login_info"
+            ? { user_id: 10001 }
+            : request.action === "get_status"
+              ? { online: true, good: true }
+              : null;
+        this.deliver({ status: "ok", retcode: 0, echo: request.echo, data });
+      }
+      deliver(value: unknown) {
+        this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) }));
+      }
+      terminate() {
+        this.readyState = 3;
+      }
+    }
+    const originalSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+    Object.defineProperty(globalThis, "WebSocket", {
+      configurable: true,
+      writable: true,
+      value: EventSocket,
+    });
+    const runtime = createRuntime({
+      business,
+      qqTransportKeyPath: keyPath,
+      browserStateSecret: "synthetic-event-runtime-secret",
+      gateway: {
+        ...gateway,
+        async complete() {
+          modelCalls += 1;
+          throw new Error("Unexpected model call");
+        },
+        async *streamChat() {
+          modelCalls += 1;
+          yield "Unexpected model call";
+        },
+      },
+    });
+    const page = async () => {
+      const response = await runtime.app.request("/v2/qq/managed-component/events?kind=message");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      return response.json();
+    };
+    try {
+      expect((await runtime.qqIntake.start()).phase).toBe("ready");
+      if (!socket) throw new Error("Expected one synthetic socket");
+      socket.deliver({
+        time: Math.floor(Date.now() / 1000),
+        self_id: 10001,
+        post_type: "message",
+        message_type: "group",
+        sub_type: "normal",
+        message_id: -991,
+        user_id: 20002,
+        group_id: 30003,
+        message: [{ type: "text", data: { text: "Synthetic committed preview" } }],
+      });
+      const initial = await page();
+      expect(initial.events).toHaveLength(1);
+      const sourceEntry = business.db
+        .query(
+          "SELECT c.id,c.binding_epoch,e.sources FROM conversations c JOIN conversation_events e ON e.conversation_id=c.id WHERE c.source_id=? AND e.kind='inbound'",
+        )
+        .get(bindingId) as { id: string; binding_epoch: number; sources: string };
+      const originalSource = (
+        JSON.parse(sourceEntry.sources) as {
+          kind: string;
+          id: string;
+          revision: string;
+          expiresAt?: string;
+        }[]
+      ).find((source) => source.kind === "qq_observation");
+      if (!originalSource?.expiresAt) throw new Error("Expected committed observation source");
+      const originalScope: BotEvidenceScope = {
+        channel: "onebot11",
+        conversationId: sourceEntry.id,
+        bindingEpoch: sourceEntry.binding_epoch,
+        accountId: "10001",
+        conversationKind: "group",
+        peerId: "30003",
+        agentId: DEFAULT_AGENT_ID,
+        bindingId,
+        authorityRevision: 1,
+      };
+      const readable = loadConversationEvidence(
+        business,
+        originalScope,
+        "history",
+        `qq-message:${originalSource.id}`,
+        nowIso(),
+      );
+      expect(readable?.text).toBe("Synthetic committed preview");
+      const readableSource = readable?.sources.find((source) => source.kind === "qq_observation");
+      expect(readableSource?.revision).toBe(originalSource.revision);
+      expect(originalSource.expiresAt).toMatch(/\.\d{6}Z$/);
+      expect(readableSource?.expiresAt).toMatch(/\.\d{3}Z$/);
+      expect(Date.parse(readableSource?.expiresAt ?? "")).toBe(
+        Date.parse(originalSource.expiresAt),
+      );
+      expect(initial.events[0]).toMatchObject({
+        conversation_binding: "bound",
+        preview_state: "available",
+        message_preview: "Synthetic committed preview",
+      });
+      const event = business.db
+        .query("SELECT event_key FROM qq_events WHERE message_id=?")
+        .get("-991") as { event_key: string };
+      const activation = business.db
+        .query("SELECT id,binding_epoch FROM conversations WHERE source_id=? AND closed_at IS NULL")
+        .get(bindingId) as { id: string; binding_epoch: number };
+      const body = business.db
+        .query("SELECT body FROM qq_observation_text WHERE event_key=?")
+        .get(event.event_key) as { body: string };
+      const facts = business.db
+        .query("SELECT parts FROM qq_message_facts WHERE event_key=?")
+        .get(event.event_key) as { parts: string };
+      business.db
+        .query("UPDATE qq_observation_text SET body=? WHERE event_key=?")
+        .run("Changed source revision", event.event_key);
+      business.db
+        .query("UPDATE qq_message_facts SET parts=? WHERE event_key=?")
+        .run(JSON.stringify([{ kind: "text", text: "Changed source revision" }]), event.event_key);
+      expect((await page()).events[0].message_preview).toBeNull();
+      business.db
+        .query("UPDATE qq_observation_text SET body=? WHERE event_key=?")
+        .run(body.body, event.event_key);
+      business.db
+        .query("UPDATE qq_message_facts SET parts=? WHERE event_key=?")
+        .run(facts.parts, event.event_key);
+      expect((await page()).events[0].message_preview).toBe("Synthetic committed preview");
+      business.db
+        .query(
+          "UPDATE qq_bindings SET revision=revision+1,authority_revision=authority_revision+1 WHERE id=?",
+        )
+        .run(bindingId);
+      expect((await page()).events[0].message_preview).toBeNull();
+      business.db
+        .query("UPDATE qq_bindings SET revision=1,authority_revision=1 WHERE id=?")
+        .run(bindingId);
+      business.db
+        .query("UPDATE conversations SET binding_epoch=binding_epoch+1 WHERE id=?")
+        .run(activation.id);
+      expect((await page()).events[0].message_preview).toBeNull();
+      expect(sockets).toBe(1);
+      expect(modelCalls).toBe(0);
+    } finally {
+      await runtime.stop();
+      if (originalSocket) Object.defineProperty(globalThis, "WebSocket", originalSocket);
+      else Reflect.deleteProperty(globalThis, "WebSocket");
     }
   });
 });

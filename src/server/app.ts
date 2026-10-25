@@ -20,7 +20,7 @@ import { memoryRoutes } from "./api/memories";
 import { modelRoutes } from "./api/models";
 import { observabilityRoutes } from "./api/observability";
 import { permissionRoutes } from "./api/permissions";
-import { qqManagedComponentRoutes, qqRoutes } from "./api/qq";
+import { type QqManagedEventsPort, qqManagedComponentRoutes, qqRoutes } from "./api/qq";
 import { runRoutes } from "./api/runs";
 import { sessionRoutes } from "./api/sessions";
 import { skillsRoutes } from "./api/skills";
@@ -86,6 +86,7 @@ export interface CreateAppOptions {
   qqConnectionState?: () => { readonly phase: string; readonly reason?: string };
   /** Optional managed-component config and status; construction performs no component I/O. */
   napcatManagement?: NapCatManagementPort;
+  napcatEvents?: QqManagedEventsPort;
   /** 外部（MCP）动作：每轮现取；没有登记时返回空表。 */
   externalActions?: () => readonly BuiltInAction[];
   toolDirectory?: () => readonly ToolDirectoryEntry[];
@@ -243,7 +244,10 @@ export function createApp(opts: CreateAppOptions): Hono {
         annotator: opts.qqStickerAnnotator ?? createQqStickerAnnotator(agentRuntime),
       }),
     );
-    app.route("/v2/qq/managed-component", qqManagedComponentRoutes(opts.napcatManagement));
+    app.route(
+      "/v2/qq/managed-component",
+      qqManagedComponentRoutes(opts.napcatManagement, opts.napcatEvents),
+    );
     app.route("/", desktopRoutes(business));
     app.route("/", memoryRoutes(business.orm));
     app.route("/", knowledgeRoutes(business, modules.knowledge));

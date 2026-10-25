@@ -5,7 +5,9 @@ import {
   isOneBotAuthenticationFailure,
   normalizeOneBotAccountId,
   normalizeOneBotMessage,
+  type OneBotProtocolEvent,
   type OneBotSendReceipt,
+  projectOneBotProtocolEvent,
   type QqMessageResult,
 } from "./onebot-protocol";
 
@@ -26,6 +28,13 @@ const nativeSocket: OneBotSocketFactory = (url, options) =>
     url,
     options,
   );
+
+export interface OneBotConnectionOptions {
+  onMessage: (message: QqMessageResult) => void | Promise<void>;
+  /** Optional body-free observation of the same identity-checked OneBot socket. */
+  onProtocolEvent?: (event: OneBotProtocolEvent) => void;
+  socketFactory?: OneBotSocketFactory;
+}
 
 export interface OneBotConnectionConfig {
   url: string;
@@ -196,22 +205,18 @@ export class OneBotConnection {
   #config: OneBotConnectionConfig;
   #factory: OneBotSocketFactory;
   #onMessage: (message: QqMessageResult) => void | Promise<void>;
+  #onProtocolEvent?: (event: OneBotProtocolEvent) => void;
   #state: OneBotConnectionState = { phase: "idle" };
   #active: ConnectionAttempt | null = null;
   #pending = new Map<string, Pending>();
   #prefix = randomUUID();
   #sequence = 0;
 
-  constructor(
-    config: OneBotConnectionConfig,
-    options: {
-      onMessage: (message: QqMessageResult) => void | Promise<void>;
-      socketFactory?: OneBotSocketFactory;
-    },
-  ) {
+  constructor(config: OneBotConnectionConfig, options: OneBotConnectionOptions) {
     this.#config = configValue(config);
     this.#factory = options.socketFactory ?? nativeSocket;
     this.#onMessage = options.onMessage;
+    this.#onProtocolEvent = options.onProtocolEvent;
   }
 
   get state(): OneBotConnectionState {
@@ -530,22 +535,43 @@ export class OneBotConnection {
       this.#finish(attempt, "account_mismatch");
       return;
     }
+    const ready = this.#state.phase === "ready";
+    if (ready) {
+      const messageResult =
+        raw.post_type === "message" || raw.post_type === "message_sent"
+          ? normalizeOneBotMessage(raw, this.#config.accountId)
+          : undefined;
+      const protocolEvent = projectOneBotProtocolEvent(raw, this.#config.accountId, messageResult);
+      if (protocolEvent) {
+        try {
+          this.#onProtocolEvent?.(protocolEvent);
+        } catch {
+          // Diagnostics are optional observers; they must never affect the owned transport.
+        }
+      }
+      if (raw.post_type === "meta_event" && raw.meta_event_type === "heartbeat" && id) {
+        const status = GoodStatus.safeParse(raw.status);
+        if (status.success && (!status.data.good || status.data.online === false))
+          this.#finish(attempt, "account_offline");
+        return;
+      }
+      if (messageResult && messageResult.kind !== "ignored") {
+        try {
+          Promise.resolve(this.#onMessage(messageResult)).catch(() =>
+            this.#finish(attempt, "consumer_error"),
+          );
+        } catch {
+          this.#finish(attempt, "consumer_error");
+        }
+      }
+      return;
+    }
     if (raw.post_type === "meta_event" && raw.meta_event_type === "heartbeat" && id) {
       const status = GoodStatus.safeParse(raw.status);
       if (status.success && (!status.data.good || status.data.online === false))
         this.#finish(attempt, "account_offline");
-      return;
-    }
-    if (this.#state.phase !== "ready") return;
-    const result = normalizeOneBotMessage(raw, this.#config.accountId);
-    if (result.kind === "ignored") return;
-    try {
-      Promise.resolve(this.#onMessage(result)).catch(() => this.#finish(attempt, "consumer_error"));
-    } catch {
-      this.#finish(attempt, "consumer_error");
     }
   }
-
   #finish(attempt: ConnectionAttempt, reason: OneBotConnectionFailure): void {
     if (this.#active !== attempt) return;
     this.#active = null;

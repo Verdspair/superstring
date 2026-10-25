@@ -211,12 +211,21 @@ const saveButtonOf = (view: View) =>
     .getAllByRole("button")
     .at(-1) as HTMLButtonElement;
 
+const navigationActions = {
+  returnQqGroupConfig: store.getState().returnQqGroupConfig,
+  requestQqSchemeNavigation: store.getState().requestQqSchemeNavigation,
+  openSettingsRoute: store.getState().openSettingsRoute,
+  requestConversationNavigation: store.getState().requestConversationNavigation,
+  openChat: store.getState().openChat,
+};
+
 beforeEach(() => {
   selectLocale("zh-CN");
 });
 
 afterEach(() => {
   cleanup();
+  store.setState(navigationActions);
 });
 
 it("显式钉住与基线同值也保留；钉住从基线初始化，装配冗余按整数百分比；follow 才回到 undefined", async () => {
@@ -332,7 +341,7 @@ it("换基础方案先预览全部当前钉住与新方案值；选 keep 后整�
   expect(
     (view.container.querySelector('select[data-field="scheme.switch"]') as HTMLSelectElement).value,
   ).toBe(TARGET_SCHEME_ID);
-  expect(view.container.querySelector("header")?.textContent).toContain("新方案");
+  expect(view.container.querySelector("[data-group-context]")?.textContent).toContain("新方案");
   const field = fieldOf(view, "rhythm.merge_window_seconds");
   expect((field.getByRole("spinbutton") as HTMLInputElement).value).toBe("45");
   // 未钉住的字段跟随目标基线：小时上限显示新方案的 250（原基线是 200）。
@@ -898,7 +907,7 @@ it("模型输入示例按生效值渲染，随本群时区改写与恢复跟随�
   expect(preview()).toContain("timezone=Asia/Shanghai");
 });
 
-it("页首返回群目录；查看会话是显式按钮且只认同一绑定、同一助手的摘要", async () => {
+it("唯一页首返回绑定目录；查看会话是显式按钮且只认同一绑定、同一助手的摘要", async () => {
   const view = await renderPage();
   const nav = vi.fn(async () => {});
   const openChat = vi.fn();
@@ -923,13 +932,13 @@ it("页首返回群目录；查看会话是显式按钮且只认同一绑定、�
     });
   });
 
-  // 页首左侧返回动作落到群目录。
+  // 缺少来源时由共同导航所有者返回全局绑定目录。
   fireEvent.click(view.container.querySelector("header button") as HTMLElement);
-  expect(store.getState().settingsRoute).toBe("qq-app-groups");
+  expect(store.getState().settingsRoute).toBe("scheme-bindings");
 
   // 查看会话是显式按钮：目标只落在同一绑定、同一助手的摘要上。
-  const header = view.container.querySelector("header") as HTMLElement;
-  const viewButton = () => within(header).getByRole("button", { name: "查看会话" });
+  const context = view.container.querySelector("[data-group-context]") as HTMLElement;
+  const viewButton = () => within(context).getByRole("button", { name: "查看会话" });
   fireEvent.click(viewButton());
   expect(nav).toHaveBeenCalledWith("right");
   expect(nav).not.toHaveBeenCalledWith("wrong");
@@ -948,7 +957,7 @@ it("页首返回群目录；查看会话是显式按钮且只认同一绑定、�
       },
     }),
   );
-  expect(within(header).queryByRole("button", { name: "查看会话" })).toBeNull();
+  expect(within(context).queryByRole("button", { name: "查看会话" })).toBeNull();
   expect(openChat).not.toHaveBeenCalled();
   // 没有新导航：只有第一阶段的合法 "right" 那一次。
   expect(nav).toHaveBeenCalledTimes(1);
@@ -977,8 +986,8 @@ it("页首选群器列出全部已绑定群（同绑定摘要标题+群号），
       },
     });
   });
-  const header = view.container.querySelector("header") as HTMLElement;
-  const switcher = within(header).getByLabelText("切换群") as HTMLSelectElement;
+  const context = view.container.querySelector("[data-group-context]") as HTMLElement;
+  const switcher = within(context).getByLabelText("切换群") as HTMLSelectElement;
   const optionTexts = () => [...switcher.options].map((option) => option.textContent);
   expect(optionTexts().join("\n")).toContain("本群会话 (123456789)");
   expect(optionTexts().join("\n")).toContain("987654321");
@@ -1000,6 +1009,58 @@ it("页首选群器列出全部已绑定群（同绑定摘要标题+群号），
   expect(editorOf()?.source.binding.id).toBe(BINDING_ID);
   expect(store.getState().qqGroupConfigBindingId).toBe(BINDING_ID);
   expect(store.getState().navigationConfirmOpen).toBe(false);
+});
+
+it("唯一页头的返回动作复用导航所有者；上下文操作和全部任务直接可见", async () => {
+  const view = await renderPage();
+  const returnToOrigin = vi.fn();
+  act(() => store.setState({ returnQqGroupConfig: returnToOrigin }));
+
+  expect(view.container.querySelectorAll("h1")).toHaveLength(1);
+  const header = view.container.querySelector("header") as HTMLElement;
+  fireEvent.click(within(header).getAllByRole("button")[0]);
+  expect(returnToOrigin).toHaveBeenCalledTimes(1);
+  expect(store.getState().settingsRoute).toBe("qq-group-config");
+
+  const actions = view.container.querySelector("[data-group-actions]") as HTMLElement;
+  expect(within(actions).getByRole("button", { name: "管理员" })).toBeTruthy();
+  expect(within(actions).getByRole("button", { name: "刷新保存基线" })).toBeTruthy();
+  expect(screen.getAllByRole("tab")).toHaveLength(7);
+  expect(screen.getByRole("checkbox", { name: "只看已自定义的项" })).toBeTruthy();
+});
+
+it.each([
+  { origin: { kind: "scheme-usage" as const, schemeId: BASE_SCHEME_ID }, expected: "scheme" },
+  { origin: { kind: "bindings" as const }, expected: "bindings" },
+  {
+    origin: { kind: "conversation" as const, conversationId: "origin-conversation" },
+    expected: "conversation",
+  },
+  { origin: { kind: "conversation" as const, conversationId: null }, expected: "chat" },
+])("返回复用来源 $expected 的既有导航动作", async ({ origin, expected }) => {
+  const view = await renderPage();
+  const scheme = vi.fn(async () => {});
+  const bindings = vi.fn();
+  const conversation = vi.fn(async () => {});
+  const chat = vi.fn();
+  act(() =>
+    store.setState({
+      qqGroupConfigOrigin: origin,
+      qqSchemes: [qqScheme()],
+      requestQqSchemeNavigation: scheme,
+      openSettingsRoute: bindings,
+      requestConversationNavigation: conversation,
+      openChat: chat,
+    }),
+  );
+  fireEvent.click(view.container.querySelector("header button") as HTMLElement);
+  expect(scheme).toHaveBeenCalledTimes(expected === "scheme" ? 1 : 0);
+  expect(bindings).toHaveBeenCalledTimes(expected === "bindings" ? 1 : 0);
+  expect(conversation).toHaveBeenCalledTimes(expected === "conversation" ? 1 : 0);
+  expect(chat).toHaveBeenCalledTimes(expected === "chat" ? 1 : 0);
+  if (expected === "scheme") expect(scheme).toHaveBeenCalledWith(BASE_SCHEME_ID, "bindings");
+  if (expected === "bindings") expect(bindings).toHaveBeenCalledWith("scheme-bindings");
+  if (expected === "conversation") expect(conversation).toHaveBeenCalledWith("origin-conversation");
 });
 
 describe("性能阶段补测：窄订阅行为保持（FE-P1, group-config）", () => {

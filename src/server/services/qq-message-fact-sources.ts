@@ -89,7 +89,7 @@ function textConsistencyOf(
   body: { body: string } | null,
 ): string | null {
   const storedText = stored.flatMap((p) => (p.kind === "text" ? [p.text] : [])).join("");
-  if (body === null) return storedText === "" ? null : "text-expired";
+  if (body === null) return storedText.trim() === "" ? null : "text-expired";
   return [...storedText].join("") === [...body.body].join("") ? null : "text-mismatch";
 }
 

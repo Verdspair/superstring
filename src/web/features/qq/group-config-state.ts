@@ -66,7 +66,13 @@ export interface QqGroupConfigEditor {
   identityConflict?: boolean;
 }
 
+export type QqGroupConfigOrigin =
+  | { kind: "scheme-usage"; schemeId: string }
+  | { kind: "bindings" }
+  | { kind: "conversation"; conversationId: string | null };
+
 export const qqGroupConfigInitial = {
+  qqGroupConfigOrigin: null as QqGroupConfigOrigin | null,
   qqGroupConfigEditor: null as QqGroupConfigEditor | null,
   /** 本群配置页当前指向的绑定 id：页面参数稳定（保存/刷新期间不抖动），失败后仍可原位重试。 */
   qqGroupConfigBindingId: null as string | null,
@@ -79,6 +85,8 @@ export const qqGroupConfigInitial = {
 };
 
 export interface QqGroupConfigState {
+  qqGroupConfigOrigin: QqGroupConfigOrigin | null;
+  returnQqGroupConfig: () => void;
   qqGroupConfigEditor: QqGroupConfigEditor | null;
   qqGroupConfigBindingId: string | null;
   qqGroupConfigLoading: boolean;

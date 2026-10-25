@@ -135,14 +135,18 @@ describe("admin store render isolation", () => {
 
   it("keeps inactive storage isolated but exposes relevant loading state", async () => {
     await isolated(<StorageInventory active={false} />);
-    const refresh = screen.getByRole("button", {
-      name: translate("connections.common.refresh"),
-    }) as HTMLButtonElement;
-    expect(refresh.disabled).toBe(false);
+    expect(
+      screen.queryByRole("button", { name: translate("connections.common.refresh") }),
+    ).toBeNull();
+    expect(screen.queryByText(translate("connections.common.loading"))).toBeNull();
     await act(async () => {
       store.setState({ qqStorageLoading: true });
     });
-    expect(refresh.disabled).toBe(true);
+    expect(screen.getByText(translate("connections.common.loading"))).toBeTruthy();
+    await act(async () => {
+      store.setState({ qqStorageLoading: false });
+    });
+    expect(screen.queryByText(translate("connections.common.loading"))).toBeNull();
   });
 
   it("keeps knowledge editor isolated and renders its real store-owned draft", async () => {

@@ -1,7 +1,11 @@
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { QqBindingResponse, QqSettingsResponse } from "../../src/shared/contracts/qq";
+import type {
+  QqBindingResponse,
+  QqSchemeResponse,
+  QqSettingsResponse,
+} from "../../src/shared/contracts/qq";
 import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
@@ -47,23 +51,33 @@ const binding: QqBindingResponse = {
   },
 };
 
-const scheme = {
+const scheme: QqSchemeResponse = {
   id: SCHEME_ID,
   name: "本地检查方案",
   description: null,
-  triggers: { direct_reply: false, follow_up: false, chiming_in: false, idle_topic: false },
+  triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: false },
+  reply: { split_by_speaker: true },
   rhythm: {
+    participation_timing: "resource_window",
     merge_window_seconds: 30,
     reply_cooldown_seconds: 10,
     hourly_speech_limit: 200,
     initiative_min_score: 6,
+    judgement_interval_turns: 3,
     idle_quiet_minutes: 15,
     active_hours_enabled: false,
     active_hours_start_minutes: 0,
     active_hours_end_minutes: 1439,
     max_recompute_count: 1,
     max_sticker_count: 1,
-    media_supplement_window_minutes: 10,
+    media_frame_count: 3,
+    media_max_dimension: 512,
+    initiative_batch_target_count: 15,
+    initiative_batch_jitter_count: 5,
+    initiative_queue_on_busy: true,
+    initiative_time_window_enabled: true,
+    initiative_time_target_seconds: 60,
+    initiative_time_jitter_seconds: 20,
   },
   context: {
     judgement_message_limit: 20,
@@ -73,8 +87,9 @@ const scheme = {
     reply_window_minutes: 360,
     reply_token_budget: 6000,
   },
+  compression: { watermark_trigger: 200, package_limit: 8, headroom_ratio: 0.05 },
   output_reserve: { judgement_output_reserved: 512, reply_output_reserved: 2048 },
-  stickers: { sticker_min_repeat_minutes: 10, sticker_recent_avoid_count: 5 },
+  stickers: { sticker_min_repeat_minutes: 10, sticker_recent_avoid_count: 5, frequency: "medium" },
   sticker_collections: { collection_ids: [] },
   prompts: {
     scene: "",
@@ -83,11 +98,29 @@ const scheme = {
     review: "",
     sticker: "",
     media: "",
+    compress: "",
   },
+  // 0052：响应契约收紧后两组必填，夹具照完整响应形状造。
+  message_settings: {
+    reply_mode: "one_then_on_demand",
+    reply_depth: 2,
+    time_display: "hybrid",
+    timezone: "Asia/Shanghai",
+  },
+  media_input: {
+    mode: "native",
+    stages: { decision: true, evaluation: true, generation: true },
+    max_images: 8,
+    ordinary_still_max_dimension: null,
+  },
+  // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
+  task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+  input_anti_spam: { enabled: false, burst_min_messages: 3, burst_window_seconds: 3 },
   revision: 2,
   created_at: "2026-09-24T00:00:00.000000Z",
   updated_at: "2026-09-24T00:00:00.000000Z",
 };
+
 const otherScheme = { ...scheme, id: OTHER_SCHEME_ID, name: "备用方案" };
 
 const agent = {
@@ -320,38 +353,35 @@ describe("scheme bindings (详情「使用会话」与全局「会话绑定」�
 });
 
 describe("QQ connection page (本人身份依赖机器人账号)", () => {
-  it("统一壳层三分区常驻导航：QQ 设置含连接/数据与保留子页；会话与绑定直达绑定看板", async () => {
+  it("连接有三个真实任务路由，数据和绑定从目录独立进入", async () => {
     await renderConnection();
-    // 旧四任务应用外壳删除：方案/会话与绑定/QQ设置 三个常驻分区一次到位。
-    expect(screen.getByRole("tab", { name: i18n.t("schemes.workspace.schemes") })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: i18n.t("schemes.workspace.bindings") })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: i18n.t("schemes.workspace.settings") })).toBeTruthy();
-    // QQ 设置分区落地连接子页：连接子页选中，数据与保留子页在列。
-    expect(
-      (
-        screen.getByRole("tab", {
-          name: i18n.t("connections.transportPage.tab"),
-        }) as HTMLButtonElement
-      ).getAttribute("aria-selected"),
-    ).toBe("true");
-    expect(screen.getByRole("tab", { name: i18n.t("connections.dataRetention") })).toBeTruthy();
+    for (const key of [
+      "connections.transportPage.tab",
+      "schemes.qq.eventsTitle",
+      "schemes.qq.runtimeTitle",
+    ]) {
+      expect(screen.getByRole("tab", { name: i18n.t(key) })).toBeTruthy();
+    }
+    expect(screen.queryByRole("tab", { name: i18n.t("connections.dataRetention") })).toBeNull();
     expect(screen.getByLabelText(i18n.t("connections.websocketAddress"))).toBeTruthy();
-    // Radix Tab 以真实指针事件激活，不用合成 click。
-    await userEvent.click(screen.getByRole("tab", { name: i18n.t("schemes.workspace.bindings") }));
-    await act(async () => {});
+    await userEvent.click(screen.getByRole("button", { name: i18n.t("schemes.backToCatalog") }));
+    await userEvent.click(
+      screen.getByRole("button", { name: i18n.t("schemes.workspace.bindings") }),
+    );
     expect(store.getState().settingsRoute).toBe("scheme-bindings");
   });
 
   const renderConnection = async (
     options: Parameters<typeof client>[0] = {},
     overrides: Partial<typeof api> = {},
+    route: "qq-connection" | "qq-runtime" = "qq-connection",
   ) => {
     const fake = client(options, overrides);
     store.getState().resetForTests(fake);
     store.setState({
       page: "settings",
       settingsView: "workspace",
-      settingsRoute: "qq-connection",
+      settingsRoute: route,
     });
     render(<SchemesWorkspace />);
     await act(async () => {});
@@ -359,7 +389,7 @@ describe("QQ connection page (本人身份依赖机器人账号)", () => {
   };
 
   it("explains why the owner identity cannot be edited until the bot account is set", async () => {
-    await renderConnection({ accountSet: false });
+    await renderConnection({ accountSet: false }, {}, "qq-runtime");
     // locale 键必须真实存在（缺键时 i18n.t 回显键名，不算通过）。
     const reason = i18n.t("connections.owner.accountRequired");
     expect(reason).not.toBe("connections.owner.accountRequired");
@@ -394,7 +424,8 @@ describe("QQ connection page (本人身份依赖机器人账号)", () => {
         name: i18n.t("connections.saveAccessSettings"),
       }),
     ).toBeTruthy();
-    // 本人身份是独立保存卡：保存本人身份不在接入卡里。
+    // 本人身份属于运行设置；切换真实路由后独立保存，不在接入卡内。
+    await userEvent.click(screen.getByRole("tab", { name: i18n.t("schemes.qq.runtimeTitle") }));
     const ownerCard = screen
       .getByLabelText(i18n.t("connections.owner.title"))
       .closest('[data-slot="card"]');
@@ -407,7 +438,7 @@ describe("QQ connection page (本人身份依赖机器人账号)", () => {
   });
 
   it("keeps the owner identity editable once the bot account is set", async () => {
-    await renderConnection({ accountSet: true });
+    await renderConnection({ accountSet: true }, {}, "qq-runtime");
     const reason = i18n.t("connections.owner.accountRequired");
     expect(reason).not.toBe("connections.owner.accountRequired");
     expect(screen.queryByText(reason)).toBeNull();

@@ -1,9 +1,7 @@
-// 图片输入基本区与高级折叠区的真实界面用例（0052/0059 之后的统一静图规格形态）：
-// 基本区 = 输入方式单选（由三阶段布尔派生）+ 图数 + 统一静图规格；
-// 高级区 = 本地折叠（forceMount 隐藏），含输入模式、逐阶段开关、动图规格与媒体提示词。
-// 这些用例只通过界面与 store 观察行为：打开/收起折叠不是草稿改动，保存只发契约里存在的键。
+// 图片理解任务使用真实界面与 store：输入方式、图数、静图规格、模式与阶段直接可编辑。
+// 任务往返保留草稿；模式说明通过既有字段帮助读取；保存只发契约里存在的键。
 
-import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSchemeResponse } from "../../src/shared/contracts/qq";
@@ -125,10 +123,6 @@ async function renderPage(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const openAdvanced = async () => {
-  await userEvent.click(screen.getByRole("button", { name: "展开高级设置" }));
-};
-
 const editor = () => {
   const current = store.getState().qqSchemeEditor;
   if (!current) throw new Error("scheme editor not loaded");
@@ -143,7 +137,7 @@ afterEach(() => {
   cleanup();
 });
 
-describe("QQ 图片输入基本区与高级折叠（实际界面）", () => {
+describe("QQ 图片理解任务（实际界面）", () => {
   it("打开页面即呈现混合阶段的派生「自定义」，不改任何值：source 三布尔与静图规格原样显示", async () => {
     await renderPage();
     await userEvent.click(screen.getByRole("tab", { name: "图片理解" }));
@@ -214,7 +208,7 @@ describe("QQ 图片输入基本区与高级折叠（实际界面）", () => {
     expect(sent.rhythm).toMatchObject({ media_frame_count: 3, media_max_dimension: 512 });
   });
 
-  it("展开/收起高级设置保留已填图数；导航守卫拦住带草稿的方案切换", async () => {
+  it("图片模式与阶段直接可用，任务往返保留已填图数；导航守卫拦住带草稿的方案切换", async () => {
     await renderPage({
       listQqSchemes: vi.fn().mockResolvedValue([scheme(), scheme({ id: OTHER, name: "其他方案" })]),
     });
@@ -222,17 +216,19 @@ describe("QQ 图片输入基本区与高级折叠（实际界面）", () => {
     // 带草稿：改图数。
     fireEvent.change(screen.getByLabelText("每次调用自动图片上限"), { target: { value: "6" } });
     expect(editor().mediaInput.max_images).toBe(6);
-    // 展开高级设置后 mode/stages 控件可访问，已填图数保持不变。
-    await openAdvanced();
-    expect(screen.getByLabelText("图片输入模式")).toBeTruthy();
+    // 同一任务直接提供 mode/stages，不需要另开高级折叠。
+    expect(screen.getByRole("combobox", { name: "图片输入模式" })).toBeTruthy();
     expect(screen.getByRole("checkbox", { name: "评估阶段" })).toBeTruthy();
     expect(editor().mediaInput.max_images).toBe(6);
     expect((screen.getByRole("button", { name: "保存方案" }) as HTMLButtonElement).disabled).toBe(
       false,
     );
-    // 收起：控件重新隐藏（forceMount 内容仍在 DOM，只是不可见），草稿原样保留。
-    await userEvent.click(screen.getByRole("button", { name: "收起高级设置" }));
-    expect(screen.getByLabelText("图片输入模式", { selector: "*" })).toBeTruthy();
+    // 切到其它任务再返回，图片控件和同源草稿仍可用。
+    await userEvent.click(screen.getByRole("tab", { name: "发言时机" }));
+    await userEvent.click(screen.getByRole("tab", { name: "图片理解" }));
+    expect(screen.getByRole("combobox", { name: "图片输入模式" })).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: "评估阶段" })).toBeTruthy();
+    expect((screen.getByLabelText("每次调用自动图片上限") as HTMLInputElement).value).toBe("6");
     expect(editor().mediaInput.max_images).toBe(6);
     // 带草稿切换方案：共享导航守卫接管，编辑器与草稿都原地保留。
     fireEvent.change(screen.getByLabelText("选择聊天方案"), { target: { value: OTHER } });
@@ -277,13 +273,24 @@ describe("QQ 图片输入基本区与高级折叠（实际界面）", () => {
   it("模式说明跟随选择切换（描述缓存/原生各有各的提示），配置读取不发起任何模型调用", async () => {
     const { fake } = await renderPage();
     await userEvent.click(screen.getByRole("tab", { name: "图片理解" }));
-    await openAdvanced();
-    const mode = screen.getByLabelText("图片输入模式");
-    // native 的说明。
-    expect(screen.getByText("使用当前会话实际模型直接读取图片画面。")).toBeTruthy();
+    const mode = screen.getByRole("combobox", { name: "图片输入模式" });
+    const help = screen.getByRole("button", { name: "了解图片输入模式" });
+    await userEvent.hover(help);
+    expect((await screen.findByRole("tooltip")).textContent).toBe(
+      "使用当前会话实际模型直接读取图片画面。",
+    );
+    await userEvent.unhover(help);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
     fireEvent.change(mode, { target: { value: "description" } });
     expect(editor().mediaInput.mode).toBe("description");
-    expect(screen.getByText("使用组织级视觉配置先写文字描述并缓存，更省视觉预算。")).toBeTruthy();
+    await userEvent.hover(help);
+    expect((await screen.findByRole("tooltip")).textContent).toBe(
+      "使用组织级视觉配置先写文字描述并缓存，更省视觉预算。",
+    );
+    await userEvent.unhover(help);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
     expect(screen.queryByText("使用当前会话实际模型直接读取图片画面。")).toBeNull();
     // 切模式只写本地草稿：除夹具的目录/用量读取外，没有任何写请求或模型端点。
     expect(fake.updateQqScheme).not.toHaveBeenCalled();

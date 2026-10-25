@@ -210,6 +210,7 @@ async function performNavigation(
       page: "settings",
       settingsView: "workspace",
       settingsRoute: pending.settingsRoute ?? "qq-group-config",
+      qqGroupConfigOrigin: pending.origin ?? { kind: "bindings" },
       feedback: "",
     });
     markLanded();
@@ -364,6 +365,7 @@ export function createNavigationActions(
   | "requestAgentNavigation"
   | "requestQqSchemeNavigation"
   | "openQqGroupConfig"
+  | "returnQqGroupConfig"
   | "confirmSaveAndContinue"
   | "confirmDiscardAndContinue"
   | "cancelPendingNavigation"
@@ -777,6 +779,16 @@ export function createNavigationActions(
       const pending: PendingNavigation = {
         kind: "group-config",
         bindingId,
+        origin:
+          state.settingsRoute === "qq-group-config" && state.page === "settings"
+            ? (state.qqGroupConfigOrigin ?? { kind: "bindings" })
+            : state.page === "chat"
+              ? { kind: "conversation", conversationId: state.currentConversationId }
+              : state.settingsRoute === "qq-scheme-config" &&
+                  state.qqSchemeView === "bindings" &&
+                  state.qqSchemeEditor
+                ? { kind: "scheme-usage", schemeId: state.qqSchemeEditor.source.id }
+                : { kind: "bindings" },
         ...(settingsRoute ? { settingsRoute } : {}),
       };
       // 同 route 换群同样走统一守卫：草稿未决前不换编辑器。
@@ -789,6 +801,19 @@ export function createNavigationActions(
         return;
       }
       void performNavigation(get, set, pending, false, markLanded);
+    },
+    returnQqGroupConfig: () => {
+      const state = get();
+      const origin = state.qqGroupConfigOrigin;
+      if (
+        origin?.kind === "scheme-usage" &&
+        state.qqSchemes.some((row) => row.id === origin.schemeId)
+      ) {
+        state.requestQqSchemeNavigation(origin.schemeId, "bindings");
+      } else if (origin?.kind === "conversation") {
+        if (origin.conversationId) state.requestConversationNavigation(origin.conversationId);
+        else state.openChat();
+      } else state.openSettingsRoute("scheme-bindings");
     },
     confirmSaveAndContinue: async () => {
       const pending = get().pendingNavigation;

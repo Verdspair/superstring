@@ -155,16 +155,14 @@ const orderOf = (fn: unknown) =>
   ((fn as { mock?: { invocationCallOrder?: number[] } }).mock?.invocationCallOrder ??
     []) as number[];
 
-/** A group title lives in a Card; the light title band is what separates page groups. */
-function expectGroupWithBand(title: string) {
-  const cards = screen
-    .getAllByText(title)
-    .map((node) => node.closest('[data-slot="card"]'))
-    .filter((card): card is HTMLElement => card !== null);
-  expect(cards.length).toBeGreaterThan(0);
-  const header = cards[0]?.querySelector('[data-slot="card-header"]');
-  expect(header).toBeTruthy();
-  expect(header?.textContent).toContain(title);
+function expectTaskGroup(title: string) {
+  const heading = screen.getByRole("heading", { name: title, level: 2 });
+  const section = heading.closest("section");
+  expect(section).not.toBeNull();
+  expect(within(section as HTMLElement).getByRole("heading", { name: title, level: 2 })).toBe(
+    heading,
+  );
+  expect(section?.querySelector("input, textarea, select, button")).not.toBeNull();
 }
 
 const bindingOf = (schemeId: string) =>
@@ -268,7 +266,8 @@ describe("Scheme studio layout and grouping", () => {
       ],
     ] as [string, string[]][]) {
       await tab(tabKey);
-      for (const title of titles) expectGroupWithBand(translate(title));
+      expect(within(screen.getByRole("tablist")).getAllByRole("tab")).toHaveLength(6);
+      for (const title of titles) expectTaskGroup(translate(title));
     }
   });
 
@@ -330,9 +329,7 @@ describe("Scheme studio layout and grouping", () => {
         "scheme-field-compression.watermark_trigger",
       ].sort(),
     );
-    // 高级图片设置是本页的本地折叠（forceMount）：收起时输入仍已渲染在 DOM 里，
-    // 上面的 querySelectorAll 因此能枚举到它们（rhythm.media_frame_count / media_max_dimension），
-    // 无需先展开；getAllByRole 等只按可见可访问面查询的写法才需要先展开高级设置。
+    // 图片参数与模式直接显示在对应任务，既有字段身份保持不变。
     expect(document.getElementById("scheme-field-rhythm.media_frame_count")).toBeTruthy();
     expect(document.getElementById("scheme-field-mediaInput.mode")).toBeTruthy();
     // 退役的按类别规格三件套与媒体补充窗口不再有任何输入入口。

@@ -2,8 +2,10 @@ import { act, cleanup, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSettingsResponse, QqStatusResponse } from "../../src/shared/contracts/qq";
 import type {
+  QqManagedAccounts,
   QqManagedConfigSnapshot,
   QqManagedQr,
+  QqManagedResourceSnapshot,
   QqManagedStatus,
 } from "../../src/shared/contracts/qq-managed";
 import { api } from "../../src/web/api";
@@ -591,6 +593,7 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
       ownership: "owned",
       phase: "core_online",
       core_ready: true,
+      network_apply: "pending",
       transport_phase: "ready",
       diagnostic_code: null,
     };
@@ -631,6 +634,7 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
       ownership: "external",
       phase: "transport_ready",
       core_ready: true,
+      network_apply: "not_owned",
       transport_phase: "ready",
       diagnostic_code: null,
     };
@@ -663,6 +667,7 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
       ownership: "owned",
       phase: "core_online",
       core_ready: true,
+      network_apply: "pending",
       transport_phase: "ready",
       diagnostic_code: null,
     };
@@ -737,6 +742,7 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
             ownership: "owned",
             phase: "waiting_scan",
             core_ready: true,
+            network_apply: "pending",
             transport_phase: "ready",
             diagnostic_code: null,
           }),
@@ -748,6 +754,7 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
         ownership: "owned",
         phase: "waiting_scan",
         core_ready: true,
+        network_apply: "pending",
         transport_phase: "ready",
         diagnostic_code: null,
       },
@@ -777,6 +784,7 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
       ownership: "owned",
       phase: "waiting_scan",
       core_ready: false,
+      network_apply: "pending",
       transport_phase: "connecting",
       diagnostic_code: null,
     };
@@ -812,6 +820,7 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
       ownership: "owned",
       phase: "error",
       core_ready: false,
+      network_apply: "failed",
       transport_phase: "closed",
       diagnostic_code: "control_unavailable",
     };
@@ -821,6 +830,7 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
       ownership: "owned",
       phase: "core_online",
       core_ready: true,
+      network_apply: "pending",
       transport_phase: "connecting",
       diagnostic_code: null,
     };
@@ -851,5 +861,247 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
     expect(store.getState().qqManagedLoading).toBe(false);
     expect(retryManaged).toHaveBeenCalledTimes(1);
     expect(getStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("QQ managed resources, accounts discovery and quick-login lifecycle", () => {
+  const mockResourceSnapshot: QqManagedResourceSnapshot = {
+    revision: "rev-resource-001",
+    status: "ready",
+    root: "C:\\tools\\napcat",
+    diagnostic_code: null,
+  };
+
+  const mockAccounts: QqManagedAccounts = {
+    accounts: [
+      { account_id: "10001", display_name: "Test Bot" },
+      { account_id: "20002", display_name: "Backup Bot" },
+    ],
+  };
+
+  it("loads managed resources and accounts into store state without polluting generic connection", async () => {
+    const getResources = vi.fn(
+      async (): Promise<QqManagedResourceSnapshot> => mockResourceSnapshot,
+    );
+    const listAccounts = vi.fn(async (): Promise<QqManagedAccounts> => mockAccounts);
+
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        getQqManagedResources: getResources,
+        listQqManagedAccounts: listAccounts,
+      },
+    });
+
+    await store.getState().loadQqManagedResources();
+    expect(getResources).toHaveBeenCalledTimes(1);
+    expect(store.getState().qqManagedResources).toEqual(mockResourceSnapshot);
+
+    await store.getState().loadQqManagedAccounts();
+    expect(listAccounts).toHaveBeenCalledTimes(1);
+    expect(store.getState().qqManagedAccounts).toEqual(mockAccounts.accounts);
+  });
+
+  it("tracks managed resource root draft, previews in qqDraftChanges, and discards cleanly", () => {
+    store.setState({ qqManagedResources: mockResourceSnapshot });
+    store.getState().patchQqManagedResourceDraft("D:\\new\\napcat\\runtime");
+
+    expect(store.getState().qqInputs.managedResources).toEqual({
+      source: mockResourceSnapshot,
+      root: "D:\\new\\napcat\\runtime",
+    });
+
+    const changes = qqDraftChanges(store.getState());
+    const resourceChange = changes.find((c) => c.id === "managed-resources");
+    expect(resourceChange).toBeDefined();
+
+    store.getState().discardQqDrafts();
+    expect(store.getState().qqInputs.managedResources).toBeNull();
+  });
+
+  it("saves managed resources using expected_revision and updates baseline on success", async () => {
+    const updatedResource: QqManagedResourceSnapshot = {
+      revision: "rev-resource-002",
+      status: "ready",
+      root: "D:\\new\\napcat\\runtime",
+      diagnostic_code: null,
+    };
+    const updateResources = vi.fn(async (): Promise<QqManagedResourceSnapshot> => updatedResource);
+
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        updateQqManagedResources: updateResources,
+      },
+      qqManagedResources: mockResourceSnapshot,
+    });
+
+    store.getState().patchQqManagedResourceDraft("D:\\new\\napcat\\runtime");
+    const ok = await store.getState().saveQqManagedResources();
+
+    expect(ok).toBe(true);
+    expect(updateResources).toHaveBeenCalledWith({
+      expected_revision: "rev-resource-001",
+      root: "D:\\new\\napcat\\runtime",
+    });
+    expect(store.getState().qqManagedResources).toEqual(updatedResource);
+    expect(store.getState().qqInputs.managedResources).toBeNull();
+  });
+
+  it("handles resource save CAS conflict without dropping draft and records error", async () => {
+    const conflictError = new Error("Resource conflict 409");
+    const updateResources = vi.fn(async () => {
+      throw conflictError;
+    });
+
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        updateQqManagedResources: updateResources,
+      },
+      qqManagedResources: mockResourceSnapshot,
+    });
+
+    store.getState().patchQqManagedResourceDraft("D:\\invalid\\path");
+    const ok = await store.getState().saveQqManagedResources();
+
+    expect(ok).toBe(false);
+    expect(store.getState().qqInputs.managedResources?.root).toBe("D:\\invalid\\path");
+    expect(store.getState().qqManagedResourceError).toContain("Resource conflict 409");
+    expect(store.getState().qqManagedError).toBeNull();
+  });
+
+  it("executes quick-login for the selected saved account only after explicit runtime/account discovery", async () => {
+    const waitingConfirm: QqManagedStatus = {
+      process: "running",
+      apply: "ready",
+      ownership: "owned",
+      phase: "waiting_confirm",
+      core_ready: false,
+      network_apply: "pending",
+      transport_phase: "idle",
+      diagnostic_code: null,
+    };
+    const quickLoginSpy = vi.fn(async (): Promise<QqManagedStatus> => waitingConfirm);
+
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        quickLoginQqManaged: quickLoginSpy,
+      },
+      qqSettings: mockQqSettings,
+      qqManagedResources: mockResourceSnapshot,
+      qqManagedAccounts: mockAccounts.accounts,
+      qqManagedAccountsLoaded: true,
+      qqManagedStatus: {
+        process: "running",
+        apply: "ready",
+        ownership: "owned",
+        phase: "waiting_scan",
+        core_ready: false,
+        network_apply: "pending",
+        transport_phase: "idle",
+        diagnostic_code: null,
+      },
+    });
+
+    const success = await store.getState().quickLoginQqManaged("10001");
+    expect(success).toBe(true);
+    expect(quickLoginSpy).toHaveBeenCalledWith({
+      account_id: "10001",
+      expected_settings_revision: mockQqSettings.revision,
+    });
+    expect(store.getState().qqManagedStatus).toEqual(waitingConfirm);
+  });
+
+  it.each([
+    [
+      "runtime resources are not ready",
+      { resources: { ...mockResourceSnapshot, status: "missing" as const } },
+    ],
+    ["account list is unknown", { accountsLoaded: false }],
+    [
+      "account is absent from the explicit list",
+      { accounts: [{ account_id: "20002", display_name: null }] },
+    ],
+    [
+      "account is already logged in",
+      {
+        status: {
+          process: "running" as const,
+          apply: "ready" as const,
+          ownership: "owned" as const,
+          phase: "core_online" as const,
+          core_ready: true,
+          network_apply: "pending" as const,
+          transport_phase: "ready" as const,
+          diagnostic_code: null,
+        },
+      },
+    ],
+    [
+      "runtime is externally owned",
+      {
+        status: {
+          process: "running" as const,
+          apply: "ready" as const,
+          ownership: "external" as const,
+          phase: "waiting_scan" as const,
+          core_ready: false,
+          network_apply: "not_owned" as const,
+          transport_phase: "idle" as const,
+          diagnostic_code: null,
+        },
+      },
+    ],
+  ] as const)("does not quick-login when %s", async (_reason, override) => {
+    const quickLoginSpy = vi.fn();
+    store.setState({
+      apiClient: { ...store.getState().apiClient, quickLoginQqManaged: quickLoginSpy },
+      qqSettings: mockQqSettings,
+      qqManagedResources: "resources" in override ? override.resources : mockResourceSnapshot,
+      qqManagedAccounts: "accounts" in override ? [...override.accounts] : mockAccounts.accounts,
+      qqManagedAccountsLoaded: "accountsLoaded" in override ? override.accountsLoaded : true,
+      qqManagedStatus:
+        "status" in override
+          ? override.status
+          : {
+              process: "running",
+              apply: "ready",
+              ownership: "owned",
+              phase: "waiting_scan",
+              core_ready: false,
+              network_apply: "pending",
+              transport_phase: "idle",
+              diagnostic_code: null,
+            },
+    });
+
+    expect(await store.getState().quickLoginQqManaged("10001")).toBe(false);
+    expect(quickLoginSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects quick-login when the requested account is not the saved selected account", async () => {
+    const quickLoginSpy = vi.fn();
+    store.setState({
+      apiClient: { ...store.getState().apiClient, quickLoginQqManaged: quickLoginSpy },
+      qqSettings: { ...mockQqSettings, account_id: "20002" },
+      qqManagedResources: mockResourceSnapshot,
+      qqManagedAccounts: mockAccounts.accounts,
+      qqManagedAccountsLoaded: true,
+      qqManagedStatus: {
+        process: "running",
+        apply: "ready",
+        ownership: "owned",
+        phase: "waiting_scan",
+        core_ready: false,
+        network_apply: "pending",
+        transport_phase: "idle",
+        diagnostic_code: null,
+      },
+    });
+
+    expect(await store.getState().quickLoginQqManaged("10001")).toBe(false);
+    expect(quickLoginSpy).not.toHaveBeenCalled();
   });
 });

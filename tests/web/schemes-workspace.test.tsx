@@ -201,7 +201,11 @@ it("按应用列出方案：共用标识、描述、绑定计数（读到后）�
   expect(fake.listQqSchemes).toHaveBeenCalled();
   expect(screen.getByRole("heading", { name: "方案" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "QQ" })).toBeTruthy();
-  expect(screen.getByText("QQ 群与私聊共用的参与方案。")).toBeTruthy();
+  expect(screen.queryByText("QQ 群与私聊共用的参与方案。")).toBeNull();
+  const appHelp = screen.getByRole("heading", { name: "QQ" }).parentElement as HTMLElement;
+  fireEvent.click(within(appHelp).getByRole("button"));
+  expect(screen.getByRole("tooltip").textContent).toContain("QQ 群与私聊共用的参与方案。");
+  fireEvent.keyDown(within(appHelp).getByRole("button"), { key: "Escape" });
   expect(screen.getByText("默认方案")).toBeTruthy();
   expect(screen.getByText("群聊里的参与方式")).toBeTruthy();
   expect(screen.getAllByText("群与私聊共用")).toHaveLength(2);
@@ -458,13 +462,17 @@ it("usage 读取失败时不把未知当 0：显示未知与重试，重试重�
   ).toBeTruthy();
 });
 
-it("用户拒绝的碎片入口不再出现：工具条会话绑定按钮与应用快捷行移除", async () => {
+it("目录提供三项等权应用任务，不再提供旧全局胶囊", async () => {
   await renderDirectory();
-  // 会话绑定升级为常驻同级分区，不再挤在目录工具条末端。
-  expect(screen.queryByRole("button", { name: translate("schemes.bindings.entry") })).toBeNull();
-  // 应用卡片快捷行（本群配置/连接/数据与保留）不再重复出现；目的地由常驻分区承接。
+  for (const key of [
+    "schemes.workspace.bindings",
+    "schemes.qq.connectionTitle",
+    "connections.dataRetention",
+  ]) {
+    expect(screen.getByRole("button", { name: translate(key) })).toBeTruthy();
+  }
+  expect(screen.queryByRole("tab", { name: translate("schemes.workspace.settings") })).toBeNull();
   expect(screen.queryByRole("button", { name: "本群配置" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "数据与保留" })).toBeNull();
 });
 
 it("qq-app-schemes 别名与方案库同页：方案目录只挂一次，切换不重挂", async () => {
@@ -478,20 +486,24 @@ it("qq-app-schemes 别名与方案库同页：方案目录只挂一次，切换�
   expect(screen.getAllByLabelText(translate("schemes.search"))).toHaveLength(1);
 });
 
-it("详情不再有外部式 QQ 连接胶囊，返回目录走面包屑", async () => {
+it("详情只有一个返回目录入口，不混入全局应用任务", async () => {
   await renderDetail();
-  // 幽灵外链按钮删除：设置走常驻 QQ 设置分区，不再从详情头部跳「外部应用」。
   expect(screen.queryByRole("button", { name: translate("schemes.detail.connection") })).toBeNull();
-  const nav = screen.getByRole("navigation", { name: translate("workspace.schemes") });
-  expect(within(nav).getByText("QQ")).toBeTruthy();
-  fireEvent.click(within(nav).getByRole("button", { name: "返回方案目录" }));
+  expect(
+    screen.queryByRole("button", { name: translate("schemes.workspace.bindings") }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: translate("schemes.qq.connectionTitle") }),
+  ).toBeNull();
+  expect(screen.getAllByRole("button", { name: "返回方案目录" })).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "返回方案目录" }));
   expect(store.getState().settingsRoute).toBe("scheme-library");
 });
 
-it("从详情点常驻 QQ 设置分区：复用 QQ 草稿三选，取消保留草稿与原路由", async () => {
+it("详情返回复用 QQ 草稿三选，取消保留草稿与原路由", async () => {
   await renderDetail();
   makeDirtyEditor();
-  await userEvent.click(screen.getByRole("tab", { name: translate("schemes.workspace.settings") }));
+  await userEvent.click(screen.getByRole("button", { name: "返回方案目录" }));
   expect(store.getState()).toMatchObject({
     settingsRoute: "qq-scheme-config",
     navigationConfirmOpen: true,
@@ -499,7 +511,7 @@ it("从详情点常驻 QQ 设置分区：复用 QQ 草稿三选，取消保留�
       kind: "page",
       page: "settings",
       settingsView: "workspace",
-      settingsRoute: "qq-connection",
+      settingsRoute: "scheme-library",
     },
   });
   store.getState().cancelPendingNavigation();
@@ -507,20 +519,12 @@ it("从详情点常驻 QQ 设置分区：复用 QQ 草稿三选，取消保留�
   expect(store.getState().settingsRoute).toBe("qq-scheme-config");
 });
 
-it("详情外壳：面包屑显示真实编辑对象、返回目录", async () => {
+it("详情唯一页标题显示真实编辑对象，嵌入编辑器不叠页头", async () => {
   await renderDetail();
-  const nav = screen.getByRole("navigation", { name: "方案" });
-  expect(within(nav).getByText("方案")).toBeTruthy();
-  expect(within(nav).getByText("QQ")).toBeTruthy();
-  const name = within(nav).getByText("默认方案");
+  const name = screen.getByRole("heading", { name: "默认方案", level: 1 });
   expect(name.className).not.toContain("truncate");
-  const breadcrumbBack = within(nav).getByRole("button", { name: "返回方案目录" });
-  const explicitBack = screen
-    .getAllByRole("button", { name: "返回方案目录" })
-    .find((button) => button !== breadcrumbBack);
-  expect(explicitBack).toBeTruthy();
-  fireEvent.click(explicitBack!);
-  expect(store.getState().settingsRoute).toBe("scheme-library");
+  expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "返回方案目录" })).toHaveLength(1);
 });
 
 it("详情空态给出新建入口，不自动新建或分配", async () => {

@@ -1,4 +1,13 @@
-import { ArrowLeft, ChevronRight, Plus, RefreshCw, Search } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronRight,
+  Database,
+  MessagesSquare,
+  Plug,
+  Plus,
+  RefreshCw,
+  Search,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -22,16 +31,12 @@ import { qqSchemeDirty } from "../../features/qq/types";
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { translateNotice } from "../../i18n";
 import { useSuperstringStore } from "../../store";
-import {
-  SCHEME_CATALOG,
-  type SchemeAppEntry,
-  schemeAppByRoute,
-  schemeRowsOf,
-} from "../../workspace/scheme-catalog";
+import { SCHEME_CATALOG, type SchemeAppEntry, schemeRowsOf } from "../../workspace/scheme-catalog";
 import type { SettingsRoute } from "../../workspace/settings-routes";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { QqGroupConfigPage } from "./group-config";
-import { QqConnectionTab } from "./qq-app-management";
+import { QqConnectionTab, type QqConnectionTask } from "./qq-app-management";
 import { SchemeBindingsView } from "./scheme-bindings";
 import { SchemeStudio } from "./scheme-studio";
 import { StorageInventory } from "./storage-inventory";
@@ -226,7 +231,7 @@ export function SchemeDirectory({ active = true }: { active?: boolean } = {}) {
               <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 px-1 py-2">
                 <app.icon className="size-4 text-muted-foreground" />
                 <h2 className="text-sm font-medium">{t(app.nameKey)}</h2>
-                <p className="text-xs text-muted-foreground">{t(app.descriptionKey)}</p>
+                <WorkspaceHelp title={t(app.nameKey)} description={t(app.descriptionKey)} />
               </div>
               {visibleRows.length > 0 ? (
                 <ul className="grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-5">
@@ -426,49 +431,26 @@ function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean })
     if (!schemeId) return;
     s.requestQqSchemeNavigation(schemeId, next === "bindings" ? "bindings" : "settings");
   };
-  const breadcrumb = (
-    <nav
-      aria-label={t("workspace.schemes")}
-      className="mb-[6px] flex min-w-0 flex-wrap items-center gap-[6px] text-[12.5px] leading-[20px] text-[var(--text-tertiary)]"
-    >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
+  return (
+    <section className="flex h-full min-h-0 w-full flex-col" aria-label={t(app.nameKey)}>
+      <WorkspacePageHeader
+        location={t(app.nameKey)}
+        title={s.qqSchemeEditor?.name ?? t("schemes.currentScheme")}
+        description={t("schemes.qq.detailNote")}
+        backAction={
+          <Button
+            variant="ghost"
+            size="icon-sm"
             onClick={back}
             disabled={busy}
             aria-label={t("schemes.backToCatalog")}
-            className="rounded-md px-1 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {t("workspace.schemes")}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>{t("hints.qq.backToCatalog")}</TooltipContent>
-      </Tooltip>
-      <ChevronRight className="size-3.5 shrink-0" />
-      <span className="shrink-0">{t(app.nameKey)}</span>
-      <ChevronRight className="size-3.5 shrink-0" />
-      <span className="min-w-0 break-words font-medium text-foreground">
-        {s.qqSchemeEditor?.name ?? t("schemes.currentScheme")}
-      </span>
-    </nav>
-  );
-  return (
-    <section className="flex h-full min-h-0 w-full flex-col" aria-label={t(app.nameKey)}>
-      <header className="mb-6 shrink-0 space-y-4">
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-[10px]">
-          {breadcrumb}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={back}
-            disabled={busy}
             tooltip={t("hints.qq.backToCatalog")}
           >
             <ArrowLeft />
-            {t("schemes.backToCatalog")}
           </Button>
-        </div>
+        }
+      />
+      <header className="mb-6 shrink-0 space-y-4">
         <Tabs value={view} onValueChange={switchView} className="min-w-0">
           <TabsList className="w-full justify-start gap-[4px] group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-[36px] [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-1 [&_[role=tab]]:whitespace-normal sm:w-auto sm:[&_[role=tab]]:flex-none">
             <TabsTrigger value="settings" disabled={busy || !schemeId}>
@@ -512,7 +494,7 @@ function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean })
         hidden={view !== "settings" && !!schemeId}
         className="min-h-0 flex-1 overflow-hidden [&[hidden]]:hidden"
       >
-        <SchemeStudio active={active && view === "settings"} breadcrumb={false} />
+        <SchemeStudio active={active && view === "settings"} breadcrumb={false} embedded />
       </div>
       {view === "bindings" && schemeId && (
         <div
@@ -520,10 +502,6 @@ function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean })
           data-workspace-scroll
           data-scheme-view="bindings"
         >
-          <div className="workspace-page-header mb-[20px]">
-            <h1 className="workspace-page-title">{s.qqSchemeEditor?.name}</h1>
-            <p className="workspace-page-description">{t("schemes.bindings.boardHint")}</p>
-          </div>
           <SchemeBindingsView schemeId={schemeId} active={active} />
         </div>
       )}
@@ -531,128 +509,70 @@ function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean })
   );
 }
 
-function QqSettingsPane({
-  active,
-  isSettingsActive,
-  route,
-}: {
-  active: boolean;
-  isSettingsActive: boolean;
-  route: SettingsRoute;
-}) {
+const CONNECTION_TASK_ROUTES = [
+  { task: "connection", route: "qq-connection", label: "connections.transportPage.tab" },
+  { task: "events", route: "qq-events", label: "schemes.qq.eventsTitle" },
+  { task: "runtime", route: "qq-runtime", label: "schemes.qq.runtimeTitle" },
+] as const;
+
+function QqSettingsPane({ active, route }: { active: boolean; route: SettingsRoute }) {
   const { t } = useTranslation();
   const openSettingsRoute = useSuperstringStore((s) => s.openSettingsRoute);
-  const s = useSuperstringStore(
-    useShallow((state) => ({
-      error: state.error,
-      feedback: state.feedback,
-      qqAccessSaving: state.qqAccessSaving,
-      qqStorageSaving: state.qqStorageSaving,
-    })),
-  );
-  const busy = s.qqAccessSaving || s.qqStorageSaving;
-
-  const activeSettingsSubTab: "connection" | "storage" | null =
-    route === "qq-storage" ? "storage" : route === "qq-connection" ? "connection" : null;
-
-  const [lastSettingsSubTab, setLastSettingsSubTab] = useState<"connection" | "storage">(
-    () => activeSettingsSubTab ?? "connection",
-  );
-
+  const busy = useSuperstringStore((s) => s.qqAccessSaving || s.qqManagedSaving);
+  const selected = CONNECTION_TASK_ROUTES.find((entry) => entry.route === route);
+  const [lastTask, setLastTask] = useState<QqConnectionTask>(() => selected?.task ?? "connection");
   useEffect(() => {
-    if (activeSettingsSubTab) {
-      setLastSettingsSubTab(activeSettingsSubTab);
-    }
-  }, [activeSettingsSubTab]);
-
-  const currentSubTab = activeSettingsSubTab ?? lastSettingsSubTab;
-
-  const [visitedSubTabs, setVisitedSubTabs] = useState<Set<"connection" | "storage">>(
-    () => new Set([currentSubTab]),
-  );
-
-  useEffect(() => {
-    if (isSettingsActive && activeSettingsSubTab) {
-      setVisitedSubTabs((prev) =>
-        prev.has(activeSettingsSubTab) ? prev : new Set(prev).add(activeSettingsSubTab),
-      );
-    }
-  }, [isSettingsActive, activeSettingsSubTab]);
-
-  const renderedSubTabs = new Set(visitedSubTabs);
-  if (isSettingsActive) {
-    renderedSubTabs.add(currentSubTab);
-  }
-
+    if (selected) setLastTask(selected.task);
+  }, [selected]);
+  const task = selected?.task ?? lastTask;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="mb-4">
-        <Tabs
-          value={currentSubTab}
-          onValueChange={(val) => {
-            if (busy) return;
-            openSettingsRoute(val === "storage" ? "qq-storage" : "qq-connection");
-          }}
-        >
-          <TabsList className="h-[36px] group-data-horizontal/tabs:h-[36px] w-fit max-w-full justify-start gap-[4px] rounded-[8px] border border-border bg-muted/60 p-[3px] [&_[role=tab]]:h-[28px] [&_[role=tab]]:px-[12px] [&_[role=tab]]:text-[12.5px]">
-            <TabsTrigger value="connection" disabled={busy}>
-              {t("connections.transportPage.tab")}
+      <WorkspacePageHeader
+        location={t("schemes.qq.name")}
+        title={t("schemes.qq.connectionTitle")}
+        description={t("connections.transportPage.hint")}
+        backAction={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={busy}
+            aria-label={t("schemes.backToCatalog")}
+            tooltip={t("hints.qq.backToCatalog")}
+            onClick={() => openSettingsRoute("scheme-library")}
+          >
+            <ArrowLeft />
+          </Button>
+        }
+      />
+      <Tabs
+        value={task}
+        onValueChange={(next) => {
+          const target = CONNECTION_TASK_ROUTES.find((entry) => entry.task === next);
+          if (target && !busy) openSettingsRoute(target.route);
+        }}
+        className="mb-4 min-w-0"
+      >
+        <TabsList className="w-full justify-start gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:min-h-9 [&_[role=tab]]:h-auto [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-1 [&_[role=tab]]:whitespace-normal sm:w-auto sm:[&_[role=tab]]:flex-none">
+          {CONNECTION_TASK_ROUTES.map((entry) => (
+            <TabsTrigger key={entry.task} value={entry.task} disabled={busy}>
+              {t(entry.label)}
             </TabsTrigger>
-            <TabsTrigger value="storage" disabled={busy}>
-              {t("connections.dataRetention")}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
-
-      <p className="border-b px-4 py-2 text-xs text-muted-foreground">
-        {t("schemes.qq.scopeNote")}
-      </p>
-      {(s.error || s.feedback) && (
-        <div className="border-b px-4 py-2">
-          {s.error ? (
-            <p role="alert" className="text-sm text-destructive">
-              {translateNotice(s.error)}
-            </p>
-          ) : (
-            <p role="status" className="text-sm text-muted-foreground">
-              {translateNotice(s.feedback)}
-            </p>
-          )}
-        </div>
-      )}
-
-      {renderedSubTabs.has("connection") && (
-        <div
-          hidden={currentSubTab !== "connection"}
-          className="flex min-h-0 flex-1 flex-col [&[hidden]]:hidden"
-        >
-          <QqConnectionTab active={active && isSettingsActive && currentSubTab === "connection"} />
-        </div>
-      )}
-      {renderedSubTabs.has("storage") && (
-        <div
-          hidden={currentSubTab !== "storage"}
-          className="flex min-h-0 flex-1 flex-col [&[hidden]]:hidden"
-        >
-          <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
-            <StorageInventory active={active && isSettingsActive && currentSubTab === "storage"} />
-          </div>
-        </div>
-      )}
+          ))}
+        </TabsList>
+      </Tabs>
+      <QqConnectionTab active={active} task={task} />
     </div>
   );
 }
 
-type PrimarySection = "schemes" | "bindings" | "settings";
-type PaneKind = "list" | "object" | "bindings" | "group" | "settings";
+type PaneKind = "list" | "object" | "bindings" | "group" | "connection" | "storage";
 
 export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
-  const route = useSuperstringStore((s) => s.settingsRoute);
-  const settingsView = useSuperstringStore((s) => s.settingsView);
+  const route = useSuperstringStore((s) =>
+    s.settingsView === "operating-mode" ? "qq-connection" : s.settingsRoute,
+  );
   const openSettingsRoute = useSuperstringStore((s) => s.openSettingsRoute);
-
   const s = useSuperstringStore(
     useShallow((state) => ({
       qqSchemeSaving: state.qqSchemeSaving,
@@ -660,6 +580,9 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
       qqStorageSaving: state.qqStorageSaving,
       qqSchemesLoading: state.qqSchemesLoading,
       qqGroupConfigSaving: state.qqGroupConfigSaving,
+      qqManagedSaving: state.qqManagedSaving,
+      error: state.error,
+      feedback: state.feedback,
     })),
   );
   const busy =
@@ -667,90 +590,98 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
     s.qqAccessSaving ||
     s.qqStorageSaving ||
     s.qqSchemesLoading ||
-    s.qqGroupConfigSaving;
-
-  const isSettings =
-    route === "qq-connection" || route === "qq-storage" || settingsView === "operating-mode";
-  const isGroupConfig = route === "qq-group-config";
-  const isBindings = route === "scheme-bindings" || route === "qq-app-groups" || isGroupConfig;
-  const primarySection: PrimarySection = isSettings
-    ? "settings"
-    : isBindings
-      ? "bindings"
-      : "schemes";
-
+    s.qqGroupConfigSaving ||
+    s.qqManagedSaving;
   const activePane: PaneKind =
     route === "qq-scheme-config"
       ? "object"
-      : isGroupConfig
+      : route === "qq-group-config"
         ? "group"
-        : isSettings
-          ? "settings"
-          : isBindings
-            ? "bindings"
-            : "list";
-
+        : route === "qq-storage"
+          ? "storage"
+          : CONNECTION_TASK_ROUTES.some((entry) => entry.route === route)
+            ? "connection"
+            : route === "scheme-bindings" || route === "qq-app-groups"
+              ? "bindings"
+              : "list";
   const [visitedPanes, setVisitedPanes] = useState<Set<PaneKind>>(() => new Set([activePane]));
-
   useEffect(() => {
     setVisitedPanes((prev) => (prev.has(activePane) ? prev : new Set(prev).add(activePane)));
   }, [activePane]);
-
   const renderedPanes = new Set(visitedPanes).add(activePane);
-
-  // Stable domain lookup: QQ is the sole scheme-enabled app in SCHEME_CATALOG.
-  // Must NOT evaluate to null on scheme-library, so object pane remains mounted and hidden when leaving!
-  const app = schemeAppByRoute(route) ?? SCHEME_CATALOG[0];
-
-  const handleSectionChange = (next: string) => {
-    if (busy) return;
-    if (next === "schemes") openSettingsRoute("scheme-library");
-    else if (next === "bindings") openSettingsRoute("scheme-bindings");
-    else if (next === "settings") openSettingsRoute("qq-connection");
-  };
-
+  const app = SCHEME_CATALOG[0];
   return (
     <section
       className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
       aria-label={t("workspace.schemes")}
     >
-      <WorkspacePageHeader
-        location={t("brand.workspace", { "0": t("workspace.schemes") })}
-        title={t("workspace.schemes")}
-        description={t("schemes.subtitle")}
-      />
-      <div className="mb-[24px]">
-        <Tabs value={primarySection} onValueChange={handleSectionChange}>
-          <TabsList
-            aria-label={t("schemes.workspace.navigation")}
-            className="h-auto group-data-horizontal/tabs:h-auto w-full sm:w-fit max-w-full flex-wrap justify-start gap-[6px] rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-[32px] [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-none [&_[role=tab]]:max-w-full [&_[role=tab]]:whitespace-normal [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]"
-          >
-            <TabsTrigger
-              value="schemes"
+      {activePane === "list" && (
+        <>
+          <WorkspacePageHeader
+            location={t("brand.workspace", { "0": t("workspace.schemes") })}
+            title={t("workspace.schemes")}
+            description={t("schemes.subtitle")}
+          />
+          <fieldset className="mb-6 flex min-w-0 flex-wrap items-center gap-2">
+            <legend className="mb-2 text-sm font-medium">{t("schemes.qq.name")}</legend>
+            <Button
+              variant="outline"
               disabled={busy}
-              onClick={() => {
-                if (primarySection === "schemes" && activePane !== "list")
-                  handleSectionChange("schemes");
-              }}
+              onClick={() => openSettingsRoute("scheme-bindings")}
             >
-              {t("schemes.workspace.schemes")}
-            </TabsTrigger>
-            <TabsTrigger
-              value="bindings"
-              disabled={busy}
-              onClick={() => {
-                if (primarySection === "bindings" && activePane === "group")
-                  handleSectionChange("bindings");
-              }}
-            >
+              <MessagesSquare />
               {t("schemes.workspace.bindings")}
-            </TabsTrigger>
-            <TabsTrigger value="settings" disabled={busy}>
-              {t("schemes.workspace.settings")}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
+            </Button>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => openSettingsRoute("qq-connection")}
+            >
+              <Plug />
+              {t("schemes.qq.connectionTitle")}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => openSettingsRoute("qq-storage")}
+            >
+              <Database />
+              {t("connections.dataRetention")}
+            </Button>
+            <WorkspaceHelp title={t("schemes.qq.name")} description={t("schemes.qq.scopeNote")} />
+          </fieldset>
+        </>
+      )}
+      {activePane === "bindings" && (
+        <WorkspacePageHeader
+          location={t("schemes.qq.name")}
+          title={t("schemes.workspace.bindings")}
+          description={t("schemes.bindings.boardHint")}
+          backAction={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              disabled={busy}
+              aria-label={t("schemes.backToCatalog")}
+              tooltip={t("hints.qq.backToCatalog")}
+              onClick={() => openSettingsRoute("scheme-library")}
+            >
+              <ArrowLeft />
+            </Button>
+          }
+        />
+      )}
+      {(s.error || s.feedback) &&
+        activePane !== "storage" &&
+        activePane !== "group" &&
+        activePane !== "list" && (
+          <p
+            role={s.error ? "alert" : "status"}
+            className={`mb-3 text-sm ${s.error ? "text-destructive" : "text-muted-foreground"}`}
+          >
+            {translateNotice(s.error ?? s.feedback)}
+          </p>
+        )}
 
       {renderedPanes.has("list") && (
         <div
@@ -792,17 +723,22 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
         </div>
       )}
 
-      {renderedPanes.has("settings") && (
+      {renderedPanes.has("connection") && (
         <div
-          hidden={activePane !== "settings"}
+          hidden={activePane !== "connection"}
           className="flex min-h-0 flex-1 flex-col [&[hidden]]:hidden"
+        >
+          <QqSettingsPane active={active && activePane === "connection"} route={route} />
+        </div>
+      )}
+      {renderedPanes.has("storage") && (
+        <div
+          hidden={activePane !== "storage"}
+          className="min-h-0 flex-1 overflow-y-auto [&[hidden]]:hidden"
+          data-workspace-scroll
           data-qq-retained-scroll="data"
         >
-          <QqSettingsPane
-            active={active && activePane === "settings"}
-            isSettingsActive={activePane === "settings"}
-            route={route}
-          />
+          <StorageInventory active={active && activePane === "storage"} />
         </div>
       )}
     </section>

@@ -38,7 +38,7 @@ import {
   type OneBotConnectionState,
   type OneBotSocketFactory,
 } from "./onebot-connection";
-import type { QqMessageResult, QqObservation } from "./onebot-protocol";
+import type { OneBotProtocolEvent, QqMessageResult, QqObservation } from "./onebot-protocol";
 import { handleQqRecordedMessage } from "./qq-event-path";
 import { type QqMemoryScheduleResult, scheduleQqMemory } from "./qq-memory-scheduler";
 
@@ -225,6 +225,21 @@ export function qqIntakeCycle(orm: Orm, now?: string): QqMemoryScheduleResult {
   return scheduleQqMemory(orm, now);
 }
 
+type QqDialConfiguration = { endpoint: string; token: string; accountId: string };
+
+function sameQqDialConfiguration(
+  left: QqDialConfiguration | null,
+  right: QqDialConfiguration | null,
+): boolean {
+  return (
+    left !== null &&
+    right !== null &&
+    left.endpoint === right.endpoint &&
+    left.token === right.token &&
+    left.accountId === right.accountId
+  );
+}
+
 export interface QqIntakeRuntimeOptions {
   memory?: Pick<import("../modules/contracts").MemoryModule, "observe">;
   conversationIngress?: ConversationIngress;
@@ -247,6 +262,8 @@ export interface QqIntakeRuntimeOptions {
    */
   superviseIntervalMs?: number;
   socketFactory?: OneBotSocketFactory;
+  /** Optional typed, body-free protocol observation from the active OneBot connection. */
+  onProtocolEvent?: (event: OneBotProtocolEvent) => void;
   /** Timer seams for the supervisor; tests drive it without waiting. */
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (handle: unknown) => void;
@@ -276,6 +293,8 @@ export const QQ_SUPERVISE_INTERVAL_MS = 5_000;
 export class QqIntakeRuntime {
   readonly #options: QqIntakeRuntimeOptions;
   #connection: OneBotConnection | null = null;
+  /** Private identity of the saved tuple used for the actual dial; never returned or logged. */
+  #dialedConfiguration: QqDialConfiguration | null = null;
   /**
    * 0053 群显示名：每条连接一份去重 Set——同一连接对同一群只发一次只读
    * `get_group_info`；重连换新 Set，可刷新群本名但永不覆写用户备注。
@@ -297,8 +316,31 @@ export class QqIntakeRuntime {
     return this.#connection?.state ?? { phase: "idle" };
   }
 
+  /**
+   * Whether the ready connection still uses the current saved account/endpoint/token tuple.
+   * The token stays inside this server-side runtime and is never exposed by this check.
+   */
+  matchesCurrentConfiguration(): boolean {
+    const connection = this.#connection;
+    const dialed = this.#dialedConfiguration;
+    if (
+      connection === null ||
+      dialed === null ||
+      connection.state.phase !== "ready" ||
+      readQqSettings(this.#options.orm).enabled !== 1
+    ) {
+      return false;
+    }
+    const current = this.connectionConfig();
+    return (
+      sameQqDialConfiguration(dialed, current) &&
+      connection.state.accountId === dialed.accountId &&
+      connection.state.accountId === current?.accountId
+    );
+  }
+
   /** The saved configuration this runtime would dial, or `null` while incomplete. */
-  connectionConfig(): { endpoint: string; token: string; accountId: string } | null {
+  connectionConfig(): QqDialConfiguration | null {
     return this.#options.transportKeyPath === undefined
       ? readQqConnectionConfig(this.#options.orm)
       : readQqConnectionConfig(this.#options.orm, this.#options.transportKeyPath);
@@ -343,7 +385,6 @@ export class QqIntakeRuntime {
       onEvent?.({ kind: "ignored", reason: "switch_off" });
       return this.state;
     }
-    if (this.#connection !== null) return this.state;
     const saved = this.connectionConfig();
     if (saved === null) {
       // Half-configured is a distinct outcome from "switched off": the user asked for it
@@ -351,6 +392,10 @@ export class QqIntakeRuntime {
       this.#disconnect();
       onEvent?.({ kind: "ignored", reason: "not_configured" });
       return this.state;
+    }
+    if (this.#connection !== null) {
+      if (sameQqDialConfiguration(saved, this.#dialedConfiguration)) return this.state;
+      this.#disconnect();
     }
     const connection = new OneBotConnection(
       {
@@ -402,23 +447,39 @@ export class QqIntakeRuntime {
           }
         },
         ...(this.#options.socketFactory ? { socketFactory: this.#options.socketFactory } : {}),
+        ...(this.#options.onProtocolEvent
+          ? { onProtocolEvent: this.#options.onProtocolEvent }
+          : {}),
       },
     );
     this.#connection = connection;
+    this.#dialedConfiguration = { ...saved };
     this.#namedGroups = new Set<string>();
     const result = await connection.connect();
-    onEvent?.({ kind: "connection", state: connection.state.phase });
     // The attempt took time, and the world may have moved: a `stop()` during the handshake must
     // win, or this runtime would arm its housekeeping timer on a process that was told to stop.
     if (this.#stopped || this.#connection !== connection) {
       connection.disconnect();
-      if (this.#connection === connection) this.#connection = null;
+      if (this.#connection === connection) {
+        this.#connection = null;
+        this.#dialedConfiguration = null;
+      }
       return this.state;
     }
+    const current = this.connectionConfig();
+    if (readQqSettings(orm).enabled !== 1 || !sameQqDialConfiguration(saved, current)) {
+      connection.disconnect();
+      this.#connection = null;
+      this.#dialedConfiguration = null;
+      onEvent?.({ kind: "connection", state: connection.state.phase });
+      return this.state;
+    }
+    onEvent?.({ kind: "connection", state: connection.state.phase });
     if (result.kind === "failed") {
       // A failed attempt leaves nothing to keep. The supervisor is what retries it now; the
       // reason travels with the state so the settings page can say why it is not connected.
       this.#connection = null;
+      this.#dialedConfiguration = null;
       return this.state;
     }
     // 0053：连接 ready 后对现已绑定的群各做一次只读取名——不需要等新消息才有群名。
@@ -452,6 +513,7 @@ export class QqIntakeRuntime {
     }
     this.#connection?.disconnect();
     this.#connection = null;
+    this.#dialedConfiguration = null;
   }
 
   #clearTimeout(handle: unknown): void {

@@ -490,13 +490,14 @@ describe("Shared scheme studio", () => {
   it("edits media input (mode, stages, max images, still spec) on the media tab with null = original", async () => {
     const { fake } = await renderPage();
     await task("图片理解");
-    // 模式与阶段在高级设置折叠区：默认收起，先展开再操作。
-    await userEvent.click(screen.getByRole("button", { name: "展开高级设置" }));
+    // 模式、阶段与规格在图片任务中直接可用。
+    expect(screen.getByRole("combobox", { name: "图片输入模式" })).toBeTruthy();
+    expect(screen.getByRole("checkbox", { name: "评估阶段" })).toBeTruthy();
     // 模式切换。
     fireEvent.change(screen.getByLabelText("图片输入模式"), { target: { value: "description" } });
     // 阶段：关掉评估阶段（另两个保持开）。
     await userEvent.click(screen.getByRole("checkbox", { name: "评估阶段" }));
-    // 图数与统一静图规格在基本区（未展开高级设置也可见，这里已展开便于连续操作）。
+    // 图数与统一静图规格沿用各自字段。
     fireEvent.change(screen.getByLabelText("每次调用自动图片上限"), { target: { value: "4" } });
     fireEvent.change(screen.getByLabelText("静图长边上限"), { target: { value: "1024" } });
     const editor = () => store.getState().qqSchemeEditor;

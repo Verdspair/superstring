@@ -721,6 +721,45 @@ describe("shared Bot model-controlled conversation", () => {
     expect(h.outbox.list({})[0]!.target?.participantId).toBe("20002");
   });
 
+  it("quotes a mention-only whitespace message after earlier content without invalidating its source", async () => {
+    const h = setup({
+      complete: async () =>
+        JSON.stringify({
+          kind: "invoke",
+          calls: [
+            {
+              name: "reply.text",
+              arguments: {
+                outputs: [
+                  {
+                    kind: "inline",
+                    targetId: "20002",
+                    text: "synthetic reply",
+                    replyToMessageId: "-702",
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+    });
+    h.receive("-701", "20002", false, "earlier content");
+    h.receive("-702", "20002", true, " ");
+    expect(
+      h.db
+        .query("SELECT 1 FROM qq_observation_text WHERE event_key=?")
+        .get('["qq","10001","group","30003","-702"]'),
+    ).toBeNull();
+    const result = await h.activate("direct_reply");
+    expect(result.status).toBe("completed");
+    expect(h.outbox.list({})).toHaveLength(1);
+    const intent = h.outbox.list({})[0];
+    if (!intent) throw new Error("Expected a committed reply intent");
+    const part = h.outbox.parts(intent.id)[0];
+    if (!part?.payload) throw new Error("Expected a committed reply part");
+    expect(JSON.parse(part.payload).replyToMessageId).toBe("-702");
+  });
+
   it("carries structured mentionIds into the committed outbox part", async () => {
     const h = setup({
       complete: async () => replyText([{ targetId: "20002", text: "ping", mentionIds: ["20002"] }]),

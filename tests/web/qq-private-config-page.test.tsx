@@ -188,8 +188,11 @@ it("私聊绑定复用同一配置页：GET 读同一编辑器，字段改动按
 
   // 页头身份按绑定如实显示：私聊 + 对端号码，不是群名。
   const header = view.container.querySelector("header") as HTMLElement;
+  const context = view.container.querySelector("[data-group-context]") as HTMLElement;
   expect(header.textContent).toContain("私聊");
-  expect(header.textContent).toContain(PRIVATE_PEER);
+  expect(context.textContent).toContain(PRIVATE_PEER);
+  expect(context.textContent).toContain("10001");
+  expect(view.container.querySelectorAll("h1")).toHaveLength(1);
 
   // 群专属面不出现：管理员入口、本群能力页签。
   expect(screen.queryByRole("button", { name: "管理员" })).toBeNull();

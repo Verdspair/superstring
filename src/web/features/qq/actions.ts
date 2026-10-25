@@ -13,13 +13,15 @@ import type {
   QqSettingsResponse,
   QqStickerAssetResponse,
 } from "../../../shared/contracts/qq";
+import type { QqManagedEventsInvalidation } from "../../../shared/contracts/qq-managed-events";
 import type {
   QqStorageCleanupRequest,
   QqStorageSettingsResponse,
 } from "../../../shared/contracts/qq-storage";
-import { ApiError, type SuperstringApi } from "../../api";
+import { ApiError, type QqManagedEventQueryInput, type SuperstringApi } from "../../api";
 import { msg } from "../../i18n";
 import { removeDirectoryCache, removeQqEventsCache } from "../../services/page-snapshot-cache";
+import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { invalidSchemeInputs, invalidSchemeTimezone, parseAttentionMembers } from "./draft-state";
@@ -1142,6 +1144,15 @@ export function createQqAccessActions(
   | "removeQqConversation"
   | "organiseQqMemoryRow"
   | "loadQqManaged"
+  | "loadQqManagedResources"
+  | "refreshQqManagedResources"
+  | "saveQqManagedResources"
+  | "patchQqManagedResourceDraft"
+  | "loadQqManagedAccounts"
+  | "loadQqManagedEvents"
+  | "setQqManagedEventsActive"
+  | "clearQqManagedEventsView"
+  | "quickLoginQqManaged"
   | "saveQqManagedConfig"
   | "refreshQqManaged"
   | "patchQqManagedDraft"
@@ -1171,6 +1182,7 @@ export function createQqAccessActions(
       api: state.apiClient,
       id: state.qqBindingsReadId + 1,
       token: accessReadToken,
+      lifecycleId: state.qqManagedLifecycleId,
     };
     set({ qqBindingsReadId: operation.id });
     return operation;
@@ -1178,12 +1190,23 @@ export function createQqAccessActions(
   const isCurrentAccessRead = (operation: ReturnType<typeof beginAccessRead>) =>
     get().qqBindingsReadId === operation.id && accessReadToken === operation.token;
   const isCurrentAccessApi = (operation: ReturnType<typeof beginAccessRead>) =>
-    get().apiClient === operation.api && isCurrentAccessRead(operation);
+    get().apiClient === operation.api &&
+    get().qqManagedLifecycleId === operation.lifecycleId &&
+    isCurrentAccessRead(operation);
+  let accessInFlight: {
+    operation: ReturnType<typeof beginAccessRead>;
+    promise: Promise<void>;
+  } | null = null;
   /** 写入开始即作废在途读取：旧列表/旧设置晚到不得盖掉刚写入的结果，也不留悬空的 loading。 */
   const invalidateAccessReads = () => {
+    accessInFlight = null;
     bindingsInFlight = null;
     directoryInFlight = null;
-    set({ qqBindingsReadId: get().qqBindingsReadId + 1, qqBindingsLoading: false });
+    set({
+      qqBindingsReadId: get().qqBindingsReadId + 1,
+      qqBindingsLoading: false,
+      qqAccessLoading: false,
+    });
   };
   // 变更操作的模块级令牌：`resetForTests` 会把 store 里的代次清零，单靠代次无法区分
   // 「重置后新操作恰好拿到同一编号」；令牌不随重置回收，与 API 实例一起判定「仍是当前写操作」。
@@ -1217,7 +1240,23 @@ export function createQqAccessActions(
     lifecycleId: number;
   } | null = null;
   let managedReadToken = 0;
+  let managedResourceReadToken = 0;
+  let managedAccountsReadToken = 0;
   let managedQrToken = 0;
+  let managedResourcesLoadInFlight: {
+    api: SuperstringApi;
+    readId: number;
+    token: number;
+    lifecycleId: number;
+    promise: Promise<void>;
+  } | null = null;
+  let managedAccountsLoadInFlight: {
+    api: SuperstringApi;
+    readId: number;
+    token: number;
+    lifecycleId: number;
+    promise: Promise<void>;
+  } | null = null;
   const beginManagedRead = () => {
     const state = get();
     managedReadToken += 1;
@@ -1240,7 +1279,144 @@ export function createQqAccessActions(
     managedReadToken += 1;
     set({ qqManagedReadId: get().qqManagedReadId + 1, qqManagedLoading: false });
   };
+  const invalidateManagedResourceReads = () => {
+    managedResourcesLoadInFlight = null;
+    managedResourceReadToken += 1;
+    set({
+      qqManagedResourcesReadId: get().qqManagedResourcesReadId + 1,
+      qqManagedResourcesLoading: false,
+    });
+  };
+  const invalidateManagedAccountsReads = (clear = false) => {
+    managedAccountsLoadInFlight = null;
+    managedAccountsReadToken += 1;
+    set({
+      qqManagedAccountsReadId: get().qqManagedAccountsReadId + 1,
+      qqManagedAccountsLoading: false,
+      ...(clear
+        ? { qqManagedAccounts: [], qqManagedAccountsLoaded: false, qqManagedAccountsError: null }
+        : {}),
+    });
+  };
+  const beginManagedResourceRead = () => {
+    const state = get();
+    managedResourceReadToken += 1;
+    const operation = {
+      api: state.apiClient,
+      id: state.qqManagedResourcesReadId + 1,
+      token: managedResourceReadToken,
+      lifecycleId: state.qqManagedLifecycleId,
+    };
+    set({ qqManagedResourcesReadId: operation.id });
+    return operation;
+  };
+  const isCurrentManagedResourceRead = (operation: ReturnType<typeof beginManagedResourceRead>) =>
+    get().qqManagedResourcesReadId === operation.id &&
+    managedResourceReadToken === operation.token &&
+    get().qqManagedLifecycleId === operation.lifecycleId &&
+    get().apiClient === operation.api;
+  const beginManagedAccountsRead = () => {
+    const state = get();
+    managedAccountsReadToken += 1;
+    const operation = {
+      api: state.apiClient,
+      id: state.qqManagedAccountsReadId + 1,
+      token: managedAccountsReadToken,
+      lifecycleId: state.qqManagedLifecycleId,
+    };
+    set({ qqManagedAccountsReadId: operation.id });
+    return operation;
+  };
+  const isCurrentManagedAccountsRead = (operation: ReturnType<typeof beginManagedAccountsRead>) =>
+    get().qqManagedAccountsReadId === operation.id &&
+    managedAccountsReadToken === operation.token &&
+    get().qqManagedLifecycleId === operation.lifecycleId &&
+    get().apiClient === operation.api;
 
+  let managedEventsTask: ReadTask | null = null;
+  let managedEventsReadTask: ReadTask | null = null;
+  let managedEventsRequestedActive = false;
+  let managedEventsApi: SuperstringApi | null = null;
+  let managedEventsOwner = 0;
+  let managedEventsStoreLifecycle = 0;
+  let managedEventsInvalidation: QqManagedEventsInvalidation | null = null;
+  let managedEventsQuery: QqManagedEventQueryInput = {};
+  let managedEventsPending = false;
+  let managedEventsReadPromise: Promise<void> | null = null;
+  let finishManagedEventsRead: (() => void) | null = null;
+  let managedEventsVisibilityListener: (() => void) | null = null;
+  let managedEventsClearedAt = 0;
+  let managedEventsGeneration: string | null = null;
+  const clearManagedEventPreviews = () => {
+    set((state) => ({
+      qqManagedEventsPage:
+        state.qqManagedEventsPage?.status === "ok"
+          ? {
+              ...state.qqManagedEventsPage,
+              events: state.qqManagedEventsPage.events.map((row) =>
+                row.preview_state === "available"
+                  ? { ...row, message_preview: null, preview_state: "unavailable" as const }
+                  : row,
+              ),
+            }
+          : state.qqManagedEventsPage,
+    }));
+  };
+  const cancelManagedEventsTasks = () => {
+    managedEventsOwner += 1;
+    managedEventsTask?.cancel();
+    managedEventsReadTask?.cancel();
+    managedEventsTask = null;
+    managedEventsReadTask = null;
+    managedEventsReadPromise = null;
+    finishManagedEventsRead?.();
+    finishManagedEventsRead = null;
+    managedEventsPending = false;
+    set({ qqManagedEventsLoading: false });
+  };
+  const managedEventsCurrent = (owner: number, api: SuperstringApi, lifecycle: number) =>
+    owner === managedEventsOwner &&
+    managedEventsRequestedActive &&
+    !document.hidden &&
+    get().apiClient === api &&
+    get().qqManagedLifecycleId === lifecycle;
+  const connectManagedEvents = () => {
+    if (!managedEventsRequestedActive || document.hidden || managedEventsTask) return;
+    const owner = managedEventsOwner;
+    const api = get().apiClient;
+    const lifecycle = get().qqManagedLifecycleId;
+    managedEventsTask = startRead(
+      (signal) =>
+        api.subscribeQqManagedEventChanges((notice) => {
+          if (!managedEventsCurrent(owner, api, lifecycle)) return;
+          const previous = managedEventsInvalidation;
+          if (
+            previous &&
+            previous.generation === notice.generation &&
+            previous.latest_sequence === notice.latest_sequence &&
+            previous.revision === notice.revision
+          )
+            return;
+          managedEventsInvalidation = notice;
+          if (managedEventsGeneration !== null && managedEventsGeneration !== notice.generation) {
+            managedEventsClearedAt = 0;
+            set({ qqManagedEventsPage: null });
+          } else clearManagedEventPreviews();
+          managedEventsPending = true;
+          void get().loadQqManagedEvents(managedEventsQuery);
+        }, signal),
+      {
+        success: () => {},
+        failure: (cause) => {
+          if (managedEventsCurrent(owner, api, lifecycle))
+            set({ qqManagedEventsError: errorText(cause) });
+        },
+        settled: () => {
+          if (owner === managedEventsOwner) managedEventsTask = null;
+        },
+      },
+    );
+  };
   let managedWriteToken = 0;
   let currentManagedWriteOp: {
     token: number;
@@ -1311,10 +1487,9 @@ export function createQqAccessActions(
       },
     }));
   };
-  const reload = async () => {
+  const reload = async (operation = beginAccessRead()) => {
     // Schemes come along because a binding names one: the page's select needs the list, and
     // fetching it here keeps the row from offering an empty choice that cannot be saved.
-    const operation = beginAccessRead();
     const schemeReadId = get().qqSchemesReadId;
     set({ qqBindingsLoading: true });
     let rows: [
@@ -1398,18 +1573,33 @@ export function createQqAccessActions(
   };
   return {
     loadQqAccess: async () => {
-      if (get().qqAccessLoading) return;
+      if (accessInFlight && isCurrentAccessApi(accessInFlight.operation))
+        return accessInFlight.promise;
       // 本群配置保存进行中不开始整页读取：它的结果只会与同一条写入竞争，等保存方完成后重读。
       if (get().qqGroupConfigSaving) return;
+      const operation = beginAccessRead();
       set({ qqAccessLoading: true, error: null });
-      try {
-        await reload();
-        set({ qqConnection: (await get().apiClient.getQqStatus()).connection });
-      } catch (error) {
-        report(error);
-      } finally {
-        set({ qqAccessLoading: false });
-      }
+      const promise = (async () => {
+        try {
+          await reload(operation);
+          if (!isCurrentAccessApi(operation)) return;
+          const status = await operation.api.getQqStatus();
+          if (isCurrentAccessApi(operation)) set({ qqConnection: status.connection });
+        } catch (error) {
+          if (isCurrentAccessApi(operation)) report(error);
+        } finally {
+          if (accessInFlight?.operation === operation) {
+            accessInFlight = null;
+            if (
+              get().apiClient === operation.api &&
+              get().qqManagedLifecycleId === operation.lifecycleId
+            )
+              set({ qqAccessLoading: false });
+          }
+        }
+      })();
+      accessInFlight = { operation, promise };
+      return promise;
     },
     // One request, for the pages that only need to know which conversations exist (the 长期记忆
     // hint). 无参保持缓存语义：读成功过就不再请求，失败保持安静（提示宁可不显示，也不重试轰炸）。
@@ -1815,6 +2005,348 @@ export function createQqAccessActions(
         return null;
       } finally {
         endAccessWrite(op);
+      }
+    },
+    setQqManagedEventsActive: (active) => {
+      const api = get().apiClient;
+      const lifecycle = get().qqManagedLifecycleId;
+      const sameOwner =
+        managedEventsRequestedActive === active &&
+        managedEventsApi === api &&
+        managedEventsStoreLifecycle === lifecycle;
+      if (sameOwner) {
+        if (active && !document.hidden) connectManagedEvents();
+        return;
+      }
+      cancelManagedEventsTasks();
+      if (managedEventsVisibilityListener)
+        document.removeEventListener("visibilitychange", managedEventsVisibilityListener);
+      managedEventsVisibilityListener = null;
+      managedEventsRequestedActive = active;
+      managedEventsApi = api;
+      managedEventsStoreLifecycle = lifecycle;
+      managedEventsInvalidation = null;
+      if (!active) {
+        set({ qqManagedEventsPage: null });
+        return;
+      }
+      managedEventsVisibilityListener = () => {
+        cancelManagedEventsTasks();
+        set({ qqManagedEventsPage: null });
+        if (!document.hidden && managedEventsRequestedActive) {
+          connectManagedEvents();
+          void get().loadQqManagedEvents(managedEventsQuery);
+        }
+      };
+      document.addEventListener("visibilitychange", managedEventsVisibilityListener);
+      connectManagedEvents();
+      void get().loadQqManagedEvents(managedEventsQuery);
+    },
+    clearQqManagedEventsView: () => {
+      const page = get().qqManagedEventsPage;
+      if (page?.status === "ok") {
+        managedEventsGeneration = page.generation;
+        managedEventsClearedAt = page.latest_sequence;
+        set({ qqManagedEventsPage: { ...page, events: [], next_cursor: null } });
+      }
+    },
+    loadQqManagedEvents: async (query = {}) => {
+      if (
+        managedEventsApi !== get().apiClient ||
+        managedEventsStoreLifecycle !== get().qqManagedLifecycleId
+      ) {
+        get().setQqManagedEventsActive(managedEventsRequestedActive);
+      }
+      if (!managedEventsRequestedActive || document.hidden) return;
+      managedEventsQuery = { ...query };
+      if (managedEventsReadPromise) {
+        managedEventsPending = true;
+        return managedEventsReadPromise;
+      }
+      connectManagedEvents();
+      const api = get().apiClient;
+      const owner = managedEventsOwner;
+      const lifecycle = get().qqManagedLifecycleId;
+      const readQuery = { ...managedEventsQuery };
+      const observed = managedEventsInvalidation;
+      managedEventsPending = false;
+      set({ qqManagedEventsLoading: true, qqManagedEventsError: null });
+      const promise = new Promise<void>((resolve) => {
+        finishManagedEventsRead = resolve;
+      });
+      managedEventsReadPromise = promise;
+      managedEventsReadTask = startRead((signal) => api.getQqManagedEventsPage(readQuery, signal), {
+        success: (page) => {
+          if (!managedEventsCurrent(owner, api, lifecycle)) return;
+          if (managedEventsGeneration !== page.generation) managedEventsClearedAt = 0;
+          managedEventsGeneration = page.generation;
+          if (page.status === "reset_required") {
+            managedEventsQuery = { ...managedEventsQuery, cursor: undefined };
+            set({ qqManagedEventsPage: null });
+            managedEventsPending = true;
+            return;
+          }
+          const latest = managedEventsInvalidation;
+          if (
+            latest &&
+            latest !== observed &&
+            (latest.generation !== page.generation || latest.revision > page.revision)
+          ) {
+            managedEventsPending = true;
+            return;
+          }
+          managedEventsInvalidation = {
+            generation: page.generation,
+            latest_sequence: page.latest_sequence,
+            revision: page.revision,
+          };
+          set({
+            qqManagedEventsPage: {
+              ...page,
+              events: page.events.filter((row) => row.sequence > managedEventsClearedAt),
+            },
+            qqManagedEventsError: null,
+          });
+        },
+        failure: (cause) => {
+          if (managedEventsCurrent(owner, api, lifecycle))
+            set({ qqManagedEventsError: errorText(cause) });
+        },
+        settled: () => {
+          if (owner !== managedEventsOwner) return;
+          managedEventsReadTask = null;
+          managedEventsReadPromise = null;
+          finishManagedEventsRead?.();
+          finishManagedEventsRead = null;
+          set({ qqManagedEventsLoading: false });
+          if (managedEventsPending && managedEventsCurrent(owner, api, lifecycle)) {
+            managedEventsPending = false;
+            void get().loadQqManagedEvents(managedEventsQuery);
+          }
+        },
+      });
+      return promise;
+    },
+    loadQqManagedResources: async () => {
+      const state = get();
+      const api = state.apiClient;
+      if (
+        managedResourcesLoadInFlight &&
+        managedResourcesLoadInFlight.api === api &&
+        managedResourcesLoadInFlight.readId === state.qqManagedResourcesReadId &&
+        managedResourcesLoadInFlight.token === managedResourceReadToken &&
+        managedResourcesLoadInFlight.lifecycleId === state.qqManagedLifecycleId
+      )
+        return managedResourcesLoadInFlight.promise;
+      const operation = beginManagedResourceRead();
+      set({ qqManagedResourcesLoading: true, qqManagedResourceError: null });
+      const promise = (async () => {
+        try {
+          const resources = await operation.api.getQqManagedResources();
+          if (!isCurrentManagedResourceRead(operation)) return;
+          set({
+            qqManagedResources: resources,
+            qqManagedResourcesLoading: false,
+            qqManagedResourceError: null,
+          });
+        } catch (error) {
+          if (!isCurrentManagedResourceRead(operation)) return;
+          set({ qqManagedResourcesLoading: false, qqManagedResourceError: errorText(error) });
+        } finally {
+          if (managedResourcesLoadInFlight?.token === operation.token)
+            managedResourcesLoadInFlight = null;
+        }
+      })();
+      managedResourcesLoadInFlight = {
+        api,
+        readId: operation.id,
+        token: operation.token,
+        lifecycleId: operation.lifecycleId,
+        promise,
+      };
+      return promise;
+    },
+    refreshQqManagedResources: async () => {
+      managedResourcesLoadInFlight = null;
+      const operation = beginManagedResourceRead();
+      set({ qqManagedResourcesLoading: true, qqManagedResourceError: null });
+      try {
+        const resources = await operation.api.getQqManagedResources();
+        if (!isCurrentManagedResourceRead(operation)) return;
+        set((state) => {
+          const draft = state.qqInputs.managedResources;
+          return {
+            qqManagedResources: resources,
+            qqManagedResourcesLoading: false,
+            qqManagedResourceError: null,
+            qqInputs: {
+              ...state.qqInputs,
+              managedResources: draft
+                ? {
+                    source: resources,
+                    root:
+                      draft.root.trim() !== (draft.source.root ?? "")
+                        ? draft.root
+                        : (resources.root ?? ""),
+                  }
+                : null,
+            },
+          };
+        });
+      } catch (error) {
+        if (!isCurrentManagedResourceRead(operation)) return;
+        set({ qqManagedResourcesLoading: false, qqManagedResourceError: errorText(error) });
+      }
+    },
+    patchQqManagedResourceDraft: (root) => {
+      const snapshot = get().qqManagedResources;
+      const source = get().qqInputs.managedResources?.source ?? snapshot;
+      if (!source) return;
+      set((state) => ({
+        qqInputs: {
+          ...state.qqInputs,
+          managedResources: { source, root },
+        },
+      }));
+    },
+    saveQqManagedResources: async () => {
+      const draft = get().qqInputs.managedResources;
+      if (!draft || get().qqManagedSaving || !draft.root.trim()) return false;
+      const op = beginManagedWrite();
+      invalidateManagedResourceReads();
+      invalidateManagedAccountsReads(true);
+      try {
+        const saved = await op.api.updateQqManagedResources({
+          expected_revision: draft.source.revision,
+          root: draft.root.trim(),
+        });
+        if (!isCurrentManagedWriteApi(op)) return false;
+        invalidateManagedResourceReads();
+        invalidateManagedAccountsReads(true);
+        invalidateManagedReads();
+        managedQrToken += 1;
+        set((state) => ({
+          qqManagedResources: saved,
+          qqManagedResourceError: null,
+          qqManagedStatus: null,
+          qqManagedQrPayload: null,
+          qqInputs: {
+            ...state.qqInputs,
+            managedResources:
+              state.qqInputs.managedResources && state.qqInputs.managedResources !== draft
+                ? { source: saved, root: state.qqInputs.managedResources.root }
+                : null,
+          },
+          feedback: msg("已保存接入设置"),
+        }));
+        return true;
+      } catch (error) {
+        if (isCurrentManagedWriteApi(op)) set({ qqManagedResourceError: errorText(error) });
+        return false;
+      } finally {
+        endManagedWrite(op);
+      }
+    },
+    loadQqManagedAccounts: async () => {
+      const state = get();
+      const api = state.apiClient;
+      if (
+        managedAccountsLoadInFlight &&
+        managedAccountsLoadInFlight.api === api &&
+        managedAccountsLoadInFlight.readId === state.qqManagedAccountsReadId &&
+        managedAccountsLoadInFlight.token === managedAccountsReadToken &&
+        managedAccountsLoadInFlight.lifecycleId === state.qqManagedLifecycleId
+      )
+        return managedAccountsLoadInFlight.promise;
+      const operation = beginManagedAccountsRead();
+      set({ qqManagedAccountsLoading: true, qqManagedAccountsError: null });
+      const promise = (async () => {
+        try {
+          const result = await operation.api.listQqManagedAccounts();
+          if (!isCurrentManagedAccountsRead(operation)) return;
+          set({
+            qqManagedAccounts: result.accounts,
+            qqManagedAccountsLoaded: true,
+            qqManagedAccountsLoading: false,
+            qqManagedAccountsError: null,
+          });
+        } catch (error) {
+          if (!isCurrentManagedAccountsRead(operation)) return;
+          set({
+            qqManagedAccounts: [],
+            qqManagedAccountsLoaded: false,
+            qqManagedAccountsLoading: false,
+            qqManagedAccountsError: errorText(error),
+          });
+        } finally {
+          if (managedAccountsLoadInFlight?.token === operation.token)
+            managedAccountsLoadInFlight = null;
+        }
+      })();
+      managedAccountsLoadInFlight = {
+        api,
+        readId: operation.id,
+        token: operation.token,
+        lifecycleId: operation.lifecycleId,
+        promise,
+      };
+      return promise;
+    },
+    quickLoginQqManaged: async (accountId) => {
+      if (get().qqManagedSaving) return false;
+      const draft = get().qqInputs.connection;
+      const settings = get().qqSettings;
+      if (!settings || !get().qqManagedResources || get().qqManagedResources?.status !== "ready")
+        return false;
+      const targetAccount = draft ? draft.accountId.trim() : (settings.account_id ?? "");
+      if (!targetAccount || targetAccount !== accountId) return false;
+      if (
+        draft &&
+        (draft.accountId.trim() !== (draft.source.account_id ?? "") ||
+          settings.account_id !== accountId)
+      ) {
+        const saved = await get().saveQqSurface({ account_id: accountId }, draft.source.revision);
+        if (!saved) return false;
+      }
+      const currentSettings = get().qqSettings;
+      const currentDraft = get().qqInputs.connection;
+      const status = get().qqManagedStatus;
+      if (
+        !currentSettings ||
+        currentSettings.account_id !== accountId ||
+        (currentDraft !== null && currentDraft.source.revision !== currentSettings.revision) ||
+        !get().qqManagedAccountsLoaded ||
+        !get().qqManagedAccounts.some((row) => row.account_id === accountId) ||
+        status?.apply !== "ready" ||
+        status.ownership !== "owned" ||
+        status.process !== "running" ||
+        status.phase !== "waiting_scan" ||
+        get().qqManagedSaving
+      )
+        return false;
+      const op = beginManagedWrite();
+      try {
+        const updated = await op.api.quickLoginQqManaged({
+          account_id: accountId,
+          expected_settings_revision: currentSettings.revision,
+        });
+        if (!isCurrentManagedWriteApi(op)) return false;
+        invalidateManagedReads();
+        const clearQr =
+          updated.apply === "blocked" ||
+          (updated.apply === "ready" && updated.phase !== "waiting_scan");
+        if (clearQr) managedQrToken += 1;
+        set({
+          qqManagedStatus: updated,
+          qqManagedError: null,
+          ...(clearQr ? { qqManagedQrPayload: null } : {}),
+        });
+        return true;
+      } catch (error) {
+        if (isCurrentManagedWriteApi(op)) set({ qqManagedError: errorText(error) });
+        return false;
+      } finally {
+        endManagedWrite(op);
       }
     },
     loadQqManaged: async () => {

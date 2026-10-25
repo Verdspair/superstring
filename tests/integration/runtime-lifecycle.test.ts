@@ -547,4 +547,81 @@ describe("application runtime lifecycle", () => {
     ).toThrow("synthetic construction failure");
     expect(closed).toBe(true);
   });
+  it("closes the business database when startup OneBot backfill fails", () => {
+    const business = openBusinessDb();
+    let closed = false;
+    let intercepted = 0;
+    ensureDefaults(business.orm, "model");
+    const timestamp = new Date().toISOString();
+    const schemeId = crypto.randomUUID();
+    const bindingId = crypto.randomUUID();
+    business.db
+      .query("INSERT INTO qq_schemes(id,name,created_at,updated_at) VALUES(?,?,?,?)")
+      .run(schemeId, "synthetic startup scheme", timestamp, timestamp);
+    business.db
+      .query(
+        "INSERT INTO qq_bindings(id,account_id,conversation_kind,peer_id,agent_id,scheme_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        bindingId,
+        "10001",
+        "private",
+        "20002",
+        "00000000-0000-0000-0000-000000000001",
+        schemeId,
+        timestamp,
+        timestamp,
+      );
+    const syntheticError = Object.assign(new Error("synthetic startup backfill read failure"), {
+      code: "SQLITE_IOERR_READ",
+      errno: 266,
+    });
+    const db = new Proxy(business.db, {
+      get(target, property) {
+        if (property !== "query") {
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (sql: string) => {
+          const statement = target.query(sql);
+          if (!sql.includes("SELECT send.id AS send_id FROM qq_send_log send")) return statement;
+          return new Proxy(statement, {
+            get(statementTarget, statementProperty) {
+              const value = Reflect.get(statementTarget, statementProperty, statementTarget);
+              if (statementProperty === "all" && typeof value === "function") {
+                return () => {
+                  intercepted += 1;
+                  throw syntheticError;
+                };
+              }
+              return typeof value === "function" ? value.bind(statementTarget) : value;
+            },
+          });
+        };
+      },
+    });
+    let thrown: unknown;
+    try {
+      createRuntime({
+        business: {
+          db: db as Database,
+          orm: business.orm,
+          close() {
+            closed = true;
+            business.close();
+          },
+        },
+        gateway,
+        browserStateSecret: testBrowserStateSecret,
+      });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      if (!closed) business.close();
+    }
+    expect(intercepted).toBe(1);
+    expect(thrown).toBe(syntheticError);
+    expect(closed).toBe(true);
+    expect(() => business.db.query("SELECT 1").get()).toThrow();
+  });
 });

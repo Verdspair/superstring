@@ -75,6 +75,38 @@ class FakeManagedSession extends FakePort implements NapCatManagedSession {
   refreshedQrPayload = "synthetic-refreshed-login-qr";
   actionError?: Error;
 
+  resourceReads = 0;
+  resourcePrepares = 0;
+  accountReads = 0;
+  quickLoginAttempts = 0;
+  resource = {
+    revision: "resources-0",
+    status: "ready" as const,
+    root: "/synthetic-private/runtime",
+    diagnostic_code: null,
+  };
+
+  readResources() {
+    this.resourceReads += 1;
+    return { ...this.resource };
+  }
+  async prepareResources(input: { expected_revision: string; root: string }) {
+    this.resourcePrepares += 1;
+    if (this.actionError) throw this.actionError;
+    if (input.expected_revision !== this.resource.revision)
+      throw storeError("NAPCAT_RESOURCE_CONFLICT");
+    this.resource = { ...this.resource, revision: "resources-1", root: input.root };
+    return { ...this.resource };
+  }
+  async listAccounts() {
+    this.accountReads += 1;
+    if (this.actionError) throw this.actionError;
+    return { accounts: [{ account_id: "10001", display_name: "Synthetic account" }] };
+  }
+  async quickLogin(_input: { account_id: string; expected_settings_revision: number }) {
+    this.quickLoginAttempts += 1;
+    if (this.actionError) throw this.actionError;
+  }
   async start() {}
   async stop() {}
 
@@ -96,12 +128,16 @@ class FakeManagedSession extends FakePort implements NapCatManagedSession {
   }
 }
 
-function setup(port?: NapCatManagementPort) {
+function setup(
+  port?: NapCatManagementPort,
+  events?: import("../../src/server/api/qq").QqManagedEventsPort,
+) {
   const business = openBusinessDb();
   ensureDefaults(business.orm, MODEL);
   const app = createApp({
     business,
     napcatManagement: port,
+    napcatEvents: events,
     qqConnectionState: () => ({ phase: "disconnected", reason: "synthetic_external_offline" }),
   });
   return { business, app };
@@ -363,6 +399,7 @@ describe("NapCat management routes", () => {
       phase: "waiting_scan",
       core_ready: false,
       transport_phase: "idle",
+      network_apply: "pending",
       diagnostic_code: null,
       ...PRIVATE_MARKERS,
       qr_payload: PRIVATE_MARKERS.qrcode,
@@ -379,6 +416,7 @@ describe("NapCat management routes", () => {
         phase: "waiting_scan",
         core_ready: false,
         transport_phase: "idle",
+        network_apply: "pending",
         diagnostic_code: null,
       });
       expect(session.retries).toBe(1);
@@ -394,6 +432,7 @@ describe("NapCat management routes", () => {
         phase: "waiting_scan",
         core_ready: false,
         transport_phase: "idle",
+        network_apply: "pending",
         diagnostic_code: null,
       });
 
@@ -449,6 +488,219 @@ describe("NapCat management routes", () => {
         unavailable_reason: "management_not_configured",
       });
       expect(await businessView(h.app)).toEqual(before);
+    } finally {
+      h.business.close();
+    }
+  });
+});
+
+describe("NapCat first-use management endpoints", () => {
+  const resources = "/v2/qq/managed-component/resources";
+  const accounts = "/v2/qq/managed-component/accounts";
+  const quickLogin = "/v2/qq/managed-component/quick-login";
+
+  it("guards resource paths and login actions before any port call", async () => {
+    const session = new FakeManagedSession();
+    const h = setup(session);
+    try {
+      for (const [route, method, body] of [
+        [resources, "GET", undefined],
+        [resources, "PUT", { expected_revision: "resources-0", root: "/synthetic/runtime" }],
+        [accounts, "GET", undefined],
+        [quickLogin, "POST", { account_id: "10001", expected_settings_revision: 1 }],
+      ] as const) {
+        const response = await h.app.request(route, {
+          method,
+          headers: { origin: "https://evil.example", "content-type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        expect((await expectSafeError(response, 403)).error.code).toBe(
+          "PERMISSION_MANAGEMENT_FORBIDDEN",
+        );
+      }
+      expect([
+        session.resourceReads,
+        session.resourcePrepares,
+        session.accountReads,
+        session.quickLoginAttempts,
+      ]).toEqual([0, 0, 0, 0]);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("returns a root only on explicit protected resource reads and prepares with CAS", async () => {
+    const session = new FakeManagedSession();
+    const h = setup(session);
+    try {
+      const before = await businessView(h.app);
+      const resource = await h.app.request(resources);
+      expect(resource.status).toBe(200);
+      expect(resource.headers.get("cache-control")).toBe("no-store");
+      expect(await resource.json()).toEqual(session.resource);
+      const response = await h.app.request(resources, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expected_revision: "resources-0",
+          root: "/synthetic-private/new-runtime",
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(session.resource);
+      expect(session.resourcePrepares).toBe(1);
+      const statusText = await (await h.app.request(STATUS)).text();
+      expect(statusText).not.toContain("/synthetic-private");
+      expect(await businessView(h.app)).toEqual(before);
+      const stale = await h.app.request(resources, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expected_revision: "resources-0", root: "/synthetic/runtime" }),
+      });
+      expect((await expectSafeError(stale, 409)).error.code).toBe("NAPCAT_RESOURCE_CONFLICT");
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("uses only reviewed product fields and rejects arbitrary resource/login administration", async () => {
+    const session = new FakeManagedSession();
+    const h = setup(session);
+    try {
+      for (const body of [
+        {},
+        { expected_revision: "resources-0", root: "" },
+        { expected_revision: "resources-0", root: "/synthetic/runtime", token: "forbidden" },
+      ]) {
+        const response = await h.app.request(resources, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        expect((await expectSafeError(response, 422)).error.code).toBe("VALIDATION_ERROR");
+      }
+      for (const body of [
+        {},
+        { account_id: "bad", expected_settings_revision: 1 },
+        { account_id: "10001", expected_settings_revision: 0 },
+        { account_id: "10001", expected_settings_revision: 1, password: "forbidden" },
+      ]) {
+        expect((await expectSafeError(await post(h.app, quickLogin, body), 422)).error.code).toBe(
+          "VALIDATION_ERROR",
+        );
+      }
+      expect([session.resourcePrepares, session.quickLoginAttempts]).toEqual([0, 0]);
+      const list = await h.app.request(accounts);
+      expect(list.status).toBe(200);
+      expect(await list.json()).toEqual({
+        accounts: [{ account_id: "10001", display_name: "Synthetic account" }],
+      });
+      const action = await post(h.app, quickLogin, {
+        account_id: "10001",
+        expected_settings_revision: 1,
+      });
+      expect(action.status).toBe(200);
+      expect(session.quickLoginAttempts).toBe(1);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("maps resource busy/conflict and selected-account conflicts without raw upstream details", async () => {
+    const session = new FakeManagedSession();
+    const h = setup(session);
+    try {
+      for (const code of ["NAPCAT_RESOURCE_CONFLICT", "NAPCAT_RESOURCE_BUSY"]) {
+        session.actionError = storeError(code);
+        const response = await h.app.request(resources, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expected_revision: "resources-0", root: "/synthetic/runtime" }),
+        });
+        expect((await expectSafeError(response, 409)).error.code).toBe(code);
+      }
+      session.actionError = storeError("NAPCAT_ACCOUNT_SELECTION_CONFLICT");
+      expect(
+        (
+          await expectSafeError(
+            await post(h.app, quickLogin, { account_id: "10001", expected_settings_revision: 1 }),
+            409,
+          )
+        ).error.code,
+      ).toBe("NAPCAT_ACCOUNT_SELECTION_CONFLICT");
+    } finally {
+      h.business.close();
+    }
+  });
+});
+
+describe("NapCat bounded event management routes", () => {
+  it("guards reads and emits only coalesced revision invalidation until cancellation", async () => {
+    const generation = "00000000-0000-4000-8000-000000000001";
+    let snapshotCalls = 0;
+    let listeners = 0;
+    let listener:
+      | ((notice: { generation: string; latest_sequence: number; revision: number }) => void)
+      | null = null;
+    const events = {
+      generation,
+      latestSequence: 1,
+      revision: 1,
+      snapshot: () => {
+        snapshotCalls += 1;
+        return {
+          status: "ok" as const,
+          generation,
+          latest_sequence: 1,
+          revision: 1,
+          events: [],
+          next_cursor: null,
+          truncated: false,
+        };
+      },
+      subscribe(next: typeof listener) {
+        listeners += 1;
+        listener = next;
+        return () => {
+          listeners -= 1;
+          listener = null;
+        };
+      },
+    };
+    const h = setup(undefined, events);
+    try {
+      const forbidden = await h.app.request("/v2/qq/managed-component/events", {
+        headers: { origin: "https://evil.example" },
+      });
+      expect(forbidden.status).toBe(403);
+      expect(snapshotCalls).toBe(0);
+      const invalid = await h.app.request("/v2/qq/managed-component/events?limit=101");
+      expect(invalid.status).toBe(422);
+      expect(snapshotCalls).toBe(0);
+      const badCursor = await h.app.request("/v2/qq/managed-component/events?cursor=not-json");
+      expect(badCursor.status).toBe(422);
+      expect(snapshotCalls).toBe(0);
+      const page = await h.app.request("/v2/qq/managed-component/events?kind=message&limit=10");
+      expect(page.status).toBe(200);
+      expect(page.headers.get("cache-control")).toBe("no-store");
+      expect((await page.json()).events).toEqual([]);
+      const response = await h.app.request("/v2/qq/managed-component/events/changes");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const reader = response.body!.getReader();
+      try {
+        const ready = new TextDecoder().decode((await reader.read()).value);
+        expect(ready).toContain("event: managed_events_ready");
+        expect(ready).toContain('"revision":1');
+        expect(listeners).toBe(1);
+        listener!({ generation, latest_sequence: 1, revision: 2 });
+        const changed = new TextDecoder().decode((await reader.read()).value);
+        expect(changed).toContain("event: managed_events_changed");
+        expect(changed).toContain('"revision":2');
+        expect(changed).not.toContain("body");
+      } finally {
+        await reader.cancel();
+      }
+      expect(listeners).toBe(0);
     } finally {
       h.business.close();
     }

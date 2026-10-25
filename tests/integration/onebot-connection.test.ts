@@ -7,7 +7,11 @@ import {
   type OneBotSocket,
   type OneBotSocketFactory,
 } from "../../src/server/services/onebot-connection";
-import type { QqMessageResult } from "../../src/server/services/onebot-protocol";
+import type {
+  OneBotProtocolEvent,
+  QqMessageResult,
+} from "../../src/server/services/onebot-protocol";
+import { OneBotProtocolEventSchema } from "../../src/shared/contracts/onebot-events";
 
 type Request = { action: string; params: Record<string, unknown>; echo: string };
 class FakeSocket extends EventTarget implements OneBotSocket {
@@ -72,6 +76,7 @@ afterEach(async () => {
 function fixture(
   patch: Partial<OneBotConnectionConfig> = {},
   consumer?: (value: QqMessageResult) => void | Promise<void>,
+  observer?: (event: OneBotProtocolEvent) => void,
 ) {
   const sockets: FakeSocket[] = [];
   const messages: QqMessageResult[] = [];
@@ -84,6 +89,7 @@ function fixture(
         ((value) => {
           messages.push(value);
         }),
+      onProtocolEvent: observer,
       socketFactory: (url, options) => {
         requests.push({ url, options });
         const socket = new FakeSocket();
@@ -475,6 +481,107 @@ describe("OneBot connection lifecycle", () => {
     failed.reject(new Error("old consumer"));
     await Promise.resolve();
     expect(f.connection.state.phase).toBe("ready");
+  });
+});
+
+describe("OneBot protocol event observer", () => {
+  it("projects only allowlisted matching-account events on the ready socket and isolates observer errors", async () => {
+    const seen: unknown[] = [];
+    const f = await ready(
+      fixture({}, undefined, (event) => {
+        seen.push(event);
+      }),
+    );
+    f.socket.message(event());
+    f.socket.message({
+      post_type: "notice",
+      self_id: 10001,
+      time: 124,
+      notice_type: "group_increase",
+      sub_type: "approve",
+      user_id: 20002,
+      group_id: 30003,
+      operator_id: 10001,
+      secret_token: "do-not-copy",
+    });
+    f.socket.message({
+      post_type: "request",
+      self_id: 10001,
+      time: 125,
+      request_type: "friend",
+      user_id: 20002,
+      comment: "private text",
+      flag: "secret-flag",
+    });
+    f.socket.message({ post_type: "future_event", self_id: 10001, arbitrary: "unknown" });
+    f.socket.message(event({ self_id: 10002 }));
+    expect(seen).toHaveLength(3);
+    expect(seen[0]).toMatchObject({
+      kind: "message",
+      event_key: JSON.stringify(["qq", "10001", "group", "30003", "-12"]),
+    });
+    expect(OneBotProtocolEventSchema.safeParse(seen[0]).success).toBe(true);
+    expect(JSON.stringify(seen)).not.toContain("你好");
+    expect(JSON.stringify(seen)).not.toContain("secret-token");
+    expect(JSON.stringify(seen)).not.toContain("secret-flag");
+    expect(JSON.stringify(seen)).not.toContain("do-not-copy");
+    expect(f.messages).toHaveLength(1);
+    f.connection.disconnect();
+
+    const malformed = await ready(
+      fixture({}, undefined, () => {
+        throw new Error("observer should not be reached");
+      }),
+    );
+    malformed.socket.message({
+      post_type: "notice",
+      self_id: 10001,
+      time: 128,
+      notice_type: { malformed: true },
+      sub_type: "ban",
+      group_id: 30003,
+    });
+    expect(malformed.connection.state.phase).toBe("ready");
+    malformed.connection.disconnect();
+
+    const throwing = await ready(
+      fixture({}, undefined, () => {
+        throw new Error("private detail");
+      }),
+    );
+    throwing.socket.message({
+      post_type: "notice",
+      self_id: 10001,
+      time: 126,
+      notice_type: "group_ban",
+      sub_type: "ban",
+      group_id: 30003,
+      user_id: 20002,
+    });
+    expect(throwing.connection.state.phase).toBe("ready");
+  });
+
+  it("observes heartbeat before the unchanged offline disconnect", async () => {
+    const seen: unknown[] = [];
+    const f = await ready(
+      fixture({}, undefined, (event) => {
+        seen.push(event);
+      }),
+    );
+    f.socket.message({
+      post_type: "meta_event",
+      meta_event_type: "heartbeat",
+      self_id: 10001,
+      time: 127,
+      status: { good: false, online: false },
+      interval: 5000,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      kind: "meta_event",
+      heartbeat: { good: false, online: false, interval_ms: 5000 },
+    });
+    expect(f.connection.state).toEqual({ phase: "closed", reason: "account_offline" });
   });
 });
 

@@ -157,9 +157,15 @@ function setEnabled(h: Setup, enabled: boolean) {
  */
 function saveTransport(h: Setup, patch: { endpoint?: string | null; token?: string | null } = {}) {
   const current = readQqSettings(h.orm);
+  const initialize = patch.endpoint === undefined && patch.token === undefined;
   updateQqTransportConfig(h.orm, {
-    endpoint: patch.endpoint === undefined ? "ws://127.0.0.1:3000/" : patch.endpoint,
-    token: patch.token === undefined ? TOKEN : patch.token,
+    endpoint:
+      patch.endpoint === undefined
+        ? initialize
+          ? "ws://127.0.0.1:3000/"
+          : undefined
+        : patch.endpoint,
+    token: patch.token === undefined ? (initialize ? TOKEN : undefined) : patch.token,
     expectedRevision: current.revision,
     keyPath: h.keyPath,
   });
@@ -629,6 +635,167 @@ describe("the transport supervisor (P5r)", () => {
     }
   }, 15_000);
 
+  it("replaces the connection independently when account, endpoint, or token changes", async () => {
+    const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      bind(h);
+      saveTransport(h);
+      const sockets: FakeSocket[] = [];
+      const dials: Array<{ url: string; authorization: string }> = [];
+      runtime = new QqIntakeRuntime({
+        orm: h.orm,
+        transportKeyPath: h.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        superviseIntervalMs: 60_000,
+        socketFactory: (url, options): OneBotSocket => {
+          dials.push({ url, authorization: options.headers.Authorization });
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      const started = runtime.start();
+      completeHandshake(sockets[0] as FakeSocket);
+      await started;
+      let previous = runtime.connection;
+      expect(runtime.state).toEqual({ phase: "ready", accountId: "10001" });
+      expect(runtime.matchesCurrentConfiguration()).toBe(true);
+
+      const reconnect = async (accountId: string, index: number) => {
+        expect(runtime?.matchesCurrentConfiguration()).toBe(false);
+        const pass = runtime?.superviseOnce();
+        expect(sockets).toHaveLength(index + 1);
+        completeHandshake(sockets[index] as FakeSocket, accountId);
+        await pass;
+        expect(runtime?.connection).not.toBe(previous);
+        expect((sockets[index - 1] as FakeSocket).terminations).toBe(1);
+        expect(runtime?.state).toEqual({ phase: "ready", accountId });
+        expect(runtime?.matchesCurrentConfiguration()).toBe(true);
+        previous = runtime?.connection ?? null;
+      };
+
+      updateQqSettings(h.orm, {
+        accountId: "10002",
+        expectedRevision: readQqSettings(h.orm).revision,
+      });
+      await reconnect("10002", 1);
+
+      saveTransport(h, { endpoint: "ws://127.0.0.1:4000/" });
+      await reconnect("10002", 2);
+
+      saveTransport(h, { token: "rotated-token" });
+      await reconnect("10002", 3);
+
+      expect(dials).toEqual([
+        { url: "ws://127.0.0.1:3000/", authorization: `Bearer ${TOKEN}` },
+        { url: "ws://127.0.0.1:3000/", authorization: `Bearer ${TOKEN}` },
+        { url: "ws://127.0.0.1:4000/", authorization: `Bearer ${TOKEN}` },
+        { url: "ws://127.0.0.1:4000/", authorization: "Bearer rotated-token" },
+      ]);
+    } finally {
+      runtime?.stop();
+      closeSetup(h);
+    }
+  }, 15_000);
+
+  it("does not redial a matching connection on repeated supervisor passes", async () => {
+    const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      bind(h);
+      saveTransport(h);
+      const sockets: FakeSocket[] = [];
+      runtime = answering(h, sockets, 60_000);
+      await runtime.start();
+      const original = runtime.connection;
+      expect(runtime.state).toEqual({ phase: "ready", accountId: "10001" });
+
+      await runtime.superviseOnce();
+      await runtime.superviseOnce();
+
+      expect(runtime.matchesCurrentConfiguration()).toBe(true);
+      expect(runtime.connection).toBe(original);
+      expect(sockets).toHaveLength(1);
+      expect(runtime.state).toEqual({ phase: "ready", accountId: "10001" });
+    } finally {
+      runtime?.stop();
+      closeSetup(h);
+    }
+  }, 15_000);
+
+  it("does not reconnect when only a non-connection QQ setting changes", async () => {
+    const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      bind(h);
+      saveTransport(h);
+      const sockets: FakeSocket[] = [];
+      runtime = answering(h, sockets, 60_000);
+      await runtime.start();
+      const original = runtime.connection;
+      expect(runtime.state).toEqual({ phase: "ready", accountId: "10001" });
+
+      updateQqSettings(h.orm, {
+        judgementModelName: "qwen/qwen3-8b",
+        expectedRevision: readQqSettings(h.orm).revision,
+      });
+      await runtime.superviseOnce();
+
+      expect(runtime.matchesCurrentConfiguration()).toBe(true);
+      expect(runtime.connection).toBe(original);
+      expect(sockets).toHaveLength(1);
+      expect(runtime.state).toEqual({ phase: "ready", accountId: "10001" });
+    } finally {
+      runtime?.stop();
+      closeSetup(h);
+    }
+  }, 15_000);
+
+  it("rejects a late handshake after the saved connection configuration changes", async () => {
+    const h = setup({ enabled: true });
+    let runtime: QqIntakeRuntime | undefined;
+    try {
+      bind(h);
+      saveTransport(h);
+      const sockets: FakeSocket[] = [];
+      runtime = new QqIntakeRuntime({
+        orm: h.orm,
+        transportKeyPath: h.keyPath,
+        connectTimeoutMs: 500,
+        requestTimeoutMs: 200,
+        superviseIntervalMs: 60_000,
+        socketFactory: (): OneBotSocket => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      const started = runtime.start();
+      expect(sockets).toHaveLength(1);
+      saveTransport(h, { endpoint: "ws://127.0.0.1:4000/" });
+      expect(runtime.matchesCurrentConfiguration()).toBe(false);
+      completeHandshake(sockets[0] as FakeSocket);
+      await started;
+
+      expect(runtime.state.phase).not.toBe("ready");
+      expect(runtime.connection).toBeNull();
+      expect(runtime.matchesCurrentConfiguration()).toBe(false);
+      expect((sockets[0] as FakeSocket).terminations).toBe(1);
+
+      const reconnecting = runtime.superviseOnce();
+      expect(sockets).toHaveLength(2);
+      completeHandshake(sockets[1] as FakeSocket);
+      await reconnecting;
+      expect(runtime.state).toEqual({ phase: "ready", accountId: "10001" });
+      expect(runtime.matchesCurrentConfiguration()).toBe(true);
+    } finally {
+      runtime?.stop();
+      closeSetup(h);
+    }
+  }, 15_000);
+
   it("gives up a live connection once the switch is turned off", async () => {
     const h = setup({ enabled: true });
     let runtime: QqIntakeRuntime | undefined;
@@ -648,6 +815,7 @@ describe("the transport supervisor (P5r)", () => {
       const after = await runtime.superviseOnce();
       expect(after.phase).not.toBe("ready");
       expect(runtime.connection).toBeNull();
+      expect(runtime.matchesCurrentConfiguration()).toBe(false);
       // …and it does not dial again while the switch is off.
       expect(sockets).toHaveLength(1);
       await runtime.superviseOnce();

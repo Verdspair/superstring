@@ -87,7 +87,7 @@ function resetStore(client: ReturnType<typeof createClient>) {
   store.setState({
     page: "settings",
     settingsView: "workspace",
-    settingsRoute: "qq-connection",
+    settingsRoute: "qq-runtime",
     modelNames: ["org-default", "vision-model"],
     organizationEditor: null,
     knowledgeModelEditor: null,
@@ -108,10 +108,10 @@ afterEach(() => {
 });
 
 describe("system and QQ model scope UI", () => {
-  it("QQ connection reads settings and status once on entry and the judge group no longer double-reads", async () => {
+  it("QQ runtime reads settings and status once on entry and the judge group no longer double-reads", async () => {
     const client = createClient();
     resetStore(client);
-    render(<QqConnectionTab active={true} />);
+    render(<QqConnectionTab active={true} task="runtime" />);
 
     await waitFor(() => expect(store.getState().qqSettings).not.toBeNull());
     await waitFor(() => expect(store.getState().organizationEditor).not.toBeNull());
@@ -120,8 +120,8 @@ describe("system and QQ model scope UI", () => {
     expect(client.getQqSettings).toHaveBeenCalledTimes(1);
     expect(client.getQqStatus).toHaveBeenCalledTimes(1);
     expect(client.getOrganizationSettings).toHaveBeenCalledTimes(1);
-    // 页面渲染连接表单与 QQ 模型组。
-    expect(screen.getByLabelText(translate("connections.websocketAddress"))).toBeTruthy();
+    // 页面渲染运行时身份表单与 QQ 模型组。
+    expect(screen.getByText(translate("connections.owner.title"))).toBeTruthy();
     expect(screen.getByText(translate("qq.models.title"))).toBeTruthy();
     expect(screen.getByText(translate("qq.aux.title"))).toBeTruthy();
     // 两个 QQ 角色：已存 vision 模型作为运行事实显示，容量只按模型读一次。
@@ -137,6 +137,7 @@ describe("system and QQ model scope UI", () => {
       .mockResolvedValue(qqSettings(3));
     const client = createClient({ getQqSettings });
     resetStore(client);
+    store.setState({ settingsRoute: "qq-connection" });
     // 读取失败横幅在统一壳层的设置分区 wrapper：按真实工作区路由断言错误语义。
     render(<SchemesWorkspace />);
 
@@ -167,14 +168,14 @@ describe("system and QQ model scope UI", () => {
   it("does not start any connection or capacity read while hidden and reads once on activation", async () => {
     const client = createClient();
     resetStore(client);
-    const { rerender } = render(<QqConnectionTab active={false} />);
+    const { rerender } = render(<QqConnectionTab active={false} task="runtime" />);
     await act(async () => {});
     expect(client.getQqSettings).not.toHaveBeenCalled();
     expect(client.getQqStatus).not.toHaveBeenCalled();
     expect(client.getOrganizationSettings).not.toHaveBeenCalled();
     expect(client.getModelCapacity).not.toHaveBeenCalled();
 
-    rerender(<QqConnectionTab active={true} />);
+    rerender(<QqConnectionTab active={true} task="runtime" />);
     await waitFor(() => expect(store.getState().qqSettings).not.toBeNull());
     await act(async () => {});
     expect(client.getQqSettings).toHaveBeenCalledTimes(1);
@@ -182,7 +183,7 @@ describe("system and QQ model scope UI", () => {
     expect(client.getOrganizationSettings).toHaveBeenCalledTimes(1);
 
     // 回到 hidden：不重新读取，也不追加容量请求。
-    rerender(<QqConnectionTab active={false} />);
+    rerender(<QqConnectionTab active={false} task="runtime" />);
     await act(async () => {});
     expect(client.getQqSettings).toHaveBeenCalledTimes(1);
     expect(client.getModelCapacity).toHaveBeenCalledTimes(1);
@@ -198,7 +199,7 @@ describe("system and QQ model scope UI", () => {
     );
     const client = createClient({ getModelCapacity });
     resetStore(client);
-    render(<QqConnectionTab active={true} />);
+    render(<QqConnectionTab active={true} task="runtime" />);
     await waitFor(() => expect(store.getState().organizationEditor).not.toBeNull());
     await act(async () => {});
     expect(getModelCapacity).toHaveBeenCalledTimes(1);
@@ -225,7 +226,7 @@ describe("system and QQ model scope UI", () => {
   it("saves and discards shared default, QQ models and aux roles through independent scopes without cross-draft bleed", async () => {
     const client = createClient();
     resetStore(client);
-    render(<QqConnectionTab active={true} />);
+    render(<QqConnectionTab active={true} task="runtime" />);
     await waitFor(() => expect(store.getState().organizationEditor).not.toBeNull());
     await act(async () => {});
 
@@ -270,7 +271,7 @@ describe("system and QQ model scope UI", () => {
   it("keeps unselected dirty/invalid drafts when saving or discarding the selected scope", async () => {
     const client = createClient();
     resetStore(client);
-    render(<QqConnectionTab active={true} />);
+    render(<QqConnectionTab active={true} task="runtime" />);
     await waitFor(() => expect(store.getState().organizationEditor).not.toBeNull());
     await act(async () => {});
 
@@ -330,7 +331,7 @@ describe("system and QQ model scope UI", () => {
   it("enables discard when only invalid raw remains in the selected scope and clears it without touching other roles", async () => {
     const client = createClient();
     resetStore(client);
-    render(<QqConnectionTab active={true} />);
+    render(<QqConnectionTab active={true} task="runtime" />);
     await waitFor(() => expect(store.getState().organizationEditor).not.toBeNull());
     await act(async () => {});
 
@@ -407,7 +408,7 @@ describe("system and QQ model scope UI", () => {
       });
     const client = createClient({ getOrganizationSettings });
     resetStore(client);
-    render(<QqConnectionTab active={true} />);
+    render(<QqConnectionTab active={true} task="runtime" />);
 
     // 冷载失败：页面给重试入口，不伪装成已停用。
     await waitFor(() => expect(store.getState().organizationError).not.toBeNull());

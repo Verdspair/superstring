@@ -374,7 +374,7 @@ void main(){
       pixels,
     );
     const error = gl.getError();
-    if (error !== gl.NO_ERROR) throw new Error("MOTION_WEBGL_UPLOAD_" + error);
+    if (error !== gl.NO_ERROR) throw new Error(`MOTION_WEBGL_UPLOAD_${error}`);
     return cornerAlpha;
   };
   const makeTrack = (knots: Array<[number, number]>, travel: number) => {

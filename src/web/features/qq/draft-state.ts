@@ -10,7 +10,10 @@ import {
   type QqSettingsResponse,
   type QqStickerCollectionResponse,
 } from "../../../shared/contracts/qq";
-import type { QqManagedConfigSnapshot } from "../../../shared/contracts/qq-managed";
+import type {
+  QqManagedConfigSnapshot,
+  QqManagedResourceSnapshot,
+} from "../../../shared/contracts/qq-managed";
 import { QqMediaInputSettingsSchema } from "../../../shared/contracts/qq-media-input";
 import { QqMessageSettingsSchema } from "../../../shared/contracts/qq-message";
 import { msg, translate } from "../../i18n";
@@ -45,6 +48,10 @@ export interface QqInputs {
   managed: {
     source: QqManagedConfigSnapshot;
     enabled: boolean;
+  } | null;
+  managedResources: {
+    source: QqManagedResourceSnapshot;
+    root: string;
   } | null;
   /** 保留设置草稿；数字以原文保存（空/非法原文也要能表示），空闲时 null。 */
   storage: QqStorageSettingsDraft | null;
@@ -98,6 +105,7 @@ export const emptyQqInputs = (): QqInputs => ({
   schemeCopyName: "",
   connection: null,
   managed: null,
+  managedResources: null,
   storage: null,
   choices: {},
   attention: {},
@@ -619,6 +627,15 @@ export function qqDraftChanges(
       ],
     });
   }
+  const managedResources = inputs.managedResources;
+  if (managedResources && managedResources.root.trim() !== (managedResources.source.root ?? ""))
+    rows.push({
+      id: "managed-resources",
+      resource: translate("connections.managed.title"),
+      changes: [
+        `${translate("connections.managed.title")}: ${managedResources.source.root ?? "—"} → ${managedResources.root}`,
+      ],
+    });
   if (storageDirty(inputs.storage) && inputs.storage)
     rows.push({
       id: "storage",
@@ -794,6 +811,13 @@ export function createQqDraftActions(
       if (managed && managed.enabled !== managed.source.config.enabled) {
         if (!(await get().saveQqManagedConfig())) return false;
       }
+      const managedResources = get().qqInputs.managedResources;
+      if (
+        managedResources &&
+        managedResources.root.trim() !== (managedResources.source.root ?? "") &&
+        !(await get().saveQqManagedResources())
+      )
+        return false;
       for (const [id, draft] of Object.entries(get().qqInputs.choices)) {
         if (!choiceDirty(draft) || !draft.source) continue;
         const patch: {

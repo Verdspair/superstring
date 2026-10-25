@@ -37,10 +37,13 @@ import {
   type QqStorageUsageResponse,
 } from "../../../shared/contracts/qq";
 import type {
+  QqManagedAccounts,
   QqManagedConfigSnapshot,
   QqManagedQr,
+  QqManagedResourceSnapshot,
   QqManagedStatus,
 } from "../../../shared/contracts/qq-managed";
+import type { QqManagedEventsPage } from "../../../shared/contracts/qq-managed-events";
 import type {
   QqConversationKind,
   QqStorageCategory,
@@ -50,6 +53,7 @@ import type {
   QqStorageSettingsResponse,
   QqStorageStatusFilter,
 } from "../../../shared/contracts/qq-storage";
+import type { QqManagedEventQueryInput } from "../../api";
 
 export interface QqStickerEditor {
   /** The row this editor was opened from; the save compares against it, not against the list. */
@@ -576,6 +580,18 @@ export interface QqAccessState {
   qqAccessSaving: boolean;
   qqManagedConfig: QqManagedConfigSnapshot | null;
   qqManagedStatus: QqManagedStatus | null;
+  qqManagedResources: QqManagedResourceSnapshot | null;
+  qqManagedResourcesLoading: boolean;
+  qqManagedResourcesReadId: number;
+  qqManagedResourceError: string | null;
+  qqManagedAccounts: QqManagedAccounts["accounts"];
+  qqManagedAccountsLoaded: boolean;
+  qqManagedAccountsLoading: boolean;
+  qqManagedAccountsReadId: number;
+  qqManagedAccountsError: string | null;
+  qqManagedEventsPage: QqManagedEventsPage | null;
+  qqManagedEventsLoading: boolean;
+  qqManagedEventsError: string | null;
   qqManagedLoading: boolean;
   qqManagedSaving: boolean;
   qqManagedReadId: number;
@@ -585,6 +601,15 @@ export interface QqAccessState {
   qqManagedQrPayload: string | null;
   loadQqAccess: () => Promise<void>;
   loadQqManaged: () => Promise<void>;
+  loadQqManagedResources: () => Promise<void>;
+  refreshQqManagedResources: () => Promise<void>;
+  saveQqManagedResources: () => Promise<boolean>;
+  patchQqManagedResourceDraft: (root: string) => void;
+  loadQqManagedAccounts: () => Promise<void>;
+  quickLoginQqManaged: (accountId: string) => Promise<boolean>;
+  loadQqManagedEvents: (query?: QqManagedEventQueryInput) => Promise<void>;
+  setQqManagedEventsActive: (active: boolean) => void;
+  clearQqManagedEventsView: () => void;
   saveQqManagedConfig: () => Promise<boolean>;
   refreshQqManaged: () => Promise<void>;
   patchQqManagedDraft: (enabled: boolean) => void;
@@ -702,6 +727,18 @@ export const qqAccessInitial = {
   qqAccessSaving: false,
   qqManagedConfig: null as QqManagedConfigSnapshot | null,
   qqManagedStatus: null as QqManagedStatus | null,
+  qqManagedResources: null as QqManagedResourceSnapshot | null,
+  qqManagedResourcesLoading: false,
+  qqManagedResourcesReadId: 0,
+  qqManagedResourceError: null as string | null,
+  qqManagedAccounts: [] as QqManagedAccounts["accounts"],
+  qqManagedAccountsLoaded: false,
+  qqManagedAccountsLoading: false,
+  qqManagedAccountsReadId: 0,
+  qqManagedAccountsError: null as string | null,
+  qqManagedEventsPage: null as QqManagedEventsPage | null,
+  qqManagedEventsLoading: false,
+  qqManagedEventsError: null as string | null,
   qqManagedLoading: false,
   qqManagedSaving: false,
   qqManagedReadId: 0,

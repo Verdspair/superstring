@@ -4,7 +4,9 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { spawn } from "bun";
 import type { Hono } from "hono";
+import { SourceRefSchema } from "../shared/contracts/evidence";
 import { executionPolicy } from "../shared/contracts/permissions";
+import { QqManagedEventsPageSchema } from "../shared/contracts/qq-managed-events";
 import { ActionExecutor } from "./agent/action-executor";
 import { type AgentRuntime, createAgentRuntime } from "./agent/agent-runtime";
 import type { CodeRunner } from "./agent/code-runner";
@@ -30,7 +32,9 @@ import type { BusinessDbHandle } from "./db/connection";
 import { ConversationEventRepository } from "./db/conversation-event-repository";
 import { readModelProviders, resolveModelProviderRoute } from "./db/model-provider-repository";
 import { readOrganizationSettings } from "./db/organization-repository";
+import { readQqBinding } from "./db/qq-binding-repository";
 import { schemeMediaInput, schemePrompts, schemeRhythm } from "./db/qq-scheme-repository";
+import { readQqSettings, readTransportToken } from "./db/qq-settings-repository";
 import { type BusinessMigrationSql, openBusinessDb } from "./db/schema-gate";
 import { withCapacityCache } from "./llm/capacity-cache";
 import { FileLocalModelEncodingStore } from "./llm/local-model-encodings";
@@ -47,15 +51,25 @@ import {
   type ModuleComposition,
   type ModuleSourceResolver,
 } from "./modules/composition";
-import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
+import {
+  type BotEvidenceScope,
+  conversationEvidenceSourceAccess,
+  evidenceScopeExists,
+} from "./modules/conversation-evidence";
+import { loadConversationEvidence } from "./modules/conversation-evidence-store";
 import { FileNapCatConfigStore } from "./napcat/config";
 import { NapCatControlClient } from "./napcat/control-client";
+import { createNapCatEventStream } from "./napcat/event-stream";
 import {
   createNapCatManagedSession,
   createNapCatManagement,
   type NapCatManagedSession,
 } from "./napcat/management";
-import { readNapCatProvision } from "./napcat/provision";
+import {
+  inspectNapCatResources,
+  prepareNapCatResources,
+  readNapCatProvision,
+} from "./napcat/provision";
 import { NapCatRuntimeManager } from "./napcat/runtime-manager";
 import { RuntimeTelemetry } from "./observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
@@ -282,6 +296,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   let bot: ReturnType<typeof createOneBotConversationRuntime>;
   let stopping = false;
   let napcatSession: NapCatManagedSession | undefined;
+  let clearNapcatEvents: (() => void) | undefined;
   try {
     const napcatStore = options.napcatConfigPath
       ? new FileNapCatConfigStore(options.napcatConfigPath)
@@ -323,8 +338,29 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
             token: provision.controlToken,
           };
         },
+        resources: {
+          read: () => inspectNapCatResources(runtimeConfigPath),
+          prepare: (input) => prepareNapCatResources(runtimeConfigPath, input),
+        },
+        readConnectionSettings() {
+          const settings = readQqSettings(business.orm);
+          return {
+            revision: settings.revision,
+            enabled: settings.enabled === 1,
+            accountId: settings.accountId,
+            endpoint: settings.endpoint,
+            token: readTransportToken(business.orm, options.qqTransportKeyPath),
+          };
+        },
         transportState: () => qqIntake.state,
-        identityMatches: () => qqIntake.state.phase === "ready",
+        identityMatches: () => {
+          const state = qqIntake.state;
+          return (
+            state.phase === "ready" &&
+            state.accountId === readQqSettings(business.orm).accountId &&
+            qqIntake.matchesCurrentConfiguration()
+          );
+        },
         pollIntervalMs: NAPCAT_POLL_INTERVAL_MS,
         stopDeadlineMs: NAPCAT_STOP_DEADLINE_MS,
       });
@@ -412,6 +448,73 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
     });
     const journal = new ConversationEventRepository(business.db);
     journal.backfill();
+    const napcatEvents = createNapCatEventStream();
+    clearNapcatEvents = () => napcatEvents.clear();
+    let observedConnection: QqIntakeRuntime["connection"] = null;
+    let observedConnectionPhase: string = "idle";
+    const syncEventConnection = () => {
+      const connection = qqIntake.connection;
+      const phase = qqIntake.state.phase;
+      if (
+        connection !== observedConnection ||
+        (phase === "closed" && observedConnectionPhase !== "closed")
+      ) {
+        observedConnection = connection;
+        napcatEvents.clear();
+      }
+      observedConnectionPhase = phase;
+    };
+    const managedEventsPort = {
+      get generation() {
+        return napcatEvents.generation;
+      },
+      get latestSequence() {
+        return napcatEvents.latestSequence;
+      },
+      get revision() {
+        return napcatEvents.revision;
+      },
+      subscribe: napcatEvents.subscribe,
+      snapshot(query: Parameters<typeof napcatEvents.snapshot>[0]) {
+        syncEventConnection();
+        return QqManagedEventsPageSchema.parse(
+          napcatEvents.snapshot(query, (reference, now) => {
+            const scope: BotEvidenceScope = { channel: "onebot11", ...reference.scope };
+            if (
+              reference.source.kind !== "qq_observation" ||
+              reference.source.id !== reference.event_key ||
+              !reference.source.expiresAt ||
+              !Number.isFinite(Date.parse(reference.source.expiresAt)) ||
+              Date.parse(reference.source.expiresAt) <= now ||
+              !evidenceScopeExists(business.db, scope)
+            )
+              return null;
+            try {
+              const row = loadConversationEvidence(
+                business,
+                scope,
+                "history",
+                `qq-message:${reference.event_key}`,
+                new Date(now).toISOString(),
+              );
+              return row?.sources.some(
+                (source) =>
+                  source.kind === reference.source.kind &&
+                  source.id === reference.source.id &&
+                  source.revision === reference.source.revision &&
+                  source.expiresAt !== undefined &&
+                  Number.isFinite(Date.parse(source.expiresAt)) &&
+                  Date.parse(source.expiresAt) === Date.parse(reference.source.expiresAt),
+              )
+                ? row.text
+                : null;
+            } catch {
+              return null;
+            }
+          }),
+        );
+      },
+    };
     const host = new ConversationHost({ runtime: agentRuntime });
     memoryService =
       options.memoryService ??
@@ -562,7 +665,98 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         transportKeyPath: options.qqTransportKeyPath,
         connectTimeoutMs: QQ_CONNECT_TIMEOUT_MS,
         requestTimeoutMs: QQ_REQUEST_TIMEOUT_MS,
-        conversationIngress: bot.adapter,
+        conversationIngress: {
+          beforeRecord: (bindingId) => bot.adapter.beforeRecord(bindingId),
+          afterMedia: (bindingId, eventKey) => bot.adapter.afterMedia(bindingId, eventKey),
+          afterRecord(bindingId, observation) {
+            const afterCommit = bot.adapter.afterRecord(bindingId, observation);
+            const activation = business.db
+              .query(
+                "SELECT id,binding_epoch FROM conversations WHERE channel='onebot11' AND source_id=? AND closed_at IS NULL LIMIT 1",
+              )
+              .get(bindingId) as { id: string; binding_epoch: number } | null;
+            const binding = readQqBinding(business.orm, bindingId);
+            const sourceRow = activation
+              ? (business.db
+                  .query(
+                    "SELECT sources FROM conversation_events WHERE conversation_id=? AND kind='inbound' AND source_kind='qq_event' AND source_id=? LIMIT 1",
+                  )
+                  .get(activation.id, observation.eventKey) as { sources: string } | null)
+              : null;
+            let capturedSource:
+              | {
+                  kind: "qq_observation";
+                  id: string;
+                  revision: string;
+                  expiresAt: string;
+                }
+              | undefined;
+            if (sourceRow) {
+              try {
+                const rawSources: unknown = JSON.parse(sourceRow.sources);
+                if (Array.isArray(rawSources)) {
+                  for (const raw of rawSources) {
+                    const parsed = SourceRefSchema.safeParse(raw);
+                    if (
+                      parsed.success &&
+                      parsed.data.kind === "qq_observation" &&
+                      parsed.data.id === observation.eventKey &&
+                      parsed.data.expiresAt
+                    ) {
+                      capturedSource = {
+                        kind: "qq_observation",
+                        id: parsed.data.id,
+                        revision: parsed.data.revision,
+                        expiresAt: parsed.data.expiresAt,
+                      };
+                      break;
+                    }
+                  }
+                }
+              } catch {
+                /* Invalid source metadata cannot authorize a preview. */
+              }
+            }
+            const reference =
+              activation && binding && capturedSource
+                ? {
+                    event_key: observation.eventKey,
+                    source: capturedSource,
+                    scope: {
+                      conversationId: activation.id,
+                      accountId: binding.accountId,
+                      conversationKind: binding.kind,
+                      peerId: binding.peerId,
+                      agentId: binding.agentId,
+                      bindingId: binding.id,
+                      bindingEpoch: activation.binding_epoch,
+                      authorityRevision: binding.authorityRevision,
+                    },
+                  }
+                : null;
+            return () => {
+              if (reference) {
+                try {
+                  napcatEvents.linkMessageSource(observation.eventKey, reference);
+                } catch {
+                  /* Diagnostics cannot change committed ingress. */
+                }
+              }
+              afterCommit?.();
+            };
+          },
+        },
+        onProtocolEvent: (event) => {
+          syncEventConnection();
+          napcatEvents.record(event);
+        },
+        onEvent: (event) => {
+          if (
+            event.kind === "connection" ||
+            (event.kind === "ignored" && event.reason === "switch_off")
+          )
+            syncEventConnection();
+        },
         memory: modules.memory,
         // 「被 @ 了别等轮询」（2026-09-25）：入站路径记下一条冲着她来的消息就叫醒宿主跑一轮。
         onAddressedMessage: () => botWorker.wake(),
@@ -592,6 +786,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       webAccess,
       mcpManagement,
       napcatManagement,
+      napcatEvents: managedEventsPort,
       skillsRoot: options.skillRoot,
       skillsEnabled: () => execution().modules.skills,
       webMaxSteps: () => execution().loop.maxSteps,
@@ -650,6 +845,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       if (contextSweep !== null) clearInterval(contextSweep);
       bot.delivery.stop();
       qqIntake.stop();
+      clearNapcatEvents?.();
       // scheduler.stop() 是同步 abort（取消在飞）；worker 的 stop() 同时停掉计时循环并等
       // scheduler.waitForIdle()（BotWorker.drain），所以在飞唤醒真正结算完才算停机。
       bot.scheduler.stop();

@@ -1,8 +1,4 @@
-// 统一方案工作区：真实点击驱动 primary nav 与对象路由的壳层契约。
-//
-// 覆盖：根列表→详情→常驻分区往返（已访问 pane 不卸载、DOM 稳定）；设置分区从 storage
-// 进入不挂载未访问的 connection 且保留最后子页；群配置路由转换不抛 hooks 错误并返回绑定分区；
-// 8 个路由 ID 的别名/legacy 解析表。
+// Task routes retain their visited panes while all navigation uses the shared draft guard.
 
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -209,7 +205,9 @@ async function renderAt(route: string, overrides: Partial<typeof api> = {}) {
   return fake;
 }
 
-const sectionTab = (key: string) => screen.getByRole("tab", { name: ui(key) }) as HTMLButtonElement;
+const taskButton = (key: string) =>
+  screen.getByRole("button", { name: ui(key) }) as HTMLButtonElement;
+const backToCatalog = () => userEvent.click(taskButton("schemes.backToCatalog"));
 
 beforeEach(() => {
   selectLocale("zh-CN");
@@ -221,30 +219,30 @@ afterEach(() => {
 });
 
 describe("unified scheme workspace shell", () => {
-  it("根列表→详情→常驻分区往返：真实点击切换，已访问 pane 保持挂载", async () => {
+  it("根目录三项等权任务可见，详情不显示全局任务，返回保留已访问目录", async () => {
     await renderAt("scheme-library");
     const schemesNode = document.querySelector('[data-qq-retained-scroll="schemes"]');
-    expect(schemesNode).toBeTruthy();
-
-    // 真实点击进入详情。
+    const actions = [
+      "schemes.workspace.bindings",
+      "schemes.qq.connectionTitle",
+      "connections.dataRetention",
+    ].map(taskButton);
+    expect(new Set(actions.map((button) => button.getAttribute("data-variant"))).size).toBe(1);
+    expect(screen.queryByRole("tab", { name: ui("schemes.workspace.schemes") })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /夜间方案/ }));
     expect(store.getState().settingsRoute).toBe("qq-scheme-config");
-    expect(screen.getByRole("tab", { name: ui("schemes.bindings.viewSettings") })).toBeTruthy();
-
-    // 详情不卸载已访问 pane；同一壳层的 primary nav 直接切换到 canonical 绑定路由。
-    await userEvent.click(sectionTab("schemes.workspace.bindings"));
+    expect(screen.getByRole("heading", { name: "夜间方案", level: 1 })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: ui("schemes.backToCatalog") })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: ui("schemes.workspace.bindings") })).toBeNull();
+    await backToCatalog();
+    await userEvent.click(taskButton("schemes.workspace.bindings"));
     expect(store.getState().settingsRoute).toBe("scheme-bindings");
     expect(screen.getByLabelText(ui("connections.searchConversationBindings"))).toBeTruthy();
-    expect(document.querySelector('[data-qq-retained-scroll="schemes"]')).toBe(schemesNode);
-
-    await userEvent.click(sectionTab("schemes.workspace.settings"));
+    await backToCatalog();
+    await userEvent.click(taskButton("schemes.qq.connectionTitle"));
     expect(store.getState().settingsRoute).toBe("qq-connection");
     expect(screen.getByLabelText(ui("connections.websocketAddress"))).toBeTruthy();
-    expect(document.querySelector('[data-qq-retained-scroll="schemes"]')).toBe(schemesNode);
-
-    // 返回方案分区：同一滚动容器实例，目录内容未重挂。
-    await userEvent.click(sectionTab("schemes.workspace.schemes"));
-    expect(store.getState().settingsRoute).toBe("scheme-library");
+    await backToCatalog();
     expect(document.querySelector('[data-qq-retained-scroll="schemes"]')).toBe(schemesNode);
     expect(screen.getByRole("button", { name: /默认方案/ })).toBeTruthy();
   });
@@ -260,19 +258,19 @@ describe("unified scheme workspace shell", () => {
       .getAllByRole("tablist")
       .find((node) => within(node).getAllByRole("tab").length === 6);
     expect(studioTabs).toBeTruthy();
-    const crumb = document.querySelector('nav[aria-label="方案"]');
+    const crumb = screen.getByRole("heading", { name: "夜间方案", level: 1 });
     expect(crumb).toBeTruthy();
 
     // 经 primary nav 离开到方案分区：对象 pane 不被卸载（隐藏保留，NB5）。
-    await userEvent.click(sectionTab("schemes.workspace.schemes"));
+    await backToCatalog();
     expect(store.getState().settingsRoute).toBe("scheme-library");
     expect(crumb).toBeTruthy();
-    expect(crumb!.closest("[hidden]")).toBeTruthy();
+    expect(crumb.closest("[hidden]")).toBeTruthy();
 
     // 同一对象重入：面包屑与 studio 子树是同一 DOM 实例，编辑器是同一对象。
     await userEvent.click(screen.getByRole("button", { name: /夜间方案/ }));
     expect(store.getState().settingsRoute).toBe("qq-scheme-config");
-    expect(document.querySelector('nav[aria-label="方案"]')).toBe(crumb);
+    expect(screen.getByRole("heading", { name: "夜间方案", level: 1 })).toBe(crumb);
     expect(
       screen.getAllByRole("tablist").find((node) => within(node).getAllByRole("tab").length === 6),
     ).toBe(studioTabs);
@@ -290,23 +288,17 @@ describe("unified scheme workspace shell", () => {
     expect(store.getState().qqSchemeEditor?.name).toBe("改过的名字");
   });
 
-  it("设置分区从 storage 进入：不自动挂载未访问的 connection，离开时保留最后子页", async () => {
+  it("数据深链不挂载连接，返回目录再开连接仍保留数据pane", async () => {
     await renderAt("qq-storage");
-    await screen.findByText(ui("connections.storage.title"));
-    // storage 深链进入：未访问的 connection 子页绝不自动挂载。
+    await screen.findByRole("heading", { name: ui("connections.dataRetention"), level: 1 });
     expect(screen.queryByLabelText(ui("connections.websocketAddress"))).toBeNull();
-
-    // 切去绑定分区：设置分区保持挂载（隐藏），最后子页仍是数据，connection 仍不被挂载。
-    await userEvent.click(sectionTab("schemes.workspace.bindings"));
-    await screen.findByLabelText(ui("connections.searchConversationBindings"));
-    expect(document.querySelector('[data-qq-retained-scroll="data"]')).toBeTruthy();
-    expect(screen.queryByLabelText(ui("connections.websocketAddress"))).toBeNull();
-
-    // 经常驻 QQ 设置分区回来：落地 canonical 连接子页，已访问的 storage 子页不卸载。
-    await userEvent.click(sectionTab("schemes.workspace.settings"));
+    const storageNode = document.querySelector('[data-qq-retained-scroll="data"]');
+    await backToCatalog();
+    await userEvent.click(taskButton("schemes.qq.connectionTitle"));
     expect(store.getState().settingsRoute).toBe("qq-connection");
     await screen.findByLabelText(ui("connections.websocketAddress"));
-    expect(document.querySelector('[data-qq-retained-scroll="data"]')).toBeTruthy();
+    expect(document.querySelector('[data-qq-retained-scroll="data"]')).toBe(storageNode);
+    expect(storageNode?.closest("[hidden]")).toBeTruthy();
   });
 
   it("群配置路由经真实行级直入转换不抛 hooks 错误，返回时回到绑定分区", async () => {
@@ -325,13 +317,15 @@ describe("unified scheme workspace shell", () => {
     expect(screen.getByRole("region", { name: ui("schemes.qq.groupConfigTitle") })).toBeTruthy();
 
     // 对象页返回：canonical 目的地是绑定分区（全局看板），不再是旧应用外壳。
-    fireEvent.click(screen.getByRole("button", { name: ui("schemes.qq.groups.backToDirectory") }));
+    fireEvent.click(
+      screen.getByRole("button", { name: ui("schemes.qq.groupConfig.returnToOrigin") }),
+    );
     await act(async () => {});
-    expect(store.getState().settingsRoute).toBe("qq-app-groups");
+    expect(store.getState().settingsRoute).toBe("scheme-bindings");
     expect(screen.getByLabelText(ui("connections.searchConversationBindings"))).toBeTruthy();
   });
 
-  it("8 个路由 ID 全部有效：别名归一到 canonical pane，无死路由", async () => {
+  it("10 个路由 ID 全部有效：别名归一到 canonical pane，无死路由", async () => {
     const cases: Array<[string, () => Promise<void>]> = [
       ["scheme-library", async () => expect(screen.getByText("默认方案")).toBeTruthy()],
       ["qq-app-schemes", async () => expect(screen.getByText("默认方案")).toBeTruthy()],
@@ -355,8 +349,29 @@ describe("unified scheme workspace shell", () => {
           expect(await screen.findByLabelText(ui("connections.websocketAddress"))).toBeTruthy(),
       ],
       [
+        "qq-events",
+        async () =>
+          expect(
+            (await screen.findByRole("tab", { name: ui("schemes.qq.eventsTitle") })).getAttribute(
+              "aria-selected",
+            ),
+          ).toBe("true"),
+      ],
+      [
+        "qq-runtime",
+        async () =>
+          expect(
+            (await screen.findByRole("tab", { name: ui("schemes.qq.runtimeTitle") })).getAttribute(
+              "aria-selected",
+            ),
+          ).toBe("true"),
+      ],
+      [
         "qq-storage",
-        async () => expect(await screen.findByText(ui("connections.storage.title"))).toBeTruthy(),
+        async () =>
+          expect(
+            await screen.findByRole("heading", { name: ui("connections.dataRetention"), level: 1 }),
+          ).toBeTruthy(),
       ],
       [
         "qq-scheme-config",

@@ -139,7 +139,14 @@ function seedDirectory(
     },
     qqBindings: [target, other],
     qqBindingsLoaded: true,
-    qqAccessLoading: true,
+    qqSettings: {
+      enabled: false,
+      account_id: "10001",
+      judgement_model_name: null,
+      transport: { endpoint: "ws://localhost:3000", has_token: true },
+      revision: 3,
+    },
+    qqConnection: { phase: "ready", reason: "Connected fixture" },
     qqConversations: observed,
   });
   return { web, privateRow, groupRow };

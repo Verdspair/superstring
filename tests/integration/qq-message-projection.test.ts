@@ -283,6 +283,38 @@ describe("locked inbound fact projection interface", () => {
     }
   });
 
+  it("keeps mention-only whitespace complete without inventing an observation body", () => {
+    const h = setup();
+    try {
+      const { conversation, journal } = bind(h);
+      const scope = liveScope(h, conversation);
+      for (const [index, whitespace] of [" ", "\t\n", "\u00a0"].entries()) {
+        const observation = alinObservation(-500 - index, whitespace);
+        observation.segments = [
+          { kind: "mention", target: "90001" },
+          { kind: "text", text: whitespace },
+        ];
+        observation.replyToMessageId = null;
+        recordWithJournal(h, journal, "binding", observation);
+        const fact = loadQqMessageFact(h, scope, observation.messageId, now);
+        expect(fact?.completeness).toBe("full");
+        expect(fact?.parts).toEqual([
+          { kind: "mention", qq: "90001" },
+          { kind: "text", text: whitespace },
+        ]);
+        expect(fact?.sources.some((ref) => ref.kind === "qq_observation")).toBe(false);
+        expect(
+          h.db
+            .query("SELECT 1 FROM qq_observation_text WHERE event_key=?")
+            .get(observation.eventKey),
+        ).toBeNull();
+        expect(loadQqMessageFact(h, scope, observation.messageId, expired)).toBeNull();
+      }
+    } finally {
+      h.close();
+    }
+  });
+
   it("fails closed when the stored text no longer matches a rewritten body", () => {
     const h = setup();
     try {

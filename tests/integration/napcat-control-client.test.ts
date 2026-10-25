@@ -253,3 +253,201 @@ describe("NapCat control client", () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe("NapCat control client account and OneBot configuration routes", () => {
+  it("projects the pinned quick-login record shape and validates every source field", async () => {
+    const { client, calls } = harness([
+      response({
+        code: 0,
+        data: [
+          {
+            uin: "123456",
+            uid: "uid-1",
+            nickName: "Account one",
+            faceUrl: "https://example.invalid/avatar",
+            facePath: "avatar.png",
+            loginType: 1,
+            isQuickLogin: true,
+            isAutoLogin: false,
+          },
+          {
+            uin: "234567",
+            uid: "uid-2",
+            nickName: "",
+            faceUrl: "",
+            facePath: "",
+            loginType: 1,
+            isQuickLogin: false,
+            isAutoLogin: false,
+          },
+        ],
+        message: "success",
+      }),
+    ]);
+
+    expect(await client.getQuickLoginAccounts(credential)).toEqual([
+      { account_id: "123456", display_name: "Account one" },
+      { account_id: "234567", display_name: null },
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(`${baseUrl}/api/QQLogin/GetQuickLoginListNew`);
+    expect(calls[0].init.method).toBe("POST");
+    expect(jsonBody(calls[0])).toEqual({});
+    expect(new Headers(calls[0].init.headers).get("authorization")).toBe(`Bearer ${credential}`);
+
+    const malformed = harness([
+      response({
+        code: 0,
+        data: [{ uin: "123456", nickName: "Missing the rest of LoginListItem" }],
+        message: "success",
+      }),
+    ]);
+    await expect(malformed.client.getQuickLoginAccounts(credential)).rejects.toMatchObject({
+      code: "invalid_response",
+    });
+  });
+
+  it("requests one quick login using the selected UIN and preserves rejection without retry", async () => {
+    const { client, calls } = harness([
+      response({ code: 0, data: null, message: "success" }),
+      response({ code: -1, message: "QQ Is Logined" }),
+    ]);
+
+    await expect(client.quickLogin(credential, { account_id: "123456" })).resolves.toBeUndefined();
+    expect(calls[0].url).toBe(`${baseUrl}/api/QQLogin/SetQuickLogin`);
+    expect(calls[0].init.method).toBe("POST");
+    expect(jsonBody(calls[0])).toEqual({ uin: "123456" });
+    await expect(client.quickLogin(credential, { account_id: "123456" })).rejects.toMatchObject({
+      code: "upstream_rejected",
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("reads the current login UIN from the pinned login-info response", async () => {
+    const { client, calls } = harness([
+      response({
+        code: 0,
+        data: {
+          uid: "uid-1",
+          uin: "123456",
+          nick: "Account one",
+          online: true,
+          avatarUrl: "https://example.invalid/avatar",
+        },
+        message: "success",
+      }),
+    ]);
+
+    expect(await client.getLoginAccount(credential)).toBe("123456");
+    expect(calls[0].url).toBe(`${baseUrl}/api/QQLogin/GetQQLoginInfo`);
+    expect(jsonBody(calls[0])).toEqual({});
+
+    const missingUin = harness([
+      response({
+        code: 0,
+        data: { uid: "uid-1", nick: "Account one" },
+        message: "success",
+      }),
+    ]);
+    await expect(missingUin.client.getLoginAccount(credential)).rejects.toMatchObject({
+      code: "invalid_response",
+    });
+  });
+
+  it("reads a full OneBot config object without dropping unknown nested fields", async () => {
+    const config = {
+      network: {
+        httpServers: [],
+        httpSseServers: [],
+        httpClients: [],
+        websocketServers: [
+          {
+            name: "superstring",
+            enable: true,
+            host: "127.0.0.1",
+            port: 3001,
+            messagePostFormat: "array",
+            reportSelfMessage: false,
+            token: "synthetic-onebot-token",
+            enableForcePushEvent: true,
+            debug: false,
+            heartInterval: 30000,
+            customAdapterOption: { keep: "this" },
+          },
+        ],
+        websocketClients: [],
+        plugins: [],
+        customNetworkOption: { preserve: true },
+      },
+      musicSignUrl: "",
+      enableLocalFile2Url: false,
+      parseMultMsg: false,
+      imageDownloadProxy: "",
+      timeout: {
+        baseTimeout: 10000,
+        uploadSpeedKBps: 256,
+        downloadSpeedKBps: 256,
+        maxTimeout: 1800000,
+        customTimeoutOption: "preserve",
+      },
+      customTopLevelOption: ["preserve", 7],
+    };
+    const { client, calls } = harness([response({ code: 0, data: config, message: "success" })]);
+
+    expect(await client.getOneBotConfig(credential)).toEqual(config);
+    expect(calls[0].url).toBe(`${baseUrl}/api/OB11Config/GetConfig`);
+    expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].init.body).toBeUndefined();
+    expect(new Headers(calls[0].init.headers).get("authorization")).toBe(`Bearer ${credential}`);
+
+    const malformed = harness([
+      response({
+        code: 0,
+        data: { ...config, network: { ...config.network, websocketServers: [{ name: "broken" }] } },
+        message: "success",
+      }),
+    ]);
+    await expect(malformed.client.getOneBotConfig(credential)).rejects.toMatchObject({
+      code: "invalid_response",
+    });
+  });
+
+  it("serializes the complete OneBot config for SetConfig and does not retry a rejected write", async () => {
+    const config = {
+      network: {
+        httpServers: [],
+        httpSseServers: [],
+        httpClients: [],
+        websocketServers: [],
+        websocketClients: [],
+        plugins: [],
+        customNetworkOption: "retain",
+      },
+      musicSignUrl: "",
+      enableLocalFile2Url: false,
+      parseMultMsg: false,
+      imageDownloadProxy: "",
+      timeout: {
+        baseTimeout: 10000,
+        uploadSpeedKBps: 256,
+        downloadSpeedKBps: 256,
+        maxTimeout: 1800000,
+      },
+      customTopLevelOption: { retain: true },
+    };
+    const { client, calls } = harness([
+      response({ code: 0, data: null, message: "success" }),
+      response({ code: -1, message: "write rejected" }),
+    ]);
+
+    await expect(client.setOneBotConfig(credential, config)).resolves.toBeUndefined();
+    expect(calls[0].url).toBe(`${baseUrl}/api/OB11Config/SetConfig`);
+    expect(calls[0].init.method).toBe("POST");
+    expect(jsonBody(calls[0])).toEqual({ config: JSON.stringify(config) });
+    expect(new Headers(calls[0].init.headers).get("content-type")).toBe("application/json");
+    await expect(client.setOneBotConfig(credential, config)).rejects.toMatchObject({
+      code: "upstream_rejected",
+    });
+    expect(calls).toHaveLength(2);
+  });
+});

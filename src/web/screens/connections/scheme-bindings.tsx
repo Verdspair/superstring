@@ -11,6 +11,7 @@ import { NativeSelect } from "../../components/ui/native-select";
 import { translateNotice } from "../../i18n";
 import { formatDate } from "../../i18n/runtime";
 import { useSuperstringStore } from "../../store";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { QqGroupControls } from "../conversations/QqGroupControls";
 import { BindingEditor } from "./binding-editor";
 import { QqConversationEntry } from "./QqConversationEntry";
@@ -189,64 +190,88 @@ export function SchemeBindingsView({
           {t("schemes.bindings.reading")}
         </p>
       )}
-      {picker && (
-        <Field label="schemes.bindings.chooseScheme" tooltip={t("hints.fieldExtra.schemeUsage")}>
-          <NativeSelect
-            className="min-w-0 w-full sm:min-w-48 sm:w-auto"
-            value={effectiveId ?? ""}
-            disabled={busy}
-            onChange={(event) => setPickedScheme(event.target.value || null)}
-          >
-            {!schemeId && <option value="">{t("schemes.bindings.scopeAll")}</option>}
-            {!schemeId && pickedScheme && !schemes.some((scheme) => scheme.id === pickedScheme) && (
-              <option value={pickedScheme}>{t("schemes.bindings.schemeMissing")}</option>
-            )}
-            {schemes.map((scheme) => (
-              <option key={scheme.id} value={scheme.id}>
-                {scheme.name}
-              </option>
-            ))}
-          </NativeSelect>
-        </Field>
-      )}
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/20 p-3">
-        <QqConversationEntry
-          schemeId={effectiveId}
-          loadDirectory={false}
-          initialKind={kindFilter === "all" ? undefined : kindFilter}
-        />
-        <Button
-          variant="outline"
-          disabled={busy}
-          tooltip={t("hints.qq.reloadBindings")}
-          onClick={load}
-        >
-          <RefreshCw />
-          {t("schemes.bindings.refresh")}
-        </Button>
-        <div className="relative min-w-0 basis-full sm:order-first sm:basis-64 sm:flex-1">
-          <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
-          <Input
-            className="pl-9"
-            aria-label={t("connections.searchConversationBindings")}
-            placeholder={t("connections.searchByNumberAgentOrScheme")}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+      <div className="space-y-3" data-bindings-scope={schemeId ? "scheme" : "global"}>
+        <div className="flex min-w-0 flex-wrap items-end justify-between gap-3">
+          {picker ? (
+            <Field
+              label="schemes.bindings.chooseScheme"
+              tooltip={t("hints.fieldExtra.schemeUsage")}
+            >
+              <NativeSelect
+                className="min-w-0 w-full sm:min-w-48 sm:w-auto"
+                value={effectiveId ?? ""}
+                disabled={busy}
+                onChange={(event) => setPickedScheme(event.target.value || null)}
+              >
+                {!schemeId && <option value="">{t("schemes.bindings.scopeAll")}</option>}
+                {!schemeId &&
+                  pickedScheme &&
+                  !schemes.some((scheme) => scheme.id === pickedScheme) && (
+                    <option value={pickedScheme}>{t("schemes.bindings.schemeMissing")}</option>
+                  )}
+                {schemes.map((scheme) => (
+                  <option key={scheme.id} value={scheme.id}>
+                    {scheme.name}
+                  </option>
+                ))}
+              </NativeSelect>
+            </Field>
+          ) : (
+            <p className="min-w-0 break-words text-sm font-medium">
+              {effectiveId
+                ? t("schemes.bindings.scopeScheme", {
+                    "0": schemes.find((scheme) => scheme.id === effectiveId)?.name ?? effectiveId,
+                  })
+                : t("schemes.bindings.scopeAll")}
+            </p>
+          )}
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <QqConversationEntry
+              schemeId={effectiveId}
+              loadDirectory={false}
+              initialKind={kindFilter === "all" ? undefined : kindFilter}
+            />
+            <Button
+              variant="outline"
+              disabled={busy}
+              tooltip={t("hints.qq.reloadBindings")}
+              onClick={load}
+            >
+              <RefreshCw />
+              {t("schemes.bindings.refresh")}
+            </Button>
+            <WorkspaceHelp
+              title={t("schemes.bindings.viewBindings")}
+              description={t(
+                allScope && !effectiveId
+                  ? "schemes.bindings.allHint"
+                  : "schemes.bindings.boardHint",
+              )}
+            />
+          </div>
         </div>
-        <NativeSelect
-          className="min-w-36"
-          aria-label={t("connections.conversationType")}
-          value={kindFilter}
-          onChange={(event) => setKindFilter(event.target.value as "all" | "group" | "private")}
-        >
-          <option value="all">{t("connections.all")}</option>
-          <option value="group">{t("connections.group")}</option>
-          <option value="private">{t("connections.privateChat")}</option>
-        </NativeSelect>
-        <p className="min-w-0 basis-full text-xs text-muted-foreground">
-          {t(allScope && !effectiveId ? "schemes.bindings.allHint" : "schemes.bindings.boardHint")}
-        </p>
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <div className="relative min-w-0 basis-full sm:basis-64 sm:flex-1">
+            <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              aria-label={t("connections.searchConversationBindings")}
+              placeholder={t("connections.searchByNumberAgentOrScheme")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <NativeSelect
+            className="min-w-0 w-full sm:w-auto sm:min-w-36"
+            aria-label={t("connections.conversationType")}
+            value={kindFilter}
+            onChange={(event) => setKindFilter(event.target.value as "all" | "group" | "private")}
+          >
+            <option value="all">{t("connections.all")}</option>
+            <option value="group">{t("connections.group")}</option>
+            <option value="private">{t("connections.privateChat")}</option>
+          </NativeSelect>
+        </div>
       </div>
       {visible.length ? (
         <ul className="space-y-3">
@@ -267,43 +292,54 @@ export function SchemeBindingsView({
                 key={binding.id}
                 className="flex min-w-0 flex-wrap items-center gap-3 rounded-lg border px-3 py-4 sm:px-4"
               >
-                {rowTitle && (
-                  <span className="min-w-0 truncate text-sm font-medium">{rowTitle}</span>
-                )}
-                <Badge variant="outline">
-                  {t(binding.kind === "group" ? "connections.group" : "connections.privateChat")}
-                </Badge>
-                <span className="min-w-0 break-all font-mono text-sm">{binding.peer_id}</span>
-                <span className="text-xs text-muted-foreground">
-                  {t("schemes.qq.groupConfig.account")} {binding.account_id}
-                </span>
-                <span className="text-sm text-muted-foreground">
-                  {agent?.name ?? t("connections.unknown")}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {t("schemes.qq.groupConfig.baseScheme")}: {schemeName}
-                </span>
-                {binding.paused && <Badge variant="secondary">{t("connections.paused")}</Badge>}
-                {observation && observation.last_at_seconds > 0 ? (
-                  <span className="text-xs text-muted-foreground">
-                    {t("connections.latestMessage")}{" "}
-                    {formatDate(observation.last_at_seconds * 1000, i18n.language, {
-                      dateStyle: "short",
-                      timeStyle: "short",
-                    })}
-                  </span>
-                ) : (
-                  <span className="text-xs text-muted-foreground">
-                    {t("connections.nothingObservedYet")}
-                  </span>
-                )}
-                <div className="flex w-full flex-wrap items-center justify-end gap-2 border-t pt-2 sm:ml-auto sm:w-auto sm:border-0 sm:pt-0">
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {rowTitle && (
+                      <span className="min-w-0 break-words text-sm font-medium">{rowTitle}</span>
+                    )}
+                    <Badge variant="outline">
+                      {t(
+                        binding.kind === "group" ? "connections.group" : "connections.privateChat",
+                      )}
+                    </Badge>
+                    <span className="min-w-0 break-all font-mono text-sm">{binding.peer_id}</span>
+                    {binding.paused && <Badge variant="secondary">{t("connections.paused")}</Badge>}
+                  </div>
+                  <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <span>
+                      {t("schemes.qq.groupConfig.account")} {binding.account_id}
+                    </span>
+                    <span className="inline-flex flex-wrap items-baseline gap-1">
+                      <span>{t("schemes.qq.groupConfig.agent")}</span>
+                      <span className="text-sm">{agent?.name ?? t("connections.unknown")}</span>
+                    </span>
+                    <span>
+                      {t("schemes.qq.groupConfig.baseScheme")}: {schemeName}
+                    </span>
+                    <span>
+                      {observation && observation.last_at_seconds > 0
+                        ? `${t("connections.latestMessage")} ${formatDate(
+                            observation.last_at_seconds * 1000,
+                            i18n.language,
+                            {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                            },
+                          )}`
+                        : t("connections.nothingObservedYet")}
+                    </span>
+                  </div>
+                </div>
+                <div
+                  className="flex w-full flex-wrap items-center gap-2 border-t pt-3"
+                  data-binding-actions
+                >
                   {/* 每行常显启停与「本群配置」：与目录卡片同一组件、同一写路径（只带 paused）。
                       目录由本视图读取，行内不再回读整页事实——连接状态可能保持未知，启停按目录可用。 */}
                   <QqGroupControls bindingId={binding.id} loadFacts={false} />
                   {binding.kind === "group" && (
                     <Button
-                      variant="ghost"
+                      variant="outline"
                       size="sm"
                       className="min-h-8 whitespace-normal"
                       disabled={busy}
@@ -318,7 +354,7 @@ export function SchemeBindingsView({
                     </Button>
                   )}
                   <Button
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
                     className="min-h-8 whitespace-normal"
                     disabled={busy}

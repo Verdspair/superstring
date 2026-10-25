@@ -68,17 +68,53 @@ const qqDeliveryFields: { key: ExecutionDraftKey; label: string; info: string }[
   },
 ];
 
-export function TransportSettings({ active = true }: { active?: boolean } = {}) {
+export function QqBusinessSwitch() {
+  const { t } = useTranslation();
+  const { settings, connection, saving, save } = useSuperstringStore(
+    useShallow((state) => ({
+      settings: state.qqSettings,
+      connection: state.qqConnection,
+      saving: state.qqAccessSaving,
+      save: state.saveQqSurface,
+    })),
+  );
+  if (!settings) return null;
+  return (
+    <Card size="sm">
+      <CardContent className="flex items-center justify-between gap-3 pt-(--card-spacing)">
+        <div className="min-w-0">
+          <p className="font-medium">{t("connections.participateInExternalChats")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {connection?.reason ??
+              t("connections.eachConversationSSchemeDeterminesHowTheAgentSpeaks")}
+          </p>
+        </div>
+        <Checkbox
+          aria-label={t("connections.enableQq")}
+          checked={settings.enabled}
+          disabled={saving}
+          onCheckedChange={(checked) => void save({ enabled: checked === true })}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+export function TransportSettings({
+  active = true,
+  view,
+}: {
+  active?: boolean;
+  view?: "connection" | "runtime";
+} = {}) {
   const { t } = useTranslation();
   const {
     qqSettings: settings,
-    qqConnection: connection,
     qqAccessSaving: saving,
     saveQqSurface: save,
   } = useSuperstringStore(
     useShallow((state) => ({
       qqSettings: state.qqSettings,
-      qqConnection: state.qqConnection,
       qqAccessSaving: state.qqAccessSaving,
       saveQqSurface: state.saveQqSurface,
     })),
@@ -106,97 +142,88 @@ export function TransportSettings({ active = true }: { active?: boolean } = {}) 
     });
   return (
     <section className="space-y-6">
-      <Card size="sm">
-        <CardContent className="flex items-center justify-between gap-3 pt-(--card-spacing)">
-          <div className="min-w-0">
-            <p className="font-medium">{t("connections.participateInExternalChats")}</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {connection?.reason ??
-                t("connections.eachConversationSSchemeDeterminesHowTheAgentSpeaks")}
-            </p>
-          </div>
-          <Checkbox
-            aria-label={t("connections.enableQq")}
-            checked={settings.enabled}
-            disabled={saving}
-            onCheckedChange={(checked) => void save({ enabled: checked === true })}
-          />
-        </CardContent>
-      </Card>
+      {view !== "runtime" && (
+        <>
+          {view === undefined && <QqBusinessSwitch />}
 
-      <Card size="sm">
-        <CardHeader className="border-b bg-muted/50">
-          <CardTitle>{t("connections.onebotConnection")}</CardTitle>
-          <CardDescription>
-            {t("connections.connectYourBotServiceCredentialsRemainOnThisMachine")}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5 pt-(--card-spacing)">
-          <Field label="connections.assistantAccount" tooltip={t("hints.fieldExtra.qqAccount")}>
-            <Input
-              inputMode="numeric"
-              value={value.accountId}
-              disabled={saving}
-              onChange={(e) => patch("accountId", e.target.value)}
-            />
-          </Field>
-          <div className="space-y-4 border-l-2 border-muted pl-4 sm:pl-5">
-            <Field
-              label="connections.websocketAddress"
-              info="connections.napcatSForwardWebsocketAddressLoopbackPreferredForExample"
-              tooltip={t("connections.napcatSForwardWebsocketAddressLoopbackPreferredForExample")}
-            >
-              <Input
-                value={value.endpoint}
-                disabled={saving}
-                placeholder={t("connections.endpointExample")}
-                onChange={(e) => patch("endpoint", e.target.value)}
-              />
-            </Field>
-            <Field
-              label="connections.accessToken"
-              info="connections.neverEchoedBackOnceSavedLeavingItEmptyKeeps"
-              tooltip={t("connections.neverEchoedBackOnceSavedLeavingItEmptyKeeps")}
-            >
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={value.token}
-                disabled={saving}
-                onChange={(e) => patch("token", e.target.value)}
-              />
-              <div className="flex items-center justify-between gap-2 pt-1">
-                <Badge variant="outline">
-                  {t(
-                    settings.transport.has_token
-                      ? "connections.tokenSaved"
-                      : "connections.noTokenSavedYet",
+          <Card size="sm">
+            <CardHeader className="border-b bg-muted/50">
+              <CardTitle>{t("connections.onebotConnection")}</CardTitle>
+              <CardDescription>
+                {t("connections.connectYourBotServiceCredentialsRemainOnThisMachine")}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5 pt-(--card-spacing)">
+              <Field label="connections.assistantAccount" tooltip={t("hints.fieldExtra.qqAccount")}>
+                <Input
+                  inputMode="numeric"
+                  value={value.accountId}
+                  disabled={saving}
+                  onChange={(e) => patch("accountId", e.target.value)}
+                />
+              </Field>
+              <div className="space-y-4 border-l-2 border-muted pl-4 sm:pl-5">
+                <Field
+                  label="connections.websocketAddress"
+                  tooltip={t(
+                    "connections.napcatSForwardWebsocketAddressLoopbackPreferredForExample",
                   )}
-                </Badge>
-                {settings.transport.has_token && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
+                >
+                  <Input
+                    value={value.endpoint}
                     disabled={saving}
-                    tooltip={t("hints.qq.tokenClear")}
-                    onClick={() => void save({ token: null })}
-                  >
-                    {t("connections.clearTheSavedToken")}
-                  </Button>
-                )}
+                    placeholder={t("connections.endpointExample")}
+                    onChange={(e) => patch("endpoint", e.target.value)}
+                  />
+                </Field>
+                <Field
+                  label="connections.accessToken"
+                  tooltip={t("connections.neverEchoedBackOnceSavedLeavingItEmptyKeeps")}
+                >
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    value={value.token}
+                    disabled={saving}
+                    onChange={(e) => patch("token", e.target.value)}
+                  />
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <Badge variant="outline">
+                      {t(
+                        settings.transport.has_token
+                          ? "connections.tokenSaved"
+                          : "connections.noTokenSavedYet",
+                      )}
+                    </Badge>
+                    {settings.transport.has_token && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={saving}
+                        tooltip={t("hints.qq.tokenClear")}
+                        onClick={() => void save({ token: null })}
+                      >
+                        {t("connections.clearTheSavedToken")}
+                      </Button>
+                    )}
+                  </div>
+                </Field>
               </div>
-            </Field>
-          </div>
-          <div className="flex justify-end pt-1">
-            <Button disabled={saving} tooltip={t("hints.qq.accessSave")} onClick={saveFields}>
-              {t("connections.saveAccessSettings")}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <OwnerIdentity />
-      <QqDeliveryLimits active={active} />
+              <div className="flex justify-end pt-1">
+                <Button disabled={saving} tooltip={t("hints.qq.accessSave")} onClick={saveFields}>
+                  {t("connections.saveAccessSettings")}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+      {view !== "connection" && (
+        <>
+          <OwnerIdentity />
+          <QqDeliveryLimits active={active} />
+        </>
+      )}
     </section>
   );
 }

@@ -186,7 +186,13 @@ describe("Connection storage inventory", () => {
   it("shows reported inventory and retention without inventing missing runtime counters", async () => {
     const { container } = await renderPage();
     const inventory = container.firstElementChild;
-    expect(inventory?.classList.contains("px-4")).toBe(true);
+    expect(inventory?.classList.contains("min-w-0")).toBe(true);
+    expect(container.querySelectorAll(".workspace-page-header")).toHaveLength(1);
+    expect(
+      screen.getByRole("heading", { level: 1, name: translate("connections.dataRetention") }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: translate("schemes.backToCatalog") })).toBeTruthy();
+    expect(screen.getByText(translate("schemes.qq.scopeNote"))).toBeTruthy();
     expect(inventory?.className).not.toMatch(/max-w-/);
     expect(screen.getByText("12")).toBeTruthy();
     const number = new Intl.NumberFormat("zh-CN");
@@ -265,6 +271,7 @@ describe("QQ retention settings", () => {
   it("saves a changed window as its own PUT without carrying other drafts", async () => {
     const { fake } = await renderPage();
     fireEvent.change(retentionInput(), { target: { value: "30" } });
+    expect(screen.getByText(/消息正文保留 14 天/)).toBeTruthy();
     await act(async () => fireEvent.click(retentionSave()));
     expect(fake.updateQqStorageSettings).toHaveBeenCalledWith({
       retention_days: 30,
@@ -566,8 +573,49 @@ describe("QQ storage table containment (窄屏表内滚动)", () => {
       const wrapper = table.closest("div");
       expect(wrapper?.classList.contains("overflow-x-auto")).toBe(true);
     }
-    // 页面根不引入横向溢出（px-4 全宽、无 max-w）。
+    // 页面宽度由父工作区拥有；叶子保留 min-w-0，不增加第二层横向宽度。
     const inventory = container.firstElementChild as HTMLElement;
     expect(inventory.className).not.toMatch(/max-w-/);
+  });
+});
+
+describe("QQ storage leaf navigation and feedback", () => {
+  it("returns through the existing route guard and does not submit retention", async () => {
+    const { fake } = await renderPage();
+    const navigate = vi.fn();
+    store.setState({ openSettingsRoute: navigate });
+    fireEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
+    expect(navigate).toHaveBeenCalledExactlyOnceWith("scheme-library");
+    expect(fake.updateQqStorageSettings).not.toHaveBeenCalled();
+    expect(fake.runQqStorageSelectionCleanup).not.toHaveBeenCalled();
+  });
+
+  it("does not own a visible header or start reads while its retained pane is inactive", async () => {
+    const fake = client();
+    store.getState().resetForTests(fake);
+    store.setState({ page: "settings", settingsView: "workspace", settingsRoute: "qq-storage" });
+    const { container, rerender } = render(<StorageInventory active={false} />);
+    await act(async () => {});
+    expect(container.querySelector(".workspace-page-header")).toBeNull();
+    expect(fake.getQqStorage).not.toHaveBeenCalled();
+    expect(fake.listQqStorageItems).not.toHaveBeenCalled();
+    rerender(<StorageInventory active />);
+    await act(async () => {});
+    expect(container.querySelectorAll(".workspace-page-header")).toHaveLength(1);
+    expect(fake.getQqStorage).toHaveBeenCalledTimes(1);
+    expect(fake.listQqStorageItems).toHaveBeenCalledTimes(1);
+    const signal = (fake.listQqStorageItems as Mock).mock.calls[0][1] as AbortSignal;
+    rerender(<StorageInventory active={false} />);
+    expect(signal.aborted).toBe(true);
+  });
+
+  it("keeps save errors and required cleanup restrictions visible", async () => {
+    await renderPage();
+    await act(async () => store.setState({ error: "retention conflict" }));
+    expect(screen.getByRole("alert").textContent).toBe("retention conflict");
+    expect(screen.getByText(translate("connections.storage.manage.manualNote"))).toBeTruthy();
+    expect(screen.getByText(translate("connections.storage.manage.metaNote"))).toBeTruthy();
+    expect(screen.getByText(translate("connections.storage.manage.protectedHint"))).toBeTruthy();
+    expect(screen.getByText(translate("connections.storage.manage.retentionNote"))).toBeTruthy();
   });
 });

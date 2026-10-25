@@ -34,10 +34,11 @@ when there is nothing to send, or return `none` when the run protocol permits it
    contribution tool at most once per decision batch; do not mix terminal
    contributions with ordinary tools in that same batch. Search first, then
    make the reply decision in a later step if more information is needed.
-6. Do not submit an empty text contribution or guess, reuse, or silently omit
-   invalid references. Unknown, expired, mismatched, or unauthorized references
-   are errors. The host places quote and mentions on the first actual delivery
-   part only.
+6. Inline text may be empty when valid `mentionIds` supply a mention-only
+   reply. A quote alone is not a reply body; sticker-only replies use
+   `reply.sticker`. Do not guess, reuse, or silently omit invalid references.
+   Unknown, expired, mismatched, or unauthorized references are errors. The host
+   places quote and mentions on the first actual delivery part only.
 
 ## Text and CQ codes
 

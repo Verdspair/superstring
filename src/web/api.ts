@@ -134,11 +134,21 @@ import {
   type UpdateQqGroupConfigRequest,
 } from "../shared/contracts/qq-group-config";
 import {
+  QqManagedAccountsSchema,
   QqManagedConfigSnapshotSchema,
   QqManagedQrSchema,
+  type QqManagedQuickLoginRequest,
+  QqManagedResourceSnapshotSchema,
   QqManagedStatusSchema,
   type UpdateQqManagedConfigRequest,
+  type UpdateQqManagedResourcesRequest,
 } from "../shared/contracts/qq-managed";
+import {
+  type QqManagedEventQuerySchema,
+  type QqManagedEventsInvalidation,
+  QqManagedEventsInvalidationSchema,
+  QqManagedEventsPageSchema,
+} from "../shared/contracts/qq-managed-events";
 import {
   type QqStorageCleanupRequest,
   QqStorageCleanupSelectionResponseSchema,
@@ -161,6 +171,8 @@ import {
 import { SkillCatalogResponseSchema, SkillDetailResponseSchema } from "../shared/contracts/skill";
 import { ToolDirectoryResponseSchema } from "../shared/contracts/tool-directory";
 import { msg } from "./i18n";
+
+export type QqManagedEventQueryInput = z.input<typeof QqManagedEventQuerySchema>;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -807,6 +819,40 @@ export const api = {
   updateQqTransport: (body: UpdateQqTransportRequest) =>
     requestJson("/qq/transport", QqSettingsResponseSchema, json("PUT", body)),
   getQqStatus: () => requestJson("/qq/status", QqStatusResponseSchema),
+  getQqManagedEventsPage: async (query: QqManagedEventQueryInput = {}, signal?: AbortSignal) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query))
+      if (value !== undefined) params.set(key, String(value));
+    const response = await fetch(
+      `/v2/qq/managed-component/events${params.size ? `?${params}` : ""}`,
+      { signal, cache: "no-store" },
+    );
+    if (response.status === 409) return QqManagedEventsPageSchema.parse(await response.json());
+    if (!response.ok) throw await responseError(response);
+    return QqManagedEventsPageSchema.parse(await response.json());
+  },
+  subscribeQqManagedEventChanges: (
+    onEvent: (event: QqManagedEventsInvalidation) => void,
+    signal?: AbortSignal,
+  ) => subscribeQqManagedEventChanges(onEvent, signal),
+  getQqManagedResources: (signal?: AbortSignal) =>
+    requestJson("/v2/qq/managed-component/resources", QqManagedResourceSnapshotSchema, {
+      signal,
+      cache: "no-store",
+    }),
+  updateQqManagedResources: (body: UpdateQqManagedResourcesRequest) =>
+    requestJson(
+      "/v2/qq/managed-component/resources",
+      QqManagedResourceSnapshotSchema,
+      json("PUT", body),
+    ),
+  listQqManagedAccounts: (signal?: AbortSignal) =>
+    requestJson("/v2/qq/managed-component/accounts", QqManagedAccountsSchema, {
+      signal,
+      cache: "no-store",
+    }),
+  quickLoginQqManaged: (body: QqManagedQuickLoginRequest) =>
+    requestJson("/v2/qq/managed-component/quick-login", QqManagedStatusSchema, json("POST", body)),
   getQqManagedConfig: (signal?: AbortSignal) =>
     requestJson("/v2/qq/managed-component/config", QqManagedConfigSnapshotSchema, {
       signal,
@@ -963,6 +1009,24 @@ export async function streamChatV2(
 
 export type { ConversationChangeEvent };
 export { ConversationChangeEventSchema };
+
+export async function subscribeQqManagedEventChanges(
+  onEvent: (event: QqManagedEventsInvalidation) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch("/v2/qq/managed-component/events/changes", {
+    headers: { accept: "text/event-stream" },
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) throw await responseError(response);
+  if (!response.body)
+    throw new ApiError(502, "STREAM_INTERRUPTED", msg("连接中断，正在核对服务端结果…"));
+  await readEventStream(response.body, (frame) => {
+    if (frame.event !== "managed_events_ready" && frame.event !== "managed_events_changed") return;
+    onEvent(QqManagedEventsInvalidationSchema.parse(JSON.parse(frame.data)));
+  });
+}
 
 export async function subscribeConversationChanges(
   onEvent: (event: ConversationChangeEvent) => void,

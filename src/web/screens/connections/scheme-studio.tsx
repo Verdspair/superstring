@@ -1,13 +1,4 @@
-import {
-  ChevronDown,
-  Copy,
-  Crosshair,
-  FileDiff,
-  Plus,
-  RefreshCw,
-  Save,
-  Trash2,
-} from "lucide-react";
+import { Copy, Crosshair, FileDiff, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -19,13 +10,9 @@ import {
 } from "../../../shared/contracts/qq";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
+import { SettingsGroup } from "../../components/settings-group";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "../../components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -66,13 +53,10 @@ import { useQqInput } from "../../features/qq/use-qq-input";
 import { translateNotice } from "../../i18n";
 import type { SuperstringState } from "../../state/types";
 import { useSuperstringStore } from "../../store";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { QqMessagePreview } from "./qq-message-preview";
 import { SchemeNumber, SchemePercent } from "./qq-number-fields";
-import {
-  DerivedRhythmIntervals,
-  SchemeFieldCard,
-  StickerFrequencyOptions,
-} from "./scheme-field-shared";
+import { DerivedRhythmIntervals, StickerFrequencyOptions } from "./scheme-field-shared";
 import {
   fieldBounds,
   isValidTimezone,
@@ -84,6 +68,34 @@ import {
 } from "./scheme-fields";
 
 export { SchemeNumber };
+
+function SchemeTaskGroup({
+  title,
+  description,
+  visibleDescription = false,
+  children,
+}: {
+  title: string;
+  description?: string;
+  visibleDescription?: boolean;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  return (
+    <SettingsGroup
+      title={title}
+      description={description && visibleDescription ? t(description) : undefined}
+      action={
+        description && !visibleDescription ? (
+          <WorkspaceHelp title={title} description={t(description)} />
+        ) : undefined
+      }
+      containerClassName="space-y-4 divide-y-0 p-3 sm:p-4"
+    >
+      {children}
+    </SettingsGroup>
+  );
+}
 
 const schemeTaskLabels: Partial<Record<SchemeTask, string>> = {
   participation: "strict.qq.participation",
@@ -256,9 +268,6 @@ function StageSwitch({ phase }: { phase: "decision" | "evaluation" | "generation
       />
       <span className="space-y-1">
         <span className="block">{label}</span>
-        <span className="block text-xs font-normal leading-5 text-muted-foreground">
-          {t("schemes.studio.stageOffHint")}
-        </span>
       </span>
     </Label>
   );
@@ -266,7 +275,7 @@ function StageSwitch({ phase }: { phase: "decision" | "evaluation" | "generation
 
 /**
  * 图片输入方式：由三阶段布尔派生（全 true=自动附图、全 false=仅按需查看、混合=自定义保留）。
- * 切换自动/按需时原子设置三个阶段布尔，自定义保留由高级区逐阶段开关调整。
+ * 切换自动/按需时原子设置三个阶段布尔，自定义保留由逐阶段开关调整。
  */
 function ImageInputMethodRadio() {
   const { t } = useTranslation();
@@ -323,9 +332,6 @@ function ImageInputMethodRadio() {
             <span className="block font-medium leading-none">
               {t("schemes.studio.imageInputMethodAuto")}
             </span>
-            <span className="block text-xs font-normal leading-normal text-muted-foreground">
-              {t("schemes.studio.imageInputMethodAutoHint")}
-            </span>
           </div>
         </Label>
         <Label
@@ -341,9 +347,6 @@ function ImageInputMethodRadio() {
           <div className="space-y-1">
             <span className="block font-medium leading-none">
               {t("schemes.studio.imageInputMethodOnDemand")}
-            </span>
-            <span className="block text-xs font-normal leading-normal text-muted-foreground">
-              {t("schemes.studio.imageInputMethodOnDemandHint")}
             </span>
           </div>
         </Label>
@@ -586,7 +589,7 @@ function PromptEditor({
   const qqSchemeSaving = useSuperstringStore((s) => s.qqSchemeSaving);
   const patchQqSchemeGroup = useSuperstringStore((s) => s.patchQqSchemeGroup);
   return (
-    <Field label={titleKey} info={hint} tooltip={hint ? t(hint) : t(`hints.qqPrompt.${slot}`)}>
+    <Field label={titleKey} tooltip={hint ? t(hint) : t(`hints.qqPrompt.${slot}`)}>
       <Textarea
         className="min-h-36 font-mono text-xs leading-6"
         disabled={qqSchemeSaving}
@@ -602,9 +605,11 @@ type SchemeNaming = { kind: "new" | "copy"; step: "name" | "draft" };
 export function SchemeStudio({
   active = true,
   breadcrumb,
+  embedded = false,
 }: {
   active?: boolean;
   breadcrumb?: ReactNode;
+  embedded?: boolean;
 } = {}) {
   const { t } = useTranslation();
   const state = useSuperstringStore(
@@ -638,7 +643,6 @@ export function SchemeStudio({
   const { loadQqSchemes, loadQqStickers, qqSchemeEditor: editor, qqSchemeSaving: saving } = state;
   const [task, setTask] = useState<SchemeTask>("participation");
   const [visitedTasks, setVisitedTasks] = useState<SchemeTask[]>(["participation"]);
-  const [advancedImageOpen, setAdvancedImageOpen] = useState(false);
   const taskScrollRoot = useRef<HTMLDivElement>(null);
   const taskScrollPositions = useRef(new Map<SchemeTask, number>());
   const previousTask = useRef(task);
@@ -763,30 +767,40 @@ export function SchemeStudio({
           className="mb-[24px] flex flex-col gap-[14px] border-b border-border pb-[20px] min-[768px]:flex-row min-[768px]:items-start min-[768px]:justify-between"
         >
           <div className="min-w-0 flex-1">
-            {breadcrumb ?? (
-              <div className="mb-[6px] text-[12.5px] text-[var(--text-tertiary)]">
-                {t("schemes.qq.name")} · {editor.name}
-              </div>
-            )}
-            <div className="flex flex-wrap items-center gap-[12px]">
-              <h1 className="workspace-page-title">
-                {t(
-                  schemeTaskLabels[effectiveTab] ??
-                    QQ_SCHEME_SECTIONS.find((section) => section.id === effectiveTab)?.labelKey ??
-                    "connections.speechTriggers",
+            {!embedded && (
+              <>
+                {breadcrumb ?? (
+                  <div className="mb-[6px] text-[12.5px] text-[var(--text-tertiary)]">
+                    {t("schemes.qq.name")} · {editor.name}
+                  </div>
                 )}
-              </h1>
-              <span className="rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-[12px]">
+                  <h1 className="workspace-page-title">
+                    {t(
+                      schemeTaskLabels[effectiveTab] ??
+                        QQ_SCHEME_SECTIONS.find((section) => section.id === effectiveTab)
+                          ?.labelKey ??
+                        "connections.speechTriggers",
+                    )}
+                  </h1>
+                  <span className="rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] text-muted-foreground">
+                    {t("schemes.sharedScope")}
+                  </span>
+                </div>
+                <p className="mt-[6px] max-w-[680px] text-[13.5px] leading-[1.55] text-muted-foreground">
+                  {t(
+                    effectiveTab === "participation"
+                      ? "strict.qq.participationDescription"
+                      : "schemes.sharedScopeNote",
+                  )}
+                </p>
+              </>
+            )}
+            {embedded && (
+              <span className="text-[12.5px] text-muted-foreground">
                 {t("schemes.sharedScope")}
               </span>
-            </div>
-            <p className="mt-[6px] max-w-[680px] text-[13.5px] leading-[1.55] text-muted-foreground">
-              {t(
-                effectiveTab === "participation"
-                  ? "strict.qq.participationDescription"
-                  : "schemes.sharedScopeNote",
-              )}
-            </p>
+            )}
           </div>
           <div className="flex shrink-0 flex-col items-start gap-[10px] min-[768px]:items-end">
             <p
@@ -871,54 +885,160 @@ export function SchemeStudio({
           onValueChange={(value) => setTask(value as SchemeTask)}
           className="flex min-h-[28rem] shrink-0 flex-col gap-0 lg:min-h-0 lg:flex-1"
         >
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="shrink-0 pb-[24px]">
-              <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px] [&_[role=tab]]:rounded-[6px]">
-                {QQ_SCHEME_SECTIONS.map((section) => (
-                  <TabsTrigger
-                    key={section.id}
-                    value={section.id}
-                    tooltip={t(`hints.custom.qqTab.${section.id}`)}
-                    className="whitespace-nowrap"
-                    aria-label={t(section.labelKey)}
+          <ScrollArea ref={taskScrollRoot} className="min-h-0 flex-1">
+            <div className="min-w-0 space-y-5 pb-7">
+              <SettingsGroup containerClassName="space-y-4 divide-y-0 p-3 sm:p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <NativeSelect
+                    className="min-w-0 flex-1 basis-48"
+                    aria-label={t("connections.chooseAChatScheme")}
+                    tooltip={t("hints.custom.qqStudioSchemePicker")}
+                    value={editor?.source.id ?? ""}
+                    disabled={busy}
+                    onChange={(e) => state.requestQqSchemeNavigation(e.target.value)}
                   >
-                    {t(schemeTaskLabels[section.id] ?? section.labelKey)}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </div>
-            <ScrollArea ref={taskScrollRoot} className="min-h-0 flex-1">
-              <div className="min-w-0 space-y-[28px] pb-[28px] text-[14px] leading-[1.5]">
+                    {!state.qqSchemes.length && (
+                      <option value="">{t("connections.noSchemesYet")}</option>
+                    )}
+                    {state.qqSchemes.map((scheme) => (
+                      <option key={scheme.id} value={scheme.id}>
+                        {scheme.name}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!editor || busy}
+                      tooltip={t("hints.qq.schemeReload")}
+                      onClick={() => void state.refreshQqScheme()}
+                    >
+                      <RefreshCw />
+                      {t("schemes.studio.refresh")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      tooltip={t("hints.qq.schemeNew")}
+                      onClick={() => setNaming({ kind: "new", step: "name" })}
+                    >
+                      <Plus />
+                      {t("connections.create")}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!editor || busy || invalid}
+                      tooltip={t("hints.qq.schemeCopyAs")}
+                      onClick={() => setNaming({ kind: "copy", step: "name" })}
+                    >
+                      <Copy />
+                      {t("connections.saveAs")}
+                    </Button>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div className="grid gap-5 sm:grid-cols-2">
+                    <Field
+                      label="connections.schemeName"
+                      tooltip={t("hints.fieldExtra.schemeName")}
+                    >
+                      <Input
+                        value={editor.name}
+                        disabled={saving}
+                        onChange={(e) => state.patchQqScheme({ name: e.target.value })}
+                      />
+                    </Field>
+                    <Field
+                      label="connections.description"
+                      tooltip={t("hints.qqScheme.description")}
+                    >
+                      <Input
+                        value={editor.description}
+                        disabled={saving}
+                        onChange={(e) => state.patchQqScheme({ description: e.target.value })}
+                      />
+                    </Field>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      {selectedUsage !== null && (
+                        <span>{t("schemes.usageCount", { "0": selectedUsage })}</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
+                  {editor && selectedUsage !== 0 && (
+                    <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+                      {selectedUsage === null
+                        ? t("schemes.studio.usageUnknownCannotDelete")
+                        : t("schemes.studio.inUseCannotDelete", { "0": selectedUsage })}
+                    </p>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={t("connections.deleteScheme")}
+                    disabled={!editor || busy || selectedUsage !== 0}
+                    tooltip={t("hints.qq.schemeDelete")}
+                    onClick={() => {
+                      if (!editor) return;
+                      deleteTarget.current = { name: editor.name, dirty };
+                      setConfirmDelete(true);
+                    }}
+                  >
+                    <Trash2 />
+                    {t("connections.deleteScheme")}
+                  </Button>
+                </div>
+              </SettingsGroup>
+              <div>
+                <TabsList className="grid h-auto w-full min-w-0 grid-cols-2 gap-2 rounded-none bg-transparent p-0 md:grid-cols-3 xl:grid-cols-6">
+                  {QQ_SCHEME_SECTIONS.map((section) => (
+                    <TabsTrigger
+                      key={section.id}
+                      value={section.id}
+                      tooltip={t(`hints.custom.qqTab.${section.id}`)}
+                      className="h-auto min-h-10 min-w-0 justify-start whitespace-normal rounded-lg border border-border bg-card px-3 py-2 text-left leading-5 data-active:border-primary/40 data-active:bg-accent data-active:text-accent-foreground"
+                      aria-label={t(section.labelKey)}
+                    >
+                      {t(schemeTaskLabels[section.id] ?? section.labelKey)}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
+              <div className="min-w-0 text-[14px] leading-[1.5]">
                 {(effectiveTab === "participation" || visitedTasks.includes("participation")) && (
                   <TabsContent
                     value="participation"
                     forceMount
-                    className="m-0 space-y-[52px] text-[14px] leading-[1.5] data-[state=inactive]:hidden"
+                    className="m-0 space-y-6 text-[14px] leading-[1.5] data-[state=inactive]:hidden"
                   >
-                    <section>
-                      <div className="mb-[14px] flex flex-wrap items-baseline justify-between gap-[8px]">
-                        <h2 className="workspace-section-title">{t("strict.qq.modelTitle")}</h2>
-                        <p className="text-[12.5px] text-[var(--text-tertiary)]">
-                          {t("strict.qq.modelHint")}
-                        </p>
-                      </div>
-                      <div className="rounded-[10px] border border-border bg-card p-[16px]">
-                        <div className="flex flex-wrap items-center justify-between gap-[6px] text-[13.5px] font-bold">
-                          <span>{t("strict.qq.modelRule")}</span>
-                          <span className="rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] font-semibold text-primary">
-                            {t("strict.qq.followsBinding")}
-                          </span>
-                        </div>
-                        <p className="mt-[6px] text-[13px] leading-[1.6] text-muted-foreground">
-                          {t("strict.qq.modelBody")}
-                        </p>
-                      </div>
-                    </section>
-                    <SchemeFieldCard
-                      unframed
+                    <SettingsGroup
+                      title={t("strict.qq.modelTitle")}
+                      action={
+                        <WorkspaceHelp
+                          title={t("strict.qq.modelTitle")}
+                          description={t("strict.qq.modelBody")}
+                        />
+                      }
+                      containerClassName="flex flex-wrap items-center justify-between gap-3 p-3 sm:p-4"
+                    >
+                      <span className="text-sm">{t("strict.qq.modelRule")}</span>
+                      <span className="text-xs font-medium text-primary">
+                        {t("strict.qq.followsBinding")}
+                      </span>
+                    </SettingsGroup>
+                    <SchemeTaskGroup
                       title={t("connections.speechTriggers")}
                       description="schemes.studio.triggersHint"
                     >
+                      <p className="text-xs text-muted-foreground">
+                        {t("connections.triggersMutualExclusionHint")}
+                      </p>
                       {!Object.values(editor.triggers).some(Boolean) && (
                         <p className="mb-3 text-sm text-muted-foreground">
                           {t("qq.entry.schemeInactive")}
@@ -928,7 +1048,7 @@ export function SchemeStudio({
                         {Object.entries(TRIGGER_LABELS).map(([key, label]) => (
                           <Label
                             key={key}
-                            className="selection-card flex min-h-[104px] items-start gap-[12px] p-[16px] text-[13.5px] leading-[1.5] [&>button]:mt-[2px] [&>button]:size-[18px] [&>button]:rounded-[4px]"
+                            className="selection-card flex items-start gap-3 p-3 text-[13.5px] leading-[1.5] [&>button]:mt-[2px] [&>button]:size-[18px] [&>button]:rounded-[4px]"
                           >
                             <Checkbox
                               tooltip={t(`strict.qq.trigger.${key}`)}
@@ -952,9 +1072,6 @@ export function SchemeStudio({
                             />
                             <span className="space-y-1">
                               <span className="block">{t(label)}</span>
-                              <span className="block text-xs font-normal leading-5 text-muted-foreground">
-                                {t(`strict.qq.trigger.${key}`)}
-                              </span>
                             </span>
                           </Label>
                         ))}
@@ -964,9 +1081,8 @@ export function SchemeStudio({
                           {t("connections.legacyChimingInPrecedenceNotice")}
                         </div>
                       )}
-                    </SchemeFieldCard>
-                    <SchemeFieldCard
-                      unframed
+                    </SchemeTaskGroup>
+                    <SchemeTaskGroup
                       title={t("schemes.studio.rhythmTitle")}
                       description="schemes.studio.rhythmHint"
                     >
@@ -983,9 +1099,9 @@ export function SchemeStudio({
                         ].map((names, index) => (
                           <div
                             key={names[0]}
-                            className="rounded-[10px] border border-border bg-card px-[20px] py-[18px] sm:col-span-2"
+                            className="space-y-3 border-b border-border pb-4 last:border-b-0 last:pb-0 sm:col-span-2"
                           >
-                            <h3 className="mb-[14px] border-b border-dashed border-border pb-[8px] text-[13px] font-bold">
+                            <h3 className="text-[13px] font-semibold">
                               {t(`strict.qq.rhythmGroup.${index}`)}
                             </h3>
                             <div className="grid grid-cols-[repeat(auto-fit,minmax(min(220px,100%),1fr))] gap-[16px]">
@@ -1065,10 +1181,11 @@ export function SchemeStudio({
                           </span>
                         </Label>
                       </div>
-                    </SchemeFieldCard>
-                    <SchemeFieldCard
+                    </SchemeTaskGroup>
+                    <SchemeTaskGroup
                       title={t("connections.allowedHours")}
                       description="connections.useLocalTimeEqualStartAndEndMeansAll"
+                      visibleDescription
                     >
                       <Label className="selection-card p-3">
                         <Checkbox
@@ -1116,8 +1233,8 @@ export function SchemeStudio({
                       <p className="text-xs text-muted-foreground">
                         {t("schemes.studio.activeHoursHint")}
                       </p>
-                    </SchemeFieldCard>
-                    <SchemeFieldCard
+                    </SchemeTaskGroup>
+                    <SchemeTaskGroup
                       title={t("connections.inputAntiSpam")}
                       description="schemes.studio.inputAntiSpamHint"
                     >
@@ -1155,13 +1272,13 @@ export function SchemeStudio({
                           disabled={!editor.inputAntiSpam.enabled}
                         />
                       </div>
-                    </SchemeFieldCard>
-                    <SchemeFieldCard
+                    </SchemeTaskGroup>
+                    <SchemeTaskGroup
                       title={t("schemes.studio.judgePrompt")}
                       description="connections.decideWhetherToSpeak"
                     >
                       <PromptEditor slot="judge" titleKey="connections.judgementTask" />
-                    </SchemeFieldCard>
+                    </SchemeTaskGroup>
                   </TabsContent>
                 )}
                 {(effectiveTab === "response" || visitedTasks.includes("response")) && (
@@ -1170,7 +1287,7 @@ export function SchemeStudio({
                     forceMount
                     className="m-0 space-y-6 data-[state=inactive]:hidden"
                   >
-                    <SchemeFieldCard
+                    <SchemeTaskGroup
                       title={t("schemes.studio.replyStructure")}
                       description="connections.whenEnabledGenerateAReplyPerSpeakerAndAdd"
                     >
@@ -1185,8 +1302,8 @@ export function SchemeStudio({
                         />
                         {t("connections.answerEachSpeakerSeparately")}
                       </Label>
-                    </SchemeFieldCard>
-                    <SchemeFieldCard
+                    </SchemeTaskGroup>
+                    <SchemeTaskGroup
                       title={t("schemes.studio.replyTasks")}
                       description="schemes.studio.replyTasksHint"
                     >
@@ -1233,10 +1350,11 @@ export function SchemeStudio({
                         ))}
                       </div>
                       <PromptEditor slot="review" titleKey="connections.reviewTask" />
-                    </SchemeFieldCard>
-                    <SchemeFieldCard
+                    </SchemeTaskGroup>
+                    <SchemeTaskGroup
                       title={t("connections.taskLimitsTitle")}
                       description="schemes.studio.taskLimitsHint"
+                      visibleDescription
                     >
                       <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
                         <SchemeNumber
@@ -1252,7 +1370,7 @@ export function SchemeStudio({
                           info="connections.ordinaryTaskLimitHint"
                         />
                       </div>
-                    </SchemeFieldCard>
+                    </SchemeTaskGroup>
                   </TabsContent>
                 )}
                 {(effectiveTab === "context_reading" ||
@@ -1264,7 +1382,7 @@ export function SchemeStudio({
                   >
                     {/* 0052 消息关系与时间：引用模式/层数、时间呈现、时区；one_then_on_demand 下层数
                     不参与运行（禁用但配置保留），切回按层数即恢复。 */}
-                    <SchemeFieldCard
+                    <SchemeTaskGroup
                       title={t("schemes.studio.messageRelations")}
                       description="schemes.studio.messageRelationsHint"
                     >
@@ -1296,9 +1414,9 @@ export function SchemeStudio({
                             : null
                         }
                       />
-                    </SchemeFieldCard>
+                    </SchemeTaskGroup>
                     {(["judgement", "reply"] as const).map((part) => (
-                      <SchemeFieldCard
+                      <SchemeTaskGroup
                         key={part}
                         title={
                           part === "judgement"
@@ -1306,6 +1424,7 @@ export function SchemeStudio({
                             : t("connections.replyContext")
                         }
                         description="connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues"
+                        visibleDescription
                       >
                         <div className="grid gap-5 sm:grid-cols-2">
                           <Field
@@ -1387,7 +1506,7 @@ export function SchemeStudio({
                             }
                           />
                         </div>
-                      </SchemeFieldCard>
+                      </SchemeTaskGroup>
                     ))}
                     <div className="rounded-lg bg-muted p-5 text-sm leading-6">
                       <h3 className="font-medium">
@@ -1414,7 +1533,7 @@ export function SchemeStudio({
                     forceMount
                     className="m-0 space-y-6 data-[state=inactive]:hidden"
                   >
-                    <SchemeFieldCard
+                    <SchemeTaskGroup
                       title={t("connections.compressionAndAssembly")}
                       description="schemes.studio.compressionHint"
                     >
@@ -1442,7 +1561,7 @@ export function SchemeStudio({
                         titleKey="connections.watermarkCompressionTask"
                         hint="connections.compressTheBufferedOldMessagesIntoFactsTheStructuralRulesAre"
                       />
-                    </SchemeFieldCard>
+                    </SchemeTaskGroup>
                   </TabsContent>
                 )}
                 {(effectiveTab === "image_understanding" ||
@@ -1452,8 +1571,7 @@ export function SchemeStudio({
                     forceMount
                     className="m-0 space-y-6 data-[state=inactive]:hidden"
                   >
-                    {/* 图片输入基本区：输入方式单选（自动/按需/自定义派生）、图数、统一静图规格 */}
-                    <SchemeFieldCard
+                    <SchemeTaskGroup
                       title={t("schemes.studio.imageInput")}
                       description="schemes.studio.imageInputHint"
                     >
@@ -1466,92 +1584,52 @@ export function SchemeStudio({
                         />
                         <OrdinaryStillSpec />
                       </div>
-                    </SchemeFieldCard>
+                    </SchemeTaskGroup>
 
-                    {/* 高级区：本地折叠（ephemeral Disclosure），含动图规格、mode、逐阶段独立开关、媒体提示词 */}
-                    <Collapsible
-                      open={advancedImageOpen}
-                      onOpenChange={setAdvancedImageOpen}
-                      className="space-y-6"
+                    <SchemeTaskGroup
+                      title={t("schemes.studio.imageParams")}
+                      description="schemes.studio.imageParamsHint"
                     >
-                      <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-4">
-                        <div className="space-y-0.5">
-                          <div className="text-sm font-medium">
-                            {t("schemes.studio.advancedImageSettings")}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {t("schemes.studio.advancedImageSettingsHint")}
-                          </div>
-                        </div>
-                        <CollapsibleTrigger asChild>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            tooltip={t("hints.qq.advancedImage")}
-                            className="gap-2"
-                          >
-                            <ChevronDown
-                              className={`size-4 transition-transform ${advancedImageOpen ? "rotate-180" : ""}`}
-                            />
-                            <span>
-                              {advancedImageOpen
-                                ? t("schemes.studio.collapseAdvanced")
-                                : t("schemes.studio.expandAdvanced")}
-                            </span>
-                          </Button>
-                        </CollapsibleTrigger>
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        {imageFields.map(([group, name, label]) => (
+                          <SchemeNumber key={name} group={group} name={name} label={label} />
+                        ))}
                       </div>
+                    </SchemeTaskGroup>
 
-                      <CollapsibleContent
-                        forceMount
-                        className="space-y-6 data-[state=closed]:hidden"
-                      >
-                        <SchemeFieldCard
-                          title={t("schemes.studio.imageParams")}
-                          description="schemes.studio.imageParamsHint"
-                        >
-                          <div className="grid gap-5 sm:grid-cols-2">
-                            {imageFields.map(([group, name, label]) => (
-                              <SchemeNumber key={name} group={group} name={name} label={label} />
-                            ))}
-                          </div>
-                        </SchemeFieldCard>
+                    <SchemeTaskGroup
+                      title={t("schemes.studio.imageModeAndStages")}
+                      description="schemes.studio.imageModeAndStagesHint"
+                    >
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <SchemeEnum
+                          group="mediaInput"
+                          name="mode"
+                          label="connections.imageInputMode"
+                          info={
+                            editor.mediaInput.mode === "description"
+                              ? "connections.imageMode.descriptionHint"
+                              : "connections.imageMode.nativeHint"
+                          }
+                        />
+                      </div>
+                      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                        <StageSwitch phase="decision" />
+                        <StageSwitch phase="evaluation" />
+                        <StageSwitch phase="generation" />
+                      </div>
+                    </SchemeTaskGroup>
 
-                        <SchemeFieldCard
-                          title={t("schemes.studio.imageModeAndStages")}
-                          description="schemes.studio.imageModeAndStagesHint"
-                        >
-                          <div className="grid gap-5 sm:grid-cols-2">
-                            <SchemeEnum
-                              group="mediaInput"
-                              name="mode"
-                              label="connections.imageInputMode"
-                              info={
-                                editor.mediaInput.mode === "description"
-                                  ? "connections.imageMode.descriptionHint"
-                                  : "connections.imageMode.nativeHint"
-                              }
-                            />
-                          </div>
-                          <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                            <StageSwitch phase="decision" />
-                            <StageSwitch phase="evaluation" />
-                            <StageSwitch phase="generation" />
-                          </div>
-                        </SchemeFieldCard>
-
-                        <SchemeFieldCard
-                          title={t("connections.mediaNoteTask")}
-                          description="connections.describeWhatThePictureOrVoiceActuallyContains"
-                        >
-                          <PromptEditor
-                            slot="media"
-                            titleKey="connections.mediaNoteTask"
-                            hint="connections.describeWhatThePictureOrVoiceActuallyContains"
-                          />
-                        </SchemeFieldCard>
-                      </CollapsibleContent>
-                    </Collapsible>
+                    <SchemeTaskGroup
+                      title={t("connections.mediaNoteTask")}
+                      description="connections.describeWhatThePictureOrVoiceActuallyContains"
+                    >
+                      <PromptEditor
+                        slot="media"
+                        titleKey="connections.mediaNoteTask"
+                        hint="connections.describeWhatThePictureOrVoiceActuallyContains"
+                      />
+                    </SchemeTaskGroup>
                   </TabsContent>
                 )}
                 {(effectiveTab === "sticker_sending" ||
@@ -1561,7 +1639,7 @@ export function SchemeStudio({
                     forceMount
                     className="m-0 space-y-6 data-[state=inactive]:hidden"
                   >
-                    <SchemeFieldCard
+                    <SchemeTaskGroup
                       title={t("schemes.studio.stickerParams")}
                       description="schemes.studio.stickerParamsHint"
                     >
@@ -1571,10 +1649,11 @@ export function SchemeStudio({
                           <SchemeNumber key={name} group={group} name={name} label={label} />
                         ))}
                       </div>
-                    </SchemeFieldCard>
-                    <SchemeFieldCard
+                    </SchemeTaskGroup>
+                    <SchemeTaskGroup
                       title={t("connections.authorizedCollections")}
                       description="connections.onlyEnabledAssetsInAuthorizedCollectionsCanBeSelected"
+                      visibleDescription
                     >
                       <div className="grid gap-3 sm:grid-cols-2">
                         {state.qqStickerCollections.map((collection) => (
@@ -1610,8 +1689,8 @@ export function SchemeStudio({
                       >
                         {t("connections.manageStickers")}
                       </Button>
-                    </SchemeFieldCard>
-                    <SchemeFieldCard
+                    </SchemeTaskGroup>
+                    <SchemeTaskGroup
                       title={t("connections.stickerTask")}
                       description="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
                     >
@@ -1620,123 +1699,12 @@ export function SchemeStudio({
                         titleKey="connections.stickerTask"
                         hint="connections.pickOneStickerFromTheCandidatesOutputOnlyIts"
                       />
-                    </SchemeFieldCard>
+                    </SchemeTaskGroup>
                   </TabsContent>
                 )}
-                <div className="flex shrink-0 flex-wrap items-center gap-[8px] pb-[20px]">
-                  <NativeSelect
-                    className="w-full max-w-[340px]"
-                    aria-label={t("connections.chooseAChatScheme")}
-                    tooltip={t("hints.custom.qqStudioSchemePicker")}
-                    value={editor?.source.id ?? ""}
-                    disabled={busy}
-                    onChange={(e) => state.requestQqSchemeNavigation(e.target.value)}
-                  >
-                    {!state.qqSchemes.length && (
-                      <option value="">{t("connections.noSchemesYet")}</option>
-                    )}
-                    {state.qqSchemes.map((scheme) => (
-                      <option key={scheme.id} value={scheme.id}>
-                        {scheme.name}
-                      </option>
-                    ))}
-                  </NativeSelect>
-                  <div className="ml-auto flex flex-wrap items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={!editor || busy}
-                      tooltip={t("hints.qq.schemeReload")}
-                      onClick={() => void state.refreshQqScheme()}
-                    >
-                      <RefreshCw />
-                      {t("schemes.studio.refresh")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy}
-                      tooltip={t("hints.qq.schemeNew")}
-                      onClick={() => setNaming({ kind: "new", step: "name" })}
-                    >
-                      <Plus />
-                      {t("connections.create")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={!editor || busy || invalid}
-                      tooltip={t("hints.qq.schemeCopyAs")}
-                      onClick={() => setNaming({ kind: "copy", step: "name" })}
-                    >
-                      <Copy />
-                      {t("connections.saveAs")}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={t("connections.deleteScheme")}
-                      disabled={!editor || busy || selectedUsage !== 0}
-                      tooltip={t("hints.qq.schemeDelete")}
-                      onClick={() => {
-                        if (!editor) return;
-                        deleteTarget.current = { name: editor.name, dirty };
-                        setConfirmDelete(true);
-                      }}
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                  {editor && selectedUsage !== 0 && (
-                    <p className="w-full text-xs text-muted-foreground">
-                      {selectedUsage === null
-                        ? t("schemes.studio.usageUnknownCannotDelete")
-                        : t("schemes.studio.inUseCannotDelete", { "0": selectedUsage })}
-                    </p>
-                  )}
-                </div>
-                <div className="rounded-[10px] border border-border bg-card px-[20px] py-[18px]">
-                  <p className="mb-[14px] text-[12.5px] leading-[1.5] text-muted-foreground">
-                    {t("connections.triggersMutualExclusionHint")}
-                  </p>
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <Field
-                      label="connections.schemeName"
-                      tooltip={t("hints.fieldExtra.schemeName")}
-                    >
-                      <Input
-                        value={editor.name}
-                        disabled={saving}
-                        onChange={(e) => state.patchQqScheme({ name: e.target.value })}
-                      />
-                    </Field>
-                    <Field
-                      label="connections.description"
-                      tooltip={t("hints.qqScheme.description")}
-                    >
-                      <Input
-                        value={editor.description}
-                        disabled={saving}
-                        onChange={(e) => state.patchQqScheme({ description: e.target.value })}
-                      />
-                    </Field>
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                    <div className="flex items-center gap-2">
-                      {selectedUsage !== null && (
-                        <span>{t("schemes.usageCount", { "0": selectedUsage })}</span>
-                      )}
-                      {dirty && (
-                        <span className="font-medium text-muted-foreground">
-                          · {t("connections.valueUnsavedChanges", { "0": changes.length })}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
               </div>
-            </ScrollArea>
-          </div>
+            </div>
+          </ScrollArea>
         </Tabs>
       )}
       {editor && (state.error || state.feedback) && (

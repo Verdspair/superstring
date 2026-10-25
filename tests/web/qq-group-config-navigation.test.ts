@@ -4,7 +4,7 @@
 //
 // 只断言 store 状态与请求参数，不渲染页面；页面接线由 UI 自身负责。
 
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { QqBindingResponse, QqSchemeResponse } from "../../src/shared/contracts/qq";
 import type {
   QqGroupConfigResponse,
@@ -13,6 +13,7 @@ import type {
 import { api, type SuperstringApi } from "../../src/web/api";
 import { qqDraftChanges } from "../../src/web/features/qq/draft-state";
 import { qqGroupConfigEditorFrom } from "../../src/web/features/qq/group-config-state";
+import { qqSchemeEditorFrom } from "../../src/web/features/qq/types";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const NOW = "2026-09-30T00:00:00.000Z";
@@ -148,8 +149,19 @@ const deferred = <T>() => {
 
 const editorOf = () => store.getState().qqGroupConfigEditor;
 
+const navigationActions = {
+  saveQqDrafts: store.getState().saveQqDrafts,
+  requestQqSchemeNavigation: store.getState().requestQqSchemeNavigation,
+  openSettingsRoute: store.getState().openSettingsRoute,
+  requestConversationNavigation: store.getState().requestConversationNavigation,
+};
+
 beforeEach(() => {
   store.getState().resetForTests();
+});
+
+afterEach(() => {
+  store.setState(navigationActions);
 });
 
 it("同 id 换 agent（编辑器干净）：显式打开按目录身份重读", async () => {
@@ -443,4 +455,106 @@ it("未选群：无本群草稿行，核心设置路由照常切换", () => {
     settingsRoute: "qq-connection",
     navigationConfirmOpen: false,
   });
+});
+
+it("方案使用会话来源只在落地推进，取消与保存失败保留旧来源", async () => {
+  const read = vi.fn(async (id: string) => qqConfig(qqBinding({ id })));
+  store.getState().resetForTests(fakeClient({ getQqGroupConfig: read }));
+  const scheme = qqScheme();
+  const editor = qqSchemeEditorFrom(scheme);
+  editor.name = "未保存的方案名";
+  store.setState({
+    page: "settings",
+    settingsView: "workspace",
+    settingsRoute: "qq-scheme-config",
+    qqSchemeView: "bindings",
+    qqSchemes: [scheme],
+    qqSchemesLoaded: true,
+    qqSchemeEditor: editor,
+    qqBindings: [qqBinding()],
+    qqBindingsLoaded: true,
+    qqGroupConfigOrigin: { kind: "bindings" },
+  });
+  store.getState().openQqGroupConfig(BINDING_ID);
+  expect(store.getState().pendingNavigation).toMatchObject({
+    kind: "group-config",
+    origin: { kind: "scheme-usage", schemeId: BASE_SCHEME_ID },
+  });
+  expect(store.getState().qqGroupConfigOrigin).toEqual({ kind: "bindings" });
+  store.getState().cancelPendingNavigation();
+  expect(store.getState().qqGroupConfigOrigin).toEqual({ kind: "bindings" });
+  store.getState().openQqGroupConfig(BINDING_ID);
+  store.setState({ saveQqDrafts: vi.fn().mockResolvedValue(false) });
+  await store.getState().confirmSaveAndContinue();
+  expect(store.getState().settingsRoute).toBe("qq-scheme-config");
+  expect(store.getState().qqGroupConfigOrigin).toEqual({ kind: "bindings" });
+  await store.getState().confirmDiscardAndContinue();
+  expect(store.getState().settingsRoute).toBe("qq-group-config");
+  expect(store.getState().qqGroupConfigOrigin).toEqual({
+    kind: "scheme-usage",
+    schemeId: BASE_SCHEME_ID,
+  });
+  expect(read).toHaveBeenCalledTimes(1);
+});
+
+it("group到另一个group保留最初来源，返回由唯一导航owner选择现有入口", async () => {
+  const read = vi.fn(async (id: string) => qqConfig(qqBinding({ id })));
+  store.getState().resetForTests(fakeClient({ getQqGroupConfig: read }));
+  store.setState({
+    page: "settings",
+    settingsView: "workspace",
+    settingsRoute: "qq-group-config",
+    qqSchemes: [qqScheme()],
+    qqSchemesLoaded: true,
+    qqBindings: [qqBinding(), qqBinding({ id: OTHER_BINDING_ID })],
+    qqBindingsLoaded: true,
+    qqGroupConfigBindingId: BINDING_ID,
+    qqGroupConfigEditor: qqGroupConfigEditorFrom(qqConfig(qqBinding())),
+    qqGroupConfigOrigin: { kind: "scheme-usage", schemeId: BASE_SCHEME_ID },
+  });
+  store.getState().openQqGroupConfig(OTHER_BINDING_ID);
+  await flush();
+  expect(store.getState().qqGroupConfigOrigin).toEqual({
+    kind: "scheme-usage",
+    schemeId: BASE_SCHEME_ID,
+  });
+  const schemeNav = vi.fn();
+  const routeNav = vi.fn();
+  const conversationNav = vi.fn();
+  store.setState({
+    requestQqSchemeNavigation: schemeNav,
+    openSettingsRoute: routeNav,
+    requestConversationNavigation: conversationNav,
+  });
+  store.getState().returnQqGroupConfig();
+  expect(schemeNav).toHaveBeenCalledWith(BASE_SCHEME_ID, "bindings");
+  store.setState({ qqSchemes: [] });
+  store.getState().returnQqGroupConfig();
+  expect(routeNav).toHaveBeenCalledWith("scheme-bindings");
+  store.setState({
+    qqGroupConfigOrigin: { kind: "conversation", conversationId: "conversation-1" },
+  });
+  store.getState().returnQqGroupConfig();
+  expect(conversationNav).toHaveBeenCalledWith("conversation-1");
+});
+
+it("对话入口捕获会话来源，直接group深链返回全局绑定", async () => {
+  const read = vi.fn(async (id: string) => qqConfig(qqBinding({ id })));
+  store.getState().resetForTests(fakeClient({ getQqGroupConfig: read }));
+  store.setState({
+    page: "chat",
+    currentConversationId: "conversation-1",
+    qqBindings: [qqBinding()],
+    qqBindingsLoaded: true,
+  });
+  store.getState().openQqGroupConfig(BINDING_ID);
+  await flush();
+  expect(store.getState().qqGroupConfigOrigin).toEqual({
+    kind: "conversation",
+    conversationId: "conversation-1",
+  });
+  const routeNav = vi.fn();
+  store.setState({ qqGroupConfigOrigin: null, openSettingsRoute: routeNav });
+  store.getState().returnQqGroupConfig();
+  expect(routeNav).toHaveBeenCalledWith("scheme-bindings");
 });

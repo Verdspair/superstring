@@ -60,6 +60,114 @@ const RefreshQrPayload = z.union([
   z.strictObject({ qrcodeurl: z.string(), restarting: z.literal(true) }),
   z.strictObject({ qrcodeurl: z.string() }),
 ]);
+const QuickLoginAccountPayload = z.array(
+  z.strictObject({
+    uin: z.string().min(1),
+    uid: z.string(),
+    nickName: z.string(),
+    faceUrl: z.string(),
+    facePath: z.string(),
+    loginType: z.literal(1),
+    isQuickLogin: z.boolean(),
+    isAutoLogin: z.boolean(),
+  }),
+);
+const LoginAccountPayload = z.object({
+  uid: z.string(),
+  uin: z.string().min(1),
+  nick: z.string(),
+  online: z.boolean().optional(),
+  avatarUrl: z.string().optional(),
+});
+const NamedAdapter = z
+  .object({
+    name: z.string().min(1),
+    enable: z.boolean(),
+  })
+  .passthrough();
+const HttpServer = NamedAdapter.extend({
+  port: z.number(),
+  host: z.string(),
+  enableCors: z.boolean(),
+  enableWebsocket: z.boolean(),
+  messagePostFormat: z.string(),
+  token: z.string(),
+  debug: z.boolean(),
+});
+const HttpSseServer = z
+  .object({
+    name: z.string().min(1),
+    enable: z.boolean(),
+    port: z.number(),
+    host: z.string(),
+    enableCors: z.boolean(),
+    enableWebsocket: z.boolean(),
+    messagePostFormat: z.string(),
+    token: z.string(),
+    debug: z.boolean(),
+    reportSelfMessage: z.boolean(),
+  })
+  .passthrough();
+const HttpClient = NamedAdapter.extend({
+  url: z.string(),
+  messagePostFormat: z.string(),
+  reportSelfMessage: z.boolean(),
+  token: z.string(),
+  debug: z.boolean(),
+});
+const OneBotAdapter = z
+  .object({
+    name: z.string().min(1),
+    enable: z.boolean(),
+    messagePostFormat: z.string(),
+    reportSelfMessage: z.boolean(),
+    debug: z.boolean(),
+  })
+  .passthrough();
+const WebsocketServer = OneBotAdapter.extend({
+  host: z.string(),
+  port: z.number(),
+  token: z.string(),
+  enableForcePushEvent: z.boolean(),
+  heartInterval: z.number(),
+});
+const WebsocketClient = OneBotAdapter.extend({
+  url: z.string(),
+  reconnectInterval: z.number(),
+  token: z.string(),
+  heartInterval: z.number(),
+});
+const Plugin = NamedAdapter.extend({
+  messagePostFormat: z.string(),
+  reportSelfMessage: z.boolean(),
+  debug: z.boolean(),
+});
+const OneBotConfigPayload = z
+  .object({
+    network: z
+      .object({
+        httpServers: z.array(HttpServer),
+        httpSseServers: z.array(HttpSseServer),
+        httpClients: z.array(HttpClient),
+        websocketServers: z.array(WebsocketServer),
+        websocketClients: z.array(WebsocketClient),
+        plugins: z.array(Plugin),
+      })
+      .passthrough(),
+    musicSignUrl: z.string(),
+    enableLocalFile2Url: z.boolean(),
+    parseMultMsg: z.boolean(),
+    imageDownloadProxy: z.string(),
+    timeout: z
+      .object({
+        baseTimeout: z.number(),
+        uploadSpeedKBps: z.number(),
+        downloadSpeedKBps: z.number(),
+        maxTimeout: z.number(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
 
 export interface NapCatControlClientOptions {
   readonly baseUrl: string;
@@ -168,6 +276,84 @@ export class NapCatControlClient {
     const parsed = RefreshQrPayload.safeParse(payload);
     if (!parsed.success) throw new NapCatControlError("invalid_response");
     return parsed.data;
+  }
+
+  async getQuickLoginAccounts(
+    credential: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<readonly { account_id: string; display_name: string | null }[]> {
+    const payload = await this.#request("/api/QQLogin/GetQuickLoginListNew", {
+      method: "POST",
+      headers: this.#authHeaders(credential),
+      body: "{}",
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    const parsed = QuickLoginAccountPayload.safeParse(payload);
+    if (!parsed.success) throw new NapCatControlError("invalid_response");
+    return parsed.data.map(({ uin, nickName }) => ({
+      account_id: uin,
+      display_name: nickName || null,
+    }));
+  }
+
+  async quickLogin(
+    credential: string,
+    input: { readonly account_id: string },
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<void> {
+    if (!input.account_id.trim()) throw new NapCatControlError("invalid_response");
+    const payload = await this.#request("/api/QQLogin/SetQuickLogin", {
+      method: "POST",
+      headers: { ...this.#authHeaders(credential), "content-type": "application/json" },
+      body: JSON.stringify({ uin: input.account_id }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (payload !== null) throw new NapCatControlError("invalid_response");
+  }
+
+  async getLoginAccount(
+    credential: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<string> {
+    const payload = await this.#request("/api/QQLogin/GetQQLoginInfo", {
+      method: "POST",
+      headers: this.#authHeaders(credential),
+      body: "{}",
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    const parsed = LoginAccountPayload.safeParse(payload);
+    if (!parsed.success) throw new NapCatControlError("invalid_response");
+    return parsed.data.uin;
+  }
+
+  async getOneBotConfig(
+    credential: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<Record<string, unknown>> {
+    const payload = await this.#request("/api/OB11Config/GetConfig", {
+      method: "POST",
+      headers: this.#authHeaders(credential),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    const parsed = OneBotConfigPayload.safeParse(payload);
+    if (!parsed.success) throw new NapCatControlError("invalid_response");
+    return parsed.data as Record<string, unknown>;
+  }
+
+  async setOneBotConfig(
+    credential: string,
+    config: Record<string, unknown>,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<void> {
+    const parsed = OneBotConfigPayload.safeParse(config);
+    if (!parsed.success) throw new NapCatControlError("invalid_response");
+    const payload = await this.#request("/api/OB11Config/SetConfig", {
+      method: "POST",
+      headers: { ...this.#authHeaders(credential), "content-type": "application/json" },
+      body: JSON.stringify({ config: JSON.stringify(parsed.data) }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (payload !== null) throw new NapCatControlError("invalid_response");
   }
 
   #authHeaders(credential: string): HeadersInit {
