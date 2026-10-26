@@ -16,6 +16,19 @@ import type { QqMediaSourceFetcher } from "./qq-media-adapter";
 
 const DataUrlSchema = z.string().regex(/^data:[^;,]+;base64,/);
 
+/**
+ * The bot side explicitly refused a source (resolved non-source): a known,
+ * safe outcome of taking the stream, never a programming error. The upstream
+ * reason stays diagnostics-only at the connection layer — nothing URL- or
+ * path-shaped travels on the error itself.
+ */
+export class QqMediaSourceUnavailableError extends Error {
+  constructor() {
+    super("QQ media source unavailable");
+    this.name = "QqMediaSourceUnavailableError";
+  }
+}
+
 /** `fetchImpl` is injected so a URL reference can be exercised without a network. */
 export function createQqMediaSourceFetcher(input: {
   readonly resolveSource: (request: {
@@ -32,7 +45,7 @@ export function createQqMediaSourceFetcher(input: {
     const resolved = await input.resolveSource({ kind, sourceRef });
     signal?.throwIfAborted();
     if (resolved.kind !== "source") {
-      throw new Error(`QQ media source unavailable: ${resolved.reason}`);
+      throw new QqMediaSourceUnavailableError();
     }
     const reference = resolved.reference;
     if (DataUrlSchema.safeParse(reference).success) {

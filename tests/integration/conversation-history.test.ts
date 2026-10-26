@@ -15,6 +15,7 @@ import {
 } from "../../src/server/db/conversation-event-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import { readQqBinding } from "../../src/server/db/qq-binding-repository";
+import { recordObservation } from "../../src/server/db/qq-observation-intake";
 import { createQqScheme, readQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import {
@@ -25,6 +26,7 @@ import {
 } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
+import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import type { QqStickerStore } from "../../src/server/services/qq-sticker-store";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
@@ -118,6 +120,33 @@ function setup() {
       expiresAt: future,
       parts: [{ kind: "text", text: "confirmed prior reply" }],
     });
+  const ingestOneBot = (
+    msg: {
+      messageId: number;
+      message: Array<{ type: string; data: Record<string, unknown> }>;
+      time?: number;
+    },
+    agentId = DEFAULT_AGENT_ID,
+  ) => {
+    const nowSeconds = Math.floor(Date.parse(at) / 1000);
+    const normalized = normalizeOneBotMessage(
+      {
+        time: msg.time ?? nowSeconds,
+        self_id: 100,
+        post_type: "message",
+        message_type: "private",
+        sub_type: "normal",
+        message_id: msg.messageId,
+        user_id: 200,
+        sender: { card: "阿林", nickname: "林某" },
+        message: msg.message,
+      },
+      "100",
+    );
+    if (normalized.kind !== "message") throw new Error("expected message");
+    recordObservation(h.orm, normalized.observation, agentId);
+    return journal.ingestOneBotEvent(normalized.observation.eventKey, bindingId)!;
+  };
   return {
     ...h,
     journal,
@@ -129,6 +158,7 @@ function setup() {
     at,
     bind,
     incoming,
+    ingestOneBot,
     snapshot,
     delivery,
   };
@@ -417,5 +447,122 @@ describe("stable assistant history and activation isolation", () => {
     expect(recoveryWakes).toBe(0);
     expect(h.db.query("SELECT count(*) AS n FROM wake_signals").get()).toEqual({ n: 0 });
     expect(h.journal.row(a1.id)?.closed_at).not.toBeNull();
+  });
+
+  it("pure image without text projects to active contentState and available media without description, while image with deleted body stays unavailable", async () => {
+    const h = setup(),
+      a1 = h.bind(DEFAULT_AGENT_ID);
+
+    // 1. Pure image message (textless, zero read note)
+    const pureImageEvent = h.ingestOneBot({
+      messageId: 5001,
+      message: [{ type: "image", data: { file: "file-5001" } }],
+    });
+
+    // 2. Rich message (text + image) where body text will subsequently be deleted
+    const richEvent = h.ingestOneBot({
+      messageId: 5002,
+      message: [
+        { type: "text", data: { text: "caption text" } },
+        { type: "image", data: { file: "file-5002" } },
+      ],
+    });
+
+    const read = async (id: string, query = "") =>
+      (await h.app.request(`/v2/conversations/${id}/events${query}`)).json();
+
+    const initial = await read(a1.id);
+    const pureItem = initial.items.find(
+      (e: { source: { id: string } }) => e.source.id === pureImageEvent.source.id,
+    );
+    const richItem = initial.items.find(
+      (e: { source: { id: string } }) => e.source.id === richEvent.source.id,
+    );
+
+    // Pure image: immutable authorized facts prove message never had text parts ->
+    // contentState is active (no false '原文暂不可用'), media is available with null description ('暂无可用媒体描述').
+    expect(pureItem).toMatchObject({
+      contentState: "active",
+      text: null,
+      media: [
+        {
+          kind: "image",
+          description: null,
+          availability: "available",
+        },
+      ],
+    });
+
+    // Rich message before deletion has text and active contentState
+    expect(richItem).toMatchObject({
+      contentState: "active",
+      text: "caption text",
+      media: [
+        {
+          kind: "image",
+          description: null,
+          availability: "available",
+        },
+      ],
+    });
+
+    // Now simulate text body loss/deletion for the rich message
+    h.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(richEvent.source.id);
+
+    const afterDeletion = await read(a1.id);
+    const richAfterItem = afterDeletion.items.find(
+      (e: { source: { id: string } }) => e.source.id === richEvent.source.id,
+    );
+    const pureAfterItem = afterDeletion.items.find(
+      (e: { source: { id: string } }) => e.source.id === pureImageEvent.source.id,
+    );
+
+    // Negative case: Rich message lost its text body -> contentState MUST remain "unavailable".
+    // Available media presence must NOT mask the lost text body!
+    expect(richAfterItem).toMatchObject({
+      contentState: "unavailable",
+      text: null,
+      media: [
+        {
+          kind: "image",
+          description: null,
+          availability: "available",
+        },
+      ],
+    });
+
+    // Pure image remains active and unaffected
+    expect(pureAfterItem).toMatchObject({
+      contentState: "active",
+      text: null,
+      media: [
+        {
+          kind: "image",
+          description: null,
+          availability: "available",
+        },
+      ],
+    });
+
+    // Expiry retains true expired state
+    h.db
+      .query("UPDATE qq_media_notes SET expires_at='2000-01-01T00:00:00.000Z' WHERE event_key=?")
+      .run(pureImageEvent.source.id);
+
+    const expiredView = await read(a1.id);
+    const pureExpiredItem = expiredView.items.find(
+      (e: { source: { id: string } }) => e.source.id === pureImageEvent.source.id,
+    );
+    expect(pureExpiredItem).toMatchObject({
+      contentState: "expired",
+      text: null,
+      media: [
+        {
+          kind: "image",
+          description: null,
+          availability: "expired",
+        },
+      ],
+    });
   });
 });

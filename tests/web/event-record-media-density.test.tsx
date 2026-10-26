@@ -302,3 +302,33 @@ it("summarizes readable and unavailable counts together while keeping descriptio
   expect(record.getByText("r1")).toBeDefined();
   expect(record.getByText("e1")).toBeDefined();
 });
+
+it("renders pure image message with active contentState as '暂无可用媒体描述' without '原文暂不可用' or '媒体不可用'", () => {
+  const view = renderRecord(
+    eventView({
+      text: null,
+      contentState: "active",
+      media: [{ id: "pure-img-1", kind: "image", description: null, availability: "available" }],
+    }),
+  );
+  expect(view.getByText("图片 · 暂无可用媒体描述")).toBeDefined();
+  expect(view.queryByText("原文暂不可用")).toBeNull();
+  expect(view.queryByText("媒体不可用")).toBeNull();
+  const record = openSourceRecord(view.container);
+  expect(record.getByText("pure-img-1")).toBeDefined();
+});
+
+it("renders image message with lost text body by preserving '原文暂不可用' alongside available media", () => {
+  const view = renderRecord(
+    eventView({
+      text: null,
+      contentState: "unavailable",
+      media: [{ id: "lost-body-img", kind: "image", description: null, availability: "available" }],
+    }),
+  );
+  expect(view.getByText("原文暂不可用")).toBeDefined();
+  expect(view.getByText("图片 · 暂无可用媒体描述")).toBeDefined();
+  expect(view.queryByText("媒体不可用")).toBeNull();
+  const record = openSourceRecord(view.container);
+  expect(record.getByText("lost-body-img")).toBeDefined();
+});

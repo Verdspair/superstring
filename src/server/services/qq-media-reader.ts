@@ -45,6 +45,7 @@ import {
   qqMediaFailureOutcome,
   qqMediaModelFor,
 } from "./qq-media-contract";
+import { QqMediaSourceUnavailableError } from "./qq-media-source";
 
 // Prevent two reads of the same segment in one process from overlapping. The database
 // CAS below remains necessary for other processes; this is not a persistent lease.
@@ -505,6 +506,41 @@ export async function readQqMediaTaskOnce(
         authorityRevision: startBinding.authorityRevision,
       };
     })();
+  const domainGuard: MediaTaskSourceGuard = (tx) => {
+    const conversation = tx
+      .select({ epoch: conversations.bindingEpoch, closedAt: conversations.closedAt })
+      .from(conversations)
+      .where(eq(conversations.id, ownerScope.conversationId))
+      .get();
+    const binding = tx
+      .select({ authorityRevision: qqBindings.authorityRevision, agentId: qqBindings.agentId })
+      .from(qqBindings)
+      .where(eq(qqBindings.id, startBinding.id))
+      .get();
+    if (
+      !conversation ||
+      conversation.closedAt !== null ||
+      conversation.epoch !== ownerScope.bindingEpoch ||
+      !binding ||
+      binding.agentId !== owner.agentId ||
+      binding.agentId !== event.agentId ||
+      binding.authorityRevision !== ownerScope.authorityRevision
+    ) {
+      fail("CONTEXT_SOURCE_INVALID", "媒体读取的会话归属已变化");
+    }
+    input.assertCurrent(tx);
+    if (input.purpose === "detail") input.assertQuestionCurrent(tx);
+  };
+  const checkedGuard: MediaTaskSourceGuard = (tx) => {
+    signal?.throwIfAborted();
+    try {
+      domainGuard(tx);
+    } finally {
+      // A cancellation during the guard wins over any domain error the guard
+      // raised; 取消后的失败记账仍需来源授权。
+      signal?.throwIfAborted();
+    }
+  };
   const purpose: QqMediaReadPurpose = input.purpose;
   if (row.expiresAt <= now()) return { kind: "unreadable", reason: "segment_expired" };
   if (row.segmentKind !== "image" && row.segmentKind !== "record" && row.segmentKind !== "video")
@@ -545,7 +581,20 @@ export async function readQqMediaTaskOnce(
     if (asset) {
       contentSha256 = asset.asset.contentSha256;
     } else if (adapter.fetchBytes) {
-      const fetched = await adapter.fetchBytes({ kind, sourceRef: row.sourceRef, signal });
+      let fetched: { readonly bytes: Uint8Array };
+      try {
+        fetched = await adapter.fetchBytes({ kind, sourceRef: row.sourceRef, signal });
+      } catch (error) {
+        // An explicit upstream refusal (resolved non-source) lands here before the
+        // claim: no attempt is spent, no identity/asset is written. Only the typed
+        // source error converts to a plain unreadable — cancellation, authority
+        // loss and unknown errors propagate; the conversion re-runs the shared
+        // checkedGuard (signal + domain authority + host source/question guards),
+        // never swallowing a revocation behind a caller noop.
+        if (!(error instanceof QqMediaSourceUnavailableError)) throw error;
+        checkedGuard(orm);
+        return { kind: "unreadable", reason: "source_unavailable" };
+      }
       signal?.throwIfAborted();
       if (!(fetched.bytes instanceof Uint8Array) || fetched.bytes.byteLength === 0) {
         fail("MEMORY_SOURCE_INVALID", "媒体字节不可用，无法确认内容身份");
@@ -629,41 +678,6 @@ export async function readQqMediaTaskOnce(
       });
     }
   }
-  const domainGuard: MediaTaskSourceGuard = (tx) => {
-    const conversation = tx
-      .select({ epoch: conversations.bindingEpoch, closedAt: conversations.closedAt })
-      .from(conversations)
-      .where(eq(conversations.id, ownerScope.conversationId))
-      .get();
-    const binding = tx
-      .select({ authorityRevision: qqBindings.authorityRevision, agentId: qqBindings.agentId })
-      .from(qqBindings)
-      .where(eq(qqBindings.id, startBinding.id))
-      .get();
-    if (
-      !conversation ||
-      conversation.closedAt !== null ||
-      conversation.epoch !== ownerScope.bindingEpoch ||
-      !binding ||
-      binding.agentId !== owner.agentId ||
-      binding.agentId !== event.agentId ||
-      binding.authorityRevision !== ownerScope.authorityRevision
-    ) {
-      fail("CONTEXT_SOURCE_INVALID", "媒体读取的会话归属已变化");
-    }
-    input.assertCurrent(tx);
-    if (input.purpose === "detail") input.assertQuestionCurrent(tx);
-  };
-  const checkedGuard: MediaTaskSourceGuard = (tx) => {
-    signal?.throwIfAborted();
-    try {
-      domainGuard(tx);
-    } finally {
-      // A cancellation during the guard wins over any domain error the guard
-      // raised; 取消后的失败记账仍需来源授权。
-      signal?.throwIfAborted();
-    }
-  };
   // 成功内容缓存与预算行分两路（§5.7/0063）：预算行只决定 claim/去重，绝不把旧
   // failed/running 行冒充成缓存答案；成功复用单独按"内容身份（不含 requestId）+
   // model/policy 精确 + 未过期"跨请求只读查询，行仍要过下面的 sourceguard，

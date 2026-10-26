@@ -1730,7 +1730,15 @@ export function createQqMediaTools(options: QqMediaToolsOptions): BuiltInAction[
       const prior = state.outcomes.get(input.id);
       if (prior) {
         const fresh = baselineTask(input.id);
-        if (!fresh) return refuse(state, context, fits, "segment_missing");
+        if (!fresh) {
+          // 无账本行的同 run 复用只认一种拒绝：claim 前的明确上游不可用。同一安全
+          // 拒绝经 settle 原样重放（scope/边界/披露每 call 照走），不误报
+          // segment_missing；成功任务被删绝不借 memo 复活，其余 prior 仍按原样拒绝。
+          if (prior.value.status === "unavailable" && prior.value.code === "source_unavailable") {
+            return settle(state, context, fits, prior.value, [], snapshot(row));
+          }
+          return refuse(state, context, fits, "segment_missing");
+        }
         if (fresh.status === "succeeded") {
           const outcome = await cachePath((attempt) => ({
             status: "described",

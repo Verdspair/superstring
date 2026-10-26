@@ -304,12 +304,41 @@ export function conversationRoutes(
     );
     return c.json({
       ...result,
-      items: result.items.map(({ event, seq }, index) => ({
-        ...projected[index],
-        ...qqEventFacts(db, factStore, event, conversation, requestScopes, deliveryFacts),
-        conversationId: conversation.id,
-        seq,
-      })),
+      items: result.items.map(({ event, seq }, index) => {
+        const itemProjected = projected[index];
+        const facts = qqEventFacts(
+          db,
+          factStore,
+          event,
+          conversation,
+          requestScopes,
+          deliveryFacts,
+        );
+        let contentState = itemProjected.contentState;
+        if (
+          contentState === "unavailable" &&
+          (event.source.kind === "qq_event" || event.source.kind === "qq_observation") &&
+          facts.qqMessageFacts &&
+          facts.qqMessageFacts.length > 0
+        ) {
+          const matchingFact = facts.qqMessageFacts.find((f) => f.id === event.source.id);
+          if (
+            matchingFact &&
+            matchingFact.completeness === "full" &&
+            !matchingFact.parts.some((p) => p.kind === "text") &&
+            itemProjected.media.some((m) => m.availability === "available")
+          ) {
+            contentState = "active";
+          }
+        }
+        return {
+          ...itemProjected,
+          contentState,
+          ...facts,
+          conversationId: conversation.id,
+          seq,
+        };
+      }),
     });
   });
   return router;

@@ -15,12 +15,14 @@ import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { DEFAULT_USER_ID, ensureDefaults, nowIso } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { fail } from "../../src/server/errors";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import type { QqMediaTaskReadInput } from "../../src/server/services/qq-media-reader";
 import {
   type QqMediaReadAdapter,
   readQqMediaTaskOnce,
 } from "../../src/server/services/qq-media-reader";
+import { createQqMediaSourceFetcher } from "../../src/server/services/qq-media-source";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
 
 /** The real wire eventKey the production-ingest fixture records. */
@@ -1458,6 +1460,153 @@ describe("typed QQ media task reader", () => {
         }),
       ).toEqual({ kind: "unreadable", reason: "segment_missing" });
       expect(calls.count).toBe(0);
+      expect(h.orm.select().from(schema.qqMediaReadTasks).all()).toHaveLength(0);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe("identity fetch: upstream source unavailability (real fetcher)", () => {
+  /** 与 base 相同，但省去宿主 sha：identity 走 adapter.fetchBytes 的真实取流链。 */
+  function noShaInput(overrides: Partial<QqMediaTaskReadInput> = {}): QqMediaTaskReadInput {
+    const { contentSha256: _omit, ...rest } = base;
+    return {
+      ...rest,
+      purpose: "baseline",
+      assertCurrent: guardOk,
+      ...overrides,
+    } as QqMediaTaskReadInput;
+  }
+
+  function fetchingAdapter(
+    fetchBytes: NonNullable<QqMediaReadAdapter["fetchBytes"]>,
+    read: QqMediaReadAdapter["read"],
+  ): QqMediaReadAdapter {
+    return { capabilities: ["image"] as const, fetchBytes, read };
+  }
+
+  it("converts a real fetcher's source-unavailable (timeout) into an unreadable refusal without a claim", async () => {
+    const h = setup();
+    try {
+      const reads = { count: 0 };
+      const resolves: string[] = [];
+      const fetcher = createQqMediaSourceFetcher({
+        resolveSource: async (request) => {
+          resolves.push(request.sourceRef);
+          return { kind: "unavailable", reason: "timeout" };
+        },
+      });
+      const result = await readQqMediaTaskOnce(
+        h.orm,
+        fetchingAdapter(fetcher, async () => {
+          reads.count++;
+          return "不应被调用";
+        }),
+        noShaInput(),
+      );
+      // 上游明确不可用是 claim 前的已知结局：转 unreadable，不烧 attempt。
+      expect(result).toEqual({ kind: "unreadable", reason: "source_unavailable" });
+      expect(reads.count).toBe(0);
+      expect(resolves).toEqual(["upstream-ref"]);
+      // 源不可用不算已消耗模型 attempt：无 claim、无账本行、行级计数不动。
+      expect(mediaNoteRow(h.orm, base.eventKey, 0)?.attempts).toBe(0);
+      expect(h.orm.select().from(schema.qqMediaReadTasks).all()).toHaveLength(0);
+      // 安全 code 不携带上游引用/URL/路径。
+      expect(JSON.stringify(result)).not.toContain("upstream-ref");
+    } finally {
+      h.close();
+    }
+  });
+
+  it("keeps a cancellation during the identity fetch a hard failure (never unreadable)", async () => {
+    const h = setup();
+    try {
+      const controller = new AbortController();
+      const fetcher = createQqMediaSourceFetcher({
+        resolveSource: async () => {
+          controller.abort();
+          return { kind: "unavailable", reason: "timeout" };
+        },
+      });
+      await expect(
+        readQqMediaTaskOnce(
+          h.orm,
+          fetchingAdapter(fetcher, async () => "不应被调用"),
+          noShaInput(),
+          controller.signal,
+        ),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(h.orm.select().from(schema.qqMediaReadTasks).all()).toHaveLength(0);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("keeps unknown fetcher errors and a revoked source authority hard failures (never swallowed into unreadable)", async () => {
+    const h = setup();
+    try {
+      // (a) 未知编程错误原样穿透，不转 unreadable。
+      const crash = createQqMediaSourceFetcher({
+        resolveSource: async () => {
+          throw new TypeError("synthetic resolve crash");
+        },
+      });
+      await expect(
+        readQqMediaTaskOnce(
+          h.orm,
+          fetchingAdapter(crash, async () => "不应被调用"),
+          noShaInput(),
+        ),
+      ).rejects.toThrow("synthetic resolve crash");
+
+      // (b) fetch 失败后必须再复验来源授权：撤权按 CONTEXT_SOURCE_INVALID 抛出，
+      // 绝不吞成 unreadable（吞掉撤权＝越权读取）。
+      let revoked = false;
+      const revoking = createQqMediaSourceFetcher({
+        resolveSource: async () => {
+          revoked = true;
+          return { kind: "unavailable", reason: "timeout" };
+        },
+      });
+      const revocationGuard: MediaTaskSourceGuard = () => {
+        if (revoked) fail("CONTEXT_SOURCE_INVALID", "媒体读取的来源授权已变化");
+      };
+      await expect(
+        readQqMediaTaskOnce(
+          h.orm,
+          fetchingAdapter(revoking, async () => "不应被调用"),
+          noShaInput({ assertCurrent: revocationGuard }),
+        ),
+      ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+      expect(h.orm.select().from(schema.qqMediaReadTasks).all()).toHaveLength(0);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("re-checks the reader's own domain authority after a fetch failure (a noop caller guard cannot hide a revocation)", async () => {
+    const h = setup();
+    try {
+      const fetcher = createQqMediaSourceFetcher({
+        resolveSource: async () => {
+          // 取流期间绑定授权修订变化：reader 自身的领域守卫必须在转换前抓到，
+          // caller 层 noop 守卫不能掩护撤权。
+          h.orm
+            .update(schema.qqBindings)
+            .set({ revision: 2, authorityRevision: 2 })
+            .where(eq(schema.qqBindings.id, "11111111-1111-4111-8111-111111111111"))
+            .run();
+          return { kind: "unavailable", reason: "timeout" };
+        },
+      });
+      await expect(
+        readQqMediaTaskOnce(
+          h.orm,
+          fetchingAdapter(fetcher, async () => "不应被调用"),
+          noShaInput({ assertCurrent: () => {} }),
+        ),
+      ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
       expect(h.orm.select().from(schema.qqMediaReadTasks).all()).toHaveLength(0);
     } finally {
       h.close();

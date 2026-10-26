@@ -21,7 +21,10 @@ import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames"
 import { QqImagePrepareError } from "../../src/server/services/qq-image-error";
 import { createQqMediaAdapter } from "../../src/server/services/qq-media-adapter";
 import { readQqAddressedMediaOnce } from "../../src/server/services/qq-media-cycle";
-import { createQqMediaSourceFetcher } from "../../src/server/services/qq-media-source";
+import {
+  createQqMediaSourceFetcher,
+  QqMediaSourceUnavailableError,
+} from "../../src/server/services/qq-media-source";
 import { createEphemeralAgentRuntime } from "../harness/ephemeral-runtime";
 
 const AGENT = "00000000-0000-0000-0000-000000000001";
@@ -436,7 +439,24 @@ describe("the media source fetcher", () => {
     const fetcher = createQqMediaSourceFetcher({
       resolveSource: async () => ({ kind: "unavailable", reason: "not_ready" }),
     });
-    await expect(fetcher({ kind: "image", sourceRef: "ref" })).rejects.toThrow(/not_ready/);
+    const refusal = fetcher({ kind: "image", sourceRef: "ref" });
+    // 明确上游不可用是 typed 已知结局：固定安全 message，原因只留在连接层作诊断，
+    // 绝不随错误体插值外泄。
+    await expect(refusal).rejects.toBeInstanceOf(QqMediaSourceUnavailableError);
+    await expect(refusal).rejects.toThrow("QQ media source unavailable");
+    // 恶意 reason（URL/路径形状）也不得出现在错误 message 里。
+    const hostile = createQqMediaSourceFetcher({
+      resolveSource: async () => ({
+        kind: "unavailable",
+        reason: "timeout at http://qq-upstream.invalid/secret/cache.png",
+      }),
+    });
+    await expect(hostile({ kind: "image", sourceRef: "ref" })).rejects.toThrow(
+      "QQ media source unavailable",
+    );
+    await expect(hostile({ kind: "image", sourceRef: "ref" })).rejects.not.toThrow(
+      /invalid|secret/,
+    );
   });
 });
 

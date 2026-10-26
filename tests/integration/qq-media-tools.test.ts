@@ -28,6 +28,8 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { fail } from "../../src/server/errors";
 import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
 import type { QqBinding } from "../../src/server/services/qq-binding-contract";
+import type { QqMediaReadAdapter } from "../../src/server/services/qq-media-reader";
+import { createQqMediaSourceFetcher } from "../../src/server/services/qq-media-source";
 import {
   createQqMediaTools,
   type QqMediaToolsOptions,
@@ -247,6 +249,7 @@ function open() {
       conversationId?: string;
       binding?: QqBinding;
       resolveQuestion?: QqMediaToolsOptions["resolveQuestion"];
+      fetchBytes?: NonNullable<QqMediaReadAdapter["fetchBytes"]>;
     } = {},
   ) {
     const stats = { calls: 0, described: [] as string[] };
@@ -260,9 +263,11 @@ function open() {
         // The reader's identity discipline needs controlled bytes: the test
         // adapter derives them deterministically from the source ref (same
         // ref = same bytes = same identity), exactly one download per read.
-        fetchBytes: async (request) => ({
-          bytes: pngBytesFor(request.kind, request.sourceRef),
-        }),
+        fetchBytes:
+          input.fetchBytes ??
+          (async (request) => ({
+            bytes: pngBytesFor(request.kind, request.sourceRef),
+          })),
         read: async (request) => {
           stats.calls++;
           return (input.read ?? (async () => "橘猫"))(request);
@@ -1939,6 +1944,150 @@ describe("run-scoped QQ media tools", () => {
         throw new Error("runtime bound context has no run id");
       expect(boundContext.signal.aborted).toBe(true);
       expect(repository.getRun(boundRunId)?.status).toBe("cancelled");
+      expect(getEventListeners(boundContext.signal, "abort")).toHaveLength(0);
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("reports the real fetcher's source unavailability as an unavailable envelope without a model call", async () => {
+    const f = open();
+    try {
+      const img = f.image("img-source-timeout");
+      const resolves: string[] = [];
+      const fetcher = createQqMediaSourceFetcher({
+        // 与生产 resolveMediaSource 超时同形：{ kind: "unavailable", reason: "timeout" }。
+        resolveSource: async () => {
+          resolves.push("resolve");
+          return { kind: "unavailable", reason: "timeout" };
+        },
+      });
+      const media = f.mount({ fetchBytes: fetcher });
+      const run = f.context("run-source-timeout");
+      await media.execute("media.list", {}, run.ctx);
+      const described = await media.execute("media.describe", { id: img.id }, run.ctx);
+      // 源不可用发生在 claim 前：不烧 attempt，工具信封沿用既有 unavailable code。
+      expect(described.value).toEqual({ status: "unavailable", code: "source_unavailable" });
+      expect(described.sources).toEqual([]);
+      // 模型步骤零进入、未 claim、未烧 attempt、未伪造缓存/identity。
+      expect(media.stats.calls).toBe(0);
+      expect(f.h.orm.select().from(schema.qqMediaReadTasks).all()).toHaveLength(0);
+      expect(mediaNoteRow(f.h.orm, "img-source-timeout", 0)?.attempts).toBe(0);
+      // 信封不携带上游引用/URL/路径。
+      expect(JSON.stringify(described.value)).not.toContain("ref-img-source-timeout");
+      // 同 run 重复 describe 是同一拒绝结果的复用：不再次取流、不自动重试，
+      // 无账本行也不得误报成 segment_missing。
+      const again = await media.execute("media.describe", { id: img.id }, run.ctx);
+      expect(again.value).toEqual({ status: "unavailable", code: "source_unavailable" });
+      expect(again.sources).toEqual([]);
+      expect(resolves).toHaveLength(1);
+      expect(media.stats.calls).toBe(0);
+      expect(f.h.orm.select().from(schema.qqMediaReadTasks).all()).toHaveLength(0);
+      expect(mediaNoteRow(f.h.orm, "img-source-timeout", 0)?.attempts).toBe(0);
+    } finally {
+      f.h.close();
+    }
+  });
+
+  it("keeps the whole run alive when describe hits a source timeout and ends as a normal none", async () => {
+    const f = open();
+    try {
+      const img = f.image("img-runtime-timeout");
+      const resolves: string[] = [];
+      const fetcher = createQqMediaSourceFetcher({
+        resolveSource: async () => {
+          resolves.push("resolve");
+          return { kind: "unavailable", reason: "timeout" };
+        },
+      });
+      const media = f.mount({ fetchBytes: fetcher });
+      const actions = media.actions;
+      const repository = new AgentRunRepository(f.h.db);
+      let modelCalls = 0;
+      const bound: ActionContext[] = [];
+      const runtime = new AgentRuntime({
+        repository,
+        actions,
+        model: {
+          async complete(request) {
+            modelCalls++;
+            const invoke = (name: string, arguments_: Record<string, unknown>) =>
+              JSON.stringify({ kind: "invoke", name, arguments: arguments_ });
+            if (modelCalls === 1) return invoke("media.list", {});
+            if (modelCalls === 2) return invoke("media.describe", { id: img.id });
+            // 第三步先核对 describe 观察确实进来了，再正常 none 收轮。
+            const parsed = request.messages
+              .flatMap((m) => m.content.flatMap((p) => (p.kind === "text" ? [p.text] : [])))
+              .map((text) => {
+                try {
+                  return JSON.parse(text) as {
+                    kind?: string;
+                    value?: { name?: string; value?: unknown };
+                  };
+                } catch {
+                  return null;
+                }
+              });
+            expect(
+              parsed.find(
+                (i) => i?.kind === "action_observation" && i.value?.name === "media.describe",
+              )?.value?.value,
+            ).toEqual({ status: "unavailable", code: "source_unavailable" });
+            return JSON.stringify({ kind: "none" });
+          },
+          async *streamText() {},
+          async completeMultimodal() {
+            throw new Error("not used");
+          },
+        },
+      });
+      const result = await runtime.run(
+        {
+          id: "qq.runtime-source-timeout.test",
+          version: "1",
+          model: "synthetic-model",
+          instructions: "List media, describe it, then decide.",
+          context: "conversation",
+          availableActions: [
+            media.named("media.list").description,
+            media.named("media.describe").description,
+          ],
+          limits: { steps: 4 },
+        },
+        {
+          owner: {
+            kind: "conversation",
+            id: f.conversation.id,
+            userId: DEFAULT_USER_ID,
+            agentId: AGENT,
+          },
+          conversationId: f.conversation.id,
+          authorizedTargets: ["peer"],
+          outputMode: "buffered",
+          actions,
+          context: {
+            bindRun(actionContext) {
+              bound.push(actionContext);
+            },
+            async read() {
+              return { pending: [textMessage("user", "看看这张图")] };
+            },
+            assertCurrent() {},
+          },
+        },
+      );
+      // 源超时不打穿整轮：按既有 none 语义正常 no_output 收轮，绝不 failed。
+      expect(result.status).toBe("no_output");
+      const boundContext = bound[0];
+      if (!boundContext?.runId) throw new Error("runtime bound the context without a run id");
+      expect(repository.getRun(boundContext.runId)?.status).not.toBe("failed");
+      expect(modelCalls).toBe(3);
+      expect(new Set(bound).size).toBe(1);
+      // 取流恰一次（不自动重试）；视觉读 0、无 claim/账本行/attempt。
+      expect(resolves).toHaveLength(1);
+      expect(media.stats.calls).toBe(0);
+      expect(f.h.db.query("SELECT id FROM qq_media_read_tasks").all()).toHaveLength(0);
+      expect(mediaNoteRow(f.h.orm, "img-runtime-timeout", 0)?.attempts).toBe(0);
       expect(getEventListeners(boundContext.signal, "abort")).toHaveLength(0);
     } finally {
       f.h.close();

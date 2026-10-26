@@ -554,19 +554,17 @@ function projectEvent(
       id: m.id,
       kind: m.segment_kind,
       description: expired(m.expires_at) ? null : m.note,
-      availability: expired(m.expires_at) ? "expired" : m.note ? "available" : "unavailable",
+      availability: expired(m.expires_at) ? "expired" : "available",
     }));
+    const allMediaExpired = media.length > 0 && media.every((m) => expired(m.expires_at));
     const stale =
       expired(row.expires_at) ||
-      event.sources.some((s) => s.kind === "qq_observation" && expired(s.expiresAt));
+      event.sources.some((s) => s.kind === "qq_observation" && expired(s.expiresAt)) ||
+      (!row.body && allMediaExpired);
     return {
       ...base,
       text: stale ? null : row.body,
-      contentState: stale
-        ? "expired"
-        : row.body || base.media.some((m) => m.availability === "available")
-          ? "active"
-          : "unavailable",
+      contentState: stale ? "expired" : row.body ? "active" : "unavailable",
     };
   }
   if (event.source.kind === "qq_media") {
