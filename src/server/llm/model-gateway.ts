@@ -33,7 +33,6 @@ import type {
   ModelResponseMetadata,
   RunOwner,
 } from "../../shared/contracts/agent-run";
-import { measureContextTokens } from "../agent/context-engine";
 import type {
   ModelContextBudget,
   ModelResolvedPrepareInput,
@@ -45,14 +44,22 @@ import {
   attemptMetadata,
   finishReasonsFromPayload,
   observeStreamFinishReason,
+  parseProviderUsage,
   reportModelResponse,
 } from "./model-response";
+import {
+  measureContextTokens,
+  modelRequestFormat,
+  nativeToolDeclarations,
+  type PreparedRequestFormat,
+} from "./request-format";
 import {
   markImageContentRejection,
   type StructuredOutputLevel,
   strictSchemaAccepted,
   structuredOutputKey,
   structuredOutputRejected,
+  structuredOutputStart,
   toStrictRequiredSchema,
   withStructuredOutputChain,
 } from "./strict-json-schema";
@@ -110,6 +117,11 @@ export interface ModelTool {
 }
 
 export interface ModelGateway {
+  prepareRequestFormat?(input: {
+    model: string;
+    responseSchema?: Record<string, unknown>;
+    tools?: readonly ModelTool[];
+  }): PreparedRequestFormat;
   listModels(options?: { signal?: AbortSignal }): Promise<string[]>;
   /** `signal` aborts the capacity probe when the caller is cancelled. */
   loadedContextCapacity(model: string, options?: { signal?: AbortSignal }): Promise<number | null>;
@@ -123,6 +135,7 @@ export interface ModelGateway {
   ): Promise<ModelContextBudget>;
   probeModelLoaded(): Promise<boolean>;
   complete(options: {
+    requestFormat?: PreparedRequestFormat;
     /**
      * 初始 wire 槽（no-hook 路径 = 真实消息）。钩子路径由 ModelPort 受控传 `[]` 占位 +
      * `preparedFrom`（原始 ModelMessage[]），占位在钩子输出最终 messages 后被替换，永不落 wire。
@@ -279,37 +292,6 @@ function decisionTextFromToolCalls(
     batch.push({ name, arguments: parsed as Record<string, unknown> });
   }
   return JSON.stringify({ kind: "invoke", calls: batch });
-}
-
-/** OpenAI function names cannot contain the dots used by the host action catalog. */
-function nativeToolDeclarations(tools: readonly ModelTool[]): {
-  tools: ModelTool[];
-  wireNames: ReadonlyMap<string, string>;
-} {
-  const validName = /^[A-Za-z0-9_-]{1,64}$/;
-  const reserved = new Set(
-    tools.filter((tool) => validName.test(tool.name)).map((tool) => tool.name),
-  );
-  const wireNames = new Map<string, string>();
-  let nextAlias = 0;
-  const declarations = tools.map((tool): ModelTool => {
-    let name = tool.name;
-    if (!validName.test(name)) {
-      do {
-        name = `ss_action_${nextAlias++}`;
-      } while (reserved.has(name));
-      reserved.add(name);
-    }
-    wireNames.set(name, tool.name);
-    return name === tool.name
-      ? tool
-      : {
-          ...tool,
-          name,
-          description: `${tool.description}\nHost action: ${tool.name}. Use ${name} for native function calls; keep the host name in JSON decisions.`,
-        };
-  });
-  return { tools: declarations, wireNames };
 }
 
 /** Native calls carry the decision; any media fields still belong to the strict host parser. */
@@ -874,7 +856,7 @@ export function pickUsableModel(input: {
   return input.availableLocal[0] ?? input.configured;
 }
 
-function assertContextInputFits(
+export function assertContextInputFits(
   messages: readonly ChatMessage[],
   options: {
     contextBudget?: ModelContextBudget;
@@ -1188,6 +1170,29 @@ export function createLmStudioClient(
       return Object.freeze({ ...budget, countText: counter.count });
     },
 
+    prepareRequestFormat(input) {
+      const route = resolveRouteFor(input.model);
+      const external = route.external !== null;
+      const key = structuredOutputKey(route.cfg.baseUrl, input.model);
+      const schema =
+        input.responseSchema === undefined
+          ? undefined
+          : external
+            ? toStrictRequiredSchema(input.responseSchema)
+            : input.responseSchema;
+      const native = nativeToolDeclarations(input.tools ?? []);
+      return Object.freeze({
+        level:
+          schema === undefined
+            ? "none"
+            : structuredOutputStart(key, !external || strictSchemaAccepted(schema)),
+        schema,
+        tools:
+          external && native.tools.length > 0 && !toolsUnavailable(key) ? native.tools : undefined,
+        wireNames: native.wireNames,
+      });
+    },
+
     async probeModelLoaded(): Promise<boolean> {
       await requestJson(
         config,
@@ -1279,8 +1284,9 @@ export function createLmStudioClient(
       // (`required` must list every key). The rewritten schema says the same thing in their
       // dialect — required, but nullable — and this side reads both the same way. The local
       // service keeps the frozen schema byte for byte. Rewritten once per call, not per attempt.
-      const outboundSchema =
-        options.responseSchema === undefined
+      const outboundSchema = options.requestFormat
+        ? options.requestFormat.schema
+        : options.responseSchema === undefined
           ? undefined
           : isExternal
             ? toStrictRequiredSchema(options.responseSchema)
@@ -1289,8 +1295,12 @@ export function createLmStudioClient(
       // 外部模型默认允许尝试原生 tools；只有服务明确拒绝过 tools 的本进程负缓存才不再带
       // （见 tool-calling.ts）。
       const toolDeclarations = options.tools ?? [];
-      const nativeTools = nativeToolDeclarations(toolDeclarations);
-      let sendTools = isExternal && toolDeclarations.length > 0 && !toolsUnavailable(key);
+      const nativeTools = options.requestFormat
+        ? { tools: options.requestFormat.tools ?? [], wireNames: options.requestFormat.wireNames }
+        : nativeToolDeclarations(toolDeclarations);
+      let sendTools = options.requestFormat
+        ? options.requestFormat.tools !== undefined
+        : isExternal && toolDeclarations.length > 0 && !toolsUnavailable(key);
       // retryPolicy 路径的整次逻辑调用共享状态：剩余次数与一个共享 lifetime（定时器在第一次
       // 真正发送时启动，总时限横跨重试等待与后续发送、不因重试重置；收口 finally 关闭）。
       let retriesLeft =
@@ -1320,25 +1330,10 @@ export function createLmStudioClient(
           if (options.maxTokens < 1) throw new Error("max_tokens must be positive");
           body.max_tokens = options.maxTokens;
         }
-        if (withTools) {
-          body.tools = nativeTools.tools.map((tool) => ({
-            type: "function",
-            function: {
-              name: tool.name,
-              description: tool.description,
-              parameters: tool.parameters,
-            },
-          }));
-        }
-        if (options.responseSchema !== undefined && level !== "none") {
-          body.response_format =
-            level === "json_object"
-              ? { type: "json_object" }
-              : {
-                  type: "json_schema",
-                  json_schema: { name: "superstring_result", strict: true, schema: outboundSchema },
-                };
-        }
+        Object.assign(
+          body,
+          modelRequestFormat(outboundSchema, level, withTools ? nativeTools.tools : undefined),
+        );
         // 首次发送尚无共享 lifetime，用调用方 signal（保持原起点）；重试/后续发送的准入等待
         // 用共享 lifetime 的合并 signal——总时限到点/取消能终止准入，不挂起；过期经 rethrow
         // 映射（MODEL_TIMEOUT/原 caller reason），其他准入错误原样传播。
@@ -1398,11 +1393,19 @@ export function createLmStudioClient(
               finish_reason?: string | null;
               message?: { content?: string | null; tool_calls?: unknown };
             }>;
+            usage?: unknown;
           };
-          // 尝试落定（成功路径）：原样 finish_reason，字段缺席 = []。
+          // 尝试落定（成功路径）：原样 finish_reason，字段缺席 = []；usage 只解析本
+          // 次尝试自己的载荷（D1/D2 独立可选，缺/坏字段不造数，重试不继承）。
           reportModelResponse(
             options.onModelResponse,
-            attemptMetadata("complete", httpStatus, finishReasonsFromPayload(payload)),
+            attemptMetadata(
+              "complete",
+              httpStatus,
+              finishReasonsFromPayload(payload),
+              undefined,
+              parseProviderUsage(payload.usage),
+            ),
           );
           return payload;
         } catch (error) {
@@ -1469,6 +1472,7 @@ export function createLmStudioClient(
           // 形状注定被严格模式整单拒绝的 schema（判别联合的 oneOf）不去白撞一次 400：直接起步于
           // json_object。本地路由不参与这个判断。
           strictAccepted: !isExternal || strictSchemaAccepted(outboundSchema),
+          startLevel: options.requestFormat?.level,
           send: attempt,
           rejectionDetail: providerReason,
         });
@@ -1680,10 +1684,14 @@ export function createLmStudioClient(
             }
             const startedAt = Date.now();
             // 尝试级观察面：httpStatus 在 4xx 抛错前捕获；finishReasons 按到达顺序收原样值
-            // （显式 null 保留，缺席 chunk 忽略）；doneMarker 只记真实观察到的 [DONE]。
+            // （显式 null 保留，缺席 chunk 忽略）；doneMarker 只记真实观察到的 [DONE]；
+            // usage 只取本次尝试最后观察到的 usage 帧（累计帧取最后值，不求和，不继承
+            // 前次）；失败尝试保真保留已实际回传的 usage——失败由错误码/finish/步骤状态
+            // 记录，usage 在场绝不被读作成功；未收到 usage 缺席（缺席不是 0，不造数）。
             let httpStatus: number | undefined;
             const finishReasons: (string | null)[] = [];
             let doneMarker: boolean | undefined;
+            let lastUsageRaw: unknown;
             let response: Response;
             try {
               response = await request(
@@ -1747,12 +1755,16 @@ export function createLmStudioClient(
                     finish_reason?: string | null;
                     delta?: { content?: string | null };
                   }>;
+                  usage?: unknown;
                 };
                 try {
                   chunk = JSON.parse(payload);
                 } catch {
                   continue;
                 }
+                // usage-only 帧（无 choices）在此照常继续：先记最后观察到的 usage 帧，
+                // 再走既有 choices 判定；usage 帧绝不改变 finished/delta 语义。
+                if (chunk.usage !== undefined) lastUsageRaw = chunk.usage;
                 const choice = chunk.choices?.[0];
                 if (!choice) continue;
                 // 观察面：原样值按到达顺序去重收集，不影响下面的既有判定。
@@ -1791,7 +1803,13 @@ export function createLmStudioClient(
             } finally {
               reportModelResponse(
                 options.onModelResponse,
-                attemptMetadata("stream", httpStatus, finishReasons, doneMarker),
+                attemptMetadata(
+                  "stream",
+                  httpStatus,
+                  finishReasons,
+                  doneMarker,
+                  lastUsageRaw === undefined ? undefined : parseProviderUsage(lastUsageRaw),
+                ),
               );
               lifetime.close();
             }

@@ -1,3 +1,7 @@
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 // Production-composition coverage for concurrent replies before awareness material is added.
 
 import type { Database } from "bun:sqlite";
@@ -149,12 +153,19 @@ function composeFixture(options: {
   /** Facts-aware score hook: receives the batch envelope and the concurrent-jobs projection actually sent. */
   scoreFromFacts?: (input: { envelope: BatchEnvelope; jobs: ConcurrentJobsDump | null }) => number;
 }) {
-  const h = cloneBusinessDb();
+  const h = runtimeFixtureBusiness(cloneBusinessDb(), "awareness-model");
   handles.push(h);
   ensureDefaults(h.orm, "awareness-model");
   updateQqSettings(h.orm, { accountId: ACCOUNT_ID, enabled: true, expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
+    context: { ...fixtureLegacyContext },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     name: `reply-awareness-${crypto.randomUUID()}`,
+    taskLimits: { mention_task_limit: 4, ordinary_task_limit: 1 },
     triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: false },
     reply: { split_by_speaker: true },
     rhythm: {

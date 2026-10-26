@@ -1,4 +1,4 @@
-import type { AgentResponse } from "../../../shared/contracts";
+import { type AgentResponse, newAgentDefaults } from "../../../shared/contracts";
 import { msg } from "../../i18n";
 import { resolvePreloadedPersona } from "../../services/agent-preload";
 import { errorText, persistBrowserState } from "../../state/helpers";
@@ -66,23 +66,24 @@ export function createAgentActions(
           error: null,
         });
         const model = get().modelNames[0] ?? get().agents[0]?.model_name ?? "";
+        const defaults = newAgentDefaults();
         set({
           editorDraft: {
             name: "",
             description: "",
             additional_instructions: "",
             model_name: model,
-            temperature: 0.7,
+            temperature: defaults.temperature,
             memory_consolidation_model_name: null,
-            memory_consolidation_prompt: get().agents[0]?.memory_consolidation_prompt ?? "",
+            memory_consolidation_prompt: "",
             memory_consolidation_additional_instructions: "",
             memory_retrieval_model_name: null,
-            memory_retrieval_prompt: get().agents[0]?.memory_retrieval_prompt ?? "",
+            memory_retrieval_prompt: "",
             context_compression_model_name: null,
-            p5_config: get().agents[0]?.p5_config ?? ({} as AgentResponse["p5_config"]),
-            is_active: true,
+            p5_config: defaults.p5_config,
+            is_active: defaults.is_active,
             config_version: 0,
-            persona_intensity: 60,
+            persona_intensity: defaults.persona_intensity,
           },
           persona: {
             id: "",
@@ -221,6 +222,8 @@ export function createAgentActions(
             model_name: draft.model_name,
             temperature: draft.temperature,
             is_active: draft.is_active,
+            persona_intensity: draft.persona_intensity,
+            p5_config: draft.p5_config,
           });
         } else {
           const persisted = get().agents.find((agent) => agent.id === ownerEditorId);

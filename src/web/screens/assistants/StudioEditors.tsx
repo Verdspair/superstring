@@ -23,7 +23,11 @@ import { translateNotice } from "@/i18n";
 import { startRead } from "@/services/read-task";
 import { useSuperstringStore } from "@/store";
 import { P5ConfigSchema } from "../../../shared/contracts/models";
-import { executionPolicy, toolExecutionEnabled } from "../../../shared/contracts/permissions";
+import {
+  executionPolicy,
+  selectEffectivePermissionGrant,
+  toolExecutionEnabled,
+} from "../../../shared/contracts/permissions";
 import { compilePersona } from "../../../shared/contracts/persona-compile";
 import type { SuperstringApi } from "../../api";
 import { AllocationModelCapacity } from "../connections/AllocationModelCapacity";
@@ -199,17 +203,17 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
     const task = startRead((signal) => s.apiClient.getPermissions(signal), {
       success: (value) => {
         const execution = executionPolicy(value.policy);
-        const grants = new Map<string, (typeof value.policy.grants)[number]>();
-        for (const grant of value.policy.grants)
-          if (!grants.has(grant.resource)) grants.set(grant.resource, grant);
         const mine = value.resources.flatMap((resource) => {
-          const grant = grants.get(resource.resource);
-          if (
-            !grant ||
-            (grant.agentIds && !grant.agentIds.includes(agentId)) ||
-            !toolExecutionEnabled(execution, resource.name)
-          )
-            return [];
+          const effective = selectEffectivePermissionGrant(
+            value.policy,
+            resource.resource,
+            agentId,
+          );
+          if (!effective) return [];
+          const grant = effective.grant;
+          if (grant.enabled === false) return [];
+          if (grant.agentIds && !grant.agentIds.includes(agentId)) return [];
+          if (!toolExecutionEnabled(execution, resource.name)) return [];
           if (grant.revision !== undefined && grant.revision !== resource.revision) return [];
           if (resource.effect === "write" && !execution.modules.tasks) return [];
           return [

@@ -1213,7 +1213,7 @@ describe("outbound identity snapshot and part mapping", () => {
         identity: {
           qq: "90001",
           groupCard: null,
-          personalNickname: "群猫娘",
+          personalNickname: "示例助手昵称",
           legacyDisplayName: null,
           nameState: "known",
         },
@@ -1235,7 +1235,7 @@ describe("outbound identity snapshot and part mapping", () => {
       const claim2 = outbox.claimPart(intent.id, now)!;
       // 第二个部件未确认：投影只有第一段。
       const after = projectQqOutboundMessageFacts(h.orm, intent.id, now);
-      expect(after.identity).toMatchObject({ qq: "90001", personalNickname: "群猫娘" });
+      expect(after.identity).toMatchObject({ qq: "90001", personalNickname: "示例助手昵称" });
       expect(after.parts).toEqual([{ ordinal: 0, platformMessageId: "-201", text: "第一段" }]);
       outbox.settlePart(claim2.part.id, { status: "unknown" }, now);
       const final = projectQqOutboundMessageFacts(h.orm, intent.id, now);
@@ -1313,7 +1313,7 @@ describe("expiry cleanup extension", () => {
         identity: {
           qq: "90001",
           groupCard: null,
-          personalNickname: "群猫娘",
+          personalNickname: "示例助手昵称",
           legacyDisplayName: null,
           nameState: "known",
         },

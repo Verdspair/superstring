@@ -10,6 +10,7 @@ import type {
   ModelGateway,
   ModelTool,
 } from "../llm/model-gateway";
+import type { PreparedRequestFormat } from "../llm/request-format";
 import type { TextTokenEncoding } from "../llm/text-token-counter";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
 
@@ -62,6 +63,7 @@ export interface ModelContextBudget {
 export type ModelWorkClass = "mention" | "ordinary";
 
 export interface ModelRequest {
+  requestFormat?: PreparedRequestFormat;
   messages: readonly ModelMessage[];
   model?: string;
   /** Trusted Runtime task class used only for next-free send admission ordering. */
@@ -109,6 +111,10 @@ export interface ModelRequest {
   contextInputLimit?: number;
 }
 export interface MultimodalRequest {
+  requestFormat?: PreparedRequestFormat;
+  contextBudget?: ModelContextBudget;
+  contextInputLimit?: number;
+  assertPreparedCurrent?: (input: { model: string }) => void;
   onModelResponse?: (metadata: ModelResponseMetadata) => void;
   systemPrompt?: string;
   workClass?: ModelWorkClass;
@@ -124,6 +130,12 @@ export interface MultimodalRequest {
 }
 /** Protocol adapters are replaceable; inference ownership always stays in AgentRuntime. */
 export interface ModelPort {
+  prepareVisionRequestFormat?: VisionClient["prepareRequestFormat"];
+  prepareRequestFormat?(input: {
+    model: string;
+    responseSchema?: Record<string, unknown>;
+    tools?: readonly ModelTool[];
+  }): PreparedRequestFormat;
   readonly defaultModel?: string;
   complete(request: ModelRequest): Promise<string>;
   streamText(request: ModelRequest): AsyncGenerator<string, void, unknown>;
@@ -143,7 +155,9 @@ export interface ModelPort {
   readonly admission?: ModelAdmission;
 }
 export type TextModelGateway = Pick<ModelGateway, "complete"> &
-  Partial<Pick<ModelGateway, "streamChat" | "config" | "prepareContextModel">>;
+  Partial<
+    Pick<ModelGateway, "streamChat" | "config" | "prepareContextModel" | "prepareRequestFormat">
+  >;
 
 export function textMessages(messages: readonly ChatMessage[]): ModelMessage[] {
   return messages.map((message) => {
@@ -355,6 +369,8 @@ export function createModelPort(options: {
   return {
     defaultModel: options.gateway?.config?.model,
     prepareContextModel: options.gateway?.prepareContextModel?.bind(options.gateway),
+    prepareRequestFormat: options.gateway?.prepareRequestFormat?.bind(options.gateway),
+    prepareVisionRequestFormat: options.vision?.prepareRequestFormat?.bind(options.vision),
     admission,
     async complete(request) {
       const gateway = options.gateway;

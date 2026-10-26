@@ -24,7 +24,14 @@ function setup() {
   const orm = toOrmHandle(db).orm;
   ensureDefaults(orm, MODEL);
   createSession(orm, "会话", { modelName: MODEL });
-  const scheme = createQqScheme(orm, { name: "频率方案" });
+  const scheme = createQqScheme(orm, {
+    name: "频率方案",
+    stickers: {
+      sticker_min_repeat_minutes: 10,
+      sticker_recent_avoid_count: 5,
+      frequency: "medium",
+    },
+  });
   return { db, orm, scheme };
 }
 

@@ -11,7 +11,10 @@ import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-re
 import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
-import { saveQqConversationSummary } from "../../src/server/db/qq-summary-repository";
+import {
+  resolveQqSummaryProvenance,
+  saveQqConversationSummary,
+} from "../../src/server/db/qq-summary-repository";
 import {
   createSession,
   DEFAULT_AGENT_ID,
@@ -27,6 +30,7 @@ import { captureQqTask, createQqBinding } from "../../src/server/services/qq-bin
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import type { RuntimeConfig } from "../../src/shared/contracts";
 import type { RunOwner } from "../../src/shared/contracts/agent-run";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 import { parseSseFrames } from "../harness/sse";
 
 // 合成宿主测试：会话历史/摘要宿主接线（web-context-source、onebot11 context-source、
@@ -75,7 +79,7 @@ type WebApp = ReturnType<typeof createApp>;
 type WebSession = ReturnType<typeof createSession>;
 
 function webSetup() {
-  const business = openBusinessDb();
+  const business = runtimeFixtureBusiness(openBusinessDb(), "model");
   handles.push(business);
   ensureDefaults(business.orm, "model");
   const session = createSession(business.orm, "test", { modelName: "model" });
@@ -193,7 +197,7 @@ async function runEvidenceTurn(
 
 /** QQ 宿主夹具（思路与 bot-context-source.test.ts 相同，不导入该测试文件）。 */
 function qqSetup(input: { mode?: RuntimeConfig["p5_config"]["retrieval_mode"] } = {}) {
-  const h = openBusinessDb();
+  const h = runtimeFixtureBusiness(openBusinessDb(), "reply-model");
   handles.push(h);
   ensureDefaults(h.orm, "reply-model");
   const seconds = Math.floor(Date.now() / 1000);
@@ -356,8 +360,8 @@ describe("conversation evidence hosts", () => {
     ).toBe(true);
     const source = h.buildSource("reply");
     const material = await source.read({ signal: new AbortController().signal, observations: [] });
-    expect(JSON.stringify(material.pending)).toContain(compact);
-    expect(JSON.stringify(material.pending)).not.toContain(original);
+    expect(JSON.stringify(material.history)).toContain(compact);
+    expect(JSON.stringify(material.history)).not.toContain(original);
     const query = source.actions.find((action) => action.description.name === "summary.query");
     const read = source.actions.find((action) => action.description.name === "summary.read");
     if (!query || !read) throw new Error("fixture: original summary actions missing");
@@ -376,8 +380,19 @@ describe("conversation evidence hosts", () => {
     expect(items).toHaveLength(1);
     const page = await read.execute({ bodyRef: items[0]!.bodyRef, limit: 4096 }, context);
     const text = (page.value as { items: { text: string }[] }).items[0]!.text;
-    const facts = JSON.parse(text) as { source_ids: string[] }[];
-    expect(facts[0]!.source_ids).toEqual([original, reverse]);
+    const facts = JSON.parse(text) as {
+      kind: "fact";
+      speaker: string;
+      text: string;
+      source_ids: string[];
+    }[];
+    expect(facts[0]!.source_ids).toEqual([compact, reversedCompact]);
+    const decoded = resolveQqSummaryProvenance({
+      facts,
+      sources: pkg.sources,
+      provenance: pkg.provenance,
+    });
+    expect(decoded[0]!.source_ids).toEqual([original, reverse]);
     h.h.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(first);
     await expect(
       read.execute({ bodyRef: items[0]!.bodyRef, limit: 4096 }, context),

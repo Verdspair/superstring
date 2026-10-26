@@ -37,6 +37,8 @@ function setup(options: { schemeTriggers?: Partial<Record<string, boolean>> } = 
   updateQqSettings(h.orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
     name: "synthetic",
+    taskLimits: { mention_task_limit: 4, ordinary_task_limit: 1 },
+    inputAntiSpam: { enabled: true, burst_min_messages: 3, burst_window_seconds: 3 },
     triggers: {
       direct_reply: true,
       follow_up: true,

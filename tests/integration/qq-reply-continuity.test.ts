@@ -93,7 +93,7 @@ describe("QQ reply continuity over canonical delivery facts", () => {
     const second = await read(source);
     expect(JSON.stringify(second)).not.toContain(CONFIRMED_ANSWER_TEXT);
     // Active-task metadata can change; unchanged history objects prove no full rebuild.
-    expect(second.pending?.[0]).toBe(first.pending?.[0]);
+    expect(second.history?.[0]).toBe(first.history?.[0]);
   });
   it("does not turn an expired outbox into a new readable public intention", async () => {
     const h = sourceFixture();

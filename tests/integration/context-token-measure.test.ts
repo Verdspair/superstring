@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { measureContextTokens } from "../../src/server/agent/context-engine";
+import { measureContextTokens } from "../../src/server/llm/request-format";
 import type { TextTokenCounter } from "../../src/server/llm/text-token-counter";
 import { loadTextTokenCounter } from "../../src/server/llm/text-token-counter";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";

@@ -8,7 +8,7 @@
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import { AgentRuntime, createAgentRuntime } from "../../src/server/agent/agent-runtime";
-import { ContextEngine, measureContextTokens } from "../../src/server/agent/context-engine";
+import { ContextEngine } from "../../src/server/agent/context-engine";
 import { ContextBuilder } from "../../src/server/agent/conversation-context";
 import type { ModelContextBudget } from "../../src/server/agent/model-port";
 import { WebContextSource } from "../../src/server/channels/web-context-source";
@@ -23,6 +23,7 @@ import {
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { measureContextTokens } from "../../src/server/llm/request-format";
 import {
   loadTextTokenCounter,
   type TextTokenCounter,

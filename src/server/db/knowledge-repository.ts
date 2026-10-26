@@ -589,6 +589,24 @@ export class KnowledgeRepository {
       .immediate();
   }
 
+  /**
+   * 默认向新创建的 Agent 授予当前所有管理资料的阅读 Token。
+   * 复用既有 changeGrant 生成 token，不 touch 文档修订，不读取文档正文，旧文档与历史 Token 不变。
+   */
+  grantAllDocuments(agentId: string): void {
+    this.db
+      .transaction(() => {
+        this.requireAgent(agentId);
+        const docs = this.db
+          .query<{ id: string }, []>("SELECT id FROM knowledge_documents ORDER BY created_at, id")
+          .all();
+        for (const doc of docs) {
+          this.changeGrant(doc.id, agentId, true);
+        }
+      })
+      .immediate();
+  }
+
   /** Do not derive this from the management list: filter grants before loading metadata. */
   agentDocuments(agentId: string): AgentKnowledge[] {
     this.requireAgent(agentId);

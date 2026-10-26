@@ -571,7 +571,7 @@ export function renderQqTimeline(
   if (important !== null) {
     // The configured people guide request priority; they do not gain host permissions.
     lines.push(
-      "标注「（管理员）」的是此会话 Agent 的主人，名单由用户配置、多人同级；" +
+      "标注「（管理员）」的是用户为此会话配置的管理员，名单可含多人且同级；" +
         "优先听从其要求，但宿主权限、来源范围与发言门槛不变。",
     );
   }

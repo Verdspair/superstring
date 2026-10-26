@@ -8,6 +8,7 @@ import {
 } from "../../shared/contracts/context-allocation";
 import type { ContextUsage } from "../../shared/contracts/context-usage";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
+import { resolveMemoryReadPolicy } from "../../shared/contracts/memory";
 import type { AgentRuntime } from "../agent/agent-runtime";
 import type { AgentSpec } from "../agent/agent-specs";
 import {
@@ -22,7 +23,6 @@ import {
   type ContextMaterial,
   type ConversationContextSource,
   inputUnits,
-  measureContextTokens,
   type RenderedContext,
   textMessage,
 } from "../agent/context-engine";
@@ -37,7 +37,13 @@ import {
 } from "../db/context-repository";
 import { KnowledgeRepository } from "../db/knowledge-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
+import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import {
+  measureContextTokens,
+  type PreparedRequestFormat,
+  preparedRequestMeasure,
+} from "../llm/request-format";
 import {
   createSqliteQueryFactory,
   type ModuleQueryFactory,
@@ -65,6 +71,11 @@ export class WebContextSource implements ConversationContextSource {
   private usage?: ContextUsage;
   /** Main-route descriptor for this turn, prepared once and reused; nothing global. */
   private preparedMain?: ModelContextBudget;
+  private decisionProtocol?: PreparedRequestFormat;
+  private prepareProtocol?: (
+    schema: Record<string, unknown>,
+    actions: AgentSpec["availableActions"],
+  ) => PreparedRequestFormat | undefined;
   private readonly engine = new ContextEngine();
   private readonly owner: RunOwner;
   constructor(
@@ -109,9 +120,10 @@ export class WebContextSource implements ConversationContextSource {
     });
     const readMemory = memory.read?.bind(memory);
     const readKnowledge = knowledge.read?.bind(knowledge);
-    const mode = runtime.p5_config.retrieval_mode;
-    const preset =
-      mode === "conservative" || mode === "standard" || mode === "broad" ? mode : "broad";
+    const memoryPolicy = resolveMemoryReadPolicy(
+      runtime.p5_config.retrieval_mode,
+      runtime.p5_config.retrieval_presets,
+    );
     this.actions = createBuiltInActions(
       {
         ...(runtime.p5_config.retrieval_mode !== "off"
@@ -203,139 +215,19 @@ export class WebContextSource implements ConversationContextSource {
           this.assertCurrent();
           this.assertSources(sources);
         },
-        fit: async (name, arguments_, signal) => {
-          signal.throwIfAborted();
-          // 同批只读工具并发跑，每个的 fit 只看到"上一轮已提交的 observations"；
-          // 保守联合预留：把本批其它在飞结果的增量也算进来，宁可少装，不许下一步渲染炸轮。
-          const token = Symbol("action-result-fit");
-          // Auto 模式的同步提案边界：builder 持有本轮冻结的历史候选，返回
-          // 纯提案 {messages, sources, commit()}；是否提交由本闭包在全部
-          // 门槛（整请求 fit、联合预留、领域配额）通过后决定。
-          const reselect =
-            contextAllocationMode(runtime.p5_config.allocation) === "auto"
-              ? this.options.builder.reselectFor(options.turnId, runtime.agent_id)
-              : undefined;
-          // Legacy ceiling in byte units; token mode uses the same field as a token
-          // ceiling, so one limit serves both and neither mixes the two units.
-          const limit =
-            this.spec.limits.inputUnits ??
-            runtime.p5_config.context_window ??
-            Number.MAX_SAFE_INTEGER;
-          return (value, sources) => {
-            // 检查与登记必须在同一同步块内完成，才能消除并发竞态（JS 单线程）。
-            // 提案不落任何状态：material / 预留 / builder 校验点只在全部门槛
-            // （整请求 fit、同批联合预留、领域配额）通过后一次提交。
-            const observations = [
-              ...this.observations,
-              {
-                id: "00000000-0000-0000-0000-000000000000",
-                name,
-                arguments: arguments_,
-                value,
-                sources,
-              },
-            ];
-            const renderWith = (material: ContextMaterial): RenderedContext =>
-              this.engine.render(this.spec, material, observations, ["reply"], "stream");
-            const renderBase = (material: ContextMaterial): RenderedContext =>
-              this.engine.render(this.spec, material, this.observations, ["reply"], "stream");
-            const fits = (rendered: RenderedContext): boolean =>
-              this.tokenCounter() !== undefined
-                ? this.fitsDecision(rendered.messages, token)
-                : rendered.units + this.reservations.reserved(token) <= limit;
-            const currentMaterial = () => this.material ?? {};
-            // Domain quota first: it is independent of the history selection, so a
-            // quota rejection never starts (or commits) a reclaim proposal.
-            if (name.startsWith("knowledge.")) {
-              const nonempty = observations.filter((observation) => {
-                const result = observation.value as { items?: unknown[] } | null;
-                return (
-                  observation.name.startsWith("knowledge.") &&
-                  Array.isArray(result?.items) &&
-                  result.items.length > 0
-                );
-              });
-              const actionUnits =
-                this.engine.render(this.spec, {}, nonempty, ["reply"], "stream").units -
-                this.engine.render(this.spec, {}, [], ["reply"], "stream").units;
-              if (
-                (this.usage?.components.knowledge ?? 0) + actionUnits >
-                (runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)
-              )
-                return false;
-            }
-            const directRender = renderWith(currentMaterial());
-            const directBase = renderBase(currentMaterial());
-            let admitted = directRender;
-            if (!fits(directRender) && reselect !== undefined) {
-              // Auto only: propose reclaiming still-selectable history pairs,
-              // oldest first. Each proposal is verified against the WHOLE rebuilt
-              // request before any commit; a proposal that still does not fit
-              // leaves material and reservations untouched and the result is
-              // rejected like the fixed path.
-              for (let drop = 1; ; drop += 1) {
-                const proposal = reselect(({ historyTurnIds, summaryIds }) => {
-                  if (drop <= historyTurnIds.length) {
-                    return { historyTurnIds: historyTurnIds.slice(drop), summaryIds };
-                  }
-                  const summaryDrop = drop - historyTurnIds.length;
-                  return summaryDrop > summaryIds.length
-                    ? null
-                    : { historyTurnIds: [], summaryIds: summaryIds.slice(summaryDrop) };
-                });
-                if (proposal === null) return false;
-                const nonSystem = proposal.messages.filter((m) => m.role !== "system");
-                const asChannel = (m: (typeof nonSystem)[number]) =>
-                  textMessage(m.role === "assistant" ? "assistant" : "user", m.content);
-                const proposalMaterial: ContextMaterial = {
-                  ...currentMaterial(),
-                  sources: proposal.sources,
-                  history: nonSystem.slice(0, -1).map(asChannel),
-                  pending: nonSystem.slice(-1).map(asChannel),
-                };
-                const proposed = renderWith(proposalMaterial);
-                if (fits(proposed)) {
-                  signal.throwIfAborted();
-                  this.assertCurrent();
-                  this.assertSources([
-                    ...proposal.sources,
-                    ...observations.flatMap((item) => item.sources),
-                  ]);
-                  proposal.commit();
-                  this.material = proposalMaterial;
-                  admitted = proposed;
-                  break;
-                }
-                // This reclaim did not create room — try the next oldest pair.
-              }
-            } else if (!fits(directRender)) {
-              return false;
-            }
-            // 通过则覆盖自己的预留（fitter 记住上次通过的值）；失败不改预留。
-            // 预留基线与已提交 material 同源：回收后按回收后的基线计量增量。
-            const baseRender =
-              admitted === directRender ? directBase : renderBase(currentMaterial());
-            this.reservations.set(
-              token,
-              this.tokenCounter() === undefined
-                ? admitted.units - baseRender.units
-                : Math.max(
-                    0,
-                    this.tokensOf(admitted.messages) - this.tokensOf(baseRender.messages),
-                  ),
-            );
-            return true;
-          };
-        },
+        fit: (name, arguments_, signal) => this.actionResultFitter(name, arguments_, signal),
         budget: (kind) =>
           kind === "memory"
-            ? runtime.p5_config.retrieval_presets[preset].max_tokens
+            ? memoryPolicy.preset.max_tokens
             : kind === "knowledge"
               ? (runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)
               : Number.MAX_SAFE_INTEGER,
       },
     );
-    this.actions = [...this.actions, ...(options.extraActions ?? [])];
+    this.actions = [
+      ...this.actions,
+      ...(options.extraActions ?? []).map((action) => this.wrapReadAction(action)),
+    ];
     this.spec = {
       id: "conversation.web",
       version: "2",
@@ -355,8 +247,206 @@ export class WebContextSource implements ConversationContextSource {
       limits: { steps: options.maxSteps },
     };
   }
+  private async actionResultFitter(
+    name: string,
+    arguments_: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<(value: unknown, sources: readonly SourceRef[]) => boolean> {
+    signal.throwIfAborted();
+    // 同批只读工具并发跑，每个的 fit 只看到"上一轮已提交的 observations"；
+    // 保守联合预留：把本批其它在飞结果的增量也算进来，宁可少装，不许下一步渲染炸轮。
+    const token = Symbol("action-result-fit");
+    // Auto 模式的同步提案边界：builder 持有本轮冻结的历史候选，返回
+    // 纯提案 {messages, sources, commit()}；是否提交由本闭包在全部
+    // 门槛（整请求 fit、联合预留、领域配额）通过后决定。
+    const reselect =
+      contextAllocationMode(this.options.runtime.p5_config.allocation) === "auto"
+        ? this.options.builder.reselectFor(this.options.turnId, this.options.runtime.agent_id)
+        : undefined;
+    // Legacy ceiling in byte units; token mode uses the same field as a token
+    // ceiling, so one limit serves both and neither mixes the two units.
+    const limit =
+      this.spec.limits.inputUnits ??
+      this.options.runtime.p5_config.context_window ??
+      Number.MAX_SAFE_INTEGER;
+    return (value, sources) => {
+      // 检查与登记必须在同一同步块内完成，才能消除并发竞态（JS 单线程）。
+      // 提案不落任何状态：material / 预留 / builder 校验点只在全部门槛
+      // （整请求 fit、同批联合预留、领域配额）通过后一次提交。
+      const observations = [
+        ...this.observations,
+        {
+          id: "00000000-0000-0000-0000-000000000000",
+          name,
+          arguments: arguments_,
+          value,
+          sources,
+        },
+      ];
+      const renderWith = (material: ContextMaterial): RenderedContext =>
+        this.engine.render(this.spec, material, observations, ["reply"], "stream");
+      const renderBase = (material: ContextMaterial): RenderedContext =>
+        this.engine.render(this.spec, material, this.observations, ["reply"], "stream");
+      const fits = (rendered: RenderedContext): boolean =>
+        this.tokenCounter() !== undefined
+          ? this.fitsDecision(rendered.messages, token)
+          : rendered.units + this.reservations.reserved(token) <= limit;
+      const currentMaterial = () => this.material ?? {};
+      // Domain quota first: it is independent of the history selection, so a
+      // quota rejection never starts (or commits) a reclaim proposal.
+      if (name.startsWith("knowledge.")) {
+        const nonempty = observations.filter((observation) => {
+          const result = observation.value as { items?: unknown[] } | null;
+          return (
+            observation.name.startsWith("knowledge.") &&
+            Array.isArray(result?.items) &&
+            result.items.length > 0
+          );
+        });
+        const actionUnits =
+          this.engine.render(this.spec, {}, nonempty, ["reply"], "stream").units -
+          this.engine.render(this.spec, {}, [], ["reply"], "stream").units;
+        if (
+          (this.usage?.components.knowledge ?? 0) + actionUnits >
+          (this.options.runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)
+        )
+          return false;
+      }
+      const directRender = renderWith(currentMaterial());
+      const directBase = renderBase(currentMaterial());
+      let admitted = directRender;
+      if (!fits(directRender) && reselect !== undefined) {
+        // Auto only: propose reclaiming still-selectable history pairs,
+        // oldest first. Each proposal is verified against the WHOLE rebuilt
+        // request before any commit; a proposal that still does not fit
+        // leaves material and reservations untouched and the result is
+        // rejected like the fixed path.
+        for (let drop = 1; ; drop += 1) {
+          const proposal = reselect(({ historyTurnIds, summaryIds }) => {
+            if (drop <= historyTurnIds.length) {
+              return { historyTurnIds: historyTurnIds.slice(drop), summaryIds };
+            }
+            const summaryDrop = drop - historyTurnIds.length;
+            return summaryDrop > summaryIds.length
+              ? null
+              : { historyTurnIds: [], summaryIds: summaryIds.slice(summaryDrop) };
+          });
+          if (proposal === null) return false;
+          const nonSystem = proposal.messages.filter((m) => m.role !== "system");
+          const asChannel = (m: (typeof nonSystem)[number]) =>
+            textMessage(m.role === "assistant" ? "assistant" : "user", m.content);
+          const proposalMaterial: ContextMaterial = {
+            ...currentMaterial(),
+            sources: proposal.sources,
+            history: nonSystem.slice(0, -1).map(asChannel),
+            pending: nonSystem.slice(-1).map(asChannel),
+          };
+          const proposed = renderWith(proposalMaterial);
+          if (fits(proposed)) {
+            signal.throwIfAborted();
+            this.assertCurrent();
+            this.assertSources([
+              ...proposal.sources,
+              ...observations.flatMap((item) => item.sources),
+            ]);
+            proposal.commit();
+            this.material = proposalMaterial;
+            admitted = proposed;
+            break;
+          }
+          // This reclaim did not create room — try the next oldest pair.
+        }
+      } else if (!fits(directRender)) {
+        return false;
+      }
+      // 通过则覆盖自己的预留（fitter 记住上次通过的值）；失败不改预留。
+      // 预留基线与已提交 material 同源：回收后按回收后的基线计量增量。
+      const baseRender = admitted === directRender ? directBase : renderBase(currentMaterial());
+      this.reservations.set(
+        token,
+        this.tokenCounter() === undefined
+          ? admitted.units - baseRender.units
+          : Math.max(0, this.tokensOf(admitted.messages) - this.tokensOf(baseRender.messages)),
+      );
+      return true;
+    };
+  }
+  wrapReadAction(action: BuiltInAction): BuiltInAction {
+    if (action.description.effect !== "read") return action;
+    return {
+      ...action,
+      fitResult: async (value, sources, arguments_, context) => {
+        const check = () => {
+          context.signal.throwIfAborted();
+          context.assertAuthority?.();
+          this.assertCurrent();
+          this.assertSources(sources);
+        };
+        check();
+        const result = action.fitResult
+          ? await action.fitResult(value, sources, arguments_, context)
+          : value;
+        check();
+        if (context.fitReadResult) {
+          const accepted = context.fitReadResult(
+            action.description.name,
+            arguments_,
+            result,
+            sources,
+          );
+          check();
+          return accepted;
+        }
+        const fits = await this.actionResultFitter(
+          action.description.name,
+          arguments_,
+          context.signal,
+        );
+        check();
+        if (fits(result, sources)) {
+          check();
+          return result;
+        }
+        const unavailable = { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" };
+        if (!fits(unavailable, sources))
+          fail("CONTEXT_BUDGET_EXCEEDED", "读取结果与拒绝信封超过本轮上下文容量");
+        check();
+        return unavailable;
+      },
+    };
+  }
+
   configureActions(actions: AgentSpec["availableActions"]): void {
     this.spec.availableActions = actions;
+    this.decisionProtocol = undefined;
+  }
+
+  prepareDecisionProtocol(
+    prepare: (
+      schema: Record<string, unknown>,
+      actions: AgentSpec["availableActions"],
+    ) => PreparedRequestFormat | undefined,
+  ): void {
+    this.prepareProtocol = prepare;
+    this.decisionProtocol = undefined;
+  }
+
+  private decisionMeasure() {
+    const budget = this.preparedMain;
+    if (this.decisionProtocol === undefined && budget?.countText) {
+      const prepare =
+        this.prepareProtocol ??
+        ((schema, actions) =>
+          this.options.gateway.prepareRequestFormat?.({
+            model: budget.model,
+            responseSchema: schema,
+            tools: actions,
+          }));
+      this.decisionProtocol = prepare(AGENT_DECISION_JSON_SCHEMA, this.spec.availableActions);
+    }
+    return this.decisionProtocol === undefined
+      ? { responseSchema: AGENT_DECISION_JSON_SCHEMA, tools: this.spec.availableActions }
+      : preparedRequestMeasure(this.decisionProtocol);
   }
 
   /** This agent's research auxiliary allocation, absent = keep caller defaults. */
@@ -452,10 +542,7 @@ export class WebContextSource implements ConversationContextSource {
     if (counter === undefined) return true;
     const limit = explicitLimit ?? this.spec.limits.inputUnits;
     if (limit === undefined) return true;
-    const measured = measureContextTokens(messages, counter.counter, {
-      responseSchema: AGENT_DECISION_JSON_SCHEMA,
-      tools: this.spec.availableActions,
-    });
+    const measured = measureContextTokens(messages, counter.counter, this.decisionMeasure());
     counter.budget.assertCurrent();
     return measured.textTokens + this.reservations.reserved(except) <= limit;
   }
@@ -464,10 +551,7 @@ export class WebContextSource implements ConversationContextSource {
   private tokensOf(messages: readonly ModelMessage[]): number {
     const counter = this.tokenCounter();
     if (counter === undefined) return 0;
-    return measureContextTokens(messages, counter.counter, {
-      responseSchema: AGENT_DECISION_JSON_SCHEMA,
-      tools: this.spec.availableActions,
-    }).textTokens;
+    return measureContextTokens(messages, counter.counter, this.decisionMeasure()).textTokens;
   }
   async read(input: {
     signal: AbortSignal;
@@ -534,6 +618,7 @@ export class WebContextSource implements ConversationContextSource {
         this.spec.generation = { ...this.spec.generation, inputUnits: limit };
       }
     }
+    this.decisionMeasure();
     this.assertCurrent();
     return this.material;
   }
@@ -672,46 +757,18 @@ export class WebContextSource implements ConversationContextSource {
     // In token mode it stays an upper bound and the per-result fit stays the real
     // token admission, so a byte room is never priced as tokens.
     const budget =
-      this.tokenCounter() === undefined
+      this.tokenCounter() === undefined &&
+      contextAllocationMode(this.options.runtime.p5_config.allocation) !== "auto"
         ? limit - cost([]) - this.reservations.reserved()
         : name.startsWith("knowledge.")
           ? (this.options.runtime.knowledge_read?.budget ??
             new KnowledgeRepository(this.options.db).settings().context_budget)
-          : this.options.runtime.p5_config.retrieval_presets[
-              ["conservative", "standard", "broad"].includes(
-                this.options.runtime.p5_config.retrieval_mode,
-              )
-                ? (this.options.runtime.p5_config.retrieval_mode as
-                    | "conservative"
-                    | "standard"
-                    | "broad")
-                : "broad"
-            ].max_tokens;
+          : resolveMemoryReadPolicy(
+              this.options.runtime.p5_config.retrieval_mode,
+              this.options.runtime.p5_config.retrieval_presets,
+            ).preset.max_tokens;
     if (budget < 1) return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", items: [] };
     const result = evidenceQueryPage(await read(budget));
-    this.assertCurrent();
-    // Byte upper bound is not a token admission: recheck the real request.
-    if (
-      this.tokenCounter() !== undefined &&
-      !this.fitsDecision(
-        this.engine.render(
-          this.spec,
-          material,
-          [
-            ...this.observations,
-            {
-              ...empty,
-              value: result.items.map((item) => evidenceCatalogEntry(name.split(".")[0], item)),
-              sources: result.items.flatMap((item) => item.sources),
-            },
-          ],
-          ["reply"],
-          "stream",
-        ).messages,
-      )
-    ) {
-      return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", items: [] };
-    }
     this.assertCurrent();
     return result;
   }

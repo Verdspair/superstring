@@ -58,6 +58,7 @@ import {
 } from "../../src/shared/contracts";
 import { unicodeStrip } from "../../src/shared/contracts/code-point-string";
 import type { Evidence, SourceRef } from "../../src/shared/contracts/evidence";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const MODEL = "qwen/qwen3-4b-2507";
 
@@ -120,7 +121,7 @@ class ContextGateway implements ModelGateway {
 }
 
 function setup() {
-  const business = openBusinessDb();
+  const business = runtimeFixtureBusiness(openBusinessDb(), MODEL);
   ensureDefaults(business.orm, MODEL);
   const gateway = new ContextGateway();
   return { business, orm: business.orm, gateway };
@@ -1539,10 +1540,10 @@ describe("R4 ContextBuilder end-to-end", () => {
   });
 
   it("production POST /chat really uses ContextBuilder before streamChat", async () => {
-    const business = openBusinessDb();
+    const business = runtimeFixtureBusiness(openBusinessDb(), MODEL);
     const gateway = new ContextGateway();
     gateway.capacity = 0;
-    const app = createApp({ business, gateway });
+    const app = createApp({ business, gateway, externalActions: () => [] });
     const created = await app.request("/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -1568,10 +1569,10 @@ describe("R4 ContextBuilder end-to-end", () => {
   });
 
   it("DirectService persists contract-strip output rather than JS-trim output", async () => {
-    const business = openBusinessDb();
+    const business = runtimeFixtureBusiness(openBusinessDb(), MODEL);
     const gateway = new ContextGateway();
     gateway.streamDeltas = ["\u0085回答\u001c"];
-    const app = createApp({ business, gateway });
+    const app = createApp({ business, gateway, externalActions: () => [] });
     const created = await app.request("/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },

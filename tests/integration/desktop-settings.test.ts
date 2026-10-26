@@ -78,7 +78,7 @@ describe("the desktop close preference", () => {
 
   it("answers both verbs over HTTP and rejects a stale writer", async () => {
     const business = openBusinessDb();
-    const app = createApp({ business, gateway: new FakeGateway() });
+    const app = createApp({ business, gateway: new FakeGateway(), externalActions: () => [] });
     try {
       const initial = await app.request("/desktop/settings");
       expect(initial.status).toBe(200);

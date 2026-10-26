@@ -2,10 +2,11 @@ import { afterEach, expect, it } from "bun:test";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
-import { measureContextTokens, textMessage } from "../../src/server/agent/context-engine";
+import { textMessage } from "../../src/server/agent/context-engine";
 import type { ModelRequest } from "../../src/server/agent/model-port";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { measureContextTokens } from "../../src/server/llm/request-format";
 import { loadTextTokenCounter } from "../../src/server/llm/text-token-counter";
 import { AGENT_DECISION_JSON_SCHEMA } from "../../src/shared/contracts/agent-output";
 

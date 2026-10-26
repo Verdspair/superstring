@@ -4,8 +4,7 @@ import type { ModelMessage } from "../../shared/contracts/agent-run";
 import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import type { VisionCost } from "../../shared/contracts/context-usage";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
-import type { ChatMessage } from "../llm/chat-content";
-import type { TextTokenEncoding } from "../llm/text-token-counter";
+import type { ContextTokenMeasure, PreparedRequestFormat } from "../llm/request-format";
 import { uniqueSources } from "../services/source-refs";
 import { estimateTokens } from "../services/token-estimate";
 import type { AgentSpec } from "./agent-specs";
@@ -85,7 +84,18 @@ export type ContextReadTimings = {
 };
 
 export interface ConversationContextSource {
+  assertBeforeActionEffects?(input: {
+    observations: readonly ActionObservation[];
+    effects: readonly { name: string; arguments: Record<string, unknown> }[];
+    signal: AbortSignal;
+  }): void | Promise<void>;
   configureActions?(actions: AgentSpec["availableActions"]): void;
+  prepareDecisionProtocol?(
+    prepare: (
+      schema: Record<string, unknown>,
+      actions: AgentSpec["availableActions"],
+    ) => PreparedRequestFormat | undefined,
+  ): void;
   researchAllocation?(): AuxiliaryAllocationProfile | undefined;
   /** Optional per-phase preparation supplied by this source's own cache/ownership boundary. */
   prepareModelContext?(model: string, signal: AbortSignal): Promise<ModelContextBudget | undefined>;
@@ -226,69 +236,6 @@ export function visionCostOf(messages: readonly ModelMessage[]): VisionCost {
   }
   if (images === 0) return { state: "estimated", images: 0, pixels: 0 };
   return { state: "unknown", images, pixels };
-}
-
-/**
- * 一次请求文本量的唯一计量原语。只把"实际发送的文本请求形态"序列化成一份 JSON 后整体计数，
- * 不分段求和、不套常量、不做 floor 换算；不改任何既有计量与运行时门控。
- */
-export interface ContextTokenMeasureOptions {
-  /** 本次实际发送的响应 schema（网关转换后的形态由调用点传入）。 */
-  responseSchema?: Record<string, unknown>;
-  /** 网关本次实际发送的格式，覆盖便利的 schema 包装。 */
-  responseFormat?: Record<string, unknown>;
-  /** 本次实际发送的 function 工具声明。 */
-  tools?: readonly { name: string; description: string; parameters: Record<string, unknown> }[];
-}
-
-export interface ContextTokenMeasure {
-  /** 计量方法名：序列化的 chat 文本请求估算，不是 provider 完整请求的精确 token 数。 */
-  method: "serialized_chat_token_estimate";
-  encoding: TextTokenEncoding;
-  /** 只覆盖本次序列化生成的文本；图片成本不在其中。 */
-  textTokens: number;
-  /** 有图时为 `unknown`（不是 0）。 */
-  mediaState: "none" | "unknown";
-}
-
-export function measureContextTokens(
-  messages: readonly (ModelMessage | ChatMessage)[],
-  counter: { encoding: TextTokenEncoding; count(text: string): number },
-  options?: ContextTokenMeasureOptions,
-): ContextTokenMeasure {
-  let mediaState: ContextTokenMeasure["mediaState"] = "none";
-  const serializedMessages = messages.map((message) => {
-    const text =
-      typeof message.content === "string"
-        ? message.content
-        : message.content
-            .map((part) => {
-              if ("kind" in part && part.kind === "text") return part.text;
-              if ("type" in part && part.type === "text") return part.text;
-              mediaState = "unknown";
-              return "";
-            })
-            .join("");
-    return { role: message.role, content: text };
-  });
-  const request: Record<string, unknown> = { messages: serializedMessages };
-  if (options?.responseFormat !== undefined) request.response_format = options.responseFormat;
-  else if (options?.responseSchema !== undefined)
-    request.response_format = {
-      type: "json_schema",
-      json_schema: { name: "superstring_result", strict: true, schema: options.responseSchema },
-    };
-  if (options?.tools !== undefined)
-    request.tools = options.tools.map((tool) => ({
-      type: "function",
-      function: { name: tool.name, description: tool.description, parameters: tool.parameters },
-    }));
-  return {
-    method: "serialized_chat_token_estimate",
-    encoding: counter.encoding,
-    textTokens: counter.count(JSON.stringify(request)),
-    mediaState,
-  };
 }
 
 export { uniqueSources };

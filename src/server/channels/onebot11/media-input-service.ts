@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, like } from "drizzle-orm";
 import type { ModelContent, RunOwner } from "../../../shared/contracts/agent-run";
+import type { AuxiliaryAllocationProfile } from "../../../shared/contracts/context-allocation";
 import type { SourceRef } from "../../../shared/contracts/evidence";
 import type {
   QqEffectiveMediaPolicy,
@@ -14,6 +15,7 @@ import type {
 } from "../../../shared/contracts/qq-message";
 import type { LeafAgentRuntime } from "../../agent/agent-runtime";
 import type { ContextPrincipal } from "../../agent/context-access";
+import type { ModelContextBudget } from "../../agent/model-port";
 import type { ModelMediaClassification } from "../../agent/model-response-envelope";
 import { bodyRevision } from "../../db/conversation-event-repository";
 import {
@@ -27,6 +29,7 @@ import {
 import { DEFAULT_USER_ID, immediate, nowIso, type Orm } from "../../db/repositories";
 import * as schema from "../../db/schema";
 import { AppError, fail } from "../../errors";
+import type { PreparedRequestFormat } from "../../llm/request-format";
 import type { EvidenceStore } from "../../modules/conversation-evidence-store";
 import {
   prepareQqImage,
@@ -284,6 +287,16 @@ export interface QqMediaInputServiceOptions {
    * `baseline/v1/<policyRevision>` 组合值传进来（同一真源，本服务不另造策略键）。
    */
   readonly baselinePolicy: string;
+  readonly auxiliary_allocation?: AuxiliaryAllocationProfile;
+  readonly loadedContextCapacity?: (model: string) => Promise<number | null>;
+  readonly prepareContextModel?: (
+    model: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ModelContextBudget>;
+  readonly prepareVisionRequestFormat?: (input: {
+    model: string;
+    responseSchema?: Record<string, unknown>;
+  }) => PreparedRequestFormat;
 }
 
 export interface QqMediaProjectionInput {
@@ -478,6 +491,10 @@ export function createQqMediaInputService(
     prompt,
     // 本服务只由 QQ 通道装配：媒体描述叶子来源为 qq，经适配器转发视觉叶子。
     retryOrigin: "qq",
+    auxiliary_allocation: options.auxiliary_allocation,
+    loadedContextCapacity: options.loadedContextCapacity,
+    prepareContextModel: options.prepareContextModel,
+    prepareVisionRequestFormat: options.prepareVisionRequestFormat,
   });
   const db = options.store.db;
   const orm = options.store.orm;

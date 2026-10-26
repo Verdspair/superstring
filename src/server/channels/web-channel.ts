@@ -313,6 +313,7 @@ export class WebChannel {
           requestId: args.clientRequestId,
           context: source,
           actions: source.actions,
+          prepareResearchAction: (action) => source.wrapReadAction(action),
           authorizedTargets: ["reply"],
           outputMode: "stream",
           signal: abort.signal,

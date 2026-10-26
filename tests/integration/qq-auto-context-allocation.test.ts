@@ -12,7 +12,12 @@ import { DEFAULT_AGENT_ID, ensureDefaults, getAgentRow } from "../../src/server/
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { captureQqTask, createQqBinding } from "../../src/server/services/qq-binding-contract";
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
+import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -27,13 +32,22 @@ function fixture(
     onDiagnostic?: (event: unknown) => void;
   } = {},
 ) {
-  const h = openBusinessDb();
+  const h = runtimeFixtureBusiness(openBusinessDb(), "reply-model");
   handles.push(h);
   ensureDefaults(h.orm, "reply-model");
   const seconds = Math.floor(Date.now() / 1000),
     now = new Date(seconds * 1000).toISOString();
   updateQqSettings(h.orm, { enabled: true, accountId: "10001", expectedRevision: 1 });
-  const stored = createQqScheme(h.orm, { name: "allocation" });
+  const stored = createQqScheme(h.orm, {
+    context: { ...fixtureLegacyContext },
+    rhythm: { ...fixtureLegacyRhythm },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
+    name: "allocation",
+  });
   const scheme = {
     ...stored,
     allocation: JSON.stringify({ judgement: { mode }, reply: { mode } }),

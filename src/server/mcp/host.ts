@@ -19,6 +19,7 @@ export interface McpToolHostOptions {
 }
 interface Connected {
   revision: string;
+  catalogPending?: true;
   source: McpToolSource;
 }
 const revisionOf = (server: McpServerConfig) =>
@@ -48,7 +49,9 @@ export class McpToolHost {
       const state: McpServerState = !config.enabled
         ? "disabled"
         : !stale && connection
-          ? "connected"
+          ? connection.catalogPending
+            ? "pending"
+            : "connected"
           : !stale && failure
             ? "error"
             : "pending";
@@ -123,7 +126,9 @@ export class McpToolHost {
     this.actions = createMcpActions({
       sources: registry.servers.flatMap((server) => {
         const connection = this.connections.get(server.id);
-        return server.enabled && connection?.revision === revisionOf(server)
+        return server.enabled &&
+          connection?.revision === revisionOf(server) &&
+          !connection.catalogPending
           ? [connection.source]
           : [];
       }),
@@ -170,6 +175,7 @@ export class McpToolHost {
               // Invalidate only this catalog, retaining its transport for rediscovery.
               this.connections.set(server.id, {
                 ...connection,
+                catalogPending: true,
                 source: { ...connection.source, tools: [] },
               });
               this.actions = this.actions.filter(
@@ -191,6 +197,7 @@ export class McpToolHost {
             },
             onDiagnostic: (code) => this.options.onDiagnostic?.({ serverId: server.id, code }),
           });
+          const listingConnection = this.connections.get(server.id);
           const tools = await session.listTools(signal);
           signal.throwIfAborted();
           const currentRegistry = loadMcpRegistry(this.options.configPath);
@@ -199,7 +206,13 @@ export class McpToolHost {
           if (!current?.enabled || revisionOf(current) !== revision)
             throw new PermissionError("PERMISSION_REVISION_CHANGED");
           const existing = this.connections.get(server.id);
-          if (existing && JSON.stringify(existing.source.tools) === JSON.stringify(tools)) return;
+          if (listingConnection && existing !== listingConnection) return;
+          if (
+            existing &&
+            !existing.catalogPending &&
+            JSON.stringify(existing.source.tools) === JSON.stringify(tools)
+          )
+            return;
           const connection: Connected = {
             revision,
             source: {

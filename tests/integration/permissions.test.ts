@@ -601,7 +601,7 @@ describe("shared permission policy", () => {
     });
 
     // sourceAccess stays live: it must see a later revocation
-    const source = service.source(req);
+    const source = service.source(req, owner);
     expect(service.sourceAccess(source, owner)).toBe("available");
     service.replace(service.snapshot().revision, { version: 1, grants: [] });
     expect(service.sourceAccess(source, owner)).toBe("revoked");
@@ -614,7 +614,7 @@ describe("optional READ result hook controls", () => {
   it("replaces only the value and preserves the full original sources", async () => {
     const h = setup();
     h.replace(allow());
-    const permRef = h.executor.permissions.source(requirement);
+    const permRef = h.executor.permissions.source(requirement, owner);
     const execute = async () => ({ value: "large-original", sources: [permRef] });
     const plain = await h.executor.execute({ ...action(), execute }, { n: 1 }, context);
     let hookRefs: readonly (typeof plain.sources)[number][] = [];
@@ -640,7 +640,7 @@ describe("optional READ result hook controls", () => {
   it("keeps the same final refs when the hook returns the budget-denial value", async () => {
     const h = setup();
     h.replace(allow());
-    const permRef = h.executor.permissions.source(requirement);
+    const permRef = h.executor.permissions.source(requirement, owner);
     const execute = async () => ({ value: "large-original", sources: [permRef] });
     const plain = await h.executor.execute({ ...action(), execute }, { n: 2 }, context);
     let hookRefs: readonly (typeof plain.sources)[number][] = [];
@@ -662,7 +662,7 @@ describe("optional READ result hook controls", () => {
   it("rejects with PERMISSION_DENIED when policy is revoked while the hook awaits", async () => {
     const h = setup();
     h.replace(allow());
-    const permRef = h.executor.permissions.source(requirement);
+    const permRef = h.executor.permissions.source(requirement, owner);
     let hookStarted: () => void = () => {};
     const started = new Promise<void>((resolve) => {
       hookStarted = resolve;
@@ -701,7 +701,7 @@ describe("optional READ result hook controls", () => {
   it("rejects on abort during the hook await and never maps it as a tool error", async () => {
     const h = setup();
     h.replace(allow());
-    const permRef = h.executor.permissions.source(requirement);
+    const permRef = h.executor.permissions.source(requirement, owner);
     const controller = new AbortController();
     const reason = { fatal: "hook-abort" };
     let mapped = 0;
@@ -781,7 +781,7 @@ describe("optional READ result hook controls", () => {
   it("gives two concurrent read calls distinct contexts and per-call args", async () => {
     const h = setup();
     h.replace(allow());
-    const permRef = h.executor.permissions.source(requirement);
+    const permRef = h.executor.permissions.source(requirement, owner);
     const seen: {
       args: Record<string, unknown>;
       refs: readonly unknown[];

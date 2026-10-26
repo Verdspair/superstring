@@ -18,13 +18,14 @@ import { createSqliteModules } from "../../src/server/modules/composition";
 import { turnSources } from "../../src/server/modules/provenance";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import type { RuntimeConfig } from "../../src/shared/contracts";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
   for (const handle of handles.splice(0)) handle.close();
 });
 function setup() {
-  const h = openBusinessDb();
+  const h = runtimeFixtureBusiness(openBusinessDb(), "test-model");
   handles.push(h);
   ensureDefaults(h.orm, "test-model");
   const gateway: ModelGateway = {

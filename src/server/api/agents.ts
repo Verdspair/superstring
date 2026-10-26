@@ -14,11 +14,17 @@ import {
   SavePersonaRequestSchema,
   UpdateAgentRequestSchema,
 } from "../../shared/contracts";
+import type { PermissionRequirement } from "../../shared/contracts/permissions";
+import type { BuiltInAction } from "../agent/built-in-actions";
+import type { KnowledgeRepository } from "../db/knowledge-repository";
 import { ensureDefaults, type Orm } from "../db/repositories";
 import { isAppError } from "../errors";
+import type { McpManagement } from "../mcp/management";
+import { PermissionError, type PermissionService } from "../permissions/service";
 import { agentConfigFields } from "../services/agent-config-fields";
 import type { AgentRow } from "../services/agent-service";
 import {
+  AGENT_CREATION_PERMISSION_ERRORS,
   createAgent,
   deleteAgent,
   getAgentRowById,
@@ -27,6 +33,7 @@ import {
   savePersona,
   updateAgent,
 } from "../services/agent-service";
+import { managementErrors } from "./management";
 import { parseBody, parseUuidParam, readJsonBody } from "./validation";
 
 /** Wire shape of AgentResponse (AgentResponse). */
@@ -65,8 +72,64 @@ function toPersonaResponse(row: {
   };
 }
 
-export function agentRoutes(orm: Orm, defaultModelName: string): Hono {
+export interface AgentRoutesOptions {
+  permissions?: PermissionService;
+  externalActions?: () => readonly BuiltInAction[];
+  knowledge?: KnowledgeRepository;
+  mcpManagement?: McpManagement;
+}
+
+export function snapshotAgentCreationRequirements(
+  actions: () => readonly BuiltInAction[],
+  management?: McpManagement,
+): PermissionRequirement[] {
+  const before = management?.status();
+  if (before?.code) throw new PermissionError(before.code);
+  if (before?.servers.some((server) => server.config.enabled && server.state === "error")) {
+    throw new PermissionError("MCP_CONNECT_FAILED");
+  }
+  if (before?.servers.some((server) => server.config.enabled && server.state !== "connected")) {
+    throw new PermissionError("MCP_CATALOG_PENDING");
+  }
+  const requirements = actions().flatMap((action) => {
+    const requirement = action.permission;
+    return requirement
+      ? [
+          {
+            ...requirement,
+            ...(requirement.directories ? { directories: [...requirement.directories] } : {}),
+          },
+        ]
+      : [];
+  });
+  const after = management?.status();
+  if (after?.code) throw new PermissionError(after.code);
+  if (before?.revision !== after?.revision) throw new PermissionError("MCP_CONFIG_CONFLICT");
+  if (after?.servers.some((server) => server.config.enabled && server.state === "error")) {
+    throw new PermissionError("MCP_CONNECT_FAILED");
+  }
+  if (after?.servers.some((server) => server.config.enabled && server.state !== "connected")) {
+    throw new PermissionError("MCP_CATALOG_PENDING");
+  }
+  return requirements;
+}
+
+export function agentRoutes(
+  orm: Orm,
+  defaultModelName: string,
+  options?: AgentRoutesOptions,
+): Hono {
   const router = new Hono();
+  router.onError(
+    managementErrors({
+      ...AGENT_CREATION_PERMISSION_ERRORS,
+      MCP_CATALOG_PENDING: [409, "MCP 工具目录尚未就绪，请检查连接后重试"],
+      MCP_CONFIG_CONFLICT: [409, "MCP 配置已变化，请重新读取后创建"],
+      MCP_CONFIG_INVALID: [503, "MCP 配置格式无效"],
+      MCP_CONFIG_UNAVAILABLE: [503, "MCP 配置不可读"],
+      MCP_CONNECT_FAILED: [503, "MCP 工具发现失败，请检查连接后创建"],
+    }),
+  );
 
   // list (ensures defaults so a fresh DB always has one).
   // The default agent's model_name comes from the configured LM Studio model
@@ -82,7 +145,20 @@ export function agentRoutes(orm: Orm, defaultModelName: string): Hono {
   router.post("", async (c) => {
     const body = parseBody(CreateAgentRequestSchema, await readJsonBody(c.req.raw));
     const { persona, persona_intensity: personaIntensity, ...config } = body;
-    const row = createAgent(orm, config as Record<string, unknown>, persona, personaIntensity);
+    if (options?.mcpManagement) {
+      const before = options.mcpManagement.status();
+      const after = await options.mcpManagement.reload();
+      if (before.revision !== after.revision) throw new PermissionError("MCP_CONFIG_CONFLICT");
+    }
+    const requirements = snapshotAgentCreationRequirements(
+      options?.externalActions ?? (() => []),
+      options?.mcpManagement,
+    );
+    const row = createAgent(orm, config as Record<string, unknown>, persona, personaIntensity, {
+      permissions: options?.permissions,
+      requirements,
+      knowledge: options?.knowledge,
+    });
     return c.json(toAgentResponse(row), 201);
   });
 

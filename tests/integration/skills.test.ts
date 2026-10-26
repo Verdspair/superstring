@@ -28,6 +28,7 @@ import {
 } from "../../src/server/skills/config";
 import { skillSourceAccess } from "../../src/server/skills/sources";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const directories: string[] = [];
 const fixtureRoot = path.resolve(import.meta.dir, "../../artifacts/validation/agent-skills");
@@ -523,8 +524,8 @@ describe("document-only skill actions", () => {
           yield "answer";
         },
       };
-      const runtime = createRuntime({
-        business,
+      const runtime = await createRuntime({
+        business: runtimeFixtureBusiness(business),
         gateway,
         browserStateSecret: "synthetic-skill-test",
         skillRoot: h.root,
@@ -593,8 +594,8 @@ describe("document-only skill actions", () => {
           yield "must not publish";
         },
       };
-      const runtime = createRuntime({
-        business,
+      const runtime = await createRuntime({
+        business: runtimeFixtureBusiness(business),
         gateway,
         browserStateSecret: "synthetic-skill-test",
         skillRoot: h.root,
@@ -1060,8 +1061,8 @@ describe("skill resource transport", () => {
           yield "answer";
         },
       };
-      const runtime = createRuntime({
-        business,
+      const runtime = await createRuntime({
+        business: runtimeFixtureBusiness(business),
         gateway,
         browserStateSecret: "synthetic-skill-test",
         skillRoot: h.root,

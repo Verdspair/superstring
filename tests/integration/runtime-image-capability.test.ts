@@ -1,3 +1,4 @@
+import { runtimeFixtureBusiness } from "../harness/business-db";
 // 装配级回归：externalModel 闭包透传真实图片拒绝负缓存所需的 providerRevision；存量能力声明不再
 // 作为运行开关（vision:false 与 toolCalling:false 都只是历史配置，不拦截默认尝试）。
 // 网络边界：全部流量只到本机 port-0 桩；LM_STUDIO_BASE_URL 临时指向桩并在 finally 还原；
@@ -71,13 +72,13 @@ const answerImageUnsupported = (res: http.ServerResponse) => {
 describe("runtime 只把真实图片拒绝与 providerRevision 接进 externalModel 闭包", () => {
   it("存量 vision:false 不再是发前闸：三种声明都真实发图并保持 role", async () => {
     const savedBaseUrl = process.env.LM_STUDIO_BASE_URL;
-    let runtime: ReturnType<typeof createRuntime> | undefined;
+    let runtime: Awaited<ReturnType<typeof createRuntime>> | undefined;
     let stub: ReturnType<typeof startStub> | undefined;
     try {
       stub = startStub((_body, res) => answerText(res, '{"kind":"none"}'));
       process.env.LM_STUDIO_BASE_URL = stub.origin;
-      runtime = createRuntime({
-        businessDbPath: ":memory:",
+      runtime = await createRuntime({
+        business: runtimeFixtureBusiness(),
         browserStateSecret: "synthetic-image-capability-secret",
         modelProviderKeyPath: path.join(tmpdir(), `synthetic-provider-${randomUUID()}.key`),
       });
@@ -169,7 +170,7 @@ describe("runtime 只把真实图片拒绝与 providerRevision 接进 externalMo
 
   it("真实图片拒绝登记负缓存；同修订发前拦，CAS 推进修订后重试真实到达", async () => {
     const savedBaseUrl = process.env.LM_STUDIO_BASE_URL;
-    let runtime: ReturnType<typeof createRuntime> | undefined;
+    let runtime: Awaited<ReturnType<typeof createRuntime>> | undefined;
     let stub: ReturnType<typeof startStub> | undefined;
     const keyPath = path.join(tmpdir(), `synthetic-provider-${randomUUID()}.key`);
     let rejectImages = true;
@@ -182,8 +183,8 @@ describe("runtime 只把真实图片拒绝与 providerRevision 接进 externalMo
         answerText(res, '{"kind":"none"}');
       });
       process.env.LM_STUDIO_BASE_URL = stub.origin;
-      runtime = createRuntime({
-        businessDbPath: ":memory:",
+      runtime = await createRuntime({
+        business: runtimeFixtureBusiness(),
         browserStateSecret: "synthetic-image-capability-secret",
         modelProviderKeyPath: keyPath,
       });
@@ -272,13 +273,13 @@ describe("runtime 只把真实图片拒绝与 providerRevision 接进 externalMo
 
   it("纯文字不受图片负缓存影响；存量 toolCalling:false 不再阻止原生 tools", async () => {
     const savedBaseUrl = process.env.LM_STUDIO_BASE_URL;
-    let runtime: ReturnType<typeof createRuntime> | undefined;
+    let runtime: Awaited<ReturnType<typeof createRuntime>> | undefined;
     let stub: ReturnType<typeof startStub> | undefined;
     try {
       stub = startStub((_body, res) => answerText(res, '{"kind":"none"}'));
       process.env.LM_STUDIO_BASE_URL = stub.origin;
-      runtime = createRuntime({
-        businessDbPath: ":memory:",
+      runtime = await createRuntime({
+        business: runtimeFixtureBusiness(),
         browserStateSecret: "synthetic-image-capability-secret",
         modelProviderKeyPath: path.join(tmpdir(), `synthetic-provider-${randomUUID()}.key`),
       });

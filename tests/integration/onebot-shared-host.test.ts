@@ -48,6 +48,8 @@ import {
   WEB_PERMISSION_REVISION,
 } from "../../src/server/web-access/actions";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
+import { QQ_ALLOCATION_DEFAULT } from "../../src/shared/contracts/context-allocation";
+import { QQ_MODEL_OUTPUT_RESERVE_DEFAULT } from "../../src/shared/contracts/qq";
 import {
   QqTaskExecutionSnapshotSchema,
   qqConversationTaskKey,
@@ -113,6 +115,8 @@ function setup(
   });
   const scheme = createQqScheme(h.orm, {
     name: "group",
+    outputReserve: { ...QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(QQ_ALLOCATION_DEFAULT),
     reply: { split_by_speaker: options.split ?? true },
     ...(options.stickerCollections ? { stickerCollections: [...options.stickerCollections] } : {}),
     // 连续与自主互斥（保存边界拒绝双 true）：默认只开自主，需要连续交谈的用例传 follow:true。
@@ -4026,8 +4030,9 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     },
   );
 
-  it("does not allow terminal media recovery in a batch containing a write", async () => {
+  it("rejects an oversized mixed read/write batch before write effects", async () => {
     let writes = 0;
+    let modelCalls = 0;
     const write: BuiltInAction = {
       description: {
         name: "test.write",
@@ -4043,15 +4048,17 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     };
     const h = setup(
       {
-        complete: async () =>
-          JSON.stringify({
+        complete: async () => {
+          modelCalls++;
+          return JSON.stringify({
             kind: "invoke",
             calls: [
               { name: "media.list", arguments: { limit: 50 } },
               { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
               { name: "test.write", arguments: {} },
             ],
-          }),
+          });
+        },
       },
       {
         stickersAvailable: true,
@@ -4067,10 +4074,73 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     addSticker(h);
     h.receive("8891", "20002", true, "b".repeat(16_600));
     await expect(h.activate("direct_reply")).rejects.toMatchObject({
-      code: "STICKER_SEARCH_CONTEXT_LIMIT",
+      code: "CONTEXT_BUDGET_EXCEEDED",
     });
+    expect(modelCalls).toBe(1);
     expect(writes).toBe(0);
     expect(h.outbox.list({})).toEqual([]);
+  });
+  it("does not allow terminal media recovery in a batch containing a write", async () => {
+    let writes = 0;
+    let modelCalls = 0;
+    const write: BuiltInAction = {
+      description: {
+        name: "test.write",
+        capability: "test",
+        description: "write",
+        effect: "write",
+        parameters: { type: "object", properties: {} },
+      },
+      async execute() {
+        writes++;
+        return { value: {}, sources: [] };
+      },
+    };
+    const h = setup(
+      {
+        complete: async () => {
+          if (++modelCalls > 1) return '{"kind":"none"}';
+          return JSON.stringify({
+            kind: "invoke",
+            calls: [
+              { name: "media.list", arguments: { limit: 50 } },
+              { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
+              { name: "test.write", arguments: {} },
+            ],
+          });
+        },
+      },
+      {
+        stickersAvailable: true,
+        mediaAdapter: () => ({
+          capabilities: ["image"],
+          read: async () => {
+            throw new Error("unexpected media read");
+          },
+        }),
+        externalActions: () => [write],
+      },
+    );
+    addSticker(h);
+    const eligibilityValues: boolean[] = [];
+    const original = BotContextSource.prototype.setBudgetFeedbackBatchEligible;
+    const eligibility = spyOn(
+      BotContextSource.prototype,
+      "setBudgetFeedbackBatchEligible",
+    ).mockImplementation(function (this: BotContextSource, eligible: boolean) {
+      eligibilityValues.push(eligible);
+      original.call(this, eligible);
+    });
+    try {
+      h.receive("8891", "20002", true, "ordinary mixed read and write request");
+      expect((await h.activate("direct_reply")).status).toBe("no_output");
+      expect(eligibilityValues).toEqual([false]);
+      expect(modelCalls).toBe(2);
+      expect(writes).toBe(1);
+      expect(h.outbox.list({})).toEqual([]);
+    } finally {
+      eligibility.mockRestore();
+    }
   });
 
   it.each([1_000, 17_000, 18_500])(

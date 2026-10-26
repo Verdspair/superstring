@@ -69,7 +69,13 @@ export class ActionExecutor {
   async executeBatch(
     calls: readonly { action: BuiltInAction; arguments: Record<string, unknown> }[],
     context: ActionContext,
-    options: { mode?: ExecutionMode; assertCurrent?: () => void } = {},
+    options: {
+      mode?: ExecutionMode;
+      assertCurrent?: () => void;
+      beforeEffects?: (
+        reads: readonly { index: number; result: Omit<ActionObservation, "id" | "name"> }[],
+      ) => void | Promise<void>;
+    } = {},
   ) {
     options.assertCurrent?.();
     for (const { action } of calls) this.assert(action, context, options.mode);
@@ -97,6 +103,11 @@ export class ActionExecutor {
     for (let index = 0; index < reads.length; index += batch) {
       await Promise.allSettled(reads.slice(index, index + batch).map(execute));
       signal.throwIfAborted();
+    }
+    if (options.beforeEffects && calls.some((call) => call.action.description.effect !== "read")) {
+      await options.beforeEffects(reads.map((index) => ({ index, result: results[index] })));
+      signal.throwIfAborted();
+      options.assertCurrent?.();
     }
     for (const [index, call] of calls.entries()) {
       if (call.action.description.effect !== "read") await execute(index);
@@ -214,7 +225,7 @@ export class ActionExecutor {
     assertSources();
     const sources = uniqueSources([
       ...result.sources,
-      ...(action.permission ? [this.permissions.source(action.permission)] : []),
+      ...(action.permission ? [this.permissions.source(action.permission, context.owner)] : []),
       ...capSources,
     ]);
     if (action.description.effect === "read" && action.fitResult) {

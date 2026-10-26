@@ -19,7 +19,7 @@ import type { ModelPort } from "../../src/server/agent/model-port";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import type { BotCompressionJob } from "../../src/server/channels/onebot11/background-compression";
 import { BotCompressionQueue } from "../../src/server/channels/onebot11/background-compression";
-import { OneBotHost } from "../../src/server/channels/onebot11/bot-host";
+import { OneBotHost, type OneBotHostOptions } from "../../src/server/channels/onebot11/bot-host";
 import { mapBotHostDiagnosticTelemetry } from "../../src/server/channels/onebot11/create-runtime";
 import { createQqMediaInputService } from "../../src/server/channels/onebot11/media-input-service";
 import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
@@ -63,6 +63,7 @@ import {
   qqConversationScopeOf,
   qqMemoryScopeKey,
 } from "../../src/server/services/qq-binding-contract";
+import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contract";
 import { recordInbound } from "../../src/server/services/qq-intake";
 import { qqMediaPolicyRevision } from "../../src/server/services/qq-media-contract";
 import type { QqMediaReadAdapter } from "../../src/server/services/qq-media-reader";
@@ -70,14 +71,19 @@ import { qqExecutionModuleSourceAccess } from "../../src/server/services/qq-memb
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import type { QqSendPort } from "../../src/server/services/qq-send-transport";
 import type { MemoryContentResponse } from "../../src/shared/contracts";
+import { QQ_ALLOCATION_DEFAULT } from "../../src/shared/contracts/context-allocation";
 import {
+  QQ_COMPRESSION_DEFAULT,
   QQ_MEDIA_INPUT_SCHEME_DEFAULT,
   QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
+  QQ_MODEL_OUTPUT_RESERVE_DEFAULT,
+  QQ_STICKER_DEDUP_DEFAULT,
   type QqSchemeMediaInput,
   type QqSchemeMessageSettings,
 } from "../../src/shared/contracts/qq";
 import type { QqMediaInputSettings } from "../../src/shared/contracts/qq-media-input";
 import type { QqMessageSettings } from "../../src/shared/contracts/qq-message";
+import { runtimeFixtureBusiness } from "./business-db";
 import { type ModelStep, type ScriptedModel, scriptedModel } from "./model";
 
 /** 发送端每次返回什么；默认全部"确认送达"。 */
@@ -188,6 +194,12 @@ export interface OneBotHarnessOptions {
    * **不发 HTTP、不碰真实模型服务**。
    */
   readonly capacityGateway?: Pick<ModelGateway, "loadedContextCapacity">;
+  /**
+   * 真实网关注入（全型 OneBotHostOptions.gateway）：
+   * 提供完整协议准备能力（prepareRequestFormat / prepareContextModel），使宿主与运行时共用同一网关实例。
+   * 省略＝维持既有行为（当场答 capacity/默认 65536，不发 HTTP、不碰真实模型服务）。
+   */
+  readonly actualGateway?: OneBotHostOptions["gateway"];
   /**
    * 诊断的辅助订阅者：拿到与生产 mapper **同一批**诊断事件（只读辅助，不代持久化）。
    * 省略＝只有 `telemetry:true` 那条落库链。既有写法（内存数组断言）行为不变。
@@ -300,7 +312,7 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
   const clock = { seconds: options.nowSeconds ?? 2_000_000_000 };
   const now = () => new Date(clock.seconds * 1000).toISOString();
 
-  const handle = openBusinessDb();
+  const handle = runtimeFixtureBusiness(openBusinessDb(), conversationModel);
   const { db, orm } = handle;
   ensureDefaults(orm, conversationModel);
   updateQqSettings(orm, {
@@ -313,6 +325,12 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
   });
   const scheme = createQqScheme(orm, {
     name: `${kind}-harness`,
+    context: { ...QQ_CONTEXT_DEFAULT },
+    compression: { ...QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(QQ_ALLOCATION_DEFAULT),
+    stickers: { ...QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     ...(options.messageSettings === undefined
       ? {}
       : {
@@ -393,7 +411,7 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
   // 不另开模型路径。**null 按生产原样透传**——目录里没有该模型就是「无法确认容量」，
   // 由 context-source 走真实的 CONTEXT_CAPACITY_UNKNOWN 拒绝，夹具不拿默认容量顶替。
   // 不给＝维持既有行为（当场答 capacity/默认 65536，不发 HTTP、不碰真实模型服务）。
-  const gateway = {
+  const gateway = options.actualGateway ?? {
     complete: async () => {
       throw new Error("UNIFIED_RUNTIME_REQUIRED");
     },

@@ -138,6 +138,7 @@ import {
 import { planQqPreparedReply, type QqStickerStage } from "../../services/qq-sticker-runner";
 import { compileSystemPrompt, runtimeFromAgent } from "../../services/runtime-config";
 import { WEB_PERMISSION_RESOURCE, WEB_PERMISSION_REVISION } from "../../web-access/actions";
+
 import type { BotCompressionJob } from "./background-compression";
 import {
   assertBotContextSources,
@@ -223,7 +224,8 @@ export interface OneBotHostOptions {
   orm: Orm;
   agentRuntime: AgentRuntime;
   host?: ConversationHost;
-  gateway: Pick<ModelGateway, "complete" | "loadedContextCapacity">;
+  gateway: Pick<ModelGateway, "complete" | "loadedContextCapacity"> &
+    Partial<Pick<ModelGateway, "prepareContextModel" | "prepareRequestFormat">>;
   journal: ConversationEventRepository;
   wakes: WakeRepository;
   outbox: OutboundIntentRepository;
@@ -1579,10 +1581,10 @@ export class OneBotHost {
     };
     const spec: AgentSpec = initiative ? judgementSpec : buildReplySpec();
     // 结构化 mention 校验已迁入 buildRun（按 source 及 targets 校验，删除旧无界 journal 循环）。
-    // 观察序列戳以**原 base** 拼（不叠加，重复 read 不累积）；每个 run/子 run 以自己 spec 的
-    // base 计算。
-    const epochText = (base: string, seq: number) =>
-      `${base}\n当前观察序列：${String(seq).padStart(20, "0")}。许可由程序按当前相关状态判定：新的相关观察会让它自动失效，不相关的变化不影响它。`;
+    // 静态许可规则常驻系统指令，动态数字由底层程序游标治理，不在系统提示中频繁分叉。
+    const staticPermitRule =
+      "许可由程序按当前相关状态判定：新的相关观察会让它自动失效，不相关的变化不影响它。";
+    const withPermitRule = (base: string) => `${base}\n${staticPermitRule}`;
     // 本 run 的 id 由 host.activate 的 onEvent 回填；主路径单 run 用它，主动批次下每个达标
     // 目标各有自己的子 run id（作为参数传入各 run 块）。源回调（onRead/diagnose/媒体读取）
     // 按主（父）run id 记账。
@@ -1632,9 +1634,8 @@ export class OneBotHost {
       const runDetailMediaIds = new Set<string>();
       // read 回调按本 run 的 spec/runId 记账（不落到外部/兄弟的 spec 或 run ref）。
       const runBase = runSpec.instructions ?? "";
-      spec.instructions = epochText(runBase, 0);
+      spec.instructions = withPermitRule(runBase);
       const onRead = (seq: number) => {
-        spec.instructions = epochText(runBase, seq);
         if (ref.current) linkRun(ref.current, seq);
       };
       // 媒体相位边界：决策相与每个并行生成目标各一份（缺省＝共享边界）。所有相读取都带边界，
@@ -2559,11 +2560,15 @@ export class OneBotHost {
               source.assertCurrent();
             };
             check();
+            const result = action.fitResult
+              ? await action.fitResult(value, sources, arguments_, context)
+              : value;
+            check();
             if (context.fitReadResult) {
               const accepted = context.fitReadResult(
                 action.description.name,
                 arguments_,
-                value,
+                result,
                 sources,
               );
               check();
@@ -2576,9 +2581,9 @@ export class OneBotHost {
               true,
             );
             check();
-            if (fits(value, sources)) {
+            if (fits(result, sources)) {
               check();
-              return value;
+              return result;
             }
             const unavailable = { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" };
             if (!fits(unavailable, sources) && !fits(unavailable, sources, true))
@@ -2593,12 +2598,7 @@ export class OneBotHost {
         o.externalActions?.() ??
         []
       ).map((action): BuiltInAction => {
-        if (
-          action.description.effect !== "read" ||
-          action.permission?.resource !== WEB_PERMISSION_RESOURCE ||
-          action.permission.revision !== WEB_PERMISSION_REVISION
-        )
-          return action;
+        if (action.description.effect !== "read") return action;
         return fitReadResult(action);
       });
       let researchAction: BuiltInAction | undefined;
@@ -2728,6 +2728,7 @@ export class OneBotHost {
                     contextBudget: evaln.contextBudget,
                     contextInputLimit: evaln.contextInputLimit,
                   }),
+              ...(evaln.requestFormat === undefined ? {} : { requestFormat: evaln.requestFormat }),
               ...(execution ? { workClass: execution.snapshot.taskClass } : {}),
               imageResolver: scoreResolver,
               bindRun: (context) => {
@@ -3492,10 +3493,18 @@ export class OneBotHost {
             prepareGeneration: async (draft, input) => {
               // 本目标的媒体相位边界与发送闭包；决策相与单目标路径走共享边界。
               const boundary = source.targetScope();
+              let responseSchema: Record<string, unknown> | undefined;
               const generation = await source.prepareGeneration(draft, {
                 ...input,
                 ...(boundary === undefined ? {} : { boundary }),
+                responseSchema: () => {
+                  responseSchema = hasUnknownImages("generation", boundary)
+                    ? QQ_TEXT_ENVELOPE_SCHEMA
+                    : undefined;
+                  return responseSchema;
+                },
               });
+              const isEnvelope = responseSchema !== undefined;
               generationAttempts.set(
                 draft.targetId,
                 (generationAttempts.get(draft.targetId) ?? 0) + 1,
@@ -3602,7 +3611,7 @@ export class OneBotHost {
                 ...generation,
                 hooks,
                 // 规格 §10：生成相存在待分类 unknown 图时换 envelope，按本目标边界判定/消费。
-                ...(hasUnknownImages("generation", boundary)
+                ...(isEnvelope
                   ? {
                       instructions: qqReplaceOutputRuleInText(
                         generation.instructions ?? "",
@@ -3610,7 +3619,7 @@ export class OneBotHost {
                         QQ_REPLY_ENVELOPE_OUTPUT_RULE,
                       ),
                       responseEnvelope: {
-                        responseSchema: QQ_TEXT_ENVELOPE_SCHEMA,
+                        responseSchema: responseSchema ?? QQ_TEXT_ENVELOPE_SCHEMA,
                         parse: (raw: string, meta?: { resolvedModel: string }) => {
                           const envelope = parseModelTextEnvelope(
                             JSON.parse(raw) as unknown,

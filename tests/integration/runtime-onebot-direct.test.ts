@@ -10,6 +10,7 @@ import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
 import type { QqIntakeRuntime } from "../../src/server/services/qq-intake";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 it("production composition shares Web/Bot Agent runtime and dispatches private input exactly once", async () => {
   const business = openBusinessDb();
@@ -48,8 +49,8 @@ it("production composition shares Web/Bot Agent runtime and dispatches private i
     async start() {},
     stop() {},
   } as unknown as QqIntakeRuntime;
-  const runtime = createRuntime({
-    business,
+  const runtime = await createRuntime({
+    business: runtimeFixtureBusiness(business),
     gateway,
     qqIntake: intake,
     browserStateSecret: "synthetic-composition-secret",

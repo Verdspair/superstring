@@ -1,4 +1,4 @@
-import { expect, it, spyOn } from "bun:test";
+import { afterEach, expect, it, mock, spyOn } from "bun:test";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createSseResponse, SSE_KEEPALIVE_INTERVAL_MS } from "../../src/server/api/sse";
@@ -12,6 +12,7 @@ import {
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { ModelUnavailableError } from "../../src/server/errors";
 import { localhostFetch, type ModelGateway } from "../../src/server/llm/model-gateway";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 import { parseSseFrames } from "../harness/sse";
 
 function deferred<T = void>() {
@@ -24,10 +25,12 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
+const nativeInterval = globalThis.setInterval;
+const nativeClear = globalThis.clearInterval;
+afterEach(() => mock.restore());
+
 /** Only intercept SSE heartbeats; generation lease/timeout timers stay real. */
 function heartbeatClock() {
-  const nativeInterval = globalThis.setInterval;
-  const nativeClear = globalThis.clearInterval;
   const callbacks = new Map<ReturnType<typeof setInterval>, () => void>();
   const owned = new Set<ReturnType<typeof setInterval>>();
   let nextId = -1;
@@ -159,7 +162,7 @@ class WaitingGateway implements ModelGateway {
   }
 }
 function routeFixture() {
-  const business = openBusinessDb();
+  const business = runtimeFixtureBusiness(openBusinessDb(), "model");
   ensureDefaults(business.orm, "model");
   const gateway = new WaitingGateway();
   const session = createSession(business.orm, "fixture", { modelName: "model" });

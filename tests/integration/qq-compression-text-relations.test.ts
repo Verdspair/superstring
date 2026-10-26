@@ -486,9 +486,10 @@ describe("压缩输入的文字关系（T06 接力2）", () => {
         legacyIdOf([{ kind: "qq_observation", id: first, revision: bodySha(firstBody) }]),
         legacyIdOf([{ kind: "qq_observation", id: second, revision: bodySha(secondBody) }]),
       ];
-      expect(events.map((event) => event.id)).toEqual(
-        rawIds.map((id) => `qq-record:${createHash("sha256").update(id).digest("base64url")}`),
+      const labels = new Map(
+        [...new Set(rawIds)].sort().map((id, index) => [id, `s${index.toString(36)}`]),
       );
+      expect(events.map((event) => event.id)).toEqual(rawIds.map((id) => labels.get(id)!));
       const row = h.orm.select().from(schema.qqConversationSummaries).get();
       if (!row) throw new Error("fixture: original job did not publish a package");
       const pkg = (
@@ -657,8 +658,11 @@ describe("压缩输入的文字关系（T06 接力2）", () => {
       } else {
         expect(loaded).not.toBeNull();
         if (!loaded) throw new Error("fixture: approved scoped summary was unreadable");
-        const restored = JSON.parse(loaded.text) as { source_ids: string[] }[];
-        expect(restored.map((fact) => fact.source_ids)).toEqual(rawIds.map((id) => [id]));
+        const presented = JSON.parse(loaded.text) as { source_ids: string[] }[];
+        expect(presented).toEqual(legacyPkg.facts);
+        expect(
+          presented.map((fact) => fact.source_ids.map((id) => legacyPkg.provenance?.[id])),
+        ).toEqual(rawIds.map((id) => [id]));
       }
     },
   );
@@ -725,7 +729,8 @@ describe("压缩输入的文字关系（T06 接力2）", () => {
     for (const id of referenced) {
       const original = pkg.provenance?.[id];
       expect(rawRecords.some((record) => record.id === original)).toBe(true);
-      expect(id).toBe(`qq-record:${createHash("sha256").update(original!).digest("base64url")}`);
+      const orderedRaw = [...new Set(rawRecords.map((record) => record.id))].sort();
+      expect(id).toBe(`s${orderedRaw.indexOf(original!).toString(36)}`);
     }
     expect(
       pkg.sources.some(
@@ -963,9 +968,10 @@ describe("压缩输入的文字关系（T06 接力2）", () => {
     const events = h.capturedEvents[0];
     if (!events) throw new Error("expected captured call");
     expect(events.map((event) => event.seq)).toEqual([1, 2]);
-    expect(events.map((event) => event.id)).toEqual(
-      rawIds.map((id) => `qq-record:${createHash("sha256").update(id).digest("base64url")}`),
+    const labels = new Map(
+      [...new Set(rawIds)].sort().map((id, index) => [id, `s${index.toString(36)}`]),
     );
+    expect(events.map((event) => event.id)).toEqual(rawIds.map((id) => labels.get(id)!));
     const pkg = (JSON.parse(row.content) as { packages: { provenance: Record<string, string> }[] })
       .packages[0]!;
     expect(events.map((event) => pkg.provenance[event.id])).toEqual(rawIds);

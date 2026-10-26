@@ -1,36 +1,91 @@
-// P3n/P3o: capacity check before QQ model calls; no model completion or sending.
+// Capacity check before QQ model calls; never performs inference.
 import { z } from "zod";
+import type { ModelContextBudget } from "../agent/model-port";
 import type { ModelGateway } from "../llm/model-gateway";
+import {
+  measureContextTokens,
+  measurePreparedRequest,
+  type PreparedRequestFormat,
+} from "../llm/request-format";
 import { estimateMessages } from "../modules/memory-query";
+import { estimateTokens } from "./token-estimate";
 
 const Input = z.strictObject({
   model: z.string().min(1),
   messages: z.array(z.strictObject({ role: z.enum(["system", "user"]), content: z.string() })),
-  /** Explicit output reservation: cannot guess a reply size for the user. */
-  outputReserved: z.number().int().min(256).max(16384),
+  outputReserved: z.number().int().min(0).max(1048576),
+  responseSchema: z.record(z.string(), z.unknown()).optional(),
 });
 export type QqCapacityCheck =
-  | { readonly kind: "allowed"; readonly inputUnits: number; readonly capacity: number }
+  | {
+      readonly kind: "allowed";
+      /** Existing byte estimate, including the complete schema when supplied. */
+      readonly inputUnits: number;
+      readonly capacity: number;
+      readonly contextBudget?: ModelContextBudget;
+      readonly contextInputLimit?: number;
+      readonly requestFormat?: PreparedRequestFormat;
+    }
   | { readonly kind: "unavailable" | "exceeded" };
 
-/** A capacity probe returning null/error is a refusal, never a fallback to a made-up size. */
+/** Missing capacity refuses; an undeclared tokenizer keeps the byte estimate. */
 export async function checkQqModelCapacity(
-  gateway: Pick<ModelGateway, "loadedContextCapacity">,
+  gateway: Pick<ModelGateway, "loadedContextCapacity"> &
+    Partial<Pick<ModelGateway, "prepareContextModel">>,
   input: unknown,
+  signal?: AbortSignal,
+  prepareVisionRequestFormat?: (input: {
+    model: string;
+    responseSchema?: Record<string, unknown>;
+  }) => PreparedRequestFormat,
 ): Promise<QqCapacityCheck> {
   const parsed = Input.safeParse(input);
   if (!parsed.success) throw new TypeError("Invalid QQ capacity input");
-  const { model, messages, outputReserved } = parsed.data;
+  const { model, messages, outputReserved, responseSchema } = parsed.data;
+  signal?.throwIfAborted();
+  let descriptor: ModelContextBudget | undefined;
   let capacity: number | null;
   try {
-    capacity = await gateway.loadedContextCapacity(model);
+    descriptor = await gateway.prepareContextModel?.(model, { signal });
+    capacity = descriptor
+      ? descriptor.capacity
+      : await gateway.loadedContextCapacity(model, { signal });
   } catch {
+    signal?.throwIfAborted();
     return { kind: "unavailable" };
   }
+  signal?.throwIfAborted();
+  descriptor?.assertCurrent();
+  if (descriptor && descriptor.model !== model) return { kind: "unavailable" };
   if (capacity === null || !Number.isSafeInteger(capacity) || capacity <= 0)
     return { kind: "unavailable" };
-  const inputUnits = estimateMessages(messages);
-  return inputUnits + outputReserved <= capacity
-    ? { kind: "allowed", inputUnits, capacity }
+  const inputUnits =
+    estimateMessages(messages) +
+    (responseSchema ? estimateTokens(JSON.stringify(responseSchema)) : 0);
+  const limit = capacity - outputReserved;
+  const requestFormat = prepareVisionRequestFormat?.({ model, responseSchema });
+  const counter =
+    descriptor?.countText && descriptor.tokenizerEncoding
+      ? { encoding: descriptor.tokenizerEncoding, count: descriptor.countText }
+      : undefined;
+  const measured =
+    requestFormat !== undefined && descriptor !== undefined
+      ? measurePreparedRequest(messages, descriptor, requestFormat)
+      : undefined;
+  const cost =
+    measured !== undefined
+      ? measured.textTokens
+      : counter
+        ? measureContextTokens(messages, counter, { responseSchema }).textTokens
+        : inputUnits;
+  return cost <= limit
+    ? {
+        kind: "allowed",
+        inputUnits,
+        capacity,
+        ...(descriptor ? { contextBudget: descriptor } : {}),
+        ...(counter ? { contextInputLimit: limit } : {}),
+        ...(requestFormat ? { requestFormat } : {}),
+      }
     : { kind: "exceeded" };
 }

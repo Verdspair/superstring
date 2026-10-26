@@ -24,6 +24,15 @@ import type { ExecutionMode } from "../../shared/contracts/permissions";
 import type { AgentRunRepository } from "../db/agent-run-repository";
 import { AppError, ModelUnavailableError } from "../errors";
 import type { ChatMessage } from "../llm/model-gateway";
+import {
+  type ContextTokenMeasure,
+  type ContextTokenMeasureOptions,
+  measureContextBytes,
+  measureContextTokens,
+  measurePreparedRequest,
+  type PreparedRequestFormat,
+  preparedRequestMeasure,
+} from "../llm/request-format";
 import type { VisionClient, VisionImage } from "../llm/vision-client";
 import {
   resolveAgentTraceScope,
@@ -55,11 +64,8 @@ import {
   type ActionObservation,
   ContextEngine,
   type ContextReadTimings,
-  type ContextTokenMeasure,
-  type ContextTokenMeasureOptions,
   type ConversationContextSource,
   inputUnits,
-  measureContextTokens,
   type RenderedContext,
   textMessage,
   uniqueSources,
@@ -82,6 +88,7 @@ import { ReservationLedger } from "./reservation-ledger";
 import { createToolCatalog, type ToolCatalog } from "./tool-catalog";
 
 export interface LeafInput {
+  requestFormat?: PreparedRequestFormat;
   messages: ChatMessage[];
   owner: RunOwner;
   /** 可信宿主声明的任务类；缺省＝ordinary（ModelPort 原默认），不是新的持久状态。 */
@@ -133,6 +140,7 @@ export interface PreparedOutput extends OutputSummary {
   sources?: readonly SourceRef[];
 }
 export interface PreparedGeneration extends AgentGenerationConfig {
+  requestFormat?: PreparedRequestFormat;
   /** Explicit host-provided phase projection from the same authorized context source. */
   context?: RenderedContext;
   /**
@@ -365,6 +373,7 @@ interface TargetPlan {
   messages: ModelMessage[];
   generationSpec: LeafAgentSpec;
   generationBudget?: ModelContextBudget;
+  requestFormat?: PreparedRequestFormat;
   structured?: PreparedGeneration["responseEnvelope"];
   allowEmpty?: boolean;
   /** 宿主按目标冻结的发送闭包；缺省字段沿输入级闭包。 */
@@ -486,14 +495,31 @@ export class AgentRuntime {
     return this.withRun(active, () => this.completeLeafRun(active, spec, input));
   }
 
+  private prepareCallFormat(
+    model: string | undefined,
+    budget: ModelContextBudget | undefined,
+    responseSchema?: Record<string, unknown>,
+  ): PreparedRequestFormat | undefined {
+    if (!budget?.countText || !budget.tokenizerEncoding || !this.options.model.prepareRequestFormat)
+      return undefined;
+    return this.options.model.prepareRequestFormat({
+      model: budget.model || model || "",
+      responseSchema,
+    });
+  }
+
   private completeLeafRun(active: Running, spec: LeafAgentSpec, input: LeafInput): Promise<string> {
     return this.completeLeafTask(active, "leaf", input, () => {
       const messages = [
         ...(spec.instructions === undefined ? [] : [textMessage("system", spec.instructions)]),
         ...textMessages(input.messages),
       ];
+      const requestFormat =
+        input.requestFormat ??
+        this.prepareCallFormat(spec.model, input.contextBudget, spec.responseSchema);
       return {
         messages,
+        requestFormat,
         invoke: async (capture, onModelResolved, onModelResponse, retryOptions) => {
           const raw = await this.options.model.complete({
             messages,
@@ -501,6 +527,7 @@ export class AgentRuntime {
             temperature: spec.temperature,
             maxTokens: spec.maxTokens,
             responseSchema: spec.responseSchema,
+            ...(requestFormat === undefined ? {} : { requestFormat }),
             ...(input.contextBudget === undefined ? {} : { contextBudget: input.contextBudget }),
             ...(input.contextInputLimit === undefined
               ? {}
@@ -538,8 +565,12 @@ export class AgentRuntime {
             signal: active.signal,
             runId: active.runId,
           });
+          const requestFormat =
+            input.requestFormat ??
+            this.prepareCallFormat(spec.model, input.contextBudget, spec.responseSchema);
           return {
             messages,
+            requestFormat,
             invoke: async (capture, onModelResolved, onModelResponse, retryOptions) => {
               const raw = await this.options.model.complete({
                 messages,
@@ -547,6 +578,7 @@ export class AgentRuntime {
                 temperature: spec.temperature,
                 maxTokens: spec.maxTokens,
                 responseSchema: spec.responseSchema,
+                ...(requestFormat === undefined ? {} : { requestFormat }),
                 ...(input.contextBudget === undefined
                   ? {}
                   : { contextBudget: input.contextBudget }),
@@ -599,6 +631,7 @@ export class AgentRuntime {
     input: VisionLeafInput,
   ): Promise<string> {
     return this.completeLeafTask(active, "vision", input, () => {
+      const checkpoint = this.options.assertLeaf?.(input.owner, active.spec.id);
       const source = input.sources?.[0];
       const messages: ModelMessage[] = [
         ...(spec.instructions === undefined ? [] : [textMessage("system", spec.instructions)]),
@@ -616,8 +649,15 @@ export class AgentRuntime {
           ],
         },
       ];
+      const requestFormat =
+        input.requestFormat ??
+        this.options.model.prepareVisionRequestFormat?.({
+          model: input.model,
+          responseSchema: spec.responseSchema,
+        });
       return {
         messages,
+        requestFormat,
         invoke: async (capture, _onModelResolved, onModelResponse, retryOptions) => {
           const raw = await this.options.model.completeMultimodal({
             systemPrompt: spec.instructions,
@@ -627,6 +667,15 @@ export class AgentRuntime {
             prompt: input.prompt,
             images: input.images,
             responseSchema: spec.responseSchema,
+            ...(requestFormat === undefined ? {} : { requestFormat }),
+            contextBudget: input.contextBudget,
+            contextInputLimit: input.contextInputLimit,
+            assertPreparedCurrent: () => {
+              active.signal.throwIfAborted();
+              input.assertSources?.(input.sources ?? []);
+              this.options.assertLeaf?.(input.owner, active.spec.id);
+              if (typeof checkpoint === "function") checkpoint();
+            },
             ...(active.workClass === undefined ? {} : { workClass: active.workClass }),
             ...retryOptions(),
             signal: active.signal,
@@ -654,6 +703,7 @@ export class AgentRuntime {
     },
     prepare: () => {
       messages: ModelMessage[];
+      requestFormat?: PreparedRequestFormat;
       invoke: (
         capture: (text: string, complete?: boolean) => void,
         onModelResolved: (model: string) => void,
@@ -669,7 +719,7 @@ export class AgentRuntime {
       // 模型调用前查一次并冻结当前纪元；返回后再查当前状态与冻结纪元，且必须夹在这一步落盘为
       // 完成之前——飞行期间停用（哪怕随后恢复）已产出的叶子结果不得发布，该步按失败落盘，运行失败。
       const checkpoint = this.options.assertLeaf?.(input.owner, active.spec.id);
-      const { messages, invoke, assertSources } = prepare();
+      const { messages, requestFormat, invoke, assertSources } = prepare();
       const guarded = async (
         capture: (text: string, complete?: boolean) => void,
         onModelResolved: (model: string) => void,
@@ -707,9 +757,15 @@ export class AgentRuntime {
           budget: input.contextBudget,
           inputLimit: input.contextInputLimit,
           options:
-            active.spec.responseSchema === undefined
+            requestFormat === undefined
+              ? active.spec.responseSchema === undefined
+                ? undefined
+                : { responseSchema: active.spec.responseSchema }
+              : preparedRequestMeasure(requestFormat),
+          measure:
+            requestFormat === undefined
               ? undefined
-              : { responseSchema: active.spec.responseSchema },
+              : measurePreparedRequest(messages, input.contextBudget, requestFormat),
           stepInputLimit: input.contextInputLimit,
         },
       );
@@ -941,6 +997,20 @@ export class AgentRuntime {
         // 系统声明（render）与实际请求（requestFor）、响应解析共用同一个选择。
         let decisionEnvelope: ReturnType<NonNullable<ConversationInput["decisionEnvelope"]>>;
         const decisionBudget = await preparePhaseBudget(spec.model);
+        let decisionFormat: PreparedRequestFormat | undefined;
+        input.context.prepareDecisionProtocol?.((schema, advertised) => {
+          if (
+            decisionFormat === undefined &&
+            decisionBudget?.countText &&
+            this.options.model.prepareRequestFormat
+          )
+            decisionFormat = this.options.model.prepareRequestFormat({
+              model: decisionBudget.model,
+              responseSchema: schema,
+              tools: advertised,
+            });
+          return decisionFormat;
+        });
         active.signal.throwIfAborted();
         let currentMaterial: Awaited<ReturnType<ConversationContextSource["read"]>>;
         const context = await this.trace(
@@ -983,14 +1053,22 @@ export class AgentRuntime {
                   input.outputMode,
                   decisionEnvelope?.responseSchema,
                 );
-                rendered = this.measureRenderedContext(rendered, decisionBudget, {
-                  responseSchema: decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
-                  tools: advertisedActions.map(({ name, description, parameters }) => ({
-                    name,
-                    description,
-                    parameters,
-                  })),
-                });
+                const preparedMeasure =
+                  decisionFormat === undefined
+                    ? undefined
+                    : measurePreparedRequest(rendered.messages, decisionBudget, decisionFormat);
+                rendered =
+                  preparedMeasure === undefined
+                    ? this.measureRenderedContext(rendered, decisionBudget, {
+                        responseSchema:
+                          decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
+                        tools: advertisedActions.map(({ name, description, parameters }) => ({
+                          name,
+                          description,
+                          parameters,
+                        })),
+                      })
+                    : { ...rendered, tokenMeasure: preparedMeasure };
               } finally {
                 timings.contextRenderMs = performance.now() - renderStarted;
               }
@@ -1036,6 +1114,7 @@ export class AgentRuntime {
               // 当前 messages 组请求；prepare/schema/tools 重试共用同一次钩子结果与 used。
               const requestFor = (phaseMessages: readonly ModelMessage[]): ModelRequest => ({
                 messages: phaseMessages,
+                ...(decisionFormat === undefined ? {} : { requestFormat: decisionFormat }),
                 model: spec.model,
                 temperature: spec.temperature,
                 maxTokens: spec.maxTokens ?? spec.limits.outputTokens,
@@ -1129,14 +1208,18 @@ export class AgentRuntime {
             {
               budget: decisionBudget,
               inputLimit: decisionBudget?.countText ? spec.limits.inputUnits : undefined,
-              options: {
-                responseSchema: decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
-                tools: advertisedActions.map(({ name, description, parameters }) => ({
-                  name,
-                  description,
-                  parameters,
-                })),
-              },
+              options:
+                decisionFormat === undefined
+                  ? {
+                      responseSchema:
+                        decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
+                      tools: advertisedActions.map(({ name, description, parameters }) => ({
+                        name,
+                        description,
+                        parameters,
+                      })),
+                    }
+                  : preparedRequestMeasure(decisionFormat),
               measure: context.tokenMeasure,
               stepInputLimit: spec.limits.inputUnits,
             },
@@ -1276,6 +1359,30 @@ export class AgentRuntime {
             })),
           );
           this.repository.setStatus(active.runId, "observing", this.now());
+          const readObservations = new Map<(typeof planned)[number], ActionObservation>();
+          const projectObservation = (
+            entry: (typeof planned)[number],
+            result: Omit<ActionObservation, "id" | "name">,
+          ): ActionObservation => ({
+            ...result,
+            ...(entry.repeat
+              ? { repeatWarning: "同一个调用这是第 2 次：换个做法，不要原样重试" }
+              : {}),
+            id: randomUUID(),
+            name: entry.call.name,
+            arguments: entry.call.arguments,
+            // Only this result's sources; the context snapshot retains its input provenance.
+            sources: uniqueSources([...result.sources]),
+          });
+          const assertBatchCurrent = () => {
+            active.signal.throwIfAborted();
+            input.context.assertCurrent?.();
+            for (const [entry, observation] of readObservations) {
+              this.executor.assert(entry.action, actionContext, mode);
+              this.executor.guard?.assertSources(input.owner, observation.sources);
+              input.context.assertSources?.(observation.sources);
+            }
+          };
           const settled = await this.trace<
             Map<(typeof planned)[number], Omit<ActionObservation, "id" | "name">>
           >(
@@ -1295,9 +1402,26 @@ export class AgentRuntime {
                       const tokenMode = Boolean(
                         decisionBudget?.countText && decisionBudget.tokenizerEncoding,
                       );
-                      const group = tokenMode ? "tokens" : "bytes";
+                      const group = tokenMode ? "tokens" : "capacity";
                       const limit = spec.limits.inputUnits;
+                      const byteLimit = spec.limits.inputBytes;
+                      const protocol =
+                        decisionFormat === undefined
+                          ? {
+                              responseSchema:
+                                decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
+                              tools: advertisedActions.map(({ name, description, parameters }) => ({
+                                name,
+                                description,
+                                parameters,
+                              })),
+                            }
+                          : preparedRequestMeasure(decisionFormat);
                       const baseline = tokenMode ? context.tokenMeasure?.textTokens : context.units;
+                      const baselineBytes =
+                        byteLimit === undefined
+                          ? undefined
+                          : measureContextBytes(context.messages, protocol);
                       const fit = (candidate: unknown) => {
                         active.signal.throwIfAborted();
                         input.context.assertCurrent?.();
@@ -1318,15 +1442,11 @@ export class AgentRuntime {
                           input.outputMode,
                           decisionEnvelope?.responseSchema,
                         );
-                        const measured = this.measureRenderedContext(rendered, decisionBudget, {
-                          responseSchema:
-                            decisionEnvelope?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA,
-                          tools: advertisedActions.map(({ name, description, parameters }) => ({
-                            name,
-                            description,
-                            parameters,
-                          })),
-                        });
+                        const measured = this.measureRenderedContext(
+                          rendered,
+                          decisionBudget,
+                          protocol,
+                        );
                         const units = tokenMode
                           ? measured.tokenMeasure?.textTokens
                           : measured.units;
@@ -1340,7 +1460,19 @@ export class AgentRuntime {
                           units + reservations.reserved(token, group) > limit
                         )
                           return false;
+                        const bytes =
+                          byteLimit === undefined
+                            ? undefined
+                            : measureContextBytes(rendered.messages, protocol);
+                        if (
+                          byteLimit !== undefined &&
+                          bytes !== undefined &&
+                          bytes + reservations.reserved(token, "bytes") > byteLimit
+                        )
+                          return false;
                         reservations.set(token, Math.max(0, units - baseline), group);
+                        if (bytes !== undefined && baselineBytes !== undefined)
+                          reservations.set(token, Math.max(0, bytes - baselineBytes), "bytes");
                         return true;
                       };
                       if (fit(value)) return value;
@@ -1363,7 +1495,37 @@ export class AgentRuntime {
                   sources: context.sources,
                   ...(fitReadResult ? { fitReadResult } : {}),
                 },
-                { mode, assertCurrent: () => input.context.assertCurrent?.() },
+                {
+                  mode,
+                  assertCurrent: assertBatchCurrent,
+                  ...(input.context.assertBeforeActionEffects === undefined
+                    ? {}
+                    : {
+                        beforeEffects: async (
+                          reads: readonly {
+                            index: number;
+                            result: Omit<ActionObservation, "id" | "name">;
+                          }[],
+                        ) => {
+                          for (const { index, result } of reads) {
+                            const entry = planned[index];
+                            readObservations.set(entry, projectObservation(entry, result));
+                          }
+                          assertBatchCurrent();
+                          await input.context.assertBeforeActionEffects?.({
+                            observations: [...observations, ...readObservations.values()],
+                            effects: planned
+                              .filter((entry) => entry.effect !== "read")
+                              .map((entry) => ({
+                                name: entry.call.name,
+                                arguments: entry.call.arguments,
+                              })),
+                            signal: active.signal,
+                          });
+                          assertBatchCurrent();
+                        },
+                      }),
+                },
               );
               const results = new Map(
                 planned.map((entry, index) => {
@@ -1391,19 +1553,7 @@ export class AgentRuntime {
             const result = settled.get(entry);
             if (!result)
               throw new AgentRuntimeError("AGENT_ACTION_UNAVAILABLE", "Action produced no result");
-            const observation: ActionObservation = {
-              ...result,
-              ...(entry.repeat
-                ? { repeatWarning: "同一个调用这是第 2 次：换个做法，不要原样重试" }
-                : {}),
-              id: randomUUID(),
-              name: entry.call.name,
-              arguments: entry.call.arguments,
-              // 只带**这次结果自己的**来源：k 条观测不再各复制一遍上下文来源（元数据重复是上下文
-              // 膨胀的来源之一）。归属没有丢——"这条结果是在哪些来源之下产生的"由这一步的上下文
-              // 快照记一次（`context_snapshots.source_refs`，`repository.getContext` 可读）。
-              sources: uniqueSources([...result.sources]),
-            };
+            const observation = readObservations.get(entry) ?? projectObservation(entry, result);
             observations.push(observation);
             usedActionObservations.set(entry.action, observation);
             await this.emit(active, {
@@ -1526,19 +1676,40 @@ export class AgentRuntime {
                 const structured =
                   input.outputMode === "buffered" ? generation.responseEnvelope : undefined;
                 const generationContext = preparedGeneration?.context ?? context;
+                const requestFormat =
+                  preparedGeneration?.requestFormat ??
+                  (structured === undefined
+                    ? undefined
+                    : this.prepareCallFormat(
+                        generationModel,
+                        generationBudget,
+                        structured.responseSchema,
+                      ));
                 const messages = this.contextEngine.renderOutput(
                   { ...spec, generation },
                   generationContext,
                   draft,
                   structured?.responseSchema,
                 );
-                const measuredGenerationContext = this.measureRenderedContext(
-                  { ...generationContext, messages, units: inputUnits(messages) },
-                  generationBudget,
-                  structured === undefined
+                const generationRendered = {
+                  ...generationContext,
+                  messages,
+                  units: inputUnits(messages),
+                };
+                const preparedMeasure =
+                  requestFormat === undefined
                     ? undefined
-                    : { responseSchema: structured.responseSchema },
-                );
+                    : measurePreparedRequest(messages, generationBudget, requestFormat);
+                const measuredGenerationContext =
+                  preparedMeasure === undefined
+                    ? this.measureRenderedContext(
+                        generationRendered,
+                        generationBudget,
+                        structured === undefined
+                          ? undefined
+                          : { responseSchema: structured.responseSchema },
+                      )
+                    : { ...generationRendered, tokenMeasure: preparedMeasure };
                 await input.onContext?.(measuredGenerationContext, {
                   runId: active.runId,
                   phase: "generate",
@@ -1556,7 +1727,12 @@ export class AgentRuntime {
                   model: generation.model ?? spec.model,
                   temperature: generation.temperature ?? spec.temperature,
                   maxTokens: generation.maxTokens ?? spec.maxTokens ?? spec.limits.outputTokens,
-                  limits: { inputUnits: generation.inputUnits ?? spec.limits.inputUnits },
+                  limits: {
+                    inputUnits: generation.inputUnits ?? spec.limits.inputUnits,
+                    ...(spec.limits.inputBytes === undefined
+                      ? {}
+                      : { inputBytes: spec.limits.inputBytes }),
+                  },
                 };
                 return {
                   generation,
@@ -1564,6 +1740,7 @@ export class AgentRuntime {
                   messages,
                   generationSpec,
                   generationBudget,
+                  requestFormat,
                   ...(structured === undefined ? {} : { structured }),
                   ...(preparedGeneration?.hooks === undefined
                     ? {}
@@ -1581,6 +1758,9 @@ export class AgentRuntime {
               ...(prepared.generationBudget === undefined
                 ? {}
                 : { generationBudget: prepared.generationBudget }),
+              ...(prepared.requestFormat === undefined
+                ? {}
+                : { requestFormat: prepared.requestFormat }),
               ...(prepared.structured === undefined ? {} : { structured: prepared.structured }),
               ...(prepared.generation.allowEmpty === undefined
                 ? {}
@@ -1757,6 +1937,7 @@ export class AgentRuntime {
       generationContext,
       generationSpec,
       generationBudget,
+      requestFormat,
       structured,
       allowEmpty,
     } = plan;
@@ -1788,6 +1969,7 @@ export class AgentRuntime {
             temperature: generationSpec.temperature,
             maxTokens: generationSpec.maxTokens,
             responseSchema: structured.responseSchema,
+            ...(requestFormat === undefined ? {} : { requestFormat }),
             ...(generationBudget === undefined ? {} : { contextBudget: generationBudget }),
             ...(!generationBudget?.countText ||
             !generationBudget.tokenizerEncoding ||
@@ -1939,7 +2121,11 @@ export class AgentRuntime {
         budget: generationBudget,
         inputLimit: generationBudget?.countText ? generationSpec.limits?.inputUnits : undefined,
         options:
-          structured === undefined ? undefined : { responseSchema: structured.responseSchema },
+          structured === undefined
+            ? undefined
+            : requestFormat === undefined
+              ? { responseSchema: structured.responseSchema }
+              : preparedRequestMeasure(requestFormat),
         measure: generationContext.tokenMeasure,
         stepInputLimit: generationSpec.limits?.inputUnits,
       },
@@ -2127,6 +2313,30 @@ export class AgentRuntime {
     stepSignal.throwIfAborted();
     active.assertActions?.();
     const units = inputUnits(messages);
+    const byteLimit = stepSpec.limits?.inputBytes;
+    if (byteLimit !== undefined) {
+      const bytes = measureContextBytes(messages, tokenPreflight?.options);
+      if (bytes > byteLimit) {
+        this.telemetry?.record("agent.budget", {
+          channel: active.channel,
+          stage: "run",
+          status: "failed",
+          code: "AGENT_CONTEXT_LIMIT",
+          runId: active.runId,
+          sources,
+          details: {
+            inputBytes: bytes,
+            inputByteLimit: byteLimit,
+            stepNo: active.stepNo,
+            rejected: "context",
+          },
+        });
+        throw new AgentRuntimeError(
+          "AGENT_CONTEXT_LIMIT",
+          "Context exceeds the configured input byte budget",
+        );
+      }
+    }
     const tokenBudget = tokenPreflight?.budget;
     const tokenLimit = tokenPreflight?.inputLimit;
     if (tokenLimit !== undefined && tokenBudget?.countText && tokenBudget.tokenizerEncoding) {
@@ -2232,6 +2442,21 @@ export class AgentRuntime {
     const onModelResponse = (metadata: ModelResponseMetadata): void => {
       responses.push({ ...metadata, finishReasons: [...metadata.finishReasons] });
     };
+    // 模型 span 只投影白名单 usage 标量（最后一次带回 usage 的尝试 + 带回次数）：
+    // 不投影正文、URL、凭据；缺席计数写 null 而不是 0（缺席不是 0）。
+    const usageSpanDetails = (): Record<string, string | number | boolean | null> => {
+      const last = [...responses].reverse().find((r) => r.usage !== undefined)?.usage;
+      if (last === undefined) return {};
+      return {
+        usageInputTokens: last.inputTokens ?? null,
+        usageOutputTokens: last.outputTokens ?? null,
+        usageTotalTokens: last.totalTokens ?? null,
+        usageCacheReadInputTokens: last.cacheReadInputTokens ?? null,
+        usageCacheWriteInputTokens: last.cacheWriteInputTokens ?? null,
+        usageCacheState: last.cacheState,
+        usageAttempts: responses.filter((r) => r.usage !== undefined).length,
+      };
+    };
     const capture = (text: string, complete = false) => {
       output = {
         text,
@@ -2320,6 +2545,7 @@ export class AgentRuntime {
               }),
           );
           active.signal.throwIfAborted();
+          scope?.update({ details: usageSpanDetails() });
           if (phase === "next") {
             const decision = AgentDecisionSchema.parse(result);
             scope?.update({
@@ -2355,6 +2581,7 @@ export class AgentRuntime {
             console.warn(
               `[agent] 步骤失败（无错误码）phase=${phase} model=${stepSpec.model ?? "?"}：${describeFailure(failed)}｜模型输出：${summariseModelText(output?.text)}`,
             );
+          scope?.update({ details: usageSpanDetails() });
           scope?.end(active.callerSignal?.aborted ? "cancelled" : "failed", traceErrorCode(failed));
           throw error;
         }

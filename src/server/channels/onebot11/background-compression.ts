@@ -10,7 +10,6 @@ import {
 import { contextDumps } from "../../db/json-text";
 import { readOrganizationSettings } from "../../db/organization-repository";
 import {
-  compactQqSummaryRecordId,
   type QqConversationSummary,
   readQqConversationSummary,
   saveQqConversationSummary,
@@ -91,16 +90,7 @@ export function createBotCompressionJob(options: {
         options.onFailure("CONTEXT_SUMMARY_STALE");
         return;
       }
-      const rawIds = new Map<string, string>();
-      const records = options.records.map((record) => {
-        if (record.sources.length === 0) return record;
-        const id = compactQqSummaryRecordId(record.id);
-        const previous = rawIds.get(id);
-        if (previous !== undefined && previous !== record.id)
-          throw new TypeError("Conflicting QQ summary record identity");
-        rawIds.set(id, record.id);
-        return { ...record, id };
-      });
+      const records = options.records;
       if (options.recordSeconds.length !== options.records.length)
         throw new TypeError("QQ compression record times are not aligned");
       const chunks: { records: CompressionRecord[]; seconds: number[]; sources: SourceRef[] }[] =
@@ -140,11 +130,28 @@ export function createBotCompressionJob(options: {
       const newPackages: Parameters<typeof saveQqConversationSummary>[1]["packages"][number][] = [];
       try {
         for (const [index, chunk] of chunks.entries()) {
+          const rawIds = new Map<string, string>();
+          const labels = new Map<string, string>();
+          for (const raw of [
+            ...new Set(
+              chunk.records
+                .filter((record) => record.sources.length > 0)
+                .map((record) => record.id),
+            ),
+          ].sort()) {
+            const label = `s${labels.size.toString(36)}`;
+            labels.set(raw, label);
+            rawIds.set(label, raw);
+          }
+          const localRecords = chunk.records.map((record) => ({
+            ...record,
+            id: labels.get(record.id) ?? record.id,
+          }));
           let facts:
             | Parameters<typeof saveQqConversationSummary>[1]["packages"][number]["facts"]
             | undefined;
           await compressor.summarize({
-            records: chunk.records,
+            records: localRecords,
             task: options.task,
             target:
               Math.floor(totalTarget / chunks.length) +

@@ -244,7 +244,10 @@ describe("QQ 装配预算", () => {
       ),
     );
     expect(selected.has(seededNew)).toBe(true);
-    const pending = JSON.stringify(result.material.pending);
+    const pending = JSON.stringify([
+      ...(result.material.history ?? []),
+      ...(result.material.pending ?? []),
+    ]);
     if (selected.has(seededOld)) {
       // 窗口仍收了它：两条正文都在是**合法**的，不算失败。
       expect(pending).toContain("OLDBODYMARKER");
@@ -268,9 +271,13 @@ describe("QQ 装配预算", () => {
     room.seed(NEW_BODY, 0);
     const accepted = await room.attempt(65536);
     expect(accepted.ok).toBe(true);
-    expect(accepted.ok === true && JSON.stringify(accepted.material.pending)).toContain(
-      "NEWBODYMARKER",
-    );
+    expect(
+      accepted.ok === true &&
+        JSON.stringify([
+          ...(accepted.material.history ?? []),
+          ...(accepted.material.pending ?? []),
+        ]),
+    ).toContain("NEWBODYMARKER");
   });
 
   it("forces window_fit budget failure with two large typed observations at capacity 131072, but succeeds when empty", async () => {
@@ -321,7 +328,9 @@ describe("QQ 装配预算", () => {
     const accepted = await handle.attempt(131072, { observations: [] });
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw new Error("expected success with empty observations");
-    expect(accepted.material.pending?.length).toBeGreaterThan(0);
+    expect(
+      (accepted.material.history?.length ?? 0) + (accepted.material.pending?.length ?? 0),
+    ).toBeGreaterThan(0);
     expect(accepted.source.selection?.messages.length).toBeGreaterThan(0);
 
     console.log(

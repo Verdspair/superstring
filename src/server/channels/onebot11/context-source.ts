@@ -10,6 +10,7 @@ import {
 import type { ModelMessage, RunOwner } from "../../../shared/contracts/agent-run";
 import { MODEL_LAYER_ERROR_CODES } from "../../../shared/contracts/errors";
 import type { Evidence, SourceRef } from "../../../shared/contracts/evidence";
+import { resolveMemoryReadPolicy } from "../../../shared/contracts/memory";
 import { qqEffectiveReplyPrompt } from "../../../shared/contracts/qq";
 import type {
   QqEffectiveMediaPolicy,
@@ -41,10 +42,8 @@ import {
   ContextEngine,
   type ContextMaterial,
   type ContextReadTimings,
-  type ContextTokenMeasureOptions,
   type ConversationContextSource,
   inputUnits,
-  measureContextTokens,
   type RenderedContext,
   textMessage,
   uniqueSources,
@@ -76,12 +75,19 @@ import { ownSpeechSince } from "../../db/qq-speech-repository";
 import {
   type QqConversationSummary,
   type QqSummaryPackage,
+  qqSummaryModelFacts,
   readQqConversationSummary,
 } from "../../db/qq-summary-repository";
 import { DEFAULT_USER_ID, type Orm } from "../../db/repositories";
 import * as schema from "../../db/schema";
 import { AppError, fail } from "../../errors";
 import type { ModelGateway } from "../../llm/model-gateway";
+import {
+  type ContextTokenMeasureOptions,
+  measureContextTokens,
+  measurePreparedRequest,
+  type PreparedRequestFormat,
+} from "../../llm/request-format";
 import {
   createSqliteQueryFactory,
   type ModuleQueryFactory,
@@ -481,7 +487,7 @@ export interface BotContextSourceOptions {
   db: Database;
   orm: Orm;
   gateway: Pick<ModelGateway, "loadedContextCapacity"> &
-    Partial<Pick<ModelGateway, "prepareContextModel">>;
+    Partial<Pick<ModelGateway, "prepareContextModel" | "prepareRequestFormat">>;
   modelProtocol?: (
     phase: "decision" | "generation",
   ) => ContextTokenMeasureOptions & { outputRule?: string };
@@ -765,6 +771,13 @@ export class BotContextSource {
    * 互不覆写（规格 §3.2 target snapshot）。默认边界供决策相与单目标路径使用。
    */
   private readonly boundary: MediaPhaseState = { media: new Map(), fallback: new Map() };
+  private decisionProtocol?: PreparedRequestFormat;
+  private prepareProtocol?: (
+    schema: Record<string, unknown>,
+    actions: AgentSpec["availableActions"],
+  ) => PreparedRequestFormat | undefined;
+  private evaluationFormat?: PreparedRequestFormat;
+  private batchEvaluationFormat?: PreparedRequestFormat;
   private runId?: string;
   constructor(private readonly options: BotContextSourceOptions) {
     const o = options;
@@ -927,7 +940,7 @@ export class BotContextSource {
     this.assertCurrent();
     if (typeof messageId !== "string" || messageId.length === 0) return this.invalidReplySource();
     const disclosed = [...this.views.values()].flatMap((view) =>
-      (view.material.pending ?? []).flatMap((message) =>
+      [...(view.material.history ?? []), ...(view.material.pending ?? [])].flatMap((message) =>
         view.disclosedMessages
           .filter((entry) => entry.message === message)
           .flatMap((entry) => entry.facts),
@@ -997,7 +1010,7 @@ export class BotContextSource {
     if (ids === undefined) return [];
     if (!Array.isArray(ids)) return this.invalidMention();
     const disclosedFacts = [...this.views.values()].flatMap((view) =>
-      (view.material.pending ?? []).flatMap((message) =>
+      [...(view.material.history ?? []), ...(view.material.pending ?? [])].flatMap((message) =>
         view.disclosedMessages
           .filter((entry) => entry.message === message)
           .flatMap((entry) => entry.facts),
@@ -1210,8 +1223,132 @@ export class BotContextSource {
   isTerminalDecision(): boolean {
     return this.terminalBudgetFeedback;
   }
+  async assertBeforeActionEffects(input: {
+    observations: readonly ActionObservation[];
+    effects: readonly { name: string; arguments: Record<string, unknown> }[];
+    signal: AbortSignal;
+  }): Promise<void> {
+    input.signal.throwIfAborted();
+    this.assertCurrent();
+    if (input.effects.length === 0 || this.views.size === 0) return;
+
+    // 所有已知写动作按最小空信封（已知 name/arguments，空 value/sources）占位并入观察
+    const effectObservations: ActionObservation[] = input.effects.map((effect) => ({
+      id: "00000000-0000-0000-0000-000000000000",
+      name: effect.name,
+      arguments: effect.arguments,
+      value: {},
+      sources: [],
+    }));
+    const aggregateObservations: ActionObservation[] = [
+      ...input.observations,
+      ...effectObservations,
+    ];
+
+    const pricingViews = [...this.views];
+    const viewChanges: { tier: QqContextTier; view: View; candidate: View }[] = [];
+
+    for (const [tier, view] of pricingViews) {
+      input.signal.throwIfAborted();
+      this.assertSources([...(view.material.sources ?? []), ...(view.concurrentSources ?? [])]);
+      // mandatory nextwindow: costWithNext 在 aggregateObservations 基础上保留原 generic 512 下步动作余量，
+      // 不传 nextObservation 替代它，确保写动作占位与下步决策余量双义务均被覆盖
+      const checked = this.costWithNext(
+        tier,
+        view.material,
+        aggregateObservations,
+        view.selection.messages,
+      );
+
+      if (checked > view.limit) {
+        if (this.automaticAllocation(tier)) {
+          let candidate: View;
+          try {
+            candidate = this.buildView(
+              tier,
+              input.signal,
+              view.limit,
+              aggregateObservations,
+              undefined,
+              undefined,
+              undefined,
+              {
+                timeline: view.selection.messages,
+                limit: view.limit,
+                requireNextWindow: true,
+              },
+            );
+          } catch (error) {
+            if (error instanceof AppError && error.code === "CONTEXT_BUDGET_EXCEEDED") {
+              this.reportActionFitRejection(tier, view, aggregateObservations, 0, true, false);
+              fail(
+                "CONTEXT_BUDGET_EXCEEDED",
+                "动作前置检查：累计观察与写操作预计占用超过上下文容量",
+              );
+            }
+            throw error;
+          }
+          const candidateCost = this.costWithNext(
+            tier,
+            candidate.material,
+            aggregateObservations,
+            candidate.selection.messages,
+          );
+          if (candidateCost > view.limit) {
+            this.reportActionFitRejection(tier, view, aggregateObservations, 0, true, false);
+            fail("CONTEXT_BUDGET_EXCEEDED", "动作前置检查：累计观察与写操作预计占用超过上下文容量");
+          }
+          viewChanges.push({ tier, view, candidate });
+          continue;
+        }
+        this.reportActionFitRejection(tier, view, aggregateObservations, 0, true, false);
+        fail("CONTEXT_BUDGET_EXCEEDED", "动作前置检查：累计观察与写操作预计占用超过上下文容量");
+      }
+    }
+
+    // 全部 tier 均通过后原子提交：先整体复验 sources/contexts，再批量 assign
+    input.signal.throwIfAborted();
+    this.assertCurrent();
+    for (const change of viewChanges) {
+      this.assertSources(change.candidate.material.sources ?? []);
+      this.assertSources(change.candidate.concurrentSources ?? []);
+    }
+    for (const change of viewChanges) {
+      Object.assign(change.view, change.candidate);
+    }
+  }
   configureActions(actions: AgentSpec["availableActions"]): void {
     this.options.spec.availableActions = actions;
+    this.decisionProtocol = undefined;
+  }
+  prepareDecisionProtocol(
+    prepare: (
+      schema: Record<string, unknown>,
+      actions: AgentSpec["availableActions"],
+    ) => PreparedRequestFormat | undefined,
+  ): void {
+    this.prepareProtocol = prepare;
+    this.decisionProtocol = undefined;
+  }
+  private decisionFormat(): PreparedRequestFormat | undefined {
+    const budget = this.tokenBudget(this.options.decisionTier);
+    if (this.decisionProtocol === undefined && budget?.countText) {
+      const prepare =
+        this.prepareProtocol ??
+        ((schema, actions) =>
+          this.options.gateway.prepareRequestFormat?.({
+            model: budget.model,
+            responseSchema: schema,
+            tools: actions,
+          }));
+      const schema =
+        this.options.modelProtocol?.("decision")?.responseSchema ?? AGENT_DECISION_JSON_SCHEMA;
+      this.decisionProtocol = prepare(
+        schema as Record<string, unknown>,
+        this.options.spec.availableActions,
+      );
+    }
+    return this.decisionProtocol;
   }
   researchAllocation() {
     return this.options.runtime.p5_config.auxiliary_allocation?.research;
@@ -1224,6 +1361,9 @@ export class BotContextSource {
     this.preparationVersion++;
     this.options.spec = spec;
     this.options.decisionTier = decisionTier;
+    this.decisionProtocol = undefined;
+    this.evaluationFormat = undefined;
+    this.batchEvaluationFormat = undefined;
   }
   /** 评分相媒体准备先于叶子 bindRun：宿主把 source 绑到真实父批 run（runTaskGroup 已创建的 id），投影按该 run 记账。 */
   bindRunId(runId: string): void {
@@ -1394,6 +1534,7 @@ export class BotContextSource {
       signal: AbortSignal;
       /** 本目标的媒体相位边界；缺省＝共享边界（单目标路径）。并行时宿主每目标取一份。 */
       boundary?: MediaPhaseState;
+      responseSchema?: Record<string, unknown> | (() => Record<string, unknown> | undefined);
     },
   ): Promise<PreparedGeneration> {
     this.assertCurrent();
@@ -1431,6 +1572,8 @@ export class BotContextSource {
       undefined,
       boundary,
     );
+    const responseSchema =
+      typeof input.responseSchema === "function" ? input.responseSchema() : input.responseSchema;
     const generationMaterial = generationMedia
       ? {
           ...view.material,
@@ -1446,12 +1589,22 @@ export class BotContextSource {
     );
     // Draft instructions were inferred from the decision view; retain their provenance too.
     context.sources = uniqueSources([...context.sources, ...input.context.sources]);
+    const replyBudget = this.tokenBudget("reply");
+    const replyModel = replyBudget?.model ?? this.options.runtime.model_name;
+    const requestFormat =
+      replyBudget?.countText && responseSchema && this.options.gateway.prepareRequestFormat
+        ? this.options.gateway.prepareRequestFormat({
+            model: replyModel,
+            responseSchema,
+          })
+        : undefined;
     return {
-      model: this.options.runtime.model_name,
+      model: replyModel,
       allowEmpty: true,
       inputUnits: view.limit,
       instructions: this.replyInstructions(view.selection.messages, target),
       context,
+      ...(requestFormat === undefined ? {} : { requestFormat }),
     };
   }
   /**
@@ -1496,6 +1649,7 @@ export class BotContextSource {
     inputUnits: number;
     contextBudget?: ModelContextBudget;
     contextInputLimit?: number;
+    requestFormat?: PreparedRequestFormat;
     /** 本批冻结候选 id → 目标；宿主据此校验 evaluations 的一一对应。 */
     targets: readonly BotContextTarget[];
     /** 本批可引用的真实成员事件 seq → 冻结来源引用（引用不授予权限）。 */
@@ -1556,9 +1710,22 @@ export class BotContextSource {
       view.selection.messages,
       batchTargets,
     );
-    const units = this.tokenBudget("judgement")
+    const batchBudget = this.tokenBudget("judgement");
+    if (
+      this.batchEvaluationFormat === undefined &&
+      batchBudget?.countText &&
+      this.options.gateway.prepareRequestFormat
+    ) {
+      this.batchEvaluationFormat = this.options.gateway.prepareRequestFormat({
+        model: batchBudget.model,
+        responseSchema: QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,
+      });
+    }
+    const batchFormat = this.batchEvaluationFormat;
+    const units = batchBudget
       ? this.measurePhaseInput("batchEvaluation", messages, {
           responseSchema: QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,
+          ...(batchFormat === undefined ? {} : { requestFormat: batchFormat }),
         })
       : inputUnits(messages) + estimateTokens(contextDumps(QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA));
     if (units > view.limit) {
@@ -1604,6 +1771,7 @@ export class BotContextSource {
       ...(this.tokenBudget("judgement")
         ? { contextBudget: this.tokenBudget("judgement"), contextInputLimit: view.limit }
         : {}),
+      ...(batchFormat === undefined ? {} : { requestFormat: batchFormat }),
       targets: input.targets,
       /** 本批冻结窗口的真实成员入站事件 seq → 冻结来源引用（宿主据此校验模型的 sourceSeqs）。 */
       memberSourceSeqs,
@@ -1626,6 +1794,7 @@ export class BotContextSource {
     inputUnits: number;
     contextBudget?: ModelContextBudget;
     contextInputLimit?: number;
+    requestFormat?: PreparedRequestFormat;
     /**
      * **相关状态摘要**（0.4.0 P4 §4.1）：这份评分材料本身（人设、场景、时间线、资料、目标）的哈希，
      * **不含意图**——意图是被判的对象，不是状态。许可绑定它：材料没变＝同一相关状态，材料变了＝
@@ -1677,10 +1846,23 @@ export class BotContextSource {
       : baseMessages;
     // 计量单源（审查项 2 统一）：与 runtime 步内预算同一 inputUnits 估算器（图片不折算为
     // 文本 token，视觉成本由 visionCost=unknown 如实标出），schema 协议开销照旧单列。
-    const units = this.tokenBudget("judgement")
+    const evalBudget = this.tokenBudget("judgement");
+    const evalSchema = this.options.scoreProtocol?.responseSchema ?? QQ_JUDGEMENT_RESPONSE_SCHEMA;
+    if (
+      this.evaluationFormat === undefined &&
+      evalBudget?.countText &&
+      this.options.gateway.prepareRequestFormat
+    ) {
+      this.evaluationFormat = this.options.gateway.prepareRequestFormat({
+        model: evalBudget.model,
+        responseSchema: evalSchema,
+      });
+    }
+    const evalFormat = this.evaluationFormat;
+    const units = evalBudget
       ? this.measurePhaseInput("evaluation", messages, {
-          responseSchema:
-            this.options.scoreProtocol?.responseSchema ?? QQ_JUDGEMENT_RESPONSE_SCHEMA,
+          responseSchema: evalSchema,
+          ...(evalFormat === undefined ? {} : { requestFormat: evalFormat }),
         })
       : inputUnits(messages) + scoreProtocolUnits(this.options);
     if (units > view.limit) {
@@ -1741,6 +1923,7 @@ export class BotContextSource {
       ...(this.tokenBudget("judgement")
         ? { contextBudget: this.tokenBudget("judgement"), contextInputLimit: view.limit }
         : {}),
+      ...(evalFormat === undefined ? {} : { requestFormat: evalFormat }),
       stateDigest,
     };
   }
@@ -2222,9 +2405,12 @@ ${intent.trim()}`,
     // 记忆额度只约束记忆；历史与已存摘要是独立的有界工具，由拟合时的真实上下文剩余额度约束，
     // 不能因为记忆检索关闭（额度 0）被一并禁掉。
     if (kind !== "memory") return Number.MAX_SAFE_INTEGER;
-    const { retrieval_mode: mode, retrieval_presets: presets } = runtime.p5_config;
-    if (mode === "off") return 0;
-    return presets[mode === "full_catalog" || mode === "full_body" ? "broad" : mode].max_tokens;
+    const policy = resolveMemoryReadPolicy(
+      runtime.p5_config.retrieval_mode,
+      runtime.p5_config.retrieval_presets,
+    );
+    if (policy.effectiveMode === "off") return 0;
+    return policy.preset.max_tokens;
   }
   readonly prepareModelContext?: (
     model: string,
@@ -2284,7 +2470,7 @@ ${intent.trim()}`,
   measurePhaseInput(
     phase: "decision" | "generation" | "evaluation" | "batchEvaluation",
     messages: readonly ModelMessage[],
-    options?: ContextTokenMeasureOptions,
+    options?: ContextTokenMeasureOptions & { requestFormat?: PreparedRequestFormat },
   ): number {
     const tier =
       phase === "decision"
@@ -2296,25 +2482,67 @@ ${intent.trim()}`,
     if (!budget?.countText || !budget.tokenizerEncoding) return inputUnits(messages);
     this.assertCurrent();
     budget.assertCurrent();
-    const measured = measureContextTokens(
-      messages,
-      { encoding: budget.tokenizerEncoding, count: budget.countText },
-      options ??
-        (phase === "decision" || phase === "generation"
-          ? (this.options.modelProtocol?.(phase) ??
-            (phase === "decision"
-              ? {
-                  responseSchema: AGENT_DECISION_JSON_SCHEMA,
-                  tools: this.options.spec.availableActions.map(
-                    ({ name, description, parameters }) => ({ name, description, parameters }),
-                  ),
-                }
-              : undefined))
-          : undefined),
-    );
+    let format = options?.requestFormat;
+    if (format === undefined) {
+      if (phase === "decision") {
+        format = this.decisionFormat();
+      } else if (phase === "batchEvaluation") {
+        if (this.batchEvaluationFormat === undefined && this.options.gateway.prepareRequestFormat) {
+          this.batchEvaluationFormat = this.options.gateway.prepareRequestFormat({
+            model: budget.model,
+            responseSchema: QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,
+          });
+        }
+        format = this.batchEvaluationFormat;
+      } else if (phase === "evaluation") {
+        const schema =
+          options?.responseSchema ??
+          this.options.scoreProtocol?.responseSchema ??
+          QQ_JUDGEMENT_RESPONSE_SCHEMA;
+        if (this.evaluationFormat === undefined && this.options.gateway.prepareRequestFormat) {
+          this.evaluationFormat = this.options.gateway.prepareRequestFormat({
+            model: budget.model,
+            responseSchema: schema as Record<string, unknown>,
+          });
+        }
+        format = this.evaluationFormat;
+      } else if (this.options.gateway.prepareRequestFormat) {
+        const schema =
+          options?.responseSchema ?? this.options.modelProtocol?.("generation")?.responseSchema;
+        if (schema !== undefined) {
+          format = this.options.gateway.prepareRequestFormat({
+            model: budget.model,
+            responseSchema: schema as Record<string, unknown>,
+          });
+        }
+      }
+    }
+    let textTokens: number;
+    if (format !== undefined) {
+      const measured = measurePreparedRequest(messages, budget, format);
+      textTokens = measured?.textTokens ?? inputUnits(messages);
+    } else {
+      const measured = measureContextTokens(
+        messages,
+        { encoding: budget.tokenizerEncoding, count: budget.countText },
+        options ??
+          (phase === "decision" || phase === "generation"
+            ? (this.options.modelProtocol?.(phase) ??
+              (phase === "decision"
+                ? {
+                    responseSchema: AGENT_DECISION_JSON_SCHEMA,
+                    tools: this.options.spec.availableActions.map(
+                      ({ name, description, parameters }) => ({ name, description, parameters }),
+                    ),
+                  }
+                : undefined))
+            : undefined),
+      );
+      textTokens = measured.textTokens;
+    }
     budget.assertCurrent();
     this.assertCurrent();
-    return measured.textTokens;
+    return textTokens;
   }
   private withNextObservation(
     observations: readonly ActionObservation[],
@@ -3183,7 +3411,7 @@ ${intent.trim()}`,
           new Set(selectedCarrierEventKeys(selection.messages)),
         );
       };
-      const pending = (items: readonly QqSummaryPackage[]) => {
+      const history = (items: readonly QqSummaryPackage[]) => {
         const messages: ModelMessage[] = [];
         if (items.length > 0)
           messages.push(
@@ -3202,13 +3430,17 @@ ${intent.trim()}`,
               }),
             ),
           );
-        messages.push(...timelineMessages(), ...factsDetailMessages(), ...triggerMessages());
-        if (concurrent !== undefined) messages.push(concurrent.message);
+        messages.push(...timelineMessages(), ...factsDetailMessages());
         return messages;
       };
+      const pending = () => [
+        ...triggerMessages(),
+        ...(concurrent === undefined ? [] : [concurrent.message]),
+      ];
       rebuildConcurrentForSelection();
       let material: ContextMaterial = {
-        pending: pending([]),
+        history: history([]),
+        pending: pending(),
         sources: selection.messages.flatMap((message) => message.sources ?? []),
       };
       // 先给下一条动作信封留余量，动作再按实际返回值拟合。
@@ -3266,7 +3498,8 @@ ${intent.trim()}`,
         quoteMessage = undefined;
         disclosedMessages = [];
         material = {
-          pending: pending([]),
+          history: history([]),
+          pending: pending(),
           sources: selection.messages.flatMap((message) => message.sources ?? []),
         };
         fixed = cost(material);
@@ -3314,24 +3547,26 @@ ${intent.trim()}`,
           if (o.onDiagnostic) o.onDiagnostic(event);
           else console.warn("bot_context", event, error);
         }
-        let packages: QqSummaryPackage[] = (stored?.packages ?? []).filter((item) => {
-          try {
-            this.assertSources(item.sources ?? []);
-            return true;
-          } catch (error) {
-            if (!(error instanceof AppError) || error.code !== "CONTEXT_SOURCE_INVALID")
-              throw error;
-            const event = { kind: "supplemental_summary_failed" as const, code: error.code };
-            if (o.onDiagnostic) o.onDiagnostic(event);
-            else console.warn("bot_context", event);
-            return false;
-          }
-        });
+        let packages: QqSummaryPackage[] = (stored?.packages ?? [])
+          .filter((item) => {
+            try {
+              this.assertSources(item.sources ?? []);
+              return true;
+            } catch (error) {
+              if (!(error instanceof AppError) || error.code !== "CONTEXT_SOURCE_INVALID")
+                throw error;
+              const event = { kind: "supplemental_summary_failed" as const, code: error.code };
+              if (o.onDiagnostic) o.onDiagnostic(event);
+              else console.warn("bot_context", event);
+              return false;
+            }
+          })
+          .map((item) => ({ ...item, facts: qqSummaryModelFacts(item) }));
         const historical = stored?.throughSeq ?? -1;
         const coveredSeq = stored?.coveredSeq ?? -1;
         const windowStart = Math.max(0, nowSeconds - shared.windowMinutes * 60 - 1);
-        const retainedSeqs = this.compressionRecords(selection.messages).flatMap((record) =>
-          record.seq === null ? [] : [record.seq],
+        const retainedSeqs = this.compressionSequences(selection.messages).flatMap((seq) =>
+          seq === null ? [] : [seq],
         );
         const buffer = conversationMessagesForBackfill(o.orm, scope, {
           conversationId: o.conversationId,
@@ -3341,8 +3576,8 @@ ${intent.trim()}`,
           at: readAt,
         });
         const tail = this.compressionRecords(buffer);
-        const bufferRecords = this.compressionRecords(
-          buffer.filter((message) => message.occurredAtSeconds < windowStart),
+        const bufferRecords = tail.filter(
+          (_, index) => buffer[index]!.occurredAtSeconds < windowStart,
         );
         if (tail.length >= compression.watermark_trigger) {
           const readBudget =
@@ -3399,7 +3634,7 @@ ${intent.trim()}`,
         );
         const withPackages = (items: readonly QqSummaryPackage[]) => ({
           ...material,
-          pending: pending(items),
+          history: history(items),
         });
         while (
           packages.length > 0 &&
@@ -3426,7 +3661,7 @@ ${intent.trim()}`,
           packages = packages.slice(1);
         material = {
           ...material,
-          pending: pending(packages),
+          history: history(packages),
           sources: uniqueSources([
             ...(material.sources ?? []),
             // 没有包（例如只有排队任务）时不附引用：停用不该打死这一轮。
@@ -3674,8 +3909,8 @@ ${intent.trim()}`,
             const roots = value.roots.map(toQuoteLine).filter((line) => line !== null);
             return fitsTarget({
               ...material,
-              pending: [
-                ...(material.pending ?? []),
+              history: [
+                ...(material.history ?? []),
                 textMessage(
                   "user",
                   contextDumps({ kind: "qq_reply_roots", trust: "data_only", roots }),
@@ -3711,8 +3946,8 @@ ${intent.trim()}`,
           (!tokenMode ||
             fitsTarget({
               ...material,
-              pending: [
-                ...(material.pending ?? []),
+              history: [
+                ...(material.history ?? []),
                 textMessage(
                   "user",
                   contextDumps({
@@ -3769,7 +4004,7 @@ ${intent.trim()}`,
           });
           material = {
             ...material,
-            pending: [...(material.pending ?? []), message],
+            history: [...(material.history ?? []), message],
             sources: uniqueSources([...(material.sources ?? []), ...replyExpansion.sources]),
           };
         }
@@ -4009,6 +4244,59 @@ ${intent.trim()}`,
    * sources 并入投影产出的真实 qq_message_fact/qq_observation 引用（由 assertSources 沿
    * 现有 guard 复验），身份 tuple 只按原 sources 计算，不受新增 refs 影响。
    */
+  private compressionSequences(messages: readonly QqContextMessage[]): (number | null)[] {
+    const sequenceBySource = new Map<string, Map<string, number | null>>();
+    for (const message of messages) {
+      for (const source of message.sources ?? []) {
+        let ids = sequenceBySource.get(source.kind);
+        if (!ids) {
+          ids = new Map();
+          sequenceBySource.set(source.kind, ids);
+        }
+        ids.set(source.id, null);
+      }
+    }
+    // Secondary references can locate an earlier row outside the selected window.
+    // Derive their minimum journal sequence once per call, without filtering source TTL.
+    if (sequenceBySource.size > 0) {
+      const wantedPairs: [string, string][] = [];
+      for (const [kind, ids] of sequenceBySource) {
+        for (const id of ids.keys()) wantedPairs.push([kind, id]);
+      }
+      const rows = this.options.db
+        .query(
+          `SELECT json_extract(s.value,'$.kind') AS kind,
+            json_extract(s.value,'$.id') AS id, MIN(e.seq) AS seq
+          FROM conversation_events e,json_each(e.sources) s
+          WHERE e.conversation_id=? AND e.kind IN ('inbound','outbound')
+            AND (json_extract(s.value,'$.kind'),json_extract(s.value,'$.id')) IN (
+              SELECT json_extract(w.value,'$[0]'),json_extract(w.value,'$[1]') FROM json_each(?) w
+            )
+          GROUP BY json_extract(s.value,'$.kind'),json_extract(s.value,'$.id')`,
+        )
+        .all(this.options.conversationId, JSON.stringify(wantedPairs)) as {
+        kind: unknown;
+        id: unknown;
+        seq: number;
+      }[];
+      for (const row of rows) {
+        if (typeof row.kind !== "string" || typeof row.id !== "string") continue;
+        const ids = sequenceBySource.get(row.kind);
+        if (ids?.has(row.id)) ids.set(row.id, row.seq);
+      }
+    }
+    return messages.map((message) => {
+      const sources = message.sources ?? [];
+      let seq: number | null = null;
+      for (const source of sources) {
+        const associated = sequenceBySource.get(source.kind)?.get(source.id);
+        if (associated !== undefined && associated !== null) {
+          seq = seq === null ? associated : Math.min(seq, associated);
+        }
+      }
+      return seq;
+    });
+  }
   private compressionRecords(messages: readonly QqContextMessage[]): CompressionRecord[] {
     const o = this.options;
     // 每次调用冻结一次时钟：投影与正文期限判断用同一 now。
@@ -4056,55 +4344,10 @@ ${intent.trim()}`,
         : [],
     );
     const factRowExists = (eventKey: string): boolean => factRowExistsKeys.has(eventKey);
-    const sequenceBySource = new Map<string, Map<string, number | null>>();
-    for (const message of messages) {
-      for (const source of message.sources ?? []) {
-        let ids = sequenceBySource.get(source.kind);
-        if (!ids) {
-          ids = new Map();
-          sequenceBySource.set(source.kind, ids);
-        }
-        ids.set(source.id, null);
-      }
-    }
-    // Secondary references can locate an earlier row outside the selected window.
-    // Derive their minimum journal sequence once per call, without filtering source TTL.
-    if (sequenceBySource.size > 0) {
-      const wantedPairs: [string, string][] = [];
-      for (const [kind, ids] of sequenceBySource) {
-        for (const id of ids.keys()) wantedPairs.push([kind, id]);
-      }
-      const rows = o.db
-        .query(
-          `SELECT json_extract(s.value,'$.kind') AS kind,
-            json_extract(s.value,'$.id') AS id, MIN(e.seq) AS seq
-          FROM conversation_events e,json_each(e.sources) s
-          WHERE e.conversation_id=? AND e.kind IN ('inbound','outbound')
-            AND (json_extract(s.value,'$.kind'),json_extract(s.value,'$.id')) IN (
-              SELECT json_extract(w.value,'$[0]'),json_extract(w.value,'$[1]') FROM json_each(?) w
-            )
-          GROUP BY json_extract(s.value,'$.kind'),json_extract(s.value,'$.id')`,
-        )
-        .all(o.conversationId, JSON.stringify(wantedPairs)) as {
-        kind: unknown;
-        id: unknown;
-        seq: number;
-      }[];
-      for (const row of rows) {
-        if (typeof row.kind !== "string" || typeof row.id !== "string") continue;
-        const ids = sequenceBySource.get(row.kind);
-        if (ids?.has(row.id)) ids.set(row.id, row.seq);
-      }
-    }
+    const sequences = this.compressionSequences(messages);
     return messages.map((message, index) => {
       const sources = message.sources ?? [];
-      let seq: number | null = null;
-      for (const source of sources) {
-        const associated = sequenceBySource.get(source.kind)?.get(source.id);
-        if (associated !== undefined && associated !== null) {
-          seq = seq === null ? associated : Math.min(seq, associated);
-        }
-      }
+      const seq = sequences[index] ?? null;
       // 稳定身份 tuple 只按原 sources 计算：新增的投影 refs 不改变 record 身份。
       const id = sources.length
         ? contextDumps(sources.map((source) => [source.kind, source.id, source.revision]))
@@ -4413,15 +4656,12 @@ ${intent.trim()}`,
     token: symbol,
     requireNextWindow: boolean,
   ): { material: ContextMaterial; reservation: number } | null {
-    // 找到 qq_reply_roots 消息
-    const pending = view.material.pending ?? [];
-    const rootsIdx = pending.findIndex((message) => message === view.quoteMessage);
+    const history = view.material.history ?? [];
+    const rootsIdx = history.findIndex((message) => message === view.quoteMessage);
     if (rootsIdx < 0) return null;
-    // 移除该消息，重算 reservation
-    const shrunkPending = pending.filter((_, idx) => idx !== rootsIdx);
     const shrunkMaterial: ContextMaterial = {
       ...view.material,
-      pending: shrunkPending,
+      history: history.filter((_, idx) => idx !== rootsIdx),
     };
     const observations = [...this.observations, observation];
     const projected = this.cost(tier, shrunkMaterial, observations, view.selection.messages);

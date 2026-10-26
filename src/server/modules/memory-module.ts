@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { z } from "zod";
 import type { RuntimeConfig } from "../../shared/contracts";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
+import { resolveMemoryReadPolicy } from "../../shared/contracts/memory";
 import type { LeafAgentRuntime } from "../agent/agent-runtime";
 import {
   catalog,
@@ -207,8 +208,9 @@ export class SqliteMemoryModule implements MemoryModule {
       throw new Error("SQLite memory module requires a frozen read configuration");
     const runtime = this.options.runtime(input.agentId);
     assertEvidenceOwner(input, runtime);
-    const mode = input.mode === "full_catalog" || input.mode === "full_body" ? "broad" : input.mode;
-    const preset = runtime.p5_config.retrieval_presets[mode === "off" ? "conservative" : mode];
+    const policy = resolveMemoryReadPolicy(input.mode, runtime.p5_config.retrieval_presets);
+    const mode = policy.effectiveMode;
+    const preset = policy.preset;
     const binding: EvidenceCursorBinding = {
       kind: "memory",
       owner: evidenceDigest(input.owner),

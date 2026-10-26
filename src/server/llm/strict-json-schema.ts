@@ -223,6 +223,7 @@ export interface StructuredOutputChainOptions<T> {
   readonly hasSchema: boolean;
   /** 形状是否被严格模式接受；由调用方判定（本地路由不参与这个判断）。 */
   readonly strictAccepted: boolean;
+  readonly startLevel?: StructuredOutputLevel;
   readonly send: (level: StructuredOutputLevel) => Promise<T>;
   /** 降级日志尾部的失败详情；不提供则不加。 */
   readonly rejectionDetail?: (error: unknown) => string;
@@ -238,7 +239,7 @@ export async function withStructuredOutputChain<T>(
   const { key, model, hasSchema, strictAccepted, send, rejectionDetail } = options;
   if (!hasSchema) return send("none");
   if (!strictAccepted) announceStrictSchemaSkip(key, model);
-  let level = structuredOutputStart(key, strictAccepted);
+  let level = options.startLevel ?? structuredOutputStart(key, strictAccepted);
   // 只有"这一轮真的撞过更严的档"才值得记住并提示；直接跳过不算。
   const attemptedStrict = level === "json_schema";
   for (;;) {

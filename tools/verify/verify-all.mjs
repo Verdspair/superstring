@@ -79,12 +79,27 @@ const checks = [
  * 跑一个检查并等它结束。用 spawn（异步）而不是 spawnSync：两个重套件要能同时跑。
  * 报告顺序仍按 `checks` 的声明顺序回填，历史报告可以逐项对比。
  */
-function runCheck([name, command, args]) {
+function runCommand([name, command, args]) {
   return new Promise((settle) => {
     const started = performance.now();
-    const child = spawn(command, args, { cwd: root, windowsHide: true });
+    let child;
+    try {
+      child = spawn(command, args, { cwd: root, windowsHide: true });
+    } catch (error) {
+      settle({
+        name,
+        exitCode: -1,
+        error: error.code ?? String(error),
+        durationMs: Math.round(performance.now() - started),
+        passed: false,
+        stdout: "",
+        stderr: String(error),
+      });
+      return;
+    }
     let stdout = "";
     let stderr = "";
+    let spawnError;
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
     });
@@ -96,19 +111,58 @@ function runCheck([name, command, args]) {
       timedOut = true;
       child.kill();
     }, 900000);
+    child.on("error", (error) => {
+      spawnError = error;
+      stderr += String(error);
+    });
     child.on("close", (code) => {
       clearTimeout(timer);
       settle({
         name,
         exitCode: code,
-        error: timedOut ? "ETIMEDOUT" : null,
+        error: timedOut ? "ETIMEDOUT" : (spawnError?.code ?? null),
         durationMs: Math.round(performance.now() - started),
-        passed: code === 0 && !timedOut,
+        passed: code === 0 && !timedOut && !spawnError,
         stdout: stdout.trim(),
         stderr: stderr.trim(),
       });
     });
   });
+}
+
+// Keep absolute test filters while staying below Windows' command-line limit.
+async function runCheck(check) {
+  const [name, command, args] = check;
+  if (name !== "bun-tests") return runCommand(check);
+  const batches = [];
+  let batch = [args[0]];
+  let length = JSON.stringify(command).length + JSON.stringify(args[0]).length + 2;
+  for (const file of args.slice(1)) {
+    const cost = JSON.stringify(file).length + 1;
+    if (length + cost > 24000 && batch.length > 1) {
+      batches.push(batch);
+      batch = [args[0]];
+      length = JSON.stringify(command).length + JSON.stringify(args[0]).length + 2;
+    }
+    batch.push(file);
+    length += cost;
+  }
+  if (batch.length > 1) batches.push(batch);
+  const results = [];
+  for (const [index, files] of batches.entries()) {
+    results.push(await runCommand([`${name} ${index + 1}/${batches.length}`, command, files]));
+  }
+  const failure = results.find((result) => !result.passed);
+  return {
+    name,
+    exitCode: failure?.exitCode ?? 0,
+    error: failure?.error ?? null,
+    durationMs: results.reduce((total, result) => total + result.durationMs, 0),
+    passed: !failure,
+    stdout: results.map((result) => `[${result.name}]\n${result.stdout}`).join("\n"),
+    stderr: results.map((result) => `[${result.name}]\n${result.stderr}`).join("\n"),
+    batches: results,
+  };
 }
 
 function announce(entry) {

@@ -355,6 +355,11 @@ describe("the selection a scheme and a conversation produce", () => {
       setQqStickerEnabled(h.orm, sticker.id, true);
       const scheme = createQqScheme(h.orm, {
         name: "按群独立",
+        stickers: {
+          sticker_min_repeat_minutes: 10,
+          sticker_recent_avoid_count: 5,
+          frequency: "medium",
+        },
         stickerCollections: [collection.id],
       });
       used(h.orm, { assetId: sticker.id, at: 900 });

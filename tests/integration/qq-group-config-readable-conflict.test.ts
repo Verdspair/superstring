@@ -1,3 +1,4 @@
+import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 // 回归（bounded group-500 recovery）：本群只覆盖半径 B（或 Y）、之后基础方案改小中心 A（或 X），
 // 合并值过界——配置页 GET 必须仍可读（原始差异保留、生效值逐字段可读），写边界仍拒绝
 // 合并过界并允许合法修复；runtime 全量 schema 的严格关系不被放宽。
@@ -28,7 +29,10 @@ function setup() {
   const business = cloneBusinessDb();
   handles.push(business);
   ensureDefaults(business.orm, "test-model");
-  const scheme = createQqScheme(business.orm, { name: "可读冲突方案" });
+  const scheme = createQqScheme(business.orm, {
+    name: "可读冲突方案",
+    rhythm: { ...QQ_RHYTHM_DEFAULT },
+  });
   return { business, orm: business.orm, app: createApp({ business }), scheme };
 }
 

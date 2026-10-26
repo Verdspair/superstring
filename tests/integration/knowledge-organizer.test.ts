@@ -10,6 +10,7 @@ import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
 import { KnowledgeOrganizer } from "../../src/server/services/knowledge-organizer";
 import { knowledgeSegments } from "../../src/server/services/knowledge-segments";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 let business: BusinessDbHandle;
 let repo: KnowledgeRepository;
@@ -514,7 +515,11 @@ describe("durable knowledge organizer", () => {
       entered.resolve();
       return result.promise;
     };
-    const runtime = createRuntime({ business, gateway, browserStateSecret: "synthetic-secret" });
+    const runtime = await createRuntime({
+      business: runtimeFixtureBusiness(business),
+      gateway,
+      browserStateSecret: "synthetic-secret",
+    });
     const realClose = business.close;
     business.close = () => {
       expect(status()?.status).toBe("queued");

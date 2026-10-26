@@ -121,7 +121,8 @@ export function createCodeMode(options: CodeModeOptions): CodeMode {
             try {
               check();
               executor.assert(target, { ...context, signal }, "sandbox");
-              if (target.permission) sources.push(executor.permissions.source(target.permission));
+              if (target.permission)
+                sources.push(executor.permissions.source(target.permission, context.owner));
               used.add(target);
               consumed.add(target);
               options.assertSources?.(sources);

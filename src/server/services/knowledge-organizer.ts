@@ -6,6 +6,7 @@ import { readOrganizationSettings } from "../db/organization-repository";
 import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "../db/repositories";
 import { AppError } from "../errors";
 import type { ChatMessage, ModelGateway } from "../llm/model-gateway";
+import { measureContextTokens, measurePreparedRequest } from "../llm/request-format";
 import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
 import { knowledgeSegments, utf8Size } from "./knowledge-segments";
 
@@ -316,9 +317,21 @@ export class KnowledgeOrganizer {
       }));
       for (const chunk of chunks) {
         this.check(job, signal);
-        const capacity = await this.call(signal, () =>
-          this.options.gateway.loadedContextCapacity(job.model_name, { signal }),
-        );
+        // 每段同一边界的容量准备：有 prepare 钩子时描述符是唯一容量来源（实际模型/容量，
+        // 替换原逐段探测，不双探）；无钩子保持既有探测调用与 utf8 字节估算原样。
+        // 路由显式宣告编码时按完整请求（消息 + 响应 schema）的宣告 token 计量，输出预留与
+        // 256 协议余量数值不变；保存的 input_limit 仍是独立的 utf8 字节硬帽，不跨单位折算。
+        const prepare =
+          this.options.gateway.prepareContextModel?.bind(this.options.gateway) ?? null;
+        const prepared = prepare
+          ? await this.call(signal, () => prepare(job.model_name, { signal }))
+          : null;
+        this.check(job, signal);
+        const capacity = prepared
+          ? prepared.capacity
+          : await this.call(signal, () =>
+              this.options.gateway.loadedContextCapacity(job.model_name, { signal }),
+            );
         this.check(job, signal);
         if (capacity === null || !Number.isInteger(capacity) || capacity <= 0)
           throw new OrganizerFailure("MODEL_CAPACITY_UNAVAILABLE");
@@ -331,17 +344,42 @@ export class KnowledgeOrganizer {
           },
           { role: "user", content: chunk.body },
         ];
+        const counter =
+          prepared !== null &&
+          prepared.countText !== undefined &&
+          prepared.tokenizerEncoding !== undefined
+            ? { encoding: prepared.tokenizerEncoding, count: prepared.countText }
+            : null;
+        const actualModel = prepared?.model ?? job.model_name;
+        // 准备真实请求协议快照（网关拥有方方言/负缓存），预门禁与 LeafInput 共用同一快照。
+        const requestFormat = this.options.gateway.prepareRequestFormat?.({
+          model: actualModel,
+          responseSchema: RESPONSE_SCHEMA as Record<string, unknown>,
+        });
         // Include structured-output schema and conservative protocol/safety overhead.
         // content is string here (text-only leaf); narrow before measuring (T09 union).
-        const cost =
+        const byteCost =
           messages.reduce(
             (sum, message) =>
               sum + (typeof message.content === "string" ? utf8Size(message.content) : 0) + 8,
             2,
           ) + utf8Size(JSON.stringify(RESPONSE_SCHEMA));
-        if (allocation?.input_limit != null && cost > allocation.input_limit)
+        // 优先使用公共纯函数 measurePreparedRequest 复用同一协议快照；
+        // 协议或计数器缺失时保持旧完整协议估算，不使用空协议。
+        const measured =
+          requestFormat !== undefined && prepared !== null
+            ? measurePreparedRequest(messages, prepared, requestFormat)
+            : undefined;
+        const cost =
+          measured !== undefined
+            ? measured.textTokens
+            : counter !== null
+              ? measureContextTokens(messages, counter, { responseSchema: RESPONSE_SCHEMA })
+                  .textTokens
+              : byteCost;
+        if (allocation?.input_limit != null && byteCost > allocation.input_limit)
           throw new OrganizerFailure("CONTEXT_AUX_BUDGET");
-        // 自动档输入封顶 = 本段已知容量 - 输出预留（容量探测本就存在，不新增调用）。
+        // 自动档输入封顶 = 本段已知容量 - 输出预留（容量准备本就存在，不新增调用）。
         if (allocation?.mode === "auto" && cost > capacity - output)
           throw new OrganizerFailure("CONTEXT_AUX_BUDGET");
         if (output < 128 || cost + output + 256 > capacity)
@@ -351,7 +389,7 @@ export class KnowledgeOrganizer {
             {
               id: "knowledge.organize",
               version: "1",
-              model: job.model_name,
+              model: actualModel,
               temperature: 0,
               maxTokens: output,
               responseSchema: RESPONSE_SCHEMA,
@@ -360,6 +398,14 @@ export class KnowledgeOrganizer {
               messages,
               // 独立 worker 没有宿主 ALS：来源在叶子输入声明；每次额外物理发送前复用
               // 本任务的租约/纪元/停用检查（变更即抛，重试循环据此停止）。
+              // 描述符只要准备就随叶子输入透传（保 actual route / assertCurrent）；
+              // 宣告计数器时才携带 token 上限（容量 - 输出预留 - 256 原协议余量），
+              // 让网关在最终 wire 上按同一计量方法复核严格 schema 完整请求。
+              ...(prepared !== null ? { contextBudget: prepared } : {}),
+              ...(prepared !== null && counter !== null
+                ? { contextInputLimit: capacity - output - 256 }
+                : {}),
+              ...(requestFormat !== undefined ? { requestFormat } : {}),
               retryOrigin: "system",
               assertSources: () => this.check(job, signal),
               signal,

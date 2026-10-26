@@ -1,3 +1,7 @@
+import {
+  QQ_MEDIA_INPUT_SCHEME_DEFAULT,
+  QQ_STICKER_DEDUP_DEFAULT,
+} from "../../src/shared/contracts/qq";
 // 本群 Agent 配置走真实 SQLite 与 HTTP：稀疏差异往返、四个修订的比较交换、绑定镜像同步、
 // 素材集合的授权交集、老开关列的迁移搬移，以及管理守卫。
 
@@ -60,7 +64,11 @@ function setup() {
   const business = cloneBusinessDb();
   handles.push(business);
   ensureDefaults(business.orm, "test-model");
-  const scheme = createQqScheme(business.orm, { name: "群配置方案" });
+  const scheme = createQqScheme(business.orm, {
+    name: "群配置方案",
+    stickers: { ...QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(QQ_MEDIA_INPUT_SCHEME_DEFAULT),
+  });
   return { business, orm: business.orm, db: business.db, app: createApp({ business }), scheme };
 }
 
@@ -1008,7 +1016,10 @@ describe("本群覆盖 0052 的两组设置（T12）", () => {
 
   it("整组提交不丢未提交组的差异：换基础方案 keep/reset 时两组差异随既有语义处理", async () => {
     const { orm, app, scheme } = setup();
-    const other = createQqScheme(orm, { name: "另一个方案" });
+    const other = createQqScheme(orm, {
+      name: "另一个方案",
+      mediaInput: structuredClone(QQ_MEDIA_INPUT_SCHEME_DEFAULT),
+    });
     const binding = groupBinding(orm, scheme.id, "22002");
     const first = await save(app, orm, binding.id, {
       media_input: { stages: { generation: false } },

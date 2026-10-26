@@ -20,7 +20,12 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
 import { recordInbound } from "../../src/server/services/qq-intake";
+import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -37,11 +42,18 @@ function setup(
   } = {},
 ) {
   const clock = { seconds: nowSeconds };
-  const h = openBusinessDb();
+  const h = runtimeFixtureBusiness(openBusinessDb(), "chat-model");
   handles.push(h);
   ensureDefaults(h.orm, "chat-model");
   updateQqSettings(h.orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
+    context: { ...fixtureLegacyContext },
+    rhythm: { ...fixtureLegacyRhythm },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     name: "test",
     reply: { split_by_speaker: false },
     triggers: { direct_reply: true, follow_up: false, chiming_in: false, idle_topic: true },

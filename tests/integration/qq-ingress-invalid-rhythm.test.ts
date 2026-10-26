@@ -19,8 +19,12 @@ import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositori
 import { WakeRepository } from "../../src/server/db/wake-repository";
 import { AppError } from "../../src/server/errors";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
 import { recordInbound } from "../../src/server/services/qq-intake";
-import { cloneBusinessDb } from "../harness/business-db";
+import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { cloneBusinessDb, runtimeFixtureBusiness } from "../harness/business-db";
 
 const ACCOUNT_ID = "10001";
 const GROUP_ID = 30003;
@@ -39,7 +43,7 @@ afterEach(() => {
  */
 function setup(options: { invalidRhythm?: boolean } = {}) {
   const invalidRhythm = options.invalidRhythm ?? true;
-  const h = cloneBusinessDb();
+  const h = runtimeFixtureBusiness(cloneBusinessDb(), "reply-model");
   handles.push(h);
   ensureDefaults(h.orm, "reply-model");
   updateQqSettings(h.orm, { accountId: ACCOUNT_ID, enabled: true, expectedRevision: 1 });
@@ -47,6 +51,13 @@ function setup(options: { invalidRhythm?: boolean } = {}) {
   const clock = Math.floor(Date.now() / 1000);
 
   const scheme = createQqScheme(h.orm, {
+    context: { ...fixtureLegacyContext },
+    rhythm: { ...fixtureLegacyRhythm },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     name: "ingress-invalid-rhythm",
     triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: false },
   });

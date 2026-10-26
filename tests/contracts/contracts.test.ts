@@ -260,8 +260,8 @@ describe("Agent contracts", () => {
     });
     expect(r.success).toBe(true);
     if (r.success) {
-      expect(r.data.temperature).toBe(0.7);
-      expect(r.data.persona_intensity).toBe(60);
+      expect(r.data.temperature).toBe(1);
+      expect(r.data.persona_intensity).toBe(100);
       expect(r.data.is_active).toBe(true);
     }
   });

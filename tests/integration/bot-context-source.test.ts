@@ -55,10 +55,12 @@ import { QQ_MEDIA_RULE } from "../../src/server/services/qq-prompt-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import { createWebActions, WEB_PERMISSION_REVISION } from "../../src/server/web-access/actions";
 import type { RuntimeConfig } from "../../src/shared/contracts";
+import { QQ_ALLOCATION_DEFAULT } from "../../src/shared/contracts/context-allocation";
 import type { PermissionPolicy } from "../../src/shared/contracts/permissions";
 import {
   QQ_COMPRESSION_DEFAULT,
   QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
+  QQ_MODEL_OUTPUT_RESERVE_DEFAULT,
 } from "../../src/shared/contracts/qq";
 import { QQ_MEDIA_INPUT_DEFAULT } from "../../src/shared/contracts/qq-media-input";
 
@@ -90,6 +92,10 @@ function setup(
   updateQqSettings(h.orm, { enabled: true, accountId: "10001", expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
     name: "context",
+    context: { ...QQ_CONTEXT_DEFAULT },
+    compression: { ...QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(QQ_ALLOCATION_DEFAULT),
     ...(input.automaticAllocation
       ? { allocation: { judgement: { mode: "auto" as const }, reply: { mode: "auto" as const } } }
       : {}),
@@ -131,6 +137,10 @@ function setup(
   const row = getAgentRow(h.orm, DEFAULT_AGENT_ID);
   if (!row) throw new Error("agent");
   const runtime = runtimeFromAgent(row);
+  runtime.p5_config.recent_turns = 10;
+  runtime.p5_config.max_output_tokens = 4096;
+  runtime.p5_config.summary_max_tokens = 4096;
+  runtime.p5_config.allocation = { mode: "fixed" };
   runtime.p5_config.retrieval_mode = input.mode ?? "off";
   const journal = new ConversationEventRepository(h.db),
     outbox = new OutboundIntentRepository(h.db);
@@ -932,7 +942,7 @@ it("keeps recent confirmed outbound facts inside the selected raw window when on
   }
   expect(source.selection?.messages).toHaveLength(1);
   expect(source.selection?.messages[0]?.sources?.some((ref) => ref.id === current)).toBe(true);
-  const sections = (material.pending ?? []).flatMap((message) =>
+  const sections = (material.history ?? []).flatMap((message) =>
     message.content.flatMap((part) => {
       if (part.kind !== "text") return [];
       try {
@@ -954,7 +964,7 @@ it("keeps recent confirmed outbound facts inside the selected raw window when on
   expect(facts.map((fact) => fact.id)).toContain(current);
   expect(facts.some((fact) => partIds.includes(fact.id))).toBe(false);
   expect(facts.some((fact) => fact.speaker.role === "assistant")).toBe(false);
-  expect(JSON.stringify(material.pending)).not.toContain("UNSELECTED_ASSISTANT_");
+  expect(JSON.stringify(material.history)).not.toContain("UNSELECTED_ASSISTANT_");
   expect(
     source.selection?.messages[0]?.sources?.some(
       (ref) => ref.kind === "outbound_intent" || ref.kind === "qq_speech",
@@ -1600,8 +1610,8 @@ describe("shared Bot context source", () => {
     });
     h.seed("question");
     const material = await h.source.read(readInput());
-    expect(JSON.stringify(material.pending)).toContain("question");
-    expect(JSON.stringify(material.pending)).not.toContain("长期记忆");
+    expect(JSON.stringify(material.history)).toContain("question");
+    expect(JSON.stringify(material.history)).not.toContain("长期记忆");
     expect(h.diagnostics).toEqual([]);
     const query = h.source.actions.find((action) => action.description.name === "memory.query");
     if (!query) throw new Error("missing memory query");
@@ -1632,8 +1642,8 @@ describe("shared Bot context source", () => {
     h.seed(`old ${"x".repeat(50)}`, 31000);
     h.seed(`older ${"x".repeat(50)}`, 30000);
     const material = await h.source.read(readInput());
-    expect(JSON.stringify(material.pending)).not.toContain("qq_context_packages");
-    expect(JSON.stringify(material.pending)).not.toContain("old ");
+    expect(JSON.stringify(material.history)).not.toContain("qq_context_packages");
+    expect(JSON.stringify(material.history)).not.toContain("old ");
     expect(h.orm.select().from(schema.qqConversationSummaries).get()).toBeUndefined();
     expect(compressionRuns(h)).toHaveLength(0);
   });
@@ -1646,14 +1656,14 @@ describe("shared Bot context source", () => {
     const source = h.newSource();
     const foreground = await source.read(readInput());
     expect(compressionRuns(h)).toHaveLength(0);
-    expect(JSON.stringify(foreground.pending)).not.toContain("qq_context_packages");
+    expect(JSON.stringify(foreground.history)).not.toContain("qq_context_packages");
     await compress(source);
     const material = await h.newSource().read(readInput());
-    const pending = JSON.stringify(material.pending);
+    const history = JSON.stringify(material.history);
     // 原文窗口没动（老消息不在时间线里），它们只作为一包出现在独立消息里。
-    expect(pending).toContain("qq_context_packages");
-    expect(pending).toContain("old fact");
-    expect(pending).toContain("recent fact");
+    expect(history).toContain("qq_context_packages");
+    expect(history).toContain("old fact");
+    expect(history).toContain("recent fact");
     const row = h.orm.select().from(schema.qqConversationSummaries).get();
     if (!row) throw new Error("expected the rolling summary row");
     // 两个水位都停在窗口外那批的末尾（seq 2）。
@@ -1678,8 +1688,8 @@ describe("shared Bot context source", () => {
     const source = h.newSource();
     const material = await nextWithPackages(h, source);
     // 围栏是包装，不是内容。
-    expect(JSON.stringify(material.pending)).toContain("qq_context_packages");
-    expect(JSON.stringify(material.pending)).toContain("old fact");
+    expect(JSON.stringify(material.history)).toContain("qq_context_packages");
+    expect(JSON.stringify(material.history)).toContain("old fact");
     expect(compressionRuns(h)).toHaveLength(1);
   });
   it("advances same-second backlog in journal order without skipping records", async () => {
@@ -1782,7 +1792,7 @@ describe("shared Bot context source", () => {
     expect(compressionRuns(h)).toHaveLength(1);
     const again = h.newSource();
     const second = await again.read(readInput());
-    expect(JSON.stringify(second.pending)).toBe(JSON.stringify(first.pending));
+    expect(JSON.stringify(second.history)).toBe(JSON.stringify(first.history));
     expect(compressionRuns(h)).toHaveLength(1);
   });
   it("keeps the judgement tier off the water level entirely", async () => {
@@ -1791,7 +1801,7 @@ describe("shared Bot context source", () => {
     h.seed("recent fact");
     const material = await h.source.read(readInput());
     // 判断档：不装配包、也不压——一次调用都不花，水位原地不动。
-    expect(JSON.stringify(material.pending)).not.toContain("qq_context_packages");
+    expect(JSON.stringify(material.history)).not.toContain("qq_context_packages");
     expect(compressionRuns(h)).toHaveLength(0);
     expect(h.orm.select().from(schema.qqConversationSummaries).get()).toBeUndefined();
     // 回复档展开只准备后台任务，本轮不等待新包。
@@ -1812,7 +1822,7 @@ describe("shared Bot context source", () => {
     const judgement = h.newSource();
     const next = await judgement.read(readInput());
     const evaluation = await judgement.prepareEvaluation({ ...readInput(), target: null });
-    expect(JSON.stringify(next.pending)).not.toContain("qq_context_packages");
+    expect(JSON.stringify(next.history)).not.toContain("qq_context_packages");
     expect(JSON.stringify(evaluation.messages)).not.toContain("old fact");
     expect(judgement.takeCompressionJob()).toBeUndefined();
     expect(compressionRuns(h)).toHaveLength(1);
@@ -2015,8 +2025,8 @@ describe("shared Bot context source", () => {
     h.gateway.complete = async () => "invalid JSON";
     const material = await h.source.read(readInput());
     await compress(h.source);
-    expect(JSON.stringify(material.pending)).toContain("recent fact");
-    expect(JSON.stringify(material.pending)).not.toContain("qq_context_packages");
+    expect(JSON.stringify(material.history)).toContain("recent fact");
+    expect(JSON.stringify(material.history)).not.toContain("qq_context_packages");
     expect(h.diagnostics).toMatchObject([
       { kind: "supplemental_summary_failed", code: "MODEL_STRUCTURE_INVALID" },
     ]);
@@ -2030,8 +2040,8 @@ describe("shared Bot context source", () => {
     const material = await h.source.read(readInput());
     await compress(h.source);
     // 空包＝把那批老消息唯一一份存证丢掉：判这次尝试失败，水位不动（下次再压），窗口照旧。
-    expect(JSON.stringify(material.pending)).toContain("recent fact");
-    expect(JSON.stringify(material.pending)).not.toContain("qq_context_packages");
+    expect(JSON.stringify(material.history)).toContain("recent fact");
+    expect(JSON.stringify(material.history)).not.toContain("qq_context_packages");
     expect(h.diagnostics).toMatchObject([
       { kind: "supplemental_summary_failed", code: "CONTEXT_SUMMARY_EMPTY" },
     ]);
@@ -2046,7 +2056,7 @@ describe("shared Bot context source", () => {
     };
     const material = await h.source.read(readInput());
     await compress(h.source);
-    expect(JSON.stringify(material.pending)).toContain("recent fact");
+    expect(JSON.stringify(material.history)).toContain("recent fact");
     expect(h.diagnostics).toEqual([{ kind: "supplemental_summary_failed", code: "MODEL_TIMEOUT" }]);
     expect(h.runs.listRuns({ ownerKind: "qq_binding", ownerId: h.binding.id })[0]?.status).toBe(
       "failed",
@@ -2058,7 +2068,7 @@ describe("shared Bot context source", () => {
     h.seed(`middle ${"x".repeat(200)}`, 2);
     h.seed(`new ${"x".repeat(200)}`);
     const material = await nextWithPackages(h);
-    expect(JSON.stringify(material.pending)).toContain("qq_context_packages");
+    expect(JSON.stringify(material.history)).toContain("qq_context_packages");
     const row = h.orm.select().from(schema.qqConversationSummaries).get();
     if (!row) throw new Error("expected the rolling summary row");
     // 只压了窗口内被裁掉的那段：历史水位没有可推的，落 0（列不允许 -1）；已覆盖水位落在 seq 2。
@@ -2077,8 +2087,8 @@ describe("shared Bot context source", () => {
     h.seed("recent fact");
     const material = await h.source.read(readInput());
     await compress(h.source);
-    expect(JSON.stringify(material.pending)).toContain("recent fact");
-    expect(JSON.stringify(material.pending)).not.toContain("qq_context_packages");
+    expect(JSON.stringify(material.history)).toContain("recent fact");
+    expect(JSON.stringify(material.history)).not.toContain("qq_context_packages");
     // 目标预算放不下就**不发布**（与网页侧同一条纪律）：本轮无包、也不落库，下一轮预算够了再压。
     expect(h.diagnostics).toMatchObject([
       { kind: "supplemental_summary_failed", code: "CONTEXT_SUMMARY_BUDGET" },
@@ -2194,7 +2204,7 @@ describe("shared Bot context source", () => {
     control.runtime.p5_config.recent_turns = 1;
     seeds(control);
     const controlInitial = await control.source.read(readInput());
-    expect(countOld(controlInitial.pending)).toBe(0);
+    expect(countOld(controlInitial.history)).toBe(0);
     const controlFit = await control.source.actionResultFitter(
       "sticker.search",
       arguments_,
@@ -2233,8 +2243,8 @@ describe("shared Bot context source", () => {
       signal: new AbortController().signal,
       observations: [observation],
     });
-    expect(countOld(after.pending)).toBeLessThan(countOld(initial.pending));
-    expect(JSON.stringify(after.pending)).toContain("newest question");
+    expect(countOld(after.history)).toBeLessThan(countOld(initial.history));
+    expect(JSON.stringify(after.history)).toContain("newest question");
     const rendered = new ContextEngine().render(h.spec, after, [observation], ["alice", "bob"]);
     expect(rendered.units).toBeLessThanOrEqual(9728);
   });
@@ -2300,7 +2310,7 @@ describe("shared Bot context source", () => {
     // 对照组：小结果照常拟合、下一步照常可读。
     const control = h.newSource();
     const controlBaseline = await control.read(readInput());
-    expect(JSON.stringify(controlBaseline.pending)).toContain("newest question");
+    expect(JSON.stringify(controlBaseline.history)).toContain("newest question");
     const controlFit = await control.actionResultFitter(
       name,
       arguments_,
@@ -2317,7 +2327,7 @@ describe("shared Bot context source", () => {
     // 反例：只用公开 fitter 二分出「仍被接受」的最大结果值（无任何私有成本/视图访问）。
     const source = h.newSource();
     const baseline = await source.read(readInput());
-    expect(JSON.stringify(baseline.pending)).toContain("newest question");
+    expect(JSON.stringify(baseline.history)).toContain("newest question");
     const acceptsResult = await source.actionResultFitter(
       name,
       arguments_,
@@ -2379,7 +2389,7 @@ describe("shared Bot context source", () => {
     const material = await h.source.read({ signal, observations });
     const rendered = new ContextEngine().render(h.spec, material, observations, ["alice", "bob"]);
     expect(rendered.units).toBeLessThanOrEqual(9728);
-    expect(JSON.stringify(material.pending)).toContain("newest question");
+    expect(JSON.stringify(material.history)).toContain("newest question");
   });
   it("fits long action arguments with the production token counter and keeps the next read within its ceiling", async () => {
     const counter = await loadTextTokenCounter("o200k_base");
@@ -2417,7 +2427,7 @@ describe("shared Bot context source", () => {
     expect(measured).toBeGreaterThan(0);
     expect(measured).toBeLessThanOrEqual(9728);
     expect(counts).toBeGreaterThan(0);
-    expect(JSON.stringify(material.pending)).toContain("newest question");
+    expect(JSON.stringify(material.history)).toContain("newest question");
   });
   /**
    * 观测是一条条累起来的（模型每调一次动作就多一条），材料却只在新事件到达时重装。累到顶住上限时
@@ -2460,8 +2470,8 @@ describe("shared Bot context source", () => {
           ceiling,
           first,
           material,
-          beforeOld: countOld(first.pending),
-          afterOld: countOld(material.pending),
+          beforeOld: countOld(first.history),
+          afterOld: countOld(material.history),
           beforeUnits: engine.render(h.spec, first, [], ["alice", "bob"]).units,
           afterUnits: engine.render(h.spec, material, observations, ["alice", "bob"]).units,
           nextFits: fits({ status: "available", items: [], nextCursor: null }, []),
@@ -2497,7 +2507,7 @@ describe("shared Bot context source", () => {
     if (!calibrated.fits) throw new Error("calibrated source did not fit");
     expect(calibrated.beforeOld).toBeGreaterThanOrEqual(2);
     expect(calibrated.afterOld).toBeLessThan(calibrated.beforeOld);
-    expect(JSON.stringify(calibrated.material.pending)).toContain("newest question");
+    expect(JSON.stringify(calibrated.material.history)).toContain("newest question");
     expect(calibrated.nextFits).toBe(true);
     expect(calibrated.afterUnits).toBeLessThanOrEqual(calibrated.ceiling);
     console.info("budget-window-calibration", {
@@ -2524,8 +2534,8 @@ describe("shared Bot context source", () => {
     const countOld = (value: unknown) =>
       ((JSON.stringify(value) ?? "").match(/old x/g) ?? []).length;
     const baseline = await h.source.read(readInput());
-    expect(JSON.stringify(baseline.pending)).toContain("newest question");
-    const beforeOld = countOld(baseline.pending);
+    expect(JSON.stringify(baseline.history)).toContain("newest question");
+    const beforeOld = countOld(baseline.history);
     const observation: ActionObservation = {
       // 与 fitter 合成占位同形的稳定 uuid、同名、同参数；值是合法的空分页结果。
       id: "00000000-0000-0000-0000-000000000000",
@@ -2539,8 +2549,8 @@ describe("shared Bot context source", () => {
       observations: [observation],
     });
     // 重装证据：旧材料被裁、最新一条必须保留；渲染仍贴 9728 上限。
-    expect(countOld(material.pending)).toBeLessThan(beforeOld);
-    expect(JSON.stringify(material.pending)).toContain("newest question");
+    expect(countOld(material.history)).toBeLessThan(beforeOld);
+    expect(JSON.stringify(material.history)).toContain("newest question");
     const rendered = new ContextEngine().render(h.spec, material, [observation], ["alice", "bob"]);
     const ceiling = h.spec.limits.inputUnits;
     if (ceiling === undefined) throw new Error("context source did not set its input ceiling");
@@ -2775,8 +2785,8 @@ describe("shared Bot context source", () => {
     for (let index = 0; index < 20; index += 1) h.seed(`old ${"x".repeat(480)}`, 1);
     h.seed("newest question", 0);
     const material = await h.source.read(readInput());
-    expect(JSON.stringify(material.pending)).toContain("newest question");
-    const included = material.pending?.filter((message) =>
+    expect(JSON.stringify(material.history)).toContain("newest question");
+    const included = material.history?.filter((message) =>
       JSON.stringify(message).includes("old x"),
     );
     expect(included?.length ?? 0).toBeLessThan(20);
@@ -2906,7 +2916,7 @@ it("an explicit recoverable query failure leaves raw input and visible status, c
   });
   h.seed("raw question survives");
   const material = await h.source.read(readInput());
-  expect(JSON.stringify(material.pending)).toContain("raw question survives");
+  expect(JSON.stringify(material.history)).toContain("raw question survives");
   expect(JSON.stringify(material.pending)).not.toContain("retrieval_status");
   expect(queries).toBe(0);
   expect(h.diagnostics).toEqual([]);
@@ -3323,7 +3333,7 @@ it("shrinks only the authentic quote message when ordinary text contains the quo
     .query("UPDATE qq_message_facts SET parts=? WHERE event_key=?")
     .run(JSON.stringify([{ kind: "text", text: ordinary }]), row.event_key);
   const initial = await h.source.read(readInput());
-  const quoteMessage = initial.pending?.find((message) =>
+  const quoteMessage = initial.history?.find((message) =>
     message.content.some((part) => {
       if (part.kind !== "text") return false;
       try {
@@ -3334,7 +3344,7 @@ it("shrinks only the authentic quote message when ordinary text contains the quo
     }),
   );
   expect(quoteMessage).toBeDefined();
-  expect(JSON.stringify(initial.pending)).toContain(ordinary);
+  expect(JSON.stringify(initial.history)).toContain(ordinary);
   const engine = new ContextEngine();
   const initialUnits = engine.render(h.spec, initial, [], ["alice", "bob"]).units;
   const length = Math.max(0, (h.spec.limits.inputUnits ?? 0) - initialUnits) + 1000;
@@ -3345,8 +3355,8 @@ it("shrinks only the authentic quote message when ordinary text contains the quo
   );
   expect(fit({ status: "ok", text: "z".repeat(length) }, [])).toBe(true);
   const after = await h.source.read(readInput());
-  expect(JSON.stringify(after.pending)).toContain(ordinary);
-  expect(after.pending).not.toContain(quoteMessage);
+  expect(JSON.stringify(after.history)).toContain(ordinary);
+  expect(after.history).not.toContain(quoteMessage);
 });
 
 it("keeps every tier unchanged when quote fitting fails on a later tier", async () => {
@@ -3371,7 +3381,7 @@ it("keeps every tier unchanged when quote fitting fails on a later tier", async 
       signal: h.action.signal,
     },
   );
-  const quoteBefore = before.pending?.find((message) =>
+  const quoteBefore = before.history?.find((message) =>
     message.content.some((part) => {
       if (part.kind !== "text") return false;
       try {
@@ -3389,8 +3399,8 @@ it("keeps every tier unchanged when quote fitting fails on a later tier", async 
   );
   expect(fits({ status: "ok", text: "z".repeat(16000) }, [])).toBe(false);
   const after = await source.read(readInput());
-  expect(after.pending).toContain(quoteBefore);
-  expect(after.pending).toEqual(before.pending);
+  expect(after.history).toContain(quoteBefore);
+  expect(after.history).toEqual(before.history);
 });
 it("reads concurrent proofs once while a synchronous build shrinks several candidate windows", async () => {
   const h = setup({ tokenBudget: 16384 });
@@ -3488,7 +3498,7 @@ it("reads concurrent proofs once while a synchronous build shrinks several candi
   expect(report.readProjectionCalls).toBeGreaterThan(1);
   expect(report.readConcurrentRebuildCalls).toBe(1);
   expect(report.readConcurrentProofCalls).toBe(4);
-  expect(JSON.stringify(material.pending)).toContain("newest question");
+  expect(JSON.stringify(material.history)).toContain("newest question");
   h.runs.redactContext({ runId: "proof-run-0", stepId: "proof-step-0" }, "revoked");
   await expect(h.source.read(readInput())).rejects.toMatchObject({
     code: "CONTEXT_SOURCE_INVALID",
@@ -3670,7 +3680,7 @@ it("does not let an orphaned fitter duplicate the current concurrent-jobs messag
 it("does not overwrite a synchronous fitter material change during cached projection preparation", async () => {
   const h = quoteFixture();
   const initial = await h.source.read(readInput());
-  const quote = initial.pending?.find((message) =>
+  const quote = initial.history?.find((message) =>
     message.content.some((part) => {
       if (part.kind !== "text") return false;
       try {
@@ -3713,9 +3723,9 @@ it("does not overwrite a synchronous fitter material change during cached projec
   const after = await h.source.read(readInput());
   expect(accepted).toBe(true);
   expect(state.views.get("reply")).toBe(view);
-  expect(shrunk?.pending).not.toContain(quote);
-  expect(after.pending).not.toContain(quote);
-  expect(view?.material.pending).not.toContain(quote);
+  expect(shrunk?.history).not.toContain(quote);
+  expect(after.history).not.toContain(quote);
+  expect(view?.material.history).not.toContain(quote);
   expect(reserved).toBeGreaterThan(0);
   expect(state.reservations.reserved(undefined, "bytes")).toBe(reserved);
   expect(view?.selection).toBe(selection);

@@ -22,6 +22,7 @@ import { z } from "zod";
 import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { LeafAgentRuntime } from "../agent/agent-runtime";
+import type { ModelContextBudget } from "../agent/model-port";
 import { readOrganizationSettings } from "../db/organization-repository";
 import {
   type QqStickerAssetView,
@@ -32,6 +33,7 @@ import {
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import type { PreparedRequestFormat } from "../llm/request-format";
 import { sampleQqAnimationFrames } from "./qq-animation-frames";
 import { checkQqModelCapacity } from "./qq-capacity-preflight";
 import { QQ_STICKER_CONTENT_TYPES, readQqImageHeader } from "./qq-image-header";
@@ -70,6 +72,9 @@ export interface QqStickerAnnotatorInput {
   /** 保存档的硬输出预留（0068）：存在时作为 max_tokens 发送；缺席＝既有行为（不发送帽）。 */
   readonly outputReserved?: number;
   readonly maxTokens?: number;
+  readonly contextBudget?: ModelContextBudget;
+  readonly contextInputLimit?: number;
+  readonly requestFormat?: PreparedRequestFormat;
   /** 调用方提供的真实素材复验：每次额外物理发送前由模型发送循环调用，失效即抛。 */
   readonly assertSources?: () => void;
 }
@@ -91,6 +96,9 @@ export function createQqStickerAnnotator(agentRuntime: LeafAgentRuntime): QqStic
       },
       {
         model: input.model,
+        contextBudget: input.contextBudget,
+        contextInputLimit: input.contextInputLimit,
+        ...(input.requestFormat === undefined ? {} : { requestFormat: input.requestFormat }),
         prompt: input.prompt,
         images: input.images,
         signal: input.signal,
@@ -173,11 +181,16 @@ function readImages(
  */
 export async function annotateQqSticker(
   orm: Orm,
-  gateway: Pick<ModelGateway, "loadedContextCapacity">,
+  gateway: Pick<ModelGateway, "loadedContextCapacity"> &
+    Partial<Pick<ModelGateway, "prepareContextModel">>,
   annotate: QqStickerAnnotator,
   store: QqStickerStore,
   input: unknown,
   signal?: AbortSignal,
+  prepareVisionRequestFormat?: (input: {
+    model: string;
+    responseSchema?: Record<string, unknown>;
+  }) => PreparedRequestFormat,
 ): Promise<QqStickerAnnotationResult> {
   const request = z
     .strictObject({
@@ -224,11 +237,17 @@ export async function annotateQqSticker(
   }
   // The prompt's text is what this check can estimate; the images' cost has no unit here (§7.1's
   // budgetTokens note), and the reserve above covers the answer.
-  const capacity = await checkQqModelCapacity(gateway, {
-    model,
-    messages: [{ role: "user", content: QQ_STICKER_ANNOTATION_PROMPT }],
-    outputReserved,
-  });
+  const capacity = await checkQqModelCapacity(
+    gateway,
+    {
+      model,
+      messages: [{ role: "user", content: QQ_STICKER_ANNOTATION_PROMPT }],
+      outputReserved,
+      responseSchema: QQ_STICKER_ANNOTATION_RESPONSE_SCHEMA,
+    },
+    signal,
+    prepareVisionRequestFormat,
+  );
   if (capacity.kind !== "allowed") {
     return {
       kind: "rejected",
@@ -238,6 +257,12 @@ export async function annotateQqSticker(
   if (allocation?.input_limit != null && capacity.inputUnits > allocation.input_limit) {
     return { kind: "rejected", reason: "capacity_exceeded" };
   }
+  const requestFormat =
+    capacity.requestFormat ??
+    prepareVisionRequestFormat?.({
+      model,
+      responseSchema: QQ_STICKER_ANNOTATION_RESPONSE_SCHEMA,
+    });
   let raw: string;
   try {
     raw = await annotate({
@@ -248,6 +273,9 @@ export async function annotateQqSticker(
       assetId: asset.id,
       assertSources: assertAssetCurrent,
       outputReserved,
+      contextBudget: capacity.contextBudget,
+      contextInputLimit: capacity.contextInputLimit,
+      ...(requestFormat === undefined ? {} : { requestFormat }),
       ...(maxTokens === undefined ? {} : { maxTokens }),
       sources: [{ kind: "qq_sticker", id: asset.id, revision: asset.updatedAt }],
     });

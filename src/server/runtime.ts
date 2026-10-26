@@ -3,6 +3,7 @@
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { spawn } from "bun";
+import { eq } from "drizzle-orm";
 import type { Hono } from "hono";
 import { SourceRefSchema } from "../shared/contracts/evidence";
 import { executionPolicy } from "../shared/contracts/permissions";
@@ -35,6 +36,8 @@ import { readOrganizationSettings } from "./db/organization-repository";
 import { readQqBinding } from "./db/qq-binding-repository";
 import { schemeMediaInput, schemePrompts, schemeRhythm } from "./db/qq-scheme-repository";
 import { readQqSettings, readTransportToken } from "./db/qq-settings-repository";
+import { DEFAULT_AGENT_ID } from "./db/repositories";
+import * as schema from "./db/schema";
 import { type BusinessMigrationSql, openBusinessDb } from "./db/schema-gate";
 import { withCapacityCache } from "./llm/capacity-cache";
 import { FileLocalModelEncodingStore } from "./llm/local-model-encodings";
@@ -75,6 +78,7 @@ import { RuntimeTelemetry } from "./observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
 import {
   FilePermissionStore,
+  PermissionError,
   PermissionService,
   unconfiguredPermissions,
 } from "./permissions/service";
@@ -169,7 +173,7 @@ export const NAPCAT_POLL_INTERVAL_MS = 5_000;
 export const NAPCAT_CONTROL_TIMEOUT_MS = 5_000;
 export const NAPCAT_STOP_DEADLINE_MS = 10_000;
 
-export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime {
+export async function createRuntime(options: RuntimeOptions = {}): Promise<SuperstringRuntime> {
   const business =
     options.business ??
     openBusinessDb({
@@ -297,7 +301,21 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
   let stopping = false;
   let napcatSession: NapCatManagedSession | undefined;
   let clearNapcatEvents: (() => void) | undefined;
+  let initialMcpDiscoveryCompleted = false;
   try {
+    const defaultAgent = business.orm
+      .select({ id: schema.agents.id })
+      .from(schema.agents)
+      .where(eq(schema.agents.id, DEFAULT_AGENT_ID))
+      .get();
+    if (!defaultAgent && mcpHost && mcpManagement) {
+      const before = mcpManagement.status();
+      await mcpHost.start();
+      if (mcpManagement.status().revision !== before.revision) {
+        throw new PermissionError("MCP_CONFIG_CONFLICT");
+      }
+      initialMcpDiscoveryCompleted = true;
+    }
     const napcatStore = options.napcatConfigPath
       ? new FileNapCatConfigStore(options.napcatConfigPath)
       : undefined;
@@ -592,6 +610,8 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
           auxiliary_allocation: readOrganizationSettings(business.orm).auxiliary_allocation
             ?.qq_media_describe,
           loadedContextCapacity: (model) => gateway.loadedContextCapacity(model),
+          prepareContextModel: gateway.prepareContextModel?.bind(gateway),
+          prepareVisionRequestFormat: visionClient.prepareRequestFormat?.bind(visionClient),
           agentRuntime,
           fetchSource: createQqMediaSourceFetcher({
             resolveSource: (request) => qqIntake.resolveMediaSource(request),
@@ -624,6 +644,10 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
             transcriptionModelName: purposes.transcription_model_name,
           },
           baselinePolicy: `baseline/v1/${policyRevision}`,
+          auxiliary_allocation: purposes.auxiliary_allocation?.qq_media_describe,
+          loadedContextCapacity: (model) => gateway.loadedContextCapacity(model),
+          prepareContextModel: gateway.prepareContextModel?.bind(gateway),
+          prepareVisionRequestFormat: visionClient.prepareRequestFormat?.bind(visionClient),
         });
       },
     });
@@ -794,8 +818,26 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
         options.browserStateSecret ?? browserStateSecret(options.browserStateSecretPath),
     });
   } catch (error) {
-    void telemetry.close();
-    business.close();
+    const settled = await Promise.allSettled([
+      mcpHost?.stop() ?? Promise.resolve(),
+      telemetry.close(),
+    ]);
+    const cleanupErrors = settled.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    try {
+      business.close();
+    } catch (closeError) {
+      cleanupErrors.push(closeError);
+    }
+    if (cleanupErrors.length) {
+      console.error("Runtime initialization cleanup failed", { error, cleanupErrors });
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        "Runtime initialization and cleanup failed",
+        { cause: error },
+      );
+    }
     throw error;
   }
 
@@ -825,7 +867,7 @@ export function createRuntime(options: RuntimeOptions = {}): SuperstringRuntime 
       modules.start();
       botWorker.start();
       // Restore queued tools only after discovery has reconstructed their executable catalog.
-      if (mcpHost)
+      if (mcpHost && !initialMcpDiscoveryCompleted)
         void mcpHost
           .start()
           .then(() => {

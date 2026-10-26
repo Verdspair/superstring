@@ -48,12 +48,10 @@ import {
   openBusinessDb,
 } from "../../src/server/db/schema-gate";
 import { createQqBinding, updateQqBinding } from "../../src/server/services/qq-binding-contract";
-import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contract";
-import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import {
+  newQqSchemeDefaults,
   QQ_MEDIA_INPUT_SCHEME_DEFAULT,
   QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
-  QQ_STICKER_DEDUP_DEFAULT,
   type QqSchemeMediaInput,
 } from "../../src/shared/contracts/qq";
 
@@ -301,49 +299,50 @@ describe("scheme identity", () => {
     const h = setup();
     try {
       const created = createQqScheme(h.orm, { name: "默认方案" });
-      expect(schemeRhythm(created)).toEqual(QQ_RHYTHM_DEFAULT);
+      const defaults = newQqSchemeDefaults();
+      expect(schemeRhythm(created)).toEqual(defaults.rhythm);
       // Spelled out, so a change to the defaults has to be a deliberate edit of this test
       // rather than something that slides through with the constant.
       expect(schemeRhythm(created)).toEqual({
         participation_timing: "quiet_preferred",
-        merge_window_seconds: 30,
-        reply_cooldown_seconds: 10,
-        hourly_speech_limit: 200,
-        initiative_min_score: 6,
+        merge_window_seconds: 15,
+        reply_cooldown_seconds: 1,
+        hourly_speech_limit: 300,
+        initiative_min_score: 1,
         // 0036: 每 X 条群友消息才真跑一次判断（间隔内复用上次读数）。
-        judgement_interval_turns: 3,
+        judgement_interval_turns: 2,
         idle_quiet_minutes: 15,
         active_hours_enabled: false,
         active_hours_start_minutes: 0,
         active_hours_end_minutes: 1439,
-        max_recompute_count: 1,
+        max_recompute_count: 2,
         max_sticker_count: 1,
-        media_frame_count: 3,
+        media_frame_count: 1,
         media_max_dimension: 512,
         initiative_batch_target_count: 15,
         initiative_batch_jitter_count: 5,
         initiative_queue_on_busy: true,
         // 0055：新方案默认开时间窗，旧方案由 0055 的 DDL 默认关（见「升级」用例）。
         initiative_time_window_enabled: true,
-        initiative_time_target_seconds: 60,
-        initiative_time_jitter_seconds: 20,
+        initiative_time_target_seconds: 30,
+        initiative_time_jitter_seconds: 10,
       });
       // The context tiers are the third decided group (P3b-2), on the same terms.
-      expect(schemeContext(created)).toEqual(QQ_CONTEXT_DEFAULT);
+      expect(schemeContext(created)).toEqual(defaults.context);
       expect(schemeContext(created)).toEqual({
-        judgement_message_limit: 20,
-        judgement_window_minutes: 60,
+        judgement_message_limit: 400,
+        judgement_window_minutes: 300,
         judgement_token_budget: 2000,
-        reply_message_limit: 60,
-        reply_window_minutes: 360,
-        reply_token_budget: 6000,
+        reply_message_limit: 300,
+        reply_window_minutes: 300,
+        reply_token_budget: 16384,
       });
       // §9.3's repetition rules are the newest decided group (P4d).
-      expect(schemeStickers(created)).toEqual(QQ_STICKER_DEDUP_DEFAULT);
+      expect(schemeStickers(created)).toEqual(defaults.stickers);
       expect(schemeStickers(created)).toEqual({
-        sticker_min_repeat_minutes: 10,
-        sticker_recent_avoid_count: 5,
-        frequency: "medium",
+        sticker_min_repeat_minutes: 0,
+        sticker_recent_avoid_count: 0,
+        frequency: "high",
       });
     } finally {
       h.business.close();
@@ -468,7 +467,7 @@ describe("scheme identity", () => {
       // supplement window (§5.7) used to anchor this test; the retained reply_cooldown_seconds
       // keeps the same whole-group CAS guarantee.
       const created = createQqScheme(h.orm, { name: "默认方案" });
-      expect(schemeRhythm(created).reply_cooldown_seconds).toBe(10);
+      expect(schemeRhythm(created).reply_cooldown_seconds).toBe(1);
       const changed = updateQqScheme(h.orm, created.id, {
         name: "默认方案",
         rhythm: { ...schemeRhythm(created), reply_cooldown_seconds: 25 },
@@ -505,14 +504,14 @@ describe("scheme identity", () => {
       expect(() =>
         updateQqScheme(h.orm, created.id, {
           name: "默认方案",
-          rhythm: { ...QQ_RHYTHM_DEFAULT, reply_cooldown_seconds: 0 },
+          rhythm: { ...schemeRhythm(created), reply_cooldown_seconds: 0 },
           expectedRevision: created.revision,
         }),
       ).toThrow(TypeError);
       // A no-op save of the whole group must not look like a change.
       const saved = updateQqScheme(h.orm, created.id, {
         name: "默认方案",
-        rhythm: { ...QQ_RHYTHM_DEFAULT },
+        rhythm: { ...schemeRhythm(created) },
         expectedRevision: created.revision,
       });
       expect(saved.revision).toBe(created.revision);
@@ -726,11 +725,11 @@ describe("message settings and media input groups (0052/T12)", () => {
       expect(schemeMessageSettings(created)).toEqual(QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT);
       expect(schemeMediaInput(created)).toEqual({
         mode: "native",
-        stages: { decision: true, evaluation: true, generation: true },
+        stages: { decision: false, evaluation: false, generation: false },
         max_images: 8,
         ordinary_still_max_dimension: null,
       });
-      expect(schemeMediaInput(created)).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
+      expect(schemeMediaInput(created)).toEqual(newQqSchemeDefaults().mediaInput);
       // 写入侧补默认：列上必须是完整 JSON，而不是靠读取兜底的 NULL。
       const raw = h.orm
         .select({ m: schema.qqSchemes.messageSettings, v: schema.qqSchemes.mediaInput })
@@ -739,7 +738,7 @@ describe("message settings and media input groups (0052/T12)", () => {
       expect(raw?.m).not.toBeNull();
       expect(raw?.v).not.toBeNull();
       expect(JSON.parse(raw?.m ?? "null")).toEqual(QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT);
-      expect(JSON.parse(raw?.v ?? "null")).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
+      expect(JSON.parse(raw?.v ?? "null")).toEqual(newQqSchemeDefaults().mediaInput);
     } finally {
       h.business.close();
     }
@@ -908,7 +907,13 @@ describe("message settings and media input groups (0052/T12)", () => {
       expect(schemeRhythm(custom).media_frame_count).toBe(7);
       expect(schemeRhythm(custom).media_max_dimension).toBe(1024);
       // Changing the rhythm values did not grow a media_input field.
-      expect(schemeMediaInput(custom)).toEqual(QQ_MEDIA_INPUT_SCHEME_DEFAULT);
+      expect(schemeMediaInput(custom)).toEqual({
+        mode: "native",
+        stages: { decision: false, evaluation: false, generation: false },
+        max_images: 8,
+        ordinary_still_max_dimension: null,
+      });
+      expect(schemeMediaInput(custom)).toEqual(newQqSchemeDefaults().mediaInput);
     } finally {
       h.business.close();
     }
@@ -973,11 +978,11 @@ describe("0059 scheme task limits and input anti-spam", () => {
     const h = setup();
     try {
       const created = createQqScheme(h.orm, { name: "默认方案" });
-      expect(schemeTaskLimits(created)).toEqual({ mention_task_limit: 4, ordinary_task_limit: 1 });
+      expect(schemeTaskLimits(created)).toEqual({ mention_task_limit: 5, ordinary_task_limit: 5 });
       expect(schemeInputAntiSpam(created)).toEqual({
         enabled: true,
         burst_min_messages: 3,
-        burst_window_seconds: 3,
+        burst_window_seconds: 5,
       });
 
       const explicit = createQqScheme(h.orm, {
@@ -1013,7 +1018,7 @@ describe("0059 scheme task limits and input anti-spam", () => {
       expect(schemeInputAntiSpam(changed)).toEqual({
         enabled: true,
         burst_min_messages: 3,
-        burst_window_seconds: 3,
+        burst_window_seconds: 5,
       });
       expect(changed.revision).toBe(created.revision + 1);
 

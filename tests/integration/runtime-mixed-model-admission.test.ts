@@ -17,6 +17,7 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { createLmStudioClient } from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
 import type { QqIntakeRuntime } from "../../src/server/services/qq-intake";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const MODEL = "local/mix";
 const PEER = "20002";
@@ -190,8 +191,8 @@ async function buildRuntime(stub: Stub) {
     async start() {},
     stop() {},
   } as unknown as QqIntakeRuntime;
-  const runtime = createRuntime({
-    business,
+  const runtime = await createRuntime({
+    business: runtimeFixtureBusiness(business),
     gateway: createLmStudioClient({
       baseUrl: `http://127.0.0.1:${port}/v1`,
       model: MODEL,

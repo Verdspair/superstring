@@ -1,14 +1,18 @@
 import {
   executionPolicy,
+  type PermissionGrant,
   type PermissionPolicy,
   type PermissionResource,
 } from "../../../shared/contracts/permissions";
+
+export type AgentOverrideDraft = NonNullable<PermissionGrant["agentOverrides"]>[string];
 
 export interface GrantDraft {
   enabled: boolean;
   approved: boolean;
   agentIds: string[] | null;
   directories: string[];
+  agentOverrides?: Record<string, AgentOverrideDraft>;
 }
 
 export function grantDraftOf(
@@ -17,12 +21,47 @@ export function grantDraftOf(
   revision?: string,
 ): GrantDraft {
   const grant = policy.grants.find((entry) => entry.resource === resource);
+  const agentOverrides = grant?.agentOverrides
+    ? Object.fromEntries(
+        Object.entries(grant.agentOverrides).map(([id, ov]) => [
+          id,
+          {
+            ...(ov.enabled !== undefined ? { enabled: ov.enabled } : {}),
+            approved: ov.approved,
+            ...(ov.revision !== undefined ? { revision: ov.revision } : {}),
+            directories: [...ov.directories],
+          },
+        ]),
+      )
+    : undefined;
   return {
     enabled: !!grant && !executionPolicy(policy).pausedTools.includes(resource),
     approved: !!grant?.approved && (revision === undefined || grant.revision === revision),
     agentIds: grant?.agentIds ? [...grant.agentIds] : null,
     directories: grant?.directories ? [...grant.directories] : [],
+    ...(agentOverrides ? { agentOverrides } : {}),
   };
+}
+
+function sameAgentOverrides(
+  a?: Record<string, AgentOverrideDraft>,
+  b?: Record<string, AgentOverrideDraft>,
+): boolean {
+  const keysA = Object.keys(a ?? {}).sort();
+  const keysB = Object.keys(b ?? {}).sort();
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i++) {
+    if (keysA[i] !== keysB[i]) return false;
+    const key = keysA[i];
+    const ovA = a![key];
+    const ovB = b![key];
+    if (ovA.enabled !== ovB.enabled) return false;
+    if (ovA.approved !== ovB.approved) return false;
+    if (ovA.revision !== ovB.revision) return false;
+    if (JSON.stringify([...ovA.directories].sort()) !== JSON.stringify([...ovB.directories].sort()))
+      return false;
+  }
+  return true;
 }
 
 export function sameGrantDraft(a: GrantDraft, b: GrantDraft): boolean {
@@ -31,7 +70,8 @@ export function sameGrantDraft(a: GrantDraft, b: GrantDraft): boolean {
     a.approved === b.approved &&
     JSON.stringify(a.agentIds === null ? null : [...a.agentIds].sort()) ===
       JSON.stringify(b.agentIds === null ? null : [...b.agentIds].sort()) &&
-    JSON.stringify([...a.directories].sort()) === JSON.stringify([...b.directories].sort())
+    JSON.stringify([...a.directories].sort()) === JSON.stringify([...b.directories].sort()) &&
+    sameAgentOverrides(a.agentOverrides, b.agentOverrides)
   );
 }
 
@@ -48,17 +88,47 @@ export function applyGrantEdits(
     const baseline = grantDraftOf(policy, resource.resource, resource.revision);
     if (!draft || sameGrantDraft(draft, baseline)) continue;
     const index = grants.findIndex((grant) => grant.resource === resource.resource);
+    const onlyOverridesChanged = sameGrantDraft(
+      { ...draft, agentOverrides: baseline.agentOverrides },
+      baseline,
+    );
+    if (index >= 0 && onlyOverridesChanged) {
+      const { agentOverrides: _previous, ...base } = grants[index];
+      grants[index] = Object.keys(draft.agentOverrides ?? {}).length
+        ? { ...base, agentOverrides: structuredClone(draft.agentOverrides) }
+        : base;
+      continue;
+    }
     if (draft.enabled) paused.delete(resource.resource);
     else paused.add(resource.resource);
     // A soft pause does not change the permission fingerprint of a running task.
     if (index >= 0 && sameGrantDraft({ ...draft, enabled: baseline.enabled }, baseline)) continue;
-    const grant = {
+    const rawOverrides =
+      draft.agentOverrides !== undefined
+        ? draft.agentOverrides
+        : index >= 0
+          ? grants[index]?.agentOverrides
+          : undefined;
+    const cleanedOverrides: Record<string, AgentOverrideDraft> = {};
+    if (rawOverrides) {
+      for (const [id, ov] of Object.entries(rawOverrides)) {
+        cleanedOverrides[id] = {
+          ...(ov.enabled !== undefined ? { enabled: ov.enabled } : {}),
+          approved: ov.approved,
+          ...(ov.revision !== undefined ? { revision: ov.revision } : {}),
+          directories: [...ov.directories],
+        };
+      }
+    }
+    const hasOverrides = Object.keys(cleanedOverrides).length > 0;
+    const grant: PermissionGrant = {
       resource: resource.resource,
       approved: draft.approved,
       revision:
         index < 0 || draft.enabled || draft.approved ? resource.revision : grants[index]?.revision,
       ...(draft.agentIds === null ? {} : { agentIds: [...new Set(draft.agentIds)].sort() }),
       directories: [...new Set(draft.directories)].sort(),
+      ...(hasOverrides ? { agentOverrides: cleanedOverrides } : {}),
     };
     if (index < 0) grants.push(grant);
     else grants[index] = grant;

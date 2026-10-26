@@ -1,3 +1,7 @@
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 // 同一发送人 mention 任务的端到端并行验证：真实
 // createOneBotConversationRuntime 装配 + AgentRuntime + ConversationHost + 业务库 +
 // QqSendPort 闭桩，验证**同一发送人的两条 @ 消息作为两条 mention 任务真实并行执行**——
@@ -148,7 +152,7 @@ const controlledGate = () => {
 };
 
 function setup(options: { model: ModelPort }) {
-  const h = cloneBusinessDb();
+  const h = runtimeFixtureBusiness(cloneBusinessDb(), "reply-model");
   handles.push(h);
   ensureDefaults(h.orm, "reply-model");
   updateQqSettings(h.orm, { accountId: ACCOUNT_ID, enabled: true, expectedRevision: 1 });
@@ -178,7 +182,14 @@ function setup(options: { model: ModelPort }) {
     } = { schemeName: "task-execution-e2e" },
   ) => {
     const scheme = createQqScheme(h.orm, {
+      context: { ...fixtureLegacyContext },
+      compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+      outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+      allocation: structuredClone(fixtureLegacyAllocation),
+      stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+      mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
       name: binding.schemeName,
+      taskLimits: { mention_task_limit: 4, ordinary_task_limit: 1 },
       triggers: binding.followUp
         ? { direct_reply: true, follow_up: true, chiming_in: false, idle_topic: false }
         : {

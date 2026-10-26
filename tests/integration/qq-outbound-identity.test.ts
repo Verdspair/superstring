@@ -104,14 +104,14 @@ describe("outbound identity nameState from stored snapshot columns", () => {
       const { conversationId } = bind(h, "binding-known");
       const intentId = commitIntent(h, "intent-known", conversationId);
       recordIdentity(h, intentId, {
-        groupCard: "群猫娘",
+        groupCard: "示例助手昵称",
         personalNickname: null,
         legacyDisplayName: null,
       });
       const projected = projectQqOutboundMessageFacts(h.orm, intentId, now);
       expect(projected.identity).toMatchObject({
         qq: "90001",
-        groupCard: "群猫娘",
+        groupCard: "示例助手昵称",
         nameState: "known",
       });
     } finally {

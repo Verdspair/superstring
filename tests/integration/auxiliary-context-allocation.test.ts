@@ -15,7 +15,7 @@ import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
-import { measureContextTokens, textMessage } from "../../src/server/agent/context-engine";
+import { textMessage } from "../../src/server/agent/context-engine";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { enqueue, entries } from "../../src/server/db/memory-repository";
@@ -35,6 +35,7 @@ import {
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { measureContextBytes } from "../../src/server/llm/request-format";
 import { KnowledgeOrganizer } from "../../src/server/services/knowledge-organizer";
 import { MemoryService } from "../../src/server/services/memory-service";
 import { encodeQqFramePng } from "../../src/server/services/qq-animation-frames";
@@ -379,45 +380,62 @@ describe("auxiliary allocation: research role", () => {
         if (text.includes("Write a concise research conclusion")) return "childGeneration" as const;
         return "parent" as const;
       };
-      const measureOf = (entry: { request: unknown }): number => {
+      const byteMeasureOf = (entry: { request: unknown }): number => {
         const request = entry.request as {
-          messages: Parameters<typeof measureContextTokens>[0];
+          messages: Parameters<typeof measureContextBytes>[0];
           responseSchema?: Record<string, unknown>;
-          tools?: Parameters<typeof measureContextTokens>[2] extends {
+          tools?: Parameters<typeof measureContextBytes>[1] extends {
             tools?: infer T;
           }
             ? T
             : never;
         };
-        return measureContextTokens(request.messages, counter, {
+        return measureContextBytes(request.messages, {
           responseSchema: request.responseSchema,
           tools: request.tools,
-        }).textTokens;
+        });
       };
       const childMeasures = probeRequests.filter((entry) => classify(entry) !== "parent");
       expect(childMeasures.length).toBeGreaterThan(0);
       const parentMeasures = probeRequests.filter((entry) => classify(entry) === "parent");
       expect(parentMeasures.length).toBeGreaterThan(0);
-      // The saved child cap covers the LARGEST child-side request (decision and
-      // generation alike) plus margin; the parent cap covers the largest parent
-      // request plus margin and always stays above the child cap. Derived, not
-      // invented; no production budget involved.
-      const childCap = Math.max(...childMeasures.map(measureOf)) + 100;
-      const parentCap = Math.max(16384, childCap + 1000);
-      expect(parentCap).toBeGreaterThan(childCap);
+      // The saved child byte cap covers the LARGEST child-side request (decision and
+      // generation alike) plus margin; calibrated using shared measureContextBytes.
+      // The parent token cap always stays independent and above the child requirements.
+      const childByteCap = Math.max(...childMeasures.map(byteMeasureOf)) + 100;
+      const parentCap = Math.max(16384, childByteCap + 1000);
+      expect(parentCap).toBeGreaterThan(childByteCap);
       const mainRequests: { contextInputLimit?: number; maxTokens?: number; request: unknown }[] =
         [];
-      const main = await runOnce(childCap, parentCap, mainRequests);
+      const main = await runOnce(childByteCap, parentCap, mainRequests);
       expect(main.result.status).toBe("no_output");
       expect(main.calls.researchInvokes).toBe(1);
       const child = mainRequests.filter((entry) => classify(entry) !== "parent");
       expect(child.length).toBeGreaterThan(0);
-      // The saved cap is applied to every child-side request (decision + generation
-      // leaves) and the parent cap is never widened.
-      for (const entry of child) expect(entry.contextInputLimit).toBe(childCap);
-      // Output override lands on the conclusion-generation leaf only.
-      const conclusion = mainRequests.filter((entry) => entry.maxTokens === 555);
-      expect(conclusion.length).toBe(1);
+      // The saved input_limit is enforced as an independent byte hard cap, leaving
+      // token contextInputLimit to preserve the parent limit without widening.
+      for (const entry of child) expect(entry.contextInputLimit).toBe(parentCap);
+      // Output override lands on both child phases: decision (next) and conclusion generation.
+      const childDecision = mainRequests.find((entry) => classify(entry) === "child");
+      const childGeneration = mainRequests.find((entry) => classify(entry) === "childGeneration");
+      expect(childDecision).toBeDefined();
+      expect(childGeneration).toBeDefined();
+      expect(childDecision?.maxTokens).toBe(555);
+      expect(childGeneration?.maxTokens).toBe(555);
+      const outputCalls = mainRequests.filter((entry) => entry.maxTokens === 555);
+      expect(outputCalls.length).toBe(2);
+      for (const entry of outputCalls) {
+        expect(classify(entry)).not.toBe("parent");
+      }
+
+      // Negative boundary: an over-cap request strictly refuses on the byte gate before child wire.
+      const tightByteCap = Math.max(10, Math.min(...childMeasures.map(byteMeasureOf)) - 50);
+      const tightRequests: { contextInputLimit?: number; maxTokens?: number; request: unknown }[] =
+        [];
+      await expect(runOnce(tightByteCap, parentCap, tightRequests)).rejects.toMatchObject({
+        code: expect.stringMatching(/AGENT_CONTEXT_LIMIT|CONTEXT_AUX_BUDGET/),
+      });
+      expect(tightRequests.filter((entry) => classify(entry) !== "parent").length).toBe(0);
     } finally {
       h.close();
     }

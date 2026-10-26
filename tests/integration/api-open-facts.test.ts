@@ -6,6 +6,8 @@ import { createApp } from "../../src/server/app";
 import { getTurnByRequest, listMessages } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { type ModelGateway, mapModelError } from "../../src/server/llm/model-gateway";
+import { updateAgent } from "../../src/server/services/agent-service";
+import { P5ConfigSchema } from "../../src/shared/contracts/models";
 
 function deferred() {
   let resolve = () => {};
@@ -68,7 +70,15 @@ class OracleGateway implements ModelGateway {
 
 async function fixture(gateway = new OracleGateway()) {
   const business = openBusinessDb();
-  const app = createApp({ business, gateway });
+  const app = createApp({ business, gateway, externalActions: () => [] });
+  updateAgent(
+    business.orm,
+    "00000000-0000-0000-0000-000000000001",
+    {
+      p5_config: P5ConfigSchema.parse({}),
+    },
+    1,
+  );
   const response = await app.request("/sessions", {
     method: "POST",
     headers: { "content-type": "application/json" },

@@ -16,6 +16,7 @@ import {
   AGENT_DECISION_JSON_SCHEMA,
   INVOKE_BATCH_LIMIT,
 } from "../../src/shared/contracts/agent-output";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 // Regression test for the loopback-proxy bug: on machines where HTTP_PROXY is
 // set and NO_PROXY is unset, Bun's global `fetch` routes even 127.0.0.1 traffic
@@ -184,8 +185,8 @@ const messages = [{ role: "user", content: "hi" }];
 describe("model response body error lifecycle", () => {
   it("maps post-header list timeout through the real HTTP error handler", async () => {
     await withBodyStub("stall", async (gateway) => {
-      const runtime = createRuntime({
-        businessDbPath: ":memory:",
+      const runtime = await createRuntime({
+        business: runtimeFixtureBusiness(),
         gateway,
         browserStateSecret: "synthetic-review-secret",
       });
@@ -317,8 +318,8 @@ describe("model gateway distinguishes an auth rejection", () => {
       expect(capacity).toMatchObject({ code: "MODEL_SERVICE_UNAVAILABLE" });
       expect(capacity?.message).toContain("API token");
 
-      const runtime = createRuntime({
-        businessDbPath: ":memory:",
+      const runtime = await createRuntime({
+        business: runtimeFixtureBusiness(),
         gateway,
         browserStateSecret: "synthetic-review-secret",
       });
@@ -1130,10 +1131,10 @@ describe("runtime 不再把 per-model toolCalling 声明当成原生 tools 闸",
     const savedBaseUrl = process.env.LM_STUDIO_BASE_URL;
     process.env.LM_STUDIO_BASE_URL = origin;
     const keyPath = path.join(tmpdir(), `synthetic-provider-${crypto.randomUUID()}.key`);
-    let runtime: ReturnType<typeof createRuntime> | undefined;
+    let runtime: Awaited<ReturnType<typeof createRuntime>> | undefined;
     try {
-      runtime = createRuntime({
-        businessDbPath: ":memory:",
+      runtime = await createRuntime({
+        business: runtimeFixtureBusiness(),
         browserStateSecret: "synthetic-review-secret",
         modelProviderKeyPath: keyPath,
       });

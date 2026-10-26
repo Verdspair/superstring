@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
-import {
-  ContextEngine,
-  inputUnits,
-  measureContextTokens,
-} from "../../src/server/agent/context-engine";
+import { ContextEngine, inputUnits } from "../../src/server/agent/context-engine";
 import type { ModelContextBudget } from "../../src/server/agent/model-port";
 import { ReservationLedger } from "../../src/server/agent/reservation-ledger";
 import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
@@ -18,13 +14,18 @@ import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults, getAgentRow } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { measureContextTokens } from "../../src/server/llm/request-format";
 import {
   loadTextTokenCounter,
   type TextTokenEncoding,
 } from "../../src/server/llm/text-token-counter";
 import { captureQqTask, createQqBinding } from "../../src/server/services/qq-binding-contract";
 import { QQ_CONTEXT_DEFAULT } from "../../src/server/services/qq-context-contract";
+import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -35,13 +36,19 @@ async function fixture(
   encodings: { judge?: TextTokenEncoding; reply?: TextTokenEncoding },
   options: { capacity?: number; window?: number; legacy?: boolean } = {},
 ) {
-  const h = openBusinessDb();
+  const h = runtimeFixtureBusiness(openBusinessDb(), "reply-model");
   handles.push(h);
   ensureDefaults(h.orm, "reply-model");
   const seconds = Math.floor(Date.now() / 1000),
     now = new Date(seconds * 1000).toISOString();
   updateQqSettings(h.orm, { enabled: true, accountId: "10001", expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
+    rhythm: { ...fixtureLegacyRhythm },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     name: "context",
     context: {
       ...QQ_CONTEXT_DEFAULT,

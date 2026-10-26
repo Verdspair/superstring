@@ -21,6 +21,7 @@ import {
 import { KnowledgeOrganizer } from "../../src/server/services/knowledge-organizer";
 import { ContentItemSchema } from "../../src/shared/contracts/content";
 import type { ContextUsage } from "../../src/shared/contracts/context-usage";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 let db: BusinessDbHandle;
 let repo: KnowledgeRepository;
@@ -31,7 +32,7 @@ let streamCalls: Parameters<ModelGateway["streamChat"]>[0][];
 const question = "温度低时允许启动吗，阈值多少？";
 const source = "\uFEFF低于10°C时禁止启动。\r\n阈值42.5，维护模式除外。𠮷";
 beforeEach(() => {
-  db = openBusinessDb();
+  db = runtimeFixtureBusiness(openBusinessDb(), "synthetic");
   ensureDefaults(db.orm, "synthetic");
   repo = new KnowledgeRepository(db.db);
   context = new KnowledgeContext(db.db);

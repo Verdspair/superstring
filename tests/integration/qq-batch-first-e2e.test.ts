@@ -1,3 +1,7 @@
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 // 批量优先（batch-first）自主批次的端到端验证：真实 OneBotHost +
 // AgentRuntime + 业务库合成夹具。
 // 本文件使用独立的最小生产组合夹具；X2/Y0 是显式合法方案值，
@@ -116,7 +120,7 @@ function setup(
     prompts?: Partial<typeof QQ_PROMPT_DEFAULTS>;
   } = {},
 ) {
-  const h = cloneBusinessDb();
+  const h = runtimeFixtureBusiness(cloneBusinessDb(), "reply-model");
   handles.push(h);
   ensureDefaults(h.orm, "reply-model");
   updateQqSettings(h.orm, {
@@ -126,6 +130,12 @@ function setup(
     expectedRevision: 1,
   });
   const scheme = createQqScheme(h.orm, {
+    context: { ...fixtureLegacyContext },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     name: "batch-e2e",
     ...(options.prompts ? { prompts: { ...QQ_PROMPT_DEFAULTS, ...options.prompts } } : {}),
     ...(options.judgementBudget === undefined && options.judgementMessageLimit === undefined

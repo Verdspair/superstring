@@ -166,7 +166,7 @@ function seedOutboundFact(h: ReturnType<typeof setup>, intentId: string, expires
       accountId: "10001",
       agentId: AGENT,
       groupCard: null,
-      personalNickname: "群猫娘",
+      personalNickname: "示例助手昵称",
       legacyDisplayName: null,
       parts: "[]",
       revision: 1,

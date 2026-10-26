@@ -10,6 +10,7 @@ import {
 import { FilePermissionStore } from "../../src/server/permissions/service";
 import { createRuntime } from "../../src/server/runtime";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 afterEach(() => mock.restore());
 
@@ -19,8 +20,8 @@ it("routes ordinary provenance without permission file reads and rechecks execut
     revision,
     policy: { version: 1, grants: [] },
   }));
-  const runtime = createRuntime({
-    businessDbPath: ":memory:",
+  const runtime = await createRuntime({
+    business: runtimeFixtureBusiness(),
     browserStateSecret: "synthetic-source-routing",
     permissionConfigPath: "synthetic-policy-not-read.json",
   });
@@ -106,8 +107,8 @@ it("does not let an unavailable module policy block ordinary context and HTTP re
     if (unavailable) throw new Error("synthetic policy unavailable");
     return { revision: "current", policy: { version: 1, grants: [] } };
   });
-  const runtime = createRuntime({
-    businessDbPath: ":memory:",
+  const runtime = await createRuntime({
+    business: runtimeFixtureBusiness(),
     browserStateSecret: "synthetic-unavailable-source-routing",
     permissionConfigPath: "synthetic-policy-not-read.json",
     resolveSource: (source) => (source.kind === "fixture_source" ? "available" : undefined),

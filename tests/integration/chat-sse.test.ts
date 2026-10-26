@@ -11,11 +11,18 @@ import { describe, expect, it } from "bun:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { DatabaseError } from "../../src/server/api/error-handler";
 import { createApp } from "../../src/server/app";
-import { deleteMessage, listMessages, type Orm } from "../../src/server/db/repositories";
+import {
+  deleteMessage,
+  ensureDefaults,
+  listMessages,
+  type Orm,
+} from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { ModelUnavailableError } from "../../src/server/errors";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { updateAgent } from "../../src/server/services/agent-service";
 import { DirectService } from "../../src/server/services/direct-service";
+import { P5ConfigSchema } from "../../src/shared/contracts/models";
 import { parseSseFrames, type SseFrame } from "../harness/sse";
 
 /** A gateway whose streaming behaviour is scripted per test. */
@@ -73,9 +80,23 @@ class ScriptedGateway implements ModelGateway {
   }
 }
 
+function configureStreamingFixture(orm: Orm, model: string) {
+  ensureDefaults(orm, model);
+  updateAgent(
+    orm,
+    "00000000-0000-0000-0000-000000000001",
+    {
+      temperature: 0.7,
+      p5_config: P5ConfigSchema.parse({}),
+    },
+    1,
+  );
+}
+
 function makeApp(gateway: ScriptedGateway) {
   const business = openBusinessDb();
-  return { app: createApp({ business, gateway }), business };
+  configureStreamingFixture(business.orm, gateway.config.model);
+  return { app: createApp({ business, gateway, externalActions: () => [] }), business };
 }
 
 async function newSession(app: ReturnType<typeof makeApp>["app"]): Promise<string> {
@@ -438,6 +459,7 @@ describe("POST /chat wire contract", () => {
 
 describe("DirectService orchestration (behaviours HTTP cannot express)", () => {
   function service(gateway: ScriptedGateway, orm: Orm, heartbeatIntervalMs = 5) {
+    configureStreamingFixture(orm, gateway.config.model);
     return new DirectService({ orm, gateway, heartbeatIntervalMs, leaseSeconds: 30 });
   }
 

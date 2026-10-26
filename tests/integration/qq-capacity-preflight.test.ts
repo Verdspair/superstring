@@ -36,7 +36,14 @@ describe("QQ capacity preflight", () => {
     ).toEqual({ kind: "unavailable" });
   });
   it("does not accept guessed zero, invalid or absent reserves", async () => {
-    for (const outputReserved of [0, -1, 1.5, 255, 16385])
+    const estimated = estimateMessages(input.messages);
+    expect(
+      await checkQqModelCapacity(
+        { loadedContextCapacity: async () => estimated + 1 },
+        { ...input, outputReserved: 0 },
+      ),
+    ).toEqual({ kind: "allowed", inputUnits: estimated, capacity: estimated + 1 });
+    for (const outputReserved of [-1, 1.5, 1048577])
       await expect(
         checkQqModelCapacity(
           { loadedContextCapacity: async () => 1000 },

@@ -193,7 +193,7 @@ describe("QQ reply and mention source disclosure", () => {
     const shown = fixture.seed("event-shown", "-102", "current message");
     const material = await readView(fixture.source);
     expect(
-      material.pending?.some((message) =>
+      material.history?.some((message) =>
         message.content.some(
           (part) => part.kind === "text" && part.text.includes("current message"),
         ),
@@ -208,17 +208,17 @@ describe("QQ reply and mention source disclosure", () => {
     expect(fixture.source.resolveReplyToMessage(old.platformId)).toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: "qq_message_fact", id: old.id })]),
     );
-    const pending = material.pending;
-    const olderFactsMessage = pending?.find((message) =>
+    const history = material.history;
+    const olderFactsMessage = history?.find((message) =>
       message.content.some((part) => part.kind === "text" && part.text.includes("older message")),
     );
     expect(olderFactsMessage).toBeDefined();
-    if (!pending || !olderFactsMessage)
+    if (!history || !olderFactsMessage)
       throw new Error("expected the rendered older-facts message");
-    const writablePending = pending as unknown as typeof pending & {
+    const writableHistory = history as unknown as typeof history & {
       splice(start: number, count: number): void;
     };
-    writablePending.splice(pending.indexOf(olderFactsMessage), 1);
+    writableHistory.splice(history.indexOf(olderFactsMessage), 1);
     expectSourceInvalid(() => fixture.source.resolveReplyToMessage(old.platformId));
   });
 
@@ -262,16 +262,16 @@ describe("QQ reply and mention source disclosure", () => {
       signal: new AbortController().signal,
       observations: [queryObservation],
     });
-    const queryFacts = queryView.pending?.find((message) =>
+    const queryFacts = queryView.history?.find((message) =>
       message.content.some(
         (part) => part.kind === "text" && part.text.includes("qq_message_facts"),
       ),
     );
-    if (!queryView.pending || !queryFacts) throw new Error("expected current facts message");
-    const writableQueryPending = queryView.pending as unknown as typeof queryView.pending & {
+    if (!queryView.history || !queryFacts) throw new Error("expected current facts message");
+    const writableQueryHistory = queryView.history as unknown as typeof queryView.history & {
       splice(start: number, count: number): void;
     };
-    writableQueryPending.splice(queryView.pending.indexOf(queryFacts), 1);
+    writableQueryHistory.splice(queryView.history.indexOf(queryFacts), 1);
     expectSourceInvalid(() => fixture.source.resolveReplyToMessage(seeded.platformId));
     const observation: ActionObservation = {
       id: "history-read-observation",

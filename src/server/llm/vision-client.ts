@@ -11,19 +11,30 @@
 // the config's whole-turn budget, and a non-2xx answer is an error rather than an empty string.
 
 import type { ModelResponseMetadata } from "../../shared/contracts/agent-run";
+import type { ModelContextBudget } from "../agent/model-port";
+import { AppError } from "../errors";
 import {
   abortableDelay,
+  assertContextInputFits,
+  type ChatMessage,
   DEFAULT_LM_STUDIO_API_KEY,
   isRetryableModelRefusal,
   type LmStudioConfig,
   localhostFetch,
   mapModelError,
 } from "./model-gateway";
-import { attemptMetadata, finishReasonsFromPayload, reportModelResponse } from "./model-response";
+import {
+  attemptMetadata,
+  finishReasonsFromPayload,
+  parseProviderUsage,
+  reportModelResponse,
+} from "./model-response";
+import { modelRequestFormat, type PreparedRequestFormat } from "./request-format";
 import {
   type StructuredOutputLevel,
   strictSchemaAccepted,
   structuredOutputKey,
+  structuredOutputStart,
   withStructuredOutputChain,
 } from "./strict-json-schema";
 
@@ -33,6 +44,10 @@ export interface VisionImage {
 }
 
 export interface VisionRequest {
+  readonly requestFormat?: PreparedRequestFormat;
+  readonly contextBudget?: ModelContextBudget;
+  readonly contextInputLimit?: number;
+  readonly assertPreparedCurrent?: (input: { model: string }) => void;
   readonly systemPrompt?: string;
   readonly temperature?: number;
   readonly maxTokens?: number;
@@ -61,6 +76,10 @@ export interface VisionRequest {
 }
 
 export interface VisionClient {
+  prepareRequestFormat?(input: {
+    model: string;
+    responseSchema?: Record<string, unknown>;
+  }): PreparedRequestFormat;
   annotate(request: VisionRequest): Promise<string>;
 }
 
@@ -108,7 +127,27 @@ export function createLmStudioVisionClient(
       apiKey: external.apiKey ?? config.apiKey,
     };
   };
+  const prepareRequestFormat = (input: {
+    model: string;
+    responseSchema?: Record<string, unknown>;
+  }): PreparedRequestFormat => {
+    const routed = routeFor(input.model);
+    const external = options.externalModel?.(input.model) ?? null;
+    return Object.freeze({
+      level:
+        input.responseSchema === undefined
+          ? "none"
+          : structuredOutputStart(
+              structuredOutputKey(routed.baseUrl, input.model),
+              external === null || strictSchemaAccepted(input.responseSchema),
+            ),
+      schema: input.responseSchema,
+      tools: undefined,
+      wireNames: new Map<string, string>(),
+    });
+  };
   return {
+    prepareRequestFormat,
     async annotate(request: VisionRequest): Promise<string> {
       request.signal?.throwIfAborted();
       let timeoutSignal: AbortSignal | undefined;
@@ -134,6 +173,7 @@ export function createLmStudioVisionClient(
       const routed = routeFor(request.model);
       const routeContext = { kind: external === null ? "local" : "external" } as const;
       const key = structuredOutputKey(routed.baseUrl, request.model);
+      const requestFormat = request.requestFormat ?? prepareRequestFormat(request);
       // 默认走 localhostFetch：本地模型服务不经过 HTTP 代理（与网关同一条规则）。
       const sendFetch = fetchImpl ?? localhostFetch;
       const send = async (level: StructuredOutputLevel) => {
@@ -148,19 +188,7 @@ export function createLmStudioVisionClient(
           temperature: request.temperature ?? 0.2,
           ...(request.maxTokens === undefined ? {} : { max_tokens: request.maxTokens }),
         };
-        if (request.responseSchema !== undefined && level !== "none") {
-          body.response_format =
-            level === "json_object"
-              ? { type: "json_object" }
-              : {
-                  type: "json_schema",
-                  json_schema: {
-                    name: "superstring_result",
-                    strict: true,
-                    schema: request.responseSchema,
-                  },
-                };
-        }
+        Object.assign(body, modelRequestFormat(requestFormat.schema, level));
         const admissionSignal = admitted ? runSignal : request.signal;
         let release: (() => void) | undefined;
         try {
@@ -185,6 +213,11 @@ export function createLmStudioVisionClient(
             if (request.signal?.aborted) throw request.signal.reason ?? signalForAttempt.reason;
             throw mapModelError(signalForAttempt.reason, routeContext);
           }
+          request.assertPreparedCurrent?.({ model: request.model });
+          request.contextBudget?.assertCurrent();
+          if (request.contextBudget && request.contextBudget.model !== request.model)
+            throw new AppError("CONTEXT_BUDGET_EXCEEDED", "视觉预算与已授权模型不一致");
+          assertContextInputFits(body.messages as ChatMessage[], request, body);
           attempted = true;
           const response = await sendFetch(`${routed.baseUrl}/chat/completions`, {
             method: "POST",
@@ -216,12 +249,20 @@ export function createLmStudioVisionClient(
           try {
             const payload = JSON.parse(raw) as {
               choices?: Array<{ message?: { content?: string | null } }>;
+              usage?: unknown;
             };
-            // 尝试落定（成功路径）：原样 finish_reason，缺席 = []；只观察——vision 对 finish
+            // 尝试落定（成功路径）：原样 finish_reason，缺席 = []；usage 只解析本次尝试
+            // 自己的载荷（D1/D2 独立可选，缺/坏字段不造数）。只观察——vision 对 finish
             // 的既有接受语义原样保留，不因此新增拒绝。
             reportModelResponse(
               request.onModelResponse,
-              attemptMetadata("vision", httpStatus, finishReasonsFromPayload(payload)),
+              attemptMetadata(
+                "vision",
+                httpStatus,
+                finishReasonsFromPayload(payload),
+                undefined,
+                parseProviderUsage(payload.usage),
+              ),
             );
             return payload;
           } catch {
@@ -266,10 +307,9 @@ export function createLmStudioVisionClient(
       const payload = await withStructuredOutputChain({
         key,
         model: request.model,
-        hasSchema: request.responseSchema !== undefined,
-        // 与网关同一条规则：形状注定被严格模式整单拒绝的 schema 直接起步于 json_object
-        // ；本地模型服务不参与这个判断。
-        strictAccepted: external === null || strictSchemaAccepted(request.responseSchema),
+        hasSchema: requestFormat.schema !== undefined,
+        strictAccepted: external === null || strictSchemaAccepted(requestFormat.schema),
+        startLevel: requestFormat.level,
         send: sendWithRetry,
       });
       return payload.choices?.[0]?.message?.content ?? "";

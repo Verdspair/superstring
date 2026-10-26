@@ -1,11 +1,19 @@
 import { z } from "zod";
 
+export const PermissionAgentOverrideSchema = z.strictObject({
+  enabled: z.boolean().optional(),
+  approved: z.boolean(),
+  revision: z.string().min(1).optional(),
+  directories: z.array(z.string().min(1)),
+});
+
 export const PermissionGrantSchema = z.strictObject({
   resource: z.string().min(1).max(500),
   approved: z.boolean().default(false),
   revision: z.string().min(1).optional(),
   agentIds: z.array(z.string().min(1)).optional(),
   directories: z.array(z.string().min(1)).default([]),
+  agentOverrides: z.record(z.string().min(1), PermissionAgentOverrideSchema).optional(),
 });
 // ---- 执行配置（P7-c）：开关 + 数值分组 -----------------------------------------
 // 数值是**有效值**：schema 缺省即当前行为；消费方（任务/研究/沙箱/主循环/QQ）在新 run、
@@ -139,6 +147,30 @@ export function executionPolicy(policy: PermissionPolicy): ExecutionPolicy {
 }
 export type PermissionPolicy = z.infer<typeof PermissionPolicySchema>;
 export type PermissionGrant = z.infer<typeof PermissionGrantSchema>;
+
+export function selectEffectivePermissionGrant(
+  policy: PermissionPolicy,
+  resource: string,
+  ownerAgentId?: string,
+):
+  | {
+      grant: Omit<PermissionGrant, "agentOverrides"> & { enabled?: boolean };
+      identity: unknown;
+    }
+  | undefined {
+  const entry = policy.grants.find((grant) => grant.resource === resource);
+  if (!entry) return undefined;
+  const override =
+    ownerAgentId !== undefined &&
+    entry.agentOverrides &&
+    Object.hasOwn(entry.agentOverrides, ownerAgentId)
+      ? entry.agentOverrides[ownerAgentId]
+      : undefined;
+  const { agentOverrides: _overrides, ...base } = entry;
+  return override === undefined
+    ? { grant: base, identity: base }
+    : { grant: { resource, ...override }, identity: [resource, ownerAgentId, override] };
+}
 
 // 联网动作共用 web 授权资源，暂停须同时匹配资源名与动作名。
 const WEB_PERMISSION_RESOURCE = "web";

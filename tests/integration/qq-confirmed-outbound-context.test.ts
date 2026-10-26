@@ -391,12 +391,12 @@ const readInput = () => ({ signal: new AbortController().signal, observations: [
  * 这里按真实形状取每个 text 片段并拼接，不做子串猜测。
  */
 function messageTexts(material: unknown): string[] {
-  const pending =
+  const history =
     material !== null && typeof material === "object"
-      ? ((material as { pending?: unknown }).pending ?? [])
+      ? ((material as { history?: unknown }).history ?? [])
       : [];
-  if (!Array.isArray(pending)) return [];
-  return pending.flatMap((message) => {
+  if (!Array.isArray(history)) return [];
+  return history.flatMap((message) => {
     const content = (message as { content?: unknown }).content;
     if (typeof content === "string") return [content];
     if (!Array.isArray(content)) return [];
@@ -979,7 +979,7 @@ describe("confirmed assistant outbound parts reach the shared context", () => {
       )
       .get(intent.id) as { body: string } | null;
     expect(speechRow).toBeNull();
-    // 真实出箱公共读取：混合回执经 partialSpeechSince 正确产出已确认部件的文本，未确认��件不出现。
+    // 真实出箱公共读取：混合回执经 partialSpeechSince 正确产出已确认部件的文本，未确认部件不出现。
     const partial = f.outbox.partialSpeechSince(f.conversation.id, {
       sinceSeconds: atSeconds - 3600,
       limit: 10,

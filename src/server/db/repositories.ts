@@ -31,6 +31,7 @@ import {
 import {
   DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
   DEFAULT_MEMORY_RETRIEVAL_PROMPT,
+  newAgentDefaults,
 } from "../../shared/contracts/agent";
 import {
   AppError,
@@ -194,6 +195,7 @@ export function ensureDefaults(orm: Orm, modelName: string): void {
   let agent = orm.select().from(schema.agents).where(eq(schema.agents.id, DEFAULT_AGENT_ID)).get();
   if (!agent) {
     const now = nowIso();
+    const defaults = newAgentDefaults();
     orm
       .insert(schema.agents)
       .values({
@@ -202,17 +204,17 @@ export function ensureDefaults(orm: Orm, modelName: string): void {
         systemPrompt: DEFAULT_SYSTEM_PROMPT,
         description: "",
         additionalInstructions: "",
-        p5Config: "{}",
+        p5Config: JSON.stringify(defaults.p5_config),
         modelName,
-        temperature: 0.7,
+        temperature: defaults.temperature,
         memoryConsolidationModelName: null,
         memoryConsolidationPrompt: DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
         memoryConsolidationAdditionalInstructions: "",
         memoryRetrievalModelName: null,
         memoryRetrievalPrompt: DEFAULT_MEMORY_RETRIEVAL_PROMPT,
         contextCompressionModelName: null,
-        personaIntensity: 60,
-        isActive: 1,
+        personaIntensity: defaults.persona_intensity,
+        isActive: defaults.is_active ? 1 : 0,
         configVersion: 1,
         updatedAt: now,
         createdAt: now,

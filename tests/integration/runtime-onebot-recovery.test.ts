@@ -13,13 +13,14 @@ import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createRuntime, type SuperstringRuntime } from "../../src/server/runtime";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { type QqIntakeRuntime, recordInbound } from "../../src/server/services/qq-intake";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const runtimes: SuperstringRuntime[] = [];
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.stop();
 });
 const bindingId = "11111111-1111-4111-8111-111111111111";
-function setup(kind: "group" | "private") {
+async function setup(kind: "group" | "private") {
   const business = openBusinessDb();
   ensureDefaults(business.orm, "fixture");
   updateQqSettings(business.orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
@@ -64,8 +65,8 @@ function setup(kind: "group" | "private") {
     start: async () => {},
     stop() {},
   } as unknown as QqIntakeRuntime;
-  const runtime = createRuntime({
-    business,
+  const runtime = await createRuntime({
+    business: runtimeFixtureBusiness(business),
     gateway,
     qqIntake: intake,
     browserStateSecret: "synthetic-recovery-fixture",
@@ -146,7 +147,7 @@ function setup(kind: "group" | "private") {
 it.each([false, true])(
   "stale recovery keeps the original input age, even with fresh media revision=%s",
   async (media) => {
-    const h = setup("private"),
+    const h = await setup("private"),
       eventKey = h.receive("1", "20002", 900);
     if (media) {
       const at = new Date().toISOString();
@@ -172,7 +173,7 @@ it.each([false, true])(
   },
 );
 it("stale group recovery keeps the original recipient despite newer unrelated member input", async () => {
-  const h = setup("group"),
+  const h = await setup("group"),
     original = h.receive("1", "20002", 20);
   h.receive("2", "20003", 10, false);
   const old = await h.staleIntent();

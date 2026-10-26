@@ -21,7 +21,10 @@ import { qqMediaReadTaskSourceAccess } from "../services/qq-media-task-sources";
 import { qqMemberRosterSourceAccess } from "../services/qq-member-roster-sources";
 import { qqMemberNameSourceAccess } from "../services/qq-member-sources";
 import { qqMemoryJobSourceAccess } from "../services/qq-memory-fact-input";
-import { qqMessageFactSourceAccess } from "../services/qq-message-fact-sources";
+import {
+  qqMessageFactSourceAccess,
+  qqMessageFactSourceAccessMany,
+} from "../services/qq-message-fact-sources";
 import {
   qqOutboundFactSourceAccess,
   qqOutboundFactSourceAccessMany,
@@ -484,6 +487,21 @@ export function assertContextSources(options: {
   resolve.resolveMany = options.resolveSource?.resolveMany;
   const states: (SourceAccess | undefined)[] = [];
   for (let index = 0; index < sources.length; ) {
+    if (sources[index]!.kind === "qq_message_fact" && owner.kind !== "memory_job") {
+      let end = index + 1;
+      while (end < sources.length && sources[end]!.kind === "qq_message_fact") end++;
+      states.push(
+        ...qqMessageFactSourceAccessMany(
+          db,
+          sources.slice(index, end),
+          owner,
+          { userId: DEFAULT_USER_ID },
+          now,
+        ),
+      );
+      index = end;
+      continue;
+    }
     if (sources[index]!.kind === "qq_outbound_message_fact") {
       let end = index + 1;
       while (end < sources.length && sources[end]!.kind === "qq_outbound_message_fact") end++;
@@ -504,7 +522,8 @@ export function assertContextSources(options: {
       while (
         end < sources.length &&
         sources[end]!.kind !== "qq_observation" &&
-        sources[end]!.kind !== "qq_outbound_message_fact"
+        sources[end]!.kind !== "qq_outbound_message_fact" &&
+        sources[end]!.kind !== "qq_message_fact"
       )
         end++;
       states.push(...resolveSourceStates(sources.slice(index, end), resolve, owner, now));

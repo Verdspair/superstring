@@ -90,7 +90,7 @@ export function qqPhaseTier(
  * 14 days on purpose: observation text is deleted after that, so a longer window could only
  * select messages whose bodies are gone.
  * 回复档的**条数**在运行时不取这里，而取绑定助手的「近期保留轮数」；
- * 这份默认值仍是列默认与新建方案的初值。
+ * 这份值保留历史列默认与旧行读取含义；新建显式默认由 shared 的 newQqSchemeDefaults 拥有。
  */
 export const QQ_CONTEXT_DEFAULT: QqSchemeContext = Object.freeze({
   judgement_message_limit: 20,

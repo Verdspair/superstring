@@ -13,7 +13,7 @@ export const EDITABLE_PAGES = [
 ] as const;
 // Explicit ownership: no future p5 field is silently assigned to a page.
 export const PAGE_P5_FIELDS = {
-  // 目录批次两项只在 full_catalog/full_body 生效（memory-query 的批次循环）；仍随本页白名单保存。
+  // 目录批次两项为存量 full_catalog/full_body 字段，按存储保真原则随本页白名单保存；运行时按有界策略生效。
   "memory-tools": [
     "retrieval_mode",
     "retrieval_presets",
@@ -212,8 +212,7 @@ export function pageAgentPayload(editor: PageEditor, page: EditablePage) {
               ? {
                   // Retired legacy modes normalize to broad only when the user actively
                   // switched the mode away from the stored full mode this draft session.
-                  // A stored full mode kept untouched stays full in the payload, so catalog
-                  // batch edits remain consumed by the server's batch loop.
+                  // A stored full mode kept untouched stays full in the payload for raw storage fidelity.
                   retrieval_mode:
                     p5.retrieval_mode !== editor.agent.p5_config.retrieval_mode &&
                     (p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body")

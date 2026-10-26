@@ -142,7 +142,8 @@ export function createOneBotConversationRuntime(options: {
   orm: Orm;
   telemetry?: RuntimeTelemetry;
   db: Database;
-  gateway: Pick<ModelGateway, "complete" | "loadedContextCapacity">;
+  gateway: Pick<ModelGateway, "complete" | "loadedContextCapacity"> &
+    Partial<Pick<ModelGateway, "prepareContextModel" | "prepareRequestFormat">>;
   agentRuntime: AgentRuntime;
   host: ConversationHost;
   journal: ConversationEventRepository;

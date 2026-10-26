@@ -15,6 +15,7 @@ import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
 import type { RetryOrigin } from "../agent/built-in-actions";
+import type { ModelContextBudget } from "../agent/model-port";
 import { AgentRunRepository } from "../db/agent-run-repository";
 import {
   assertQqConsolidationPublishable,
@@ -38,6 +39,11 @@ import { DEFAULT_USER_ID, immediate, nowIso, type Orm } from "../db/repositories
 import * as schema from "../db/schema";
 import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import {
+  measureContextTokens,
+  measurePreparedRequest,
+  type PreparedRequestFormat,
+} from "../llm/request-format";
 import { estimateMessages } from "../modules/memory-query";
 import { memoryEntrySources, turnSources } from "../modules/provenance";
 import type { RuntimeTelemetry, TraceScope } from "../observability/runtime-telemetry";
@@ -50,6 +56,7 @@ import {
   codePointLength,
   DRAFT_RESULT_JSON_SCHEMA,
   MAX_SOURCE_CHARS,
+  type PromptMessage,
   parseResult,
   resolveAuxAllocation,
   SUPPRESSION_RESULT_JSON_SCHEMA,
@@ -116,7 +123,8 @@ export class MemoryService {
   private readonly orm: Orm;
   private readonly db: Database;
   private readonly agentRuntime: LeafAgentRuntime;
-  private readonly gateway: Pick<ModelGateway, "loadedContextCapacity">;
+  private readonly gateway: Pick<ModelGateway, "loadedContextCapacity"> &
+    Partial<Pick<ModelGateway, "prepareContextModel" | "prepareRequestFormat">>;
   private readonly telemetry?: RuntimeTelemetry;
   private readonly pollIntervalMs: number;
   private readonly heartbeatIntervalMs: number;
@@ -545,32 +553,118 @@ export class MemoryService {
     const consolidateMessages = buildConsolidationPrompt(kind, config, sources);
     const schemaCost = (schema: Record<string, unknown>): number =>
       estimateTokens(JSON.stringify(schema));
-    // 自动档的容量封顶：仅显式保存了档才探测（老任务/无档不新增探测调用）；
+    // 自动档的容量封顶：仅显式保存了档才取容量（老任务/无档不新增探测调用）；
     // 容量未知即显式拒绝。封顶 = 已知容量 - 输出预留（角色无输出预留则不发明余量）。
+    // 有 prepare 钩子时描述符是唯一容量来源（实际模型/容量，替换原探测，不双探）：
+    // 路由显式宣告编码时按完整请求（消息 + 响应 schema）的宣告 token 计量，未宣告编码
+    // 保持原 utf8 字节估算；描述符随叶子输入透传，每次真实发送由网关 assertCurrent 复验。
     let capacityCeiling: number | null = null;
-    if (allocation.profile !== undefined && allocation.profile.mode === "auto") {
-      const capacity = await this.gateway.loadedContextCapacity(config.model, {
-        signal,
-      });
-      if (capacity === null || !Number.isSafeInteger(capacity) || capacity < 1)
-        fail("CONTEXT_CAPACITY_UNKNOWN", "自动档无法确认整理模型容量，不猜保底值");
-      capacityCeiling = capacity - (allocation.outputReserved ?? 0);
-      if (capacityCeiling < 1) fail("CONTEXT_AUX_BUDGET", "自动档的输出预留已用尽模型容量");
+    let descriptor: ModelContextBudget | undefined;
+    if (allocation.profile !== undefined) {
+      if (this.gateway.prepareContextModel) {
+        const prepared = await this.gateway.prepareContextModel(config.model, { signal });
+        const capacity = prepared.capacity;
+        if (capacity === null || !Number.isSafeInteger(capacity) || capacity < 1)
+          fail("CONTEXT_CAPACITY_UNKNOWN", "无法确认整理模型容量，不猜保底值");
+        descriptor = prepared;
+        capacityCeiling = capacity - (allocation.outputReserved ?? 0);
+        if (capacityCeiling < 1) fail("CONTEXT_AUX_BUDGET", "输出预留已用尽模型容量");
+      } else if (allocation.profile.mode === "auto") {
+        const capacity = await this.gateway.loadedContextCapacity(config.model, {
+          signal,
+        });
+        if (capacity === null || !Number.isSafeInteger(capacity) || capacity < 1)
+          fail("CONTEXT_CAPACITY_UNKNOWN", "自动档无法确认整理模型容量，不猜保底值");
+        capacityCeiling = capacity - (allocation.outputReserved ?? 0);
+        if (capacityCeiling < 1) fail("CONTEXT_AUX_BUDGET", "自动档的输出预留已用尽模型容量");
+      }
     }
-    const consolidateInputCost =
-      estimateMessages(consolidateMessages) + schemaCost(DRAFT_RESULT_JSON_SCHEMA);
-    const gate = (cost: number, what: string): void => {
-      if (allocation.inputLimit !== null && cost > allocation.inputLimit)
-        fail("CONTEXT_AUX_BUDGET", `冻结的输入上限小于完整${what}请求，未截断来源`);
-      if (capacityCeiling !== null && cost > capacityCeiling)
-        fail("CONTEXT_AUX_BUDGET", `自动档的模型容量小于完整${what}请求，未截断来源`);
+    // 必须在获取 descriptor 之后使用 actualModel（避免猜测请求配置与实际路由/回退模型不一致）。
+    const actualModel = descriptor?.model ?? config.model;
+    // 准备各阶段真实请求协议快照（网关拥有方方言/负缓存），预门禁与 LeafInput 共用同一快照。
+    const draftFormat = this.gateway.prepareRequestFormat?.({
+      model: actualModel,
+      responseSchema: DRAFT_RESULT_JSON_SCHEMA,
+    });
+    const suppressionFormat = this.gateway.prepareRequestFormat?.({
+      model: actualModel,
+      responseSchema: SUPPRESSION_RESULT_JSON_SCHEMA,
+    });
+    const hasDeclaredCounter =
+      descriptor?.countText !== undefined && descriptor?.tokenizerEncoding !== undefined;
+    // 共享计量入口：优先使用公共纯函数 measurePreparedRequest 复用同一协议快照；
+    // 协议或计数器缺失时保持旧完整协议估算，不使用空协议。
+    const measureCost = (
+      messages: PromptMessage[],
+      schema: Record<string, unknown>,
+      format?: PreparedRequestFormat,
+    ): number | null => {
+      if (format !== undefined && descriptor !== undefined) {
+        const measured = measurePreparedRequest(messages, descriptor, format);
+        if (measured !== undefined) return measured.textTokens;
+      }
+      if (hasDeclaredCounter && descriptor !== undefined) {
+        descriptor.assertCurrent();
+        const counter = { encoding: descriptor.tokenizerEncoding!, count: descriptor.countText! };
+        const measured = measureContextTokens(messages, counter, {
+          responseSchema: schema,
+        }).textTokens;
+        descriptor.assertCurrent();
+        return measured;
+      }
+      return null;
     };
-    gate(consolidateInputCost, "整理");
+    // 输入门（utf8 字节估算口径，独立硬帽）与容量门（宣告 token 或字节估算）单向解耦检查，
+    // 不跨单位折算。整理与抑制比对各自按自己的完整请求计价。
+    const checkRequestFit = (
+      messages: PromptMessage[],
+      schema: Record<string, unknown>,
+      format?: PreparedRequestFormat,
+    ): { fits: boolean; reason?: "input_limit" | "capacity" } => {
+      const byteCost = estimateMessages(messages) + schemaCost(schema);
+      if (allocation.inputLimit !== null && byteCost > allocation.inputLimit)
+        return { fits: false, reason: "input_limit" };
+      if (capacityCeiling !== null) {
+        const tokens = measureCost(messages, schema, format);
+        const cost = tokens === null ? byteCost : tokens;
+        if (cost > capacityCeiling) return { fits: false, reason: "capacity" };
+      }
+      return { fits: true };
+    };
+    const fits = (
+      messages: PromptMessage[],
+      schema: Record<string, unknown>,
+      format?: PreparedRequestFormat,
+    ): boolean => checkRequestFit(messages, schema, format).fits;
+    const gate = (
+      messages: PromptMessage[],
+      schema: Record<string, unknown>,
+      what: string,
+      format?: PreparedRequestFormat,
+    ): void => {
+      const check = checkRequestFit(messages, schema, format);
+      if (!check.fits) {
+        if (check.reason === "input_limit") {
+          fail("CONTEXT_AUX_BUDGET", `冻结的输入上限小于完整${what}请求，未截断来源`);
+        } else {
+          fail("CONTEXT_AUX_BUDGET", `模型容量小于完整${what}请求，未截断来源`);
+        }
+      }
+    };
+    gate(consolidateMessages, DRAFT_RESULT_JSON_SCHEMA, "整理", draftFormat);
+    // 描述符与 token 上限只随叶子输入透传；token 上限仅在宣告计数器存在时携带，
+    // 让网关在最终 wire 上按同一计量方法复核严格 schema 完整请求。
+    const leafBudget = {
+      ...(descriptor === undefined ? {} : { contextBudget: descriptor }),
+      ...(descriptor !== undefined && hasDeclaredCounter && capacityCeiling !== null
+        ? { contextInputLimit: capacityCeiling }
+        : {}),
+    };
     const text = await this.agentRuntime.completeLeaf(
       {
         id: "memory.consolidate",
         version: "1",
-        model: config.model,
+        model: actualModel,
         temperature: 0,
         ...(allocation.outputReserved === null ? {} : { maxTokens: allocation.outputReserved }),
         responseSchema: DRAFT_RESULT_JSON_SCHEMA,
@@ -583,6 +677,8 @@ export class MemoryService {
         assertSources: recheckLeaf,
         sources: liveSources(),
         validate: parseResult,
+        ...(draftFormat === undefined ? {} : { requestFormat: draftFormat }),
+        ...leafBudget,
       },
     );
     // 飞行后、解析前复验：停用后不再产生后续调用，off→on 的旧纪元结果同样被拒。
@@ -599,20 +695,34 @@ export class MemoryService {
       }
     }
 
-    for (let start = 0; start < blocked.length; start += 8) {
+    for (let start = 0; start < blocked.length; ) {
       checkCapture();
       verifyPublication();
-      const chunk = blocked.slice(start, start + 8);
+      let count = 1;
+      if (allocation.mode === "auto") {
+        const firstMessages = suppressionPrompt(draft, blocked.slice(start, start + 1));
+        gate(firstMessages, SUPPRESSION_RESULT_JSON_SCHEMA, "抑制比对", suppressionFormat);
+        while (
+          start + count < blocked.length &&
+          fits(
+            suppressionPrompt(draft, blocked.slice(start, start + count + 1)),
+            SUPPRESSION_RESULT_JSON_SCHEMA,
+            suppressionFormat,
+          )
+        ) {
+          count++;
+        }
+      } else {
+        count = Math.min(8, blocked.length - start);
+      }
+      const chunk = blocked.slice(start, start + count);
       const suppressionMessages = suppressionPrompt(draft, chunk);
-      gate(
-        estimateMessages(suppressionMessages) + schemaCost(SUPPRESSION_RESULT_JSON_SCHEMA),
-        "抑制比对",
-      );
+      gate(suppressionMessages, SUPPRESSION_RESULT_JSON_SCHEMA, "抑制比对", suppressionFormat);
       const response = await this.agentRuntime.completeLeaf(
         {
           id: "memory.suppression",
           version: "1",
-          model: config.model,
+          model: actualModel,
           temperature: 0,
           ...(allocation.outputReserved === null ? {} : { maxTokens: allocation.outputReserved }),
           responseSchema: SUPPRESSION_RESULT_JSON_SCHEMA,
@@ -623,13 +733,16 @@ export class MemoryService {
           owner: context.owner,
           retryOrigin: context.retryOrigin,
           assertSources: recheckLeaf,
-          sources: [...liveSources(), ...context.blockedSources.slice(start, start + 8).flat()],
+          sources: [...liveSources(), ...context.blockedSources.slice(start, start + count).flat()],
           validate: (text) => SuppressionResultSchema.parse(JSON.parse(text)),
+          ...(suppressionFormat === undefined ? {} : { requestFormat: suppressionFormat }),
+          ...leafBudget,
         },
       );
       checkCapture();
       verifyPublication();
       if (SuppressionResultSchema.parse(JSON.parse(response)).blocked) return null;
+      start += count;
     }
     checkCapture();
     return draft;

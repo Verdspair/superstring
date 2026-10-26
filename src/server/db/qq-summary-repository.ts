@@ -68,6 +68,20 @@ export function resolveQqSummaryProvenance(
       source_ids: z.array(z.string()).min(1),
     }),
   ).parse(pkg.facts);
+  const localIds = pkg.facts
+    .flatMap((fact) => fact.source_ids)
+    .filter((id) => /^s[0-9a-z]+$/.test(id));
+  const local = localIds.length > 0;
+  if (local) {
+    z.literal(true).parse(provenance !== undefined);
+    for (const id of pkg.facts.flatMap((fact) => fact.source_ids)) {
+      z.literal(true).parse(/^s[0-9a-z]+$/.test(id));
+      const ordinal = Number.parseInt(id.slice(1), 36);
+      z.literal(true).parse(
+        Number.isSafeInteger(ordinal) && ordinal >= 0 && `s${ordinal.toString(36)}` === id,
+      );
+    }
+  }
   const resolved = new Map<string, string>();
   const referenced = new Set<string>();
   const facts = pkg.facts.map((fact) => {
@@ -79,9 +93,9 @@ export function resolveQqSummaryProvenance(
         const cached = resolved.get(id);
         if (cached !== undefined) return cached;
         let raw = id;
-        if (provenance !== undefined && id.startsWith("qq-record:")) {
+        if (provenance !== undefined && (local || id.startsWith("qq-record:"))) {
           raw = z.string().parse(Object.hasOwn(provenance, id) ? provenance[id] : undefined);
-          z.literal(id).parse(compactQqSummaryRecordId(raw));
+          if (!local) z.literal(id).parse(compactQqSummaryRecordId(raw));
           referenced.add(id);
         }
         const tuples = RecordTuplesSchema.parse(JSON.parse(raw));
@@ -93,8 +107,19 @@ export function resolveQqSummaryProvenance(
   });
   if (provenance !== undefined) {
     for (const id of Object.keys(provenance)) z.literal(true).parse(referenced.has(id));
+    if (local)
+      z.literal(Object.keys(provenance).length).parse(new Set(Object.values(provenance)).size);
   }
   return facts;
+}
+
+/** Model-facing facts retain local labels; exact source groups are validated, not printed. */
+export function qqSummaryModelFacts(
+  pkg: Pick<QqSummaryPackage, "facts" | "sources" | "provenance">,
+  sources: readonly SourceRef[] = pkg.sources ?? [],
+): ConversationSummaryFacts {
+  resolveQqSummaryProvenance(pkg, sources);
+  return pkg.facts;
 }
 
 /**

@@ -598,8 +598,7 @@ export function createQqSchemeActions(
       const bindingDraft = get().qqInputs;
       const operation = beginOperation();
       try {
-        // A new scheme starts with the project's defaults: every trigger off (§11.1) and the
-        // defaults the plan fixed. The repository owns them; this only supplies the name.
+        // The repository fills omitted groups from the shared creation defaults.
         const scheme = await operation.api.createQqScheme({ name, description: null });
         if (!isCurrentApi(operation)) return false;
         set((state) => ({ qqSchemes: [...state.qqSchemes, scheme] }));

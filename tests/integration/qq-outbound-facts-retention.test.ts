@@ -102,7 +102,7 @@ function recordFact(h: ReturnType<typeof setup>, intentId: string): void {
     identity: {
       qq: "90001",
       groupCard: null,
-      personalNickname: "群猫娘",
+      personalNickname: "示例助手昵称",
       legacyDisplayName: null,
       nameState: "known",
     },

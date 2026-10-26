@@ -14,10 +14,17 @@
 // docs/INVALID_CONFIG_PATHS.md.
 
 import { eq } from "drizzle-orm";
-import { AgentConfigSchema, type PersonaContent } from "../../shared/contracts";
+import {
+  AgentConfigSchema,
+  CreateAgentRequestSchema,
+  type PersonaContent,
+} from "../../shared/contracts";
+import type { PermissionRequirement } from "../../shared/contracts/permissions";
+import type { KnowledgeRepository } from "../db/knowledge-repository";
 import {
   asDatabaseError,
   DEFAULT_AGENT_ID,
+  DEFAULT_SYSTEM_PROMPT,
   isIntegrityError,
   newId,
   nowIso,
@@ -25,10 +32,27 @@ import {
 } from "../db/repositories";
 import * as schema from "../db/schema";
 import { AppError, ValidationError } from "../errors";
+import { type PermissionService, unconfiguredPermissions } from "../permissions/service";
 import { agentConfigFields } from "./agent-config-fields";
 
 export type AgentRow = typeof schema.agents.$inferSelect;
 export type PersonaRow = typeof schema.agentPersonas.$inferSelect;
+
+export interface CreateAgentOptions {
+  permissions?: PermissionService;
+  requirements?: readonly PermissionRequirement[];
+  knowledge?: KnowledgeRepository;
+}
+
+export const AGENT_CREATION_PERMISSION_ERRORS = {
+  PERMISSION_POLICY_CONFLICT: [409, "权限配置冲突，请重新加载后保存"],
+  PERMISSION_POLICY_INVALID: [503, "权限配置格式无效"],
+  PERMISSION_POLICY_UNAVAILABLE: [503, "权限配置不可读"],
+  PERMISSION_MANAGEMENT_UNAVAILABLE: [503, "当前实例未提供权限管理"],
+  PERMISSION_REVISION_CHANGED: [409, "权限修订已变化"],
+  PERMISSION_DENIED: [409, "无权限执行此操作"],
+  PERMISSION_DIRECTORY_DENIED: [409, "目录授权无效"],
+} as const;
 
 /** Stable key order so two parsed configs compare structurally. */
 function canonical(value: unknown): string {
@@ -59,62 +83,136 @@ export function createAgent(
   config: Record<string, unknown>,
   persona: PersonaContent,
   personaIntensity: number | null = null,
+  options?: CreateAgentOptions,
+): AgentRow {
+  return createAgentWithId(orm, newId(), config, persona, personaIntensity, options);
+}
+
+export function initializeDefaultAgent(
+  orm: Orm,
+  modelName: string,
+  options: CreateAgentOptions,
+): AgentRow {
+  const { persona, persona_intensity, ...config } = CreateAgentRequestSchema.parse({
+    name: "本地助手",
+    model_name: modelName,
+    persona: { core_identity: DEFAULT_SYSTEM_PROMPT },
+  });
+  return createAgentWithId(
+    orm,
+    DEFAULT_AGENT_ID,
+    { ...config, system_prompt: DEFAULT_SYSTEM_PROMPT },
+    persona,
+    persona_intensity,
+    options,
+  );
+}
+
+function createAgentWithId(
+  orm: Orm,
+  agentId: string,
+  config: Record<string, unknown>,
+  persona: PersonaContent,
+  personaIntensity: number | null,
+  options?: CreateAgentOptions,
 ): AgentRow {
   const parsed = AgentConfigSchema.safeParse(config);
   if (!parsed.success) throw new ValidationError("Agent 配置不合法");
   const values = parsed.data;
-
+  const permissions = options?.permissions ?? unconfiguredPermissions;
+  const requirements = options?.requirements ?? [];
+  const needsPermissionProvisioning =
+    permissions !== unconfiguredPermissions || requirements.length > 0;
   const now = nowIso();
-  const agentId = newId();
   const intensity =
     personaIntensity === null || personaIntensity === undefined
       ? undefined
       : Math.max(0, Math.min(100, Math.trunc(personaIntensity)));
+  let policyAttempted = false;
 
-  // `Agent(**values)` + an explicit `persona_intensity` override.
-  orm
-    .insert(schema.agents)
-    .values({
-      id: agentId,
-      name: values.name,
-      description: values.description,
-      systemPrompt: values.system_prompt,
-      additionalInstructions: values.additional_instructions,
-      p5Config: JSON.stringify(values.p5_config),
-      modelName: values.model_name,
-      temperature: values.temperature,
-      memoryConsolidationModelName: values.memory_consolidation_model_name,
-      memoryConsolidationPrompt: values.memory_consolidation_prompt,
-      memoryConsolidationAdditionalInstructions:
-        values.memory_consolidation_additional_instructions,
-      memoryRetrievalModelName: values.memory_retrieval_model_name,
-      memoryRetrievalPrompt: values.memory_retrieval_prompt,
-      contextCompressionModelName: values.context_compression_model_name,
-      personaIntensity: intensity ?? 60,
-      isActive: values.is_active ? 1 : 0,
-      configVersion: 1,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+  try {
+    return orm.transaction(
+      () => {
+        if (agentId === DEFAULT_AGENT_ID) {
+          const existing = orm
+            .select()
+            .from(schema.agents)
+            .where(eq(schema.agents.id, agentId))
+            .get();
+          if (existing) return existing;
+        }
+        // The policy owner validates the installed snapshot before any row is written.
+        // Overrides for this unused ID cannot grant access until the Agent commits.
+        if (needsPermissionProvisioning) {
+          policyAttempted = true;
+          permissions.grantForNewAgent(agentId, requirements);
+        }
+        orm
+          .insert(schema.agents)
+          .values({
+            id: agentId,
+            name: values.name,
+            description: values.description,
+            systemPrompt: values.system_prompt,
+            additionalInstructions: values.additional_instructions,
+            p5Config: JSON.stringify(values.p5_config),
+            modelName: values.model_name,
+            temperature: values.temperature,
+            memoryConsolidationModelName: values.memory_consolidation_model_name,
+            memoryConsolidationPrompt: values.memory_consolidation_prompt,
+            memoryConsolidationAdditionalInstructions:
+              values.memory_consolidation_additional_instructions,
+            memoryRetrievalModelName: values.memory_retrieval_model_name,
+            memoryRetrievalPrompt: values.memory_retrieval_prompt,
+            contextCompressionModelName: values.context_compression_model_name,
+            personaIntensity: intensity ?? 60,
+            isActive: values.is_active ? 1 : 0,
+            configVersion: 1,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run();
 
-  orm.insert(schema.agentKnowledgeReadSettings).values({ agentId }).run();
-  orm
-    .insert(schema.agentPersonas)
-    .values({
-      id: newId(),
-      agentId,
-      coreIdentity: persona.core_identity,
-      communicationStyle: persona.communication_style,
-      interactionBoundaries: persona.interaction_boundaries,
-      exampleDialogues: persona.example_dialogues,
-      advancedInstructions: persona.advanced_instructions,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .run();
+        orm.insert(schema.agentKnowledgeReadSettings).values({ agentId }).run();
+        orm
+          .insert(schema.agentPersonas)
+          .values({
+            id: newId(),
+            agentId,
+            coreIdentity: persona.core_identity,
+            communicationStyle: persona.communication_style,
+            interactionBoundaries: persona.interaction_boundaries,
+            exampleDialogues: persona.example_dialogues,
+            advancedInstructions: persona.advanced_instructions,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run();
 
-  return getAgentRowById(orm, agentId);
+        if (options?.knowledge) {
+          options.knowledge.grantAllDocuments(agentId);
+        }
+        return getAgentRowById(orm, agentId);
+      },
+      { behavior: "immediate" },
+    );
+  } catch (error) {
+    // A store can fail after writing, and SQLite can fail at commit. Never restore
+    // an old whole-policy snapshot: remove only this new ID from current policy.
+    if (policyAttempted) {
+      try {
+        permissions.removeOwnOverrides(agentId);
+      } catch (cleanupError) {
+        console.error("Agent creation permission cleanup failed", { agentId, error, cleanupError });
+        throw new AggregateError(
+          [error, cleanupError],
+          "Agent creation and permission cleanup failed",
+          { cause: error },
+        );
+      }
+    }
+    throw error;
+  }
 }
 
 /** missing persona is a config fault (409), not 404. */

@@ -6,9 +6,12 @@ import type { SourceRef } from "../../shared/contracts/evidence";
 import {
   type ExecutionMode,
   type PermissionDecision,
+  type PermissionGrant,
+  PermissionGrantSchema,
   type PermissionPolicy,
   PermissionPolicySchema,
   type PermissionRequirement,
+  selectEffectivePermissionGrant,
 } from "../../shared/contracts/permissions";
 
 export class PermissionError extends Error {
@@ -37,8 +40,12 @@ export function evaluatePermission(
   if ((mode !== "direct" && effect !== "read") || (mode === "sandbox" && !sandboxCallable))
     return { allowed: false, code: "PERMISSION_MODE_DENIED" };
   if (!requirement) return { allowed: true };
-  const grant = policy.grants.find((entry) => entry.resource === requirement.resource);
-  if (!grant || (grant.agentIds && (!owner.agentId || !grant.agentIds.includes(owner.agentId))))
+  const grant = selectEffectivePermissionGrant(policy, requirement.resource, owner?.agentId)?.grant;
+  if (
+    !grant ||
+    grant.enabled === false ||
+    (grant.agentIds && (!owner.agentId || !grant.agentIds.includes(owner.agentId)))
+  )
     return { allowed: false, code: "PERMISSION_DENIED" };
   if (requirement.approvalRequired && !grant.approved && !approvedOnce)
     return { allowed: false, code: "PERMISSION_APPROVAL_REQUIRED" };
@@ -130,21 +137,87 @@ export class PermissionService {
     }
     return snapshot;
   }
+  grantForNewAgent(
+    agentId: string,
+    requirements: readonly PermissionRequirement[],
+  ): PermissionSnapshot {
+    if (!agentId) throw new PermissionError("PERMISSION_DENIED");
+    const snapshot = this.store.read();
+    if (snapshot.policy.grants.some((grant) => grant.agentOverrides?.[agentId] !== undefined))
+      throw new PermissionError("PERMISSION_POLICY_CONFLICT");
+    const installed = new Map<string, PermissionGrant>();
+    for (const requirement of requirements) {
+      if (typeof requirement.revision !== "string" || requirement.revision.length === 0)
+        throw new PermissionError("PERMISSION_REVISION_CHANGED");
+      const grant = PermissionGrantSchema.parse({
+        resource: requirement.resource,
+        approved: true,
+        revision: requirement.revision,
+        directories: [...(requirement.directories ?? [])],
+      });
+      if (grant.directories.some((directory) => !path.isAbsolute(directory)))
+        throw new PermissionError("PERMISSION_DIRECTORY_DENIED");
+      const existing = installed.get(grant.resource);
+      if (existing && existing.revision !== grant.revision)
+        throw new PermissionError("PERMISSION_REVISION_CHANGED");
+      installed.set(grant.resource, {
+        ...grant,
+        directories: [...new Set([...(existing?.directories ?? []), ...grant.directories])],
+      });
+    }
+    const grants = snapshot.policy.grants.map((grant) => ({ ...grant }));
+    for (const [resource, installedGrant] of installed) {
+      let base = grants.find((grant) => grant.resource === resource);
+      if (!base) {
+        base = { resource, approved: false, agentIds: [], directories: [] };
+        grants.push(base);
+      }
+      base.agentOverrides = {
+        ...base.agentOverrides,
+        [agentId]: {
+          enabled: true,
+          approved: true,
+          revision: installedGrant.revision,
+          directories: installedGrant.directories,
+        },
+      };
+    }
+    if (installed.size === 0) return snapshot;
+    return this.replace(snapshot.revision, { ...snapshot.policy, grants });
+  }
+  removeOwnOverrides(agentId: string): PermissionSnapshot {
+    if (!agentId) throw new PermissionError("PERMISSION_DENIED");
+    const snapshot = this.store.read();
+    let changed = false;
+    const grants = snapshot.policy.grants.map((grant) => {
+      if (grant.agentOverrides?.[agentId] === undefined) return grant;
+      changed = true;
+      const agentOverrides = { ...grant.agentOverrides };
+      delete agentOverrides[agentId];
+      const { agentOverrides: _old, ...base } = grant;
+      return Object.keys(agentOverrides).length ? { ...base, agentOverrides } : base;
+    });
+    return changed ? this.replace(snapshot.revision, { ...snapshot.policy, grants }) : snapshot;
+  }
   /** 订阅策略保存；返回退订。CAS 失败时 replace() 抛错，不触发通知。 */
   subscribe(listener: () => void): () => void {
     this.policyListeners.add(listener);
     return () => this.policyListeners.delete(listener);
   }
-  private grantRevision(policy: PermissionPolicy, requirement: PermissionRequirement): string {
-    const grant = policy.grants.find((entry) => entry.resource === requirement.resource);
-    if (!grant) throw new PermissionError("PERMISSION_DENIED");
-    return createHash("sha256").update(JSON.stringify(grant)).digest("hex");
+  private grantRevision(
+    policy: PermissionPolicy,
+    requirement: PermissionRequirement,
+    owner: RunOwner,
+  ): string {
+    const selected = selectEffectivePermissionGrant(policy, requirement.resource, owner?.agentId);
+    if (!selected) throw new PermissionError("PERMISSION_DENIED");
+    return createHash("sha256").update(JSON.stringify(selected.identity)).digest("hex");
   }
-  source(requirement: PermissionRequirement): SourceRef {
+  source(requirement: PermissionRequirement, owner: RunOwner): SourceRef {
     return {
       kind: "tool_permission",
       id: requirement.resource,
-      revision: this.grantRevision(this.store.read().policy, requirement),
+      revision: this.grantRevision(this.store.read().policy, requirement, owner),
     };
   }
   private sourceVerdict(
@@ -152,10 +225,16 @@ export class PermissionService {
     owner: RunOwner,
     policy: PermissionPolicy,
   ): "available" | "revoked" {
-    const grant = policy.grants.find((entry) => entry.resource === source.id);
-    if (!grant || (grant.agentIds && (!owner.agentId || !grant.agentIds.includes(owner.agentId))))
+    const selected = selectEffectivePermissionGrant(policy, source.id, owner?.agentId);
+    if (!selected) return "revoked";
+    const grant = selected.grant;
+    if (
+      grant.enabled === false ||
+      (grant.agentIds && (!owner.agentId || !grant.agentIds.includes(owner.agentId)))
+    )
       return "revoked";
-    return createHash("sha256").update(JSON.stringify(grant)).digest("hex") === source.revision
+    return createHash("sha256").update(JSON.stringify(selected.identity)).digest("hex") ===
+      source.revision
       ? "available"
       : "revoked";
   }
@@ -189,7 +268,7 @@ export class PermissionService {
     owner: RunOwner,
   ): string {
     return createHash("sha256")
-      .update(JSON.stringify([requirement, owner, this.grantRevision(policy, requirement)]))
+      .update(JSON.stringify([requirement, owner, this.grantRevision(policy, requirement, owner)]))
       .digest("hex");
   }
   approvalKey(requirement: PermissionRequirement, owner: RunOwner): string {

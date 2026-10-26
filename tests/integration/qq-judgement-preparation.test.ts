@@ -14,6 +14,7 @@ import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
 import { prepareQqJudgement } from "../../src/server/services/qq-judgement-preparation";
 import {
   QQ_JUDGEMENT_RESPONSE_SCHEMA,
@@ -23,12 +24,16 @@ import {
   QQ_REVIEW_RESPONSE_SCHEMA,
   qqReviewVerdict,
 } from "../../src/server/services/qq-review-contract";
+import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
 import { runQqInitiativeCycle } from "../fixtures/legacy-qq/qq-initiative-cycle";
 import { runQqJudgement } from "../fixtures/legacy-qq/qq-judgement-runner";
 import { recomputeQqReply } from "../fixtures/legacy-qq/qq-recompute-runner";
 import { generateQqTextReply } from "../fixtures/legacy-qq/qq-reply-runner";
 import { pendingQqReview, reviewQqSupplement } from "../fixtures/legacy-qq/qq-review-runner";
 import { checkQqTextPreflight } from "../fixtures/legacy-qq/qq-send-preflight";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const agentId = "00000000-0000-0000-0000-000000000001";
 const bindingId = "11111111-1111-4111-8111-111111111111";
@@ -61,7 +66,7 @@ function setup(
     judgementModel?: string;
   } = {},
 ) {
-  const h = openBusinessDb();
+  const h = runtimeFixtureBusiness(openBusinessDb(), "synthetic-model");
   ensureDefaults(h.orm, "synthetic-model");
   updateQqSettings(h.orm, {
     accountId: "10001",
@@ -70,6 +75,13 @@ function setup(
     expectedRevision: 1,
   });
   const scheme = createQqScheme(h.orm, {
+    context: { ...fixtureLegacyContext },
+    rhythm: { ...fixtureLegacyRhythm },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     name: "synthetic",
     triggers: {
       direct_reply: false,
@@ -1405,12 +1417,18 @@ describe("offline QQ judgement preparation", () => {
       let release: (value: string) => void = () => {
         throw new Error("not started");
       };
+      let signalStarted: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        signalStarted = resolve;
+      });
       const gateway = {
         loadedContextCapacity: async () => 65536,
-        complete: () =>
-          new Promise<string>((resolve) => {
+        complete: () => {
+          signalStarted();
+          return new Promise<string>((resolve) => {
             release = resolve;
-          }),
+          });
+        },
       };
       const first = runQqInitiativeCycle(h.orm, gateway, request(), noStickers);
       expect(
@@ -1421,7 +1439,7 @@ describe("offline QQ judgement preparation", () => {
           noStickers,
         ),
       ).toEqual({ kind: "held", reason: "conversation_busy" });
-      await Promise.resolve();
+      await started;
       release('{"score":3}');
       expect(await first).toEqual({ kind: "held", reason: "silent" });
       expect(

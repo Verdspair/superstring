@@ -17,6 +17,7 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import type { ChatV2Event } from "../../src/shared/contracts/chat-v2";
 import { ChatV2EventSchema } from "../../src/shared/contracts/chat-v2";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 import { parseSseFrames } from "../harness/sse";
 
 class Gateway implements ModelGateway {
@@ -48,7 +49,7 @@ class Gateway implements ModelGateway {
   }
 }
 function setup() {
-  const business = openBusinessDb();
+  const business = runtimeFixtureBusiness(openBusinessDb(), "model");
   ensureDefaults(business.orm, "model");
   const session = createSession(business.orm, "test", { modelName: "model" });
   const gateway = new Gateway();

@@ -7,12 +7,13 @@ import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import { contextDumps } from "../db/json-text";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import { measureContextTokens, measurePreparedRequest } from "../llm/request-format";
 import type { TextTokenEncoding } from "../llm/text-token-counter";
 import { estimateMessages, validateContextIds } from "../modules/memory-query";
 import { estimateTokens } from "../services/token-estimate";
 import type { LeafAgentRuntime, RunBudget, RunUsage } from "./agent-runtime";
 import type { RetryOrigin } from "./built-in-actions";
-import { measureContextTokens, uniqueSources } from "./context-engine";
+import { uniqueSources } from "./context-engine";
 import type { ModelContextBudget } from "./model-port";
 import { SUMMARY_RESULT_JSON_SCHEMA } from "./summary-contract";
 
@@ -66,7 +67,8 @@ export class ConversationCompressor {
       runtime: RuntimeConfig;
       agentRuntime: LeafAgentRuntime;
       gateway: Pick<ModelGateway, "loadedContextCapacity"> &
-        Partial<Pick<ModelGateway, "prepareContextModel">>;
+        Partial<Pick<ModelGateway, "prepareContextModel">> &
+        Partial<Pick<ModelGateway, "prepareRequestFormat">>;
       owner: RunOwner;
       assertSources: (sources: readonly SourceRef[]) => void;
       usage?: RunUsage;
@@ -122,6 +124,30 @@ export class ConversationCompressor {
     }
     const evidenceOf = (facts: Summary["facts"]) =>
       conversationSummaryEvidence({ id: `summary:${key}`, records: input.records, sources, facts });
+    if (input.requireFacts) {
+      // Schema permits speakers and source labels independently, including the prior overview.
+      const shortest = (values: readonly string[]): string =>
+        values.reduce((best, value) =>
+          estimateTokens(contextDumps(value)) < estimateTokens(contextDumps(best)) ? value : best,
+        );
+      const speakers = [
+        ...input.records.map((record) => record.speaker),
+        ...(input.previous ?? []).map((fact) => fact.speaker),
+      ];
+      const ids = [
+        ...input.records.map((record) => record.id),
+        ...(input.previous ?? []).flatMap((fact) => fact.source_ids),
+      ];
+      const minimum = estimateTokens(
+        contextDumps({
+          facts: [
+            { kind: "todo", speaker: shortest(speakers), text: "x", source_ids: [shortest(ids)] },
+          ],
+        }),
+      );
+      if (minimum > input.target)
+        fail("CONTEXT_SUMMARY_BUDGET", "目标字节预算不足以承载一条完整摘要事实及来源");
+    }
     const runtime = this.options.runtime;
     const cfg = runtime.p5_config;
     const signal = AbortSignal.any([
@@ -191,7 +217,7 @@ export class ConversationCompressor {
       };
       responseSchema.$defs.SummaryFact.properties.speaker = { type: "string", enum: speakers };
       const rules =
-        `把完整会话事件压缩为中性结构化事实/明确决定/待办/不确定内容，目标预算${input.target}。保留数字、版本、路径、否定、更正、分歧和说话人身份；助手建议不是用户事实。kind限fact/decision/todo/uncertainty；speaker只能来自提供的身份；source_ids只能引用给定事件ID。` +
+        `把完整会话事件压缩为中性结构化事实/明确决定/待办/不确定内容。完整 {"facts":[...]} JSON 的 UTF-8 总字节数不得超过 ${input.target}；这不是正文字符数或模型 token 数，字段名、引号、转义、speaker 与 source_ids 也占此预算。可合并相关事件并精炼正文，不要求每条原文各写一项事实。保留数字、版本、路径、否定、更正、分歧和说话人身份；助手建议不是用户事实。kind限fact/decision/todo/uncertainty；speaker只能来自提供的身份；source_ids只能引用给定事件ID。` +
         (input.previous
           ? "previous_overview是更早原文批次的临时摘要，须与当前批次合并，不能只保留最后一批。"
           : "") +
@@ -213,12 +239,27 @@ export class ConversationCompressor {
           }),
         },
       ];
+      const requestFormat =
+        descriptor !== undefined && this.options.gateway.prepareRequestFormat !== undefined
+          ? this.options.gateway.prepareRequestFormat({
+              model: descriptor.model,
+              responseSchema,
+            })
+          : undefined;
+      const measured =
+        requestFormat !== undefined
+          ? measurePreparedRequest(messages, descriptor, requestFormat)
+          : undefined;
       return {
         messages,
         responseSchema,
-        cost: counter
-          ? measureContextTokens(messages, counter, { responseSchema }).textTokens
-          : estimateMessages(messages) + estimateTokens(contextDumps(responseSchema)),
+        requestFormat,
+        cost:
+          measured !== undefined
+            ? measured.textTokens
+            : counter
+              ? measureContextTokens(messages, counter, { responseSchema }).textTokens
+              : estimateMessages(messages) + estimateTokens(contextDumps(responseSchema)),
       };
     };
     const flush = async (batch: CompressionRecord[]) => {
@@ -242,7 +283,11 @@ export class ConversationCompressor {
         },
         {
           owner: this.options.owner,
-          ...(counter && descriptor ? { contextBudget: descriptor, contextInputLimit: limit } : {}),
+          ...(descriptor ? { contextBudget: descriptor } : {}),
+          ...(counter ? { contextInputLimit: limit } : {}),
+          ...(prepared.requestFormat !== undefined
+            ? { requestFormat: prepared.requestFormat }
+            : {}),
           sources: refs,
           signal,
           usage: this.options.usage,

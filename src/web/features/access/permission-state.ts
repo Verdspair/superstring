@@ -238,7 +238,12 @@ function preserveUnselectedDrafts(
     const merged = { ...(next.grants[resource.resource] ?? baseline) };
     for (const key of Object.keys(draft) as (keyof GrantDraft)[]) {
       if (JSON.stringify(draft[key]) !== JSON.stringify(baseline[key]))
-        Object.assign(merged, { [key]: draft[key] });
+        Object.assign(merged, {
+          [key]:
+            draft[key] !== null && typeof draft[key] === "object"
+              ? structuredClone(draft[key])
+              : draft[key],
+        });
     }
     if (refreshed && refreshed.revision !== resource.revision) merged.approved = false;
     next.grants[resource.resource] = merged;

@@ -1552,7 +1552,7 @@ describe("真实后台压缩 worker（S55 补块：生产 queue + 真实 job.run
       const compactId = fact.source_ids[0]!;
       const rawId = pkg.provenance?.[compactId];
       if (typeof rawId !== "string") throw new Error("reversible summary provenance missing");
-      expect(compactId).toBe(`qq-record:${createHash("sha256").update(rawId).digest("base64url")}`);
+      expect(compactId).toBe("s0");
       const tuples = JSON.parse(rawId) as [string, string, string][];
       const body = h.db
         .query("SELECT body FROM qq_observation_text WHERE event_key=?")

@@ -69,7 +69,7 @@ const napcatConfigPath = layout?.paths.napcatConfig ?? path.resolve("local/confi
 const runtime = await (async () => {
   try {
     if (layout?.paths.mode === "desktop") await backupBeforeDesktopMigration(layout.paths);
-    return runtimeFactory({
+    return await runtimeFactory({
       businessDbPath: BUSINESS_DB_PATH,
       browserStateSecretPath: layout?.paths.browserStateKey,
       qqStickerDirectory: layout?.paths.qqStickersDir,

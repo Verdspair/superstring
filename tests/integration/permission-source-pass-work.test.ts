@@ -73,7 +73,7 @@ function fixture() {
   };
   service.replace("", policy);
   const refs = policy.grants.map((grant) =>
-    service.source({ resource: grant.resource, revision: "1", approvalRequired: false }),
+    service.source({ resource: grant.resource, revision: "1", approvalRequired: false }, owner),
   );
   const business = openBusinessDb();
   handles.push(business);

@@ -313,6 +313,24 @@ describe("compression token budget", () => {
     expect(call.spec.contextInputLimit).toBeUndefined();
   });
 
+  it("preserves a prepared route descriptor even when no tokenizer is declared", async () => {
+    const budget: ModelContextBudget = {
+      model: COMPRESSION_MODEL,
+      capacity: 32768,
+      assertCurrent: () => {},
+    };
+    const h = setup({ descriptor: async () => budget });
+    await h.compressor.summarize({
+      records: records(2, CHINESE),
+      target: 2048,
+      signal: new AbortController().signal,
+    });
+    expect(h.leafInputs[0]?.contextBudget).toBe(budget);
+    expect(h.leafInputs[0]?.contextInputLimit).toBeUndefined();
+    expect(h.prepareCalls).toHaveLength(1);
+    expect(h.capacityCalls).toBe(0);
+  });
+
   it("keeps the old gateway path free of prepare calls", async () => {
     const h = setup({});
     await h.compressor.summarize({

@@ -9,14 +9,27 @@ import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults, getAgentRow } from "../../src/server/db/repositories";
 import { captureQqTask, createQqBinding } from "../../src/server/services/qq-binding-contract";
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
+import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
-import { cloneBusinessDb } from "../harness/business-db";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { cloneBusinessDb, runtimeFixtureBusiness } from "../harness/business-db";
 
 function fixture() {
-  const h = cloneBusinessDb();
+  const h = runtimeFixtureBusiness(cloneBusinessDb(), "reply-model");
   ensureDefaults(h.orm, "reply-model");
   updateQqSettings(h.orm, { enabled: true, accountId: "10001", expectedRevision: 1 });
-  const scheme = createQqScheme(h.orm, { name: "fit-invalidation" });
+  const scheme = createQqScheme(h.orm, {
+    context: { ...fixtureLegacyContext },
+    rhythm: { ...fixtureLegacyRhythm },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
+    name: "fit-invalidation",
+  });
   const c = createQqBinding({
     id: crypto.randomUUID(),
     accountId: "10001",

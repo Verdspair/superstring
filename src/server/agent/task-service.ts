@@ -295,7 +295,7 @@ export class AgentTaskService {
       ...capSources,
       ...(context.sources ?? []),
       ...calls.map((call) =>
-        this.options.executor.permissions.source(this.resolve(call).permission),
+        this.options.executor.permissions.source(this.resolve(call).permission, enqueueOwner),
       ),
     ]);
     const at = this.now();

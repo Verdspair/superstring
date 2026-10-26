@@ -1,3 +1,4 @@
+import { runtimeFixtureBusiness } from "../harness/business-db";
 // Web context allocation modes (0068) — history boundary + tool-result fit boundary.
 //
 // Allocation contract:
@@ -121,7 +122,7 @@ const HISTORY_TURNS = 5;
 // 5 pairs at 2300+2300 payload bytes land the full assemble() at ~23.3k:
 // above the trigger (fixed compresses) but under the real limit (auto must keep it).
 async function setupHistory(mode: "auto" | "absent") {
-  const business = openBusinessDb();
+  const business = runtimeFixtureBusiness(openBusinessDb(), MODEL);
   handles.push(business);
   ensureDefaults(business.orm, MODEL);
   const gateway = new AllocationGateway(32768);
@@ -189,7 +190,7 @@ describe("web context allocation modes (integration)", () => {
 const FIT_HISTORY_TURNS = 4;
 
 async function setupFit(mode: "auto" | "absent") {
-  const business = openBusinessDb();
+  const business = runtimeFixtureBusiness(openBusinessDb(), MODEL);
   handles.push(business);
   ensureDefaults(business.orm, MODEL);
   const gateway = new AllocationGateway(65536);

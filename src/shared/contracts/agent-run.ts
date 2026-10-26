@@ -134,11 +134,35 @@ export const ContextLayoutSchema = z.array(
     units: z.number().int().nonnegative(),
   }),
 );
+/** 提供方原报的计数字段：非负安全整数；缺席不是 0，各字段彼此独立。 */
+const UsageCountSchema = z.number().refine((value) => Number.isSafeInteger(value) && value >= 0, {
+  message: "usage counters must be non-negative safe integers",
+});
+
+/**
+ * 提供方 usage 元数据（可选，仅记录原报数值）：
+ * - D1：五个计数各自 optional，有效值独立保留，畸形/缺席只影响自身；
+ * - D2：totalTokens 永不从其他计数推导/求和；
+ * - D3：cacheWriteInputTokens 暂无 OpenAI chat 别名，初版恒由提供方缺席；
+ * - cacheState 只描述 cache 维度：显式有效 cached（含 0）=reported，坏 cache=invalid，
+ *   有计数而无 cache 字段=unreported；全部无效/缺席时整个 usage 缺席。
+ */
+export const ModelResponseUsageSchema = z.strictObject({
+  inputTokens: UsageCountSchema.optional(),
+  outputTokens: UsageCountSchema.optional(),
+  totalTokens: UsageCountSchema.optional(),
+  cacheReadInputTokens: UsageCountSchema.optional(),
+  cacheWriteInputTokens: UsageCountSchema.optional(),
+  cacheState: z.enum(["reported", "unreported", "invalid"]),
+});
+export type ModelResponseUsage = z.infer<typeof ModelResponseUsageSchema>;
+
 export const ModelResponseMetadataSchema = z.strictObject({
   transport: z.enum(["complete", "stream", "vision"]),
   httpStatus: z.number().int().min(100).max(599).optional(),
   finishReasons: z.array(z.string().nullable()),
   doneMarker: z.boolean().optional(),
+  usage: ModelResponseUsageSchema.optional(),
 });
 export type ModelResponseMetadata = z.infer<typeof ModelResponseMetadataSchema>;
 

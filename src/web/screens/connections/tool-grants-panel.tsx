@@ -1,7 +1,12 @@
 import { RefreshCw, Save, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { executionPolicy, type PermissionResource } from "../../../shared/contracts/permissions";
+import {
+  executionPolicy,
+  type PermissionPolicy,
+  type PermissionResource,
+  selectEffectivePermissionGrant,
+} from "../../../shared/contracts/permissions";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
@@ -360,6 +365,175 @@ function ResourceRow({
                       </label>
                     ))}
                   </div>
+                )}
+              </fieldset>
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-medium">
+                  {t("connections.grants.agentOverrides")}
+                </legend>
+                <p className="text-xs text-muted-foreground">
+                  {t("connections.grants.baseScopeHint")}
+                </p>
+                {agents.length ? (
+                  <div className="overflow-hidden rounded-md border bg-background">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[180px]">{t("workspace.assistant")}</TableHead>
+                          <TableHead>{t("connections.grants.agentStatus")}</TableHead>
+                          <TableHead>{t("connections.grants.enabled")}</TableHead>
+                          <TableHead>{t("connections.grants.approved")}</TableHead>
+                          <TableHead className="text-right">{t("connections.actions")}</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {agents.map((agent) => {
+                          const draftPolicy: PermissionPolicy = {
+                            version: 1,
+                            grants: [
+                              {
+                                resource: resource.resource,
+                                approved: value.approved,
+                                revision: resource.revision,
+                                ...(value.agentIds === null ? {} : { agentIds: value.agentIds }),
+                                directories: value.directories,
+                                ...(value.agentOverrides
+                                  ? { agentOverrides: value.agentOverrides }
+                                  : {}),
+                              },
+                            ],
+                          };
+                          const effective = selectEffectivePermissionGrant(
+                            draftPolicy,
+                            resource.resource,
+                            agent.id,
+                          )?.grant;
+                          const override = value.agentOverrides?.[agent.id];
+                          const hasOverride = override !== undefined;
+                          const isExplicitlyDisabled = override?.enabled === false;
+                          const agentEffectiveEnabled =
+                            effective !== undefined &&
+                            effective.enabled !== false &&
+                            (effective.agentIds === undefined ||
+                              effective.agentIds.includes(agent.id));
+                          const agentEffectiveApproved =
+                            effective?.approved === true &&
+                            effective.revision === resource.revision;
+
+                          return (
+                            <TableRow key={agent.id}>
+                              <TableCell className="font-medium text-sm">{agent.name}</TableCell>
+                              <TableCell>
+                                {hasOverride ? (
+                                  <Badge
+                                    variant={isExplicitlyDisabled ? "destructive" : "secondary"}
+                                  >
+                                    {t(
+                                      isExplicitlyDisabled
+                                        ? "connections.grants.agentOverrideDisabled"
+                                        : "connections.grants.agentOverrideExplicit",
+                                    )}
+                                  </Badge>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">
+                                    {t("connections.grants.agentOverrideInherited")}
+                                  </span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <Checkbox
+                                  id={`agent-override-enabled-${resource.resource}-${agent.id}`}
+                                  checked={agentEffectiveEnabled}
+                                  disabled={disabled}
+                                  aria-label={t("connections.grants.agentOverrideEnabledFor", {
+                                    "0": agent.name,
+                                  })}
+                                  onCheckedChange={(checked) => {
+                                    const nextEnabled = checked === true;
+                                    const nextOverrides = {
+                                      ...value.agentOverrides,
+                                      [agent.id]: {
+                                        ...(override ?? {
+                                          approved: value.approved,
+                                          revision: resource.revision,
+                                          directories: [...required],
+                                        }),
+                                        enabled: nextEnabled,
+                                      },
+                                    };
+                                    onEdit({ agentOverrides: nextOverrides });
+                                  }}
+                                />
+                              </TableCell>
+                              <TableCell>
+                                {resource.approvalRequired ? (
+                                  <Checkbox
+                                    id={`agent-override-approved-${resource.resource}-${agent.id}`}
+                                    checked={agentEffectiveApproved}
+                                    disabled={
+                                      disabled ||
+                                      (!agentEffectiveApproved &&
+                                        (!available || !agentEffectiveEnabled))
+                                    }
+                                    aria-label={t("connections.grants.agentOverrideApprovedFor", {
+                                      "0": agent.name,
+                                    })}
+                                    onCheckedChange={(checked) => {
+                                      const nextApproved = checked === true;
+                                      const nextOverrides = {
+                                        ...value.agentOverrides,
+                                        [agent.id]: {
+                                          ...(override ?? {
+                                            enabled: true,
+                                            revision: resource.revision,
+                                            directories: [...required],
+                                          }),
+                                          approved: nextApproved,
+                                        },
+                                      };
+                                      onEdit({ agentOverrides: nextOverrides });
+                                    }}
+                                  />
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">
+                                    {t("connections.grants.approvalNotRequired")}
+                                  </span>
+                                )}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {hasOverride ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    tooltip={t("connections.grants.agentOverrideRevertHint")}
+                                    disabled={disabled}
+                                    onClick={() => {
+                                      const nextOverrides = { ...value.agentOverrides };
+                                      delete nextOverrides[agent.id];
+                                      onEdit({
+                                        agentOverrides:
+                                          Object.keys(nextOverrides).length > 0
+                                            ? nextOverrides
+                                            : undefined,
+                                      });
+                                    }}
+                                  >
+                                    {t("connections.grants.agentOverrideRevert")}
+                                  </Button>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">-</span>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t("connections.grants.scopeNone")}
+                  </p>
                 )}
               </fieldset>
               <fieldset className="space-y-2">

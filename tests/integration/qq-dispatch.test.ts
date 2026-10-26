@@ -32,6 +32,7 @@ import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositori
 import * as schema from "../../src/server/db/schema";
 import { BUSINESS_SCHEMA_VERSION, openBusinessDb } from "../../src/server/db/schema-gate";
 import { qqConversationKey } from "../../src/server/services/qq-binding-contract";
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
 import {
   enqueueQqDispatchFromEvent,
   finishQqDispatchTask,
@@ -39,6 +40,9 @@ import {
   renewQqDispatchTask,
   sweepQqIdleTopics,
 } from "../../src/server/services/qq-dispatch";
+import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
 import { runQqDispatchCycle } from "../fixtures/legacy-qq/qq-dispatch-cycle";
 import { cloneBusinessDb } from "../harness/business-db";
 
@@ -100,6 +104,13 @@ function seedConversation(orm: Orm, peers: string[] = ["30003"]) {
   ensureDefaults(orm, "synthetic-model");
   updateQqSettings(orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
   const scheme = createQqScheme(orm, {
+    context: { ...fixtureLegacyContext },
+    rhythm: { ...fixtureLegacyRhythm },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     name: "synthetic",
     triggers: { direct_reply: true, follow_up: false, chiming_in: true, idle_topic: true },
   });

@@ -5,6 +5,7 @@ import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import type { ModuleComposition } from "../../src/server/modules/composition";
 import type { KnowledgeSource, SourceEvent } from "../../src/server/modules/contracts";
 import { createRuntime } from "../../src/server/runtime";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 it("composes module lifecycle and consumes committed Web/document identities without copying their sources", async () => {
   const business = openBusinessDb();
@@ -60,8 +61,8 @@ it("composes module lifecycle and consumes committed Web/document identities wit
       lifecycle.push("stop");
     },
   };
-  const runtime = createRuntime({
-    business,
+  const runtime = await createRuntime({
+    business: runtimeFixtureBusiness(business),
     gateway,
     modules,
     browserStateSecret: "synthetic-module-test",

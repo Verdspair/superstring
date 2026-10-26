@@ -34,7 +34,10 @@ function setup() {
   const business = cloneBusinessDb();
   handles.push(business);
   ensureDefaults(business.orm, "test-model");
-  const scheme = createQqScheme(business.orm, { name: "分配运行时方案" });
+  const scheme = createQqScheme(business.orm, {
+    name: "分配运行时方案",
+    allocation: { judgement: { mode: "fixed" }, reply: { mode: "fixed" } },
+  });
   return { orm: business.orm, scheme };
 }
 

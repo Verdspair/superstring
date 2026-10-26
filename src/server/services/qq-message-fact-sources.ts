@@ -16,6 +16,8 @@ export interface QqMessageFactVisibleState {
   visibleParts: QqMessagePart[];
   bodyRevisionValue: string | null;
   textConsistency: string | null;
+  body: { body: string; expiresAt: string } | null;
+  consumableCap: string;
 }
 
 export function qqMessageFactSourceRevision(
@@ -49,12 +51,19 @@ export function qqMessageFactSourceRevision(
   );
 }
 
-function factRow(
+type FactBodyRow = {
+  fact: QqMessageFactRow;
+  body: string | null;
+  bodyExpiresAt: string | null;
+};
+
+function factRows(
   db: Database,
   scope: QqConversationScope,
-  eventKey: string,
-): { fact: QqMessageFactRow; body: string | null; bodyExpiresAt: string | null } | null {
-  const row = db
+  eventKeys: readonly string[],
+): Map<string, FactBodyRow> {
+  if (eventKeys.length === 0) return new Map();
+  const rows = db
     .query(
       `SELECT f.event_key AS eventKey,f.group_card AS groupCard,f.group_card_source AS groupCardSource,
       f.personal_nickname AS personalNickname,f.personal_nickname_source AS personalNicknameSource,
@@ -64,14 +73,23 @@ function factRow(
       t.body AS body,t.expires_at AS bodyExpiresAt
       FROM qq_message_facts f JOIN qq_events e ON e.event_key=f.event_key
       LEFT JOIN qq_observation_text t ON t.event_key=f.event_key
-      WHERE f.event_key=? AND e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?`,
+      WHERE f.event_key IN (SELECT value FROM json_each(?))
+        AND e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?`,
     )
-    .get(eventKey, scope.accountId, scope.conversationKind, scope.peerId, scope.agentId) as
-    | (QqMessageFactRow & { body: string | null; bodyExpiresAt: string | null })
-    | null;
-  if (!row) return null;
-  const { body, bodyExpiresAt, ...fact } = row;
-  return { fact, body, bodyExpiresAt };
+    .all(
+      JSON.stringify([...new Set(eventKeys)]),
+      scope.accountId,
+      scope.conversationKind,
+      scope.peerId,
+      scope.agentId,
+    ) as (QqMessageFactRow & { body: string | null; bodyExpiresAt: string | null })[];
+  return new Map(
+    rows.map(({ body, bodyExpiresAt, ...fact }) => [fact.eventKey, { fact, body, bodyExpiresAt }]),
+  );
+}
+
+function factRow(db: Database, scope: QqConversationScope, eventKey: string): FactBodyRow | null {
+  return factRows(db, scope, [eventKey]).get(eventKey) ?? null;
 }
 
 // 正文副本不能复活已失效来源。
@@ -113,6 +131,11 @@ function visibleFactStateOf(
     visibleParts,
     bodyRevisionValue: body ? bodyRevision(body.body) : null,
     textConsistency,
+    body,
+    consumableCap:
+      body && Date.parse(body.expiresAt) < Date.parse(row.fact.expiresAt)
+        ? body.expiresAt
+        : row.fact.expiresAt,
   };
 }
 
@@ -127,30 +150,28 @@ export function visibleFactState(
   return visibleFactStateOf(row, now);
 }
 
-export function qqMessageFactSourceAccess(
+/** Scoped rows for one synchronous projection; no proof survives the caller's frame. */
+export function visibleFactStates(
   db: Database,
-  source: SourceRef,
-  owner: RunOwner,
-  principal: ContextPrincipal,
+  scope: QqConversationScope,
+  eventKeys: readonly string[],
   now: string,
-): SourceAccess | undefined {
-  if (source.kind !== "qq_message_fact") return undefined;
-  if (
-    owner.userId === undefined ||
-    owner.userId !== principal.userId ||
-    principal.userId !== DEFAULT_USER_ID
-  )
-    return "revoked";
-  const located = ownerScope(db, owner);
-  if (located === "ambiguous") return "revoked";
-  if (!located) return "revoked";
-  const scope = located.scope;
-  if (!owner.agentId || owner.agentId !== scope.agentId) return "revoked";
-  if (!evidenceScopeExists(db, { channel: "onebot11", ...scope })) return "revoked";
-  const row = factRow(db, scope, source.id);
+): ReadonlyMap<string, QqMessageFactVisibleState> {
+  const states = new Map<string, QqMessageFactVisibleState>();
+  for (const [id, row] of factRows(db, scope, eventKeys)) {
+    if (!isObservationExpired(row.fact.expiresAt, now))
+      states.set(id, visibleFactStateOf(row, now));
+  }
+  return states;
+}
+
+function factSourceVerdict(
+  row: FactBodyRow | undefined,
+  source: SourceRef,
+  scope: QqConversationScope,
+  now: string,
+): SourceAccess {
   if (!row) return "revoked";
-  if (!inTimeline(db, { channel: "onebot11", ...scope }, "qq_event", source.id)) return "revoked";
-  // fact 快照自己的窗口：过期 → expired（对已授权 owner 可区分，不猜）。
   if (isObservationExpired(row.fact.expiresAt, now)) return "expired";
   if (source.expiresAt !== undefined && Date.parse(source.expiresAt) <= Date.parse(now))
     return "expired";
@@ -163,6 +184,63 @@ export function qqMessageFactSourceAccess(
   ) === source.revision
     ? "available"
     : "revoked";
+}
+
+export function qqMessageFactSourceAccessMany(
+  db: Database,
+  sources: readonly SourceRef[],
+  owner: RunOwner,
+  principal: ContextPrincipal,
+  now: string,
+): SourceAccess[] {
+  if (sources.length === 0) return [];
+  const denied = () => sources.map(() => "revoked" as const);
+  if (
+    owner.userId === undefined ||
+    owner.userId !== principal.userId ||
+    principal.userId !== DEFAULT_USER_ID
+  )
+    return denied();
+  const located = ownerScope(db, owner);
+  if (!located || located === "ambiguous") return denied();
+  const scope = located.scope;
+  if (!owner.agentId || owner.agentId !== scope.agentId) return denied();
+  if (!evidenceScopeExists(db, { channel: "onebot11", ...scope })) return denied();
+  const rows = factRows(
+    db,
+    scope,
+    sources.map((source) => source.id),
+  );
+  const direct = new Set(
+    (
+      db
+        .query(`SELECT source_id AS id FROM conversation_events
+    WHERE conversation_id=? AND source_kind='qq_event' AND kind IN ('inbound','outbound')
+      AND source_id IN (SELECT value FROM json_each(?))`)
+        .all(scope.conversationId, JSON.stringify([...rows.keys()])) as { id: string }[]
+    ).map((row) => row.id),
+  );
+  return sources.map((source) => {
+    if (!rows.has(source.id)) return "revoked";
+    // Secondary journal links retain the original authoritative fallback.
+    if (
+      !direct.has(source.id) &&
+      !inTimeline(db, { channel: "onebot11", ...scope }, "qq_event", source.id)
+    )
+      return "revoked";
+    return factSourceVerdict(rows.get(source.id), source, scope, now);
+  });
+}
+
+export function qqMessageFactSourceAccess(
+  db: Database,
+  source: SourceRef,
+  owner: RunOwner,
+  principal: ContextPrincipal,
+  now: string,
+): SourceAccess | undefined {
+  if (source.kind !== "qq_message_fact") return undefined;
+  return qqMessageFactSourceAccessMany(db, [source], owner, principal, now)[0];
 }
 
 // 期限帽保留原字符串精度。

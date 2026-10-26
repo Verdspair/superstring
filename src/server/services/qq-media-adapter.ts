@@ -19,7 +19,10 @@ import { z } from "zod";
 import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import type { LeafAgentRuntime } from "../agent/agent-runtime";
 import type { RetryOrigin } from "../agent/built-in-actions";
+import type { ModelContextBudget } from "../agent/model-port";
+import type { PreparedRequestFormat } from "../llm/request-format";
 import { estimateMessages } from "../modules/memory-query";
+import { checkQqModelCapacity } from "./qq-capacity-preflight";
 import { prepareQqImage } from "./qq-image-codec";
 import type { QqMediaReadAdapter } from "./qq-media-reader";
 
@@ -63,6 +66,14 @@ export interface QqMediaAdapterOptions {
    * （CONTEXT_CAPACITY_UNKNOWN），绝不把 auto 假装成无门。
    */
   readonly loadedContextCapacity?: (model: string) => Promise<number | null>;
+  readonly prepareContextModel?: (
+    model: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ModelContextBudget>;
+  readonly prepareVisionRequestFormat?: (input: {
+    model: string;
+    responseSchema?: Record<string, unknown>;
+  }) => PreparedRequestFormat;
   /** 可信来源声明（可选）：工厂在装配点传入（QQ 媒体输入服务＝qq）；缺省由调用点父 ALS 继承。 */
   readonly retryOrigin?: RetryOrigin;
 }
@@ -184,20 +195,36 @@ export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaRea
       signalForPrepare.throwIfAborted();
       const sampledPrompt = `${prompt}${samplingSuffix(sourceId, images)}`;
       const allocation = options.auxiliary_allocation;
-      if (allocation) {
-        const textUnits = estimateMessages([{ role: "user", content: sampledPrompt }]);
-        if (allocation.input_limit != null && textUnits > allocation.input_limit)
+      const textUnits = estimateMessages([{ role: "user", content: sampledPrompt }]);
+      if (allocation?.input_limit != null && textUnits > allocation.input_limit)
+        throw new Error("CONTEXT_AUX_BUDGET");
+      let contextBudget: ModelContextBudget | undefined;
+      let contextInputLimit: number | undefined;
+      let requestFormat: PreparedRequestFormat | undefined;
+      if (options.prepareContextModel || allocation?.mode === "auto") {
+        if (!options.loadedContextCapacity) throw new Error("CONTEXT_CAPACITY_UNKNOWN");
+        const capacity = await checkQqModelCapacity(
+          {
+            loadedContextCapacity: options.loadedContextCapacity,
+            prepareContextModel: options.prepareContextModel,
+          },
+          {
+            model,
+            messages: [{ role: "user", content: sampledPrompt }],
+            outputReserved: allocation?.output_reserved ?? 0,
+          },
+          signal,
+          options.prepareVisionRequestFormat,
+        );
+        if (capacity.kind !== "allowed") {
+          if (capacity.kind === "unavailable") throw new Error("CONTEXT_CAPACITY_UNKNOWN");
           throw new Error("CONTEXT_AUX_BUDGET");
-        if (allocation.mode === "auto") {
-          // 自动档按真实可计量部分对照已知容量；容量来源缺失即显式失败，不做假无门。
-          if (!options.loadedContextCapacity) throw new Error("CONTEXT_CAPACITY_UNKNOWN");
-          const capacity = await options.loadedContextCapacity(model);
-          if (capacity === null || !Number.isSafeInteger(capacity) || capacity < 1)
-            throw new Error("CONTEXT_CAPACITY_UNKNOWN");
-          const ceiling = capacity - (allocation.output_reserved ?? 0);
-          if (textUnits > ceiling) throw new Error("CONTEXT_AUX_BUDGET");
         }
+        contextBudget = capacity.contextBudget;
+        contextInputLimit = capacity.contextInputLimit;
+        requestFormat = capacity.requestFormat;
       }
+      requestFormat ??= options.prepareVisionRequestFormat?.({ model });
       return options.agentRuntime.completeVisionLeaf(
         {
           id: "media.describe",
@@ -206,6 +233,9 @@ export function createQqMediaAdapter(options: QqMediaAdapterOptions): QqMediaRea
         },
         {
           model,
+          contextBudget,
+          contextInputLimit,
+          ...(requestFormat === undefined ? {} : { requestFormat }),
           prompt: sampledPrompt,
           images,
           signal,

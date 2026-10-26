@@ -18,7 +18,7 @@ export interface LeafAgentSpec {
   maxTokens?: number;
   responseSchema?: Record<string, unknown>;
   /** Existing task-specific budgets; omitted means the gateway's existing limit applies. */
-  limits?: { inputUnits?: number; deadlineMs?: number };
+  limits?: { inputUnits?: number; inputBytes?: number; deadlineMs?: number };
 }
 export interface AgentGenerationConfig {
   /** Channel reply instructions may differ from decision/review instructions. */
@@ -36,5 +36,11 @@ export interface AgentSpec extends LeafAgentSpec {
   availableActions: readonly ActionDescription[];
   /** Different routes may decide and write; hosts can specialize each output. */
   generation?: AgentGenerationConfig;
-  limits: { inputUnits?: number; outputTokens?: number; steps: number; deadlineMs?: number };
+  limits: {
+    inputUnits?: number;
+    inputBytes?: number;
+    outputTokens?: number;
+    steps: number;
+    deadlineMs?: number;
+  };
 }

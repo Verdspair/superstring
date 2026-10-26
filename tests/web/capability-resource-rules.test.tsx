@@ -594,7 +594,7 @@ describe("保存基线显式刷新", () => {
     store.setState({ settingsSaving: false });
   });
 
-  it("目录批次输入生命周期：null→ready、跨 Agent、刷新基线、放弃清错、非法不拦普通档保存", async () => {
+  it("真实有效策略：存量 full 批次与检索提示词/相关性在 UI 显式禁用非伪可编辑，普通预设额度可编辑且存量值保存保真", async () => {
     const fullAgent = {
       ...agent,
       p5_config: {
@@ -616,60 +616,80 @@ describe("保存基线显式刷新", () => {
       listAgents: vi.fn(async () => [fullAgent, { ...fullAgent, id: B, name: "Agent B" }]),
       updateAgent,
     } as never);
-    // 未就绪时真实编辑区不渲染占位；就绪后输入按存量值出现。
+
     store.setState({ pageEditor: null });
     await act(async () => render(<MemoryReadingRules />));
     expect(screen.queryByLabelText("最多目录批次")).toBeNull();
     await act(async () => store.getState().editAgent(A));
-    expect((screen.getByLabelText("最多目录批次") as HTMLInputElement).value).toBe("17");
-    expect((screen.getByLabelText("每批目录条数") as HTMLInputElement).value).toBe("23");
 
-    // 非法原文：alert + 拦保存 + 不写草稿。
+    // 1. 存量 full 批次字段保真显示，但在 UI 必须为 disabled（非伪可编辑），真实运行按有界策略生效
     const batches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
-    const save = () => screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement;
-    fireEvent.change(batches, { target: { value: "" } });
-    expect(screen.getByRole("alert")).toBeTruthy();
-    expect(save().disabled).toBe(true);
-    expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
+    const batchSize = screen.getByLabelText("每批目录条数") as HTMLInputElement;
+    expect(batches.value).toBe("17");
+    expect(batchSize.value).toBe("23");
+    expect(batches.disabled).toBe(true);
+    expect(batchSize.disabled).toBe(true);
 
-    // invalid-only 也能放弃清错：放弃按钮在非 dirty 但 invalid 时可用，点击后错误消失。
-    const discard = () => screen.getByRole("button", { name: "放弃修改" }) as HTMLButtonElement;
-    expect(discard().disabled).toBe(false);
-    await act(async () => fireEvent.click(discard()));
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(save().disabled).toBe(true);
+    // 2. 生产按需 Tool 交互中未被消费的检索提示词与相关性要求，在 UI 明确禁用（非伪可编辑）
+    const promptTextarea = screen.getByLabelText(
+      label("library.memory.tools.retrieval.prompt"),
+    ) as HTMLTextAreaElement;
+    expect(promptTextarea.disabled).toBe(true);
+    const relevanceTextareas = screen.getAllByLabelText(
+      label("library.memory.tools.relevance.instruction"),
+    ) as HTMLTextAreaElement[];
+    expect(relevanceTextareas.length).toBeGreaterThan(0);
+    for (const rel of relevanceTextareas) {
+      expect(rel.disabled).toBe(true);
+    }
 
-    // 跨 Agent：切到 B（同 full 配置，值不同）→ 输入按 B 的存量值显示。
-    await act(async () => store.getState().editAgent(B));
-    const bBatches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
-    expect(bBatches.value).toBe("17");
+    // 3. 有效的普通 3 档预设扫描/返回上限及 Bytes 额度仍正常可编辑
+    const candidateInputs = screen.getAllByLabelText(
+      label("library.memory.tools.scan.limit"),
+    ) as HTMLInputElement[];
+    expect(candidateInputs.length).toBe(3);
+    for (const input of candidateInputs) {
+      expect(input.disabled).toBe(false);
+    }
+    const maxEntriesInputs = screen.getAllByLabelText(
+      label("library.memory.tools.page.limit"),
+    ) as HTMLInputElement[];
+    expect(maxEntriesInputs.length).toBe(3);
+    for (const input of maxEntriesInputs) {
+      expect(input.disabled).toBe(false);
+    }
 
-    // 刷新基线：未改字段跟随新基线、已改草稿保留（既有合并语义）。这里无草稿，刷新后原文仍是基线值。
-    await act(async () => void store.getState().refreshSettingsAgent());
-    const afterRefresh = screen.getByLabelText("最多目录批次") as HTMLInputElement;
-    expect(afterRefresh.value).toBe("17");
-    expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
-    // 已改草稿（40）时刷新：草稿保留（不丢用户输入），原文与草稿一致不回跳。
-    fireEvent.change(afterRefresh, { target: { value: "40" } });
-    await act(async () => void store.getState().refreshSettingsAgent());
-    const kept = screen.getByLabelText("最多目录批次") as HTMLInputElement;
-    expect(kept.value).toBe("40");
-    expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(40);
+    // 4. 无修改时点击保存遵循 no-op：不发起网络请求，已存数据保持不变
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+    expect(updateAgent).not.toHaveBeenCalled();
 
-    // full 非法 → 主动切普通档：输入消失，invalid 不拦普通档保存；批次数保留不丢。
-    fireEvent.change(kept, { target: { value: "" } });
-    expect(save().disabled).toBe(true);
+    // 5. 修改有效普通预设 candidate_limit：触发 dirty，保存时 payload 完整保真保留存量 full_catalog 与批次配置
+    fireEvent.change(candidateInputs[0], { target: { value: "35" } });
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+    expect(updateAgent).toHaveBeenCalledWith(
+      A,
+      expect.objectContaining({
+        p5_config: expect.objectContaining({
+          retrieval_mode: "full_catalog",
+          max_catalog_batches: 17,
+          catalog_batch_size: 23,
+        }),
+      }),
+    );
+
+    // 6. 主动切到普通档（如 standard）：存量批次字段隐藏，模式正常切换并保存
     const mode = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
     fireEvent.change(mode, { target: { value: "standard" } });
     expect(screen.queryByLabelText("最多目录批次")).toBeNull();
-    expect(save().disabled).toBe(false);
     expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
-    const savedCall = updateAgent.mock.calls.at(-1);
-    if (!savedCall) throw new Error("Missing save call");
-    expect(
-      (savedCall[1] as { p5_config: { retrieval_mode: string; max_catalog_batches: number } })
-        .p5_config,
-    ).toMatchObject({ retrieval_mode: "standard", max_catalog_batches: 40 });
+    expect(updateAgent).toHaveBeenLastCalledWith(
+      A,
+      expect.objectContaining({
+        p5_config: expect.objectContaining({
+          retrieval_mode: "standard",
+        }),
+      }),
+    );
   });
 
   it("记忆读取规则提供刷新保存基线按钮；忙碌时输入、选项与保存按钮禁用", async () => {

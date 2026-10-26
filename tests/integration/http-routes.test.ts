@@ -44,7 +44,7 @@ class FakeGateway implements ModelGateway {
  */
 function makeApp(gateway = new FakeGateway()) {
   const business = openBusinessDb();
-  const app = createApp({ business, gateway });
+  const app = createApp({ business, gateway, externalActions: () => [] });
   return { app, business };
 }
 
@@ -159,7 +159,8 @@ describe("agents routes", () => {
     expect(res.status).toBe(201);
     const agent = (await res.json()) as Record<string, unknown>;
     expect(agent.name).toBe("小助手");
-    expect(agent.persona_intensity).toBe(60);
+    expect(agent.persona_intensity).toBe(100);
+    expect(agent.temperature).toBe(1);
 
     const personaRes = await app.request(`/agents/${agent.id}/persona`);
     expect(personaRes.status).toBe(200);

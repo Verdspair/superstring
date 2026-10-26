@@ -184,7 +184,7 @@ describe("module soft pause", () => {
 
   it("does not invalidate evidence or approval when usage is paused", async () => {
     const f = fixture();
-    const ref = f.permissions.source(f.actions[0].permission!);
+    const ref = f.permissions.source(f.actions[0].permission!, f.owner());
     const task = f.enqueue(["mcp.demo.read"]);
     f.change({ pausedTools: ["mcp.demo.read"] });
     expect(f.permissions.sourceAccess(ref, f.owner())).toBe("available");

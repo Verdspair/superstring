@@ -11,7 +11,7 @@ import {
 } from "./common";
 import { ErrorCodeSchema } from "./errors";
 import { FrozenKnowledgeReadSchema } from "./knowledge";
-import { P5ConfigSchema } from "./models";
+import { DEFAULT_RETRIEVAL_PRESETS, type P5Config, P5ConfigSchema } from "./models";
 import {
   codePointLength,
   compilePersona,
@@ -140,21 +140,67 @@ export const PersonaResponseSchema = z.strictObject({
 
 export type PersonaResponse = z.infer<typeof PersonaResponseSchema>;
 
+/** Fresh creation defaults; persisted configurations retain their original read semantics. */
+export function newAgentDefaults(): {
+  temperature: number;
+  persona_intensity: number;
+  is_active: boolean;
+  p5_config: P5Config;
+} {
+  return {
+    temperature: 1,
+    persona_intensity: 100,
+    is_active: true,
+    p5_config: P5ConfigSchema.parse({
+      context_window: null,
+      max_output_tokens: 32768,
+      safety_margin_ratio: 0.1,
+      compression_enabled: true,
+      compression_trigger_ratio: 0.8,
+      recent_turns: 200,
+      summary_target_tokens: 2048,
+      summary_max_tokens: 32768,
+      retrieval_mode: "full_catalog",
+      retrieval_presets: {
+        conservative: { ...DEFAULT_RETRIEVAL_PRESETS.conservative },
+        standard: { ...DEFAULT_RETRIEVAL_PRESETS.standard },
+        broad: { ...DEFAULT_RETRIEVAL_PRESETS.broad },
+      },
+      auxiliary_timeout_seconds: 900,
+      max_catalog_batches: 100,
+      catalog_batch_size: 30,
+      allocation: { mode: "auto" },
+    }),
+  };
+}
+
+const CreateAgentP5ConfigSchema = z
+  .preprocess((val) => {
+    if (val === undefined) {
+      return newAgentDefaults().p5_config;
+    }
+    if (val === null || typeof val !== "object" || Array.isArray(val)) {
+      return val;
+    }
+    return { ...newAgentDefaults().p5_config, ...val };
+  }, P5ConfigSchema)
+  .prefault(() => newAgentDefaults().p5_config);
+
 export const CreateAgentRequestSchema = z.strictObject({
   name: nonBlankString(1, 100),
   description: rawString(0, 2000).default(""),
   persona: PersonaContentSchema.prefault({}),
   additional_instructions: rawString(0, 16000).default(""),
   model_name: nonBlankString(1, 200),
-  temperature: z.number().min(0).max(2).default(0.7),
+  temperature: z.number().min(0).max(2).default(1),
   memory_consolidation_model_name: optionalModelName(200).default(null),
   memory_consolidation_prompt: rawString(1, 16000).default(DEFAULT_MEMORY_CONSOLIDATION_PROMPT),
   memory_consolidation_additional_instructions: rawString(0, 16000).default(""),
   memory_retrieval_model_name: optionalModelName(200).default(null),
   memory_retrieval_prompt: rawString(1, 16000).default(DEFAULT_MEMORY_RETRIEVAL_PROMPT),
   context_compression_model_name: optionalModelName(200).default(null),
-  persona_intensity: z.number().int().min(0).max(100).default(60),
-  p5_config: P5ConfigSchema.prefault({}),
+  persona_intensity: z.number().int().min(0).max(100).default(100),
+  p5_config: CreateAgentP5ConfigSchema,
   is_active: z.boolean().default(true),
 });
 

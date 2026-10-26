@@ -9,6 +9,7 @@ import { WakeRepository } from "../../src/server/db/wake-repository";
 import { createRuntime } from "../../src/server/runtime";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { recordInbound } from "../../src/server/services/qq-intake";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 afterEach(() => mock.restore());
 
@@ -18,8 +19,8 @@ it("lets timer callbacks run while the production runtime dispatches wakes witho
     dispatched += 1;
     return dispatched <= 3;
   });
-  const runtime = createRuntime({
-    businessDbPath: ":memory:",
+  const runtime = await createRuntime({
+    business: runtimeFixtureBusiness(),
     browserStateSecret: "synthetic-yield-fixture-secret",
   });
   Object.defineProperty(runtime.qqIntake, "state", {
@@ -48,8 +49,8 @@ it("lets timer callbacks run while the production runtime dispatches wakes witho
 it("keeps committed intake and ordinary HTTP reads independent of a held model activation", async () => {
   const held = Promise.withResolvers<string>();
   const entered = Promise.withResolvers<void>();
-  const runtime = createRuntime({
-    businessDbPath: ":memory:",
+  const runtime = await createRuntime({
+    business: runtimeFixtureBusiness(),
     browserStateSecret: "synthetic-held-model-secret",
     gateway: {
       config: { baseUrl: "http://unused.invalid", model: "fixture", timeoutSeconds: 1 },

@@ -8,15 +8,10 @@ import {
   QqSchemeAllocationSchema,
 } from "../../shared/contracts/context-allocation";
 import {
+  newQqSchemeDefaults,
   parseQqSchemeOutputReserve,
-  QQ_COMPRESSION_DEFAULT,
-  QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT,
   QQ_MEDIA_INPUT_SCHEME_DEFAULT,
   QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT,
-  QQ_MODEL_OUTPUT_RESERVE_DEFAULT,
-  QQ_REPLY_DEFAULT,
-  QQ_STICKER_DEDUP_DEFAULT,
-  QQ_TASK_LIMITS_SCHEME_DEFAULT,
   type QqSchemeCompression,
   type QqSchemeContext,
   type QqSchemeInputAntiSpam,
@@ -40,17 +35,10 @@ import {
 import { resolveQqInteractionPair } from "../../shared/contracts/qq-group-config";
 import { fail } from "../errors";
 import type { QqBinding } from "../services/qq-binding-contract";
-import {
-  parseQqSchemeCompression,
-  parseQqSchemeContext,
-  QQ_CONTEXT_DEFAULT,
-} from "../services/qq-context-contract";
+import { parseQqSchemeCompression, parseQqSchemeContext } from "../services/qq-context-contract";
 import { parseQqSchemePrompts, QQ_PROMPT_DEFAULTS } from "../services/qq-prompt-contract";
-import { parseQqSchemeRhythm, QQ_RHYTHM_DEFAULT } from "../services/qq-rhythm-contract";
-import {
-  parseQqSpeechTriggers,
-  QQ_SPEECH_TRIGGERS_DEFAULT,
-} from "../services/qq-speaking-contract";
+import { parseQqSchemeRhythm } from "../services/qq-rhythm-contract";
+import { parseQqSpeechTriggers } from "../services/qq-speaking-contract";
 import {
   parseQqSchemeStickerCollections,
   parseQqSchemeStickers,
@@ -785,7 +773,8 @@ function assertSchemeInteractionPair(triggers: QqSpeechTriggers): void {
 
 export function createQqScheme(orm: Orm, input: QqSchemeInput): QqSchemeRow {
   const name = normalizeName(input.name);
-  assertSchemeInteractionPair(input.triggers ?? QQ_SPEECH_TRIGGERS_DEFAULT);
+  const defaults = newQqSchemeDefaults();
+  assertSchemeInteractionPair(input.triggers ?? defaults.triggers);
   const existing = orm
     .select({ id: schema.qqSchemes.id })
     .from(schema.qqSchemes)
@@ -803,27 +792,25 @@ export function createQqScheme(orm: Orm, input: QqSchemeInput): QqSchemeRow {
           name,
           description: input.description ?? null,
           revision: 1,
-          ...triggerColumns(input.triggers ?? QQ_SPEECH_TRIGGERS_DEFAULT),
-          ...rhythmColumns(input.rhythm ?? QQ_RHYTHM_DEFAULT),
-          ...contextColumns(input.context ?? QQ_CONTEXT_DEFAULT),
-          ...compressionColumns(input.compression ?? QQ_COMPRESSION_DEFAULT),
-          ...outputReserveColumns(input.outputReserve ?? QQ_MODEL_OUTPUT_RESERVE_DEFAULT),
-          ...stickerColumns(input.stickers ?? QQ_STICKER_DEDUP_DEFAULT),
+          ...triggerColumns(input.triggers ?? defaults.triggers),
+          ...rhythmColumns(input.rhythm ?? defaults.rhythm),
+          ...contextColumns(input.context ?? defaults.context),
+          ...compressionColumns(input.compression ?? defaults.compression),
+          ...outputReserveColumns(input.outputReserve ?? defaults.outputReserve),
+          ...stickerColumns(input.stickers ?? defaults.stickers),
           ...promptColumns(parseQqSchemePrompts(input.prompts ?? QQ_PROMPT_DEFAULTS)),
-          ...replyColumns(parseQqSchemeReply(input.reply ?? QQ_REPLY_DEFAULT)),
+          ...replyColumns(parseQqSchemeReply(input.reply ?? defaults.reply)),
           // 0052 写入侧补默认（T12）：未提供的两组落完整 JSON，而不是靠读取兜底的 NULL。
-          ...messageSettingsColumns(input.messageSettings ?? QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT),
-          ...mediaInputColumns(input.mediaInput ?? QQ_MEDIA_INPUT_SCHEME_DEFAULT),
+          ...messageSettingsColumns(input.messageSettings ?? defaults.messageSettings),
+          ...mediaInputColumns(input.mediaInput ?? defaults.mediaInput),
           // 0059 写入侧补默认：上限 4/1 与防抖开，落显式列值，而不是靠列默认的猜测；
           // 写入边界先过契约，CHECK 约束只是第二道防线。
-          ...taskLimitColumns(
-            parseQqSchemeTaskLimits(input.taskLimits ?? QQ_TASK_LIMITS_SCHEME_DEFAULT),
-          ),
+          ...taskLimitColumns(parseQqSchemeTaskLimits(input.taskLimits ?? defaults.taskLimits)),
           ...inputAntiSpamColumns(
-            parseQqSchemeInputAntiSpam(input.inputAntiSpam ?? QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT),
+            parseQqSchemeInputAntiSpam(input.inputAntiSpam ?? defaults.inputAntiSpam),
           ),
           // 0068 写入侧补默认：未提供的分配组落完整 JSON（两档 fixed），不靠列默认的读取兜底。
-          ...allocationColumns(input.allocation ?? QQ_ALLOCATION_DEFAULT),
+          ...allocationColumns(input.allocation ?? defaults.allocation),
           createdAt: nowIso(),
           updatedAt: nowIso(),
         })

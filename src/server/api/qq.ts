@@ -109,6 +109,7 @@ import {
 import { getAgentRow, newId, type Orm } from "../db/repositories";
 import { fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import type { PreparedRequestFormat } from "../llm/request-format";
 import { normalizeOneBotAccountId } from "../services/onebot-protocol";
 import { sampleQqAnimationFrames } from "../services/qq-animation-frames";
 import {
@@ -225,6 +226,10 @@ export interface QqRoutesOptions {
    */
   annotator: QqStickerAnnotator;
   gateway: Pick<ModelGateway, "loadedContextCapacity">;
+  prepareVisionRequestFormat?: (input: {
+    model: string;
+    responseSchema?: Record<string, unknown>;
+  }) => PreparedRequestFormat;
 }
 
 /**
@@ -432,10 +437,10 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
           // 0052 两组随请求整组透传；未提供时 createQqScheme 在写入侧补已批准默认组。
           messageSettings: body.message_settings,
           mediaInput: body.media_input,
-          // 0059 两组同上：未提供时写入侧补默认（上限 4/1、防抖开）。
+          // 省略的整组由共享新建工厂填充；历史行与更新读取不变。
           taskLimits: body.task_limits,
           inputAntiSpam: body.input_anti_spam,
-          // 0068 分配组整组透传；未提供时写入侧补双 fixed 默认。
+          // 显式分配组整组透传；省略时采用新建工厂的自动模式。
           allocation: body.allocation,
         }),
       ),
@@ -605,6 +610,8 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
         assetId: stickerId,
         visionModel: settings.vision_model_name,
       },
+      undefined,
+      options.prepareVisionRequestFormat,
     );
     if (result.kind === "rejected") {
       return c.json(

@@ -201,8 +201,10 @@ function setup() {
   return { ...handle, seed, seedPeerTask, attempt, buildSource, setCapacity, spec };
 }
 
-const pendingText = (material: unknown) =>
-  JSON.stringify((material as { pending?: unknown }).pending ?? []);
+const pendingText = (material: unknown) => {
+  const m = material as { history?: unknown[]; pending?: unknown[] };
+  return JSON.stringify([...(m.history ?? []), ...(m.pending ?? [])]);
+};
 
 /** 二分出「这些消息按当前装配口径装得下且全部标记都在材料里」的最小容量。 */
 async function minCapacityWithMarkers(

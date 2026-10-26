@@ -31,7 +31,7 @@ const UNKNOWN = "99999999-9999-4999-8999-999999999999";
 
 function makeApp() {
   const business = openBusinessDb();
-  const app = createApp({ business });
+  const app = createApp({ business, externalActions: () => [] });
   return { app, business };
 }
 

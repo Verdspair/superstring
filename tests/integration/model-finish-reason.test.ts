@@ -90,11 +90,29 @@ function collect() {
   };
 }
 
-/** Metadata carries transport/status/finishReasons/doneMarker only — no message body. */
+/**
+ * Metadata carries transport/status/finishReasons/doneMarker plus the optional
+ * usage object — never a message body. When usage is present, only its six
+ * contract keys may appear (counters optional, cacheState required).
+ */
 function expectNoBody(item: ModelResponseMetadata): void {
   expect(
     Object.keys(item).every((key) =>
-      ["transport", "httpStatus", "finishReasons", "doneMarker"].includes(key),
+      ["transport", "httpStatus", "finishReasons", "doneMarker", "usage"].includes(key),
+    ),
+  ).toBe(true);
+  const usage = (item as { usage?: unknown }).usage;
+  if (usage === undefined) return;
+  expect(
+    Object.keys(usage as object).every((key) =>
+      [
+        "inputTokens",
+        "outputTokens",
+        "totalTokens",
+        "cacheReadInputTokens",
+        "cacheWriteInputTokens",
+        "cacheState",
+      ].includes(key),
     ),
   ).toBe(true);
 }

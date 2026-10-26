@@ -24,7 +24,9 @@ import {
   resolveBusinessDbPath,
 } from "../../src/server/runtime";
 import type { MemoryService } from "../../src/server/services/memory-service";
+import { P5ConfigSchema } from "../../src/shared/contracts/models";
 import { PermissionPolicySchema } from "../../src/shared/contracts/permissions";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const testBrowserStateSecret = "runtime-lifecycle-synthetic-secret";
 const gateway: ModelGateway = {
@@ -69,8 +71,8 @@ describe("application runtime lifecycle", () => {
     );
   });
   it("mounts business routes without any internal development endpoint", async () => {
-    const runtime = createRuntime({
-      businessDbPath: ":memory:",
+    const runtime = await createRuntime({
+      business: runtimeFixtureBusiness(),
       gateway,
       browserStateSecret: testBrowserStateSecret,
     });
@@ -89,14 +91,14 @@ describe("application runtime lifecycle", () => {
   it("shares one stop completion, cancels owners before drain, and closes SQLite after persistence", async () => {
     const log: string[] = [];
     const actualBusiness = openBusinessDb();
-    const runtime = createRuntime({
-      business: {
+    const runtime = await createRuntime({
+      business: runtimeFixtureBusiness({
         ...actualBusiness,
         close() {
           log.push("business-close");
           actualBusiness.close();
         },
-      },
+      }),
       gateway,
       memoryService: fakeWorker(log),
       browserStateSecret: testBrowserStateSecret,
@@ -127,8 +129,8 @@ describe("application runtime lifecycle", () => {
         underlying.close();
       },
     };
-    const runtime = createRuntime({
-      business,
+    const runtime = await createRuntime({
+      business: runtimeFixtureBusiness(business),
       gateway,
       browserStateSecret: testBrowserStateSecret,
     });
@@ -296,14 +298,14 @@ describe("application runtime lifecycle", () => {
   it("starts the worker once and stops it before closing the business database", async () => {
     const log: string[] = [];
     const actualBusiness = openBusinessDb();
-    const runtime = createRuntime({
-      business: {
+    const runtime = await createRuntime({
+      business: runtimeFixtureBusiness({
         ...actualBusiness,
         close() {
           log.push("business-close");
           actualBusiness.close();
         },
-      },
+      }),
       gateway,
       memoryService: fakeWorker(log),
       browserStateSecret: testBrowserStateSecret,
@@ -315,7 +317,7 @@ describe("application runtime lifecycle", () => {
     runtime.start();
     expect(log).toEqual(["worker-start", "worker-stop", "business-close"]);
   });
-  it("does not start the worker or change an unknown database when the schema gate fails", () => {
+  it("does not start the worker or change an unknown database when the schema gate fails", async () => {
     const log: string[] = [];
     const dbPath = path.join(tmpdir(), `superstring-bad-${crypto.randomUUID()}.sqlite`);
     const invalid = new Database(dbPath);
@@ -323,14 +325,14 @@ describe("application runtime lifecycle", () => {
     invalid.run("PRAGMA user_version = 99");
     invalid.close();
     try {
-      expect(() =>
+      await expect(
         createRuntime({
           businessDbPath: dbPath,
           gateway,
           memoryService: fakeWorker(log),
           browserStateSecret: testBrowserStateSecret,
         }),
-      ).toThrow(/REJECT_UNKNOWN_VERSION|REJECT_UNKNOWN_STRUCTURE/);
+      ).rejects.toThrow(/REJECT_UNKNOWN_VERSION|REJECT_UNKNOWN_STRUCTURE/);
       expect(log).toEqual([]);
       const preserved = new Database(dbPath);
       try {
@@ -354,8 +356,8 @@ describe("application runtime lifecycle", () => {
     const keyPath = path.join(dir, "qq-transport.key");
     const business = openBusinessDb();
     try {
-      const runtime = createRuntime({
-        business,
+      const runtime = await createRuntime({
+        business: runtimeFixtureBusiness(business),
         gateway,
         qqTransportKeyPath: keyPath,
         browserStateSecret: testBrowserStateSecret,
@@ -392,8 +394,8 @@ describe("application runtime lifecycle", () => {
   it("keeps the default model limit when only another conversation policy is overridden", async () => {
     let active = 0;
     let peak = 0;
-    const runtime = createRuntime({
-      businessDbPath: ":memory:",
+    const runtime = await createRuntime({
+      business: runtimeFixtureBusiness(),
       browserStateSecret: testBrowserStateSecret,
       botConversationPolicy: { maxSteps: 4 },
       gateway: {
@@ -432,10 +434,13 @@ describe("application runtime lifecycle", () => {
     const business = openBusinessDb();
     const model = "code-capable";
     ensureDefaults(business.orm, model);
+    business.db
+      .query("UPDATE agents SET p5_config = ? WHERE id = ?")
+      .run(JSON.stringify(P5ConfigSchema.parse({})), "00000000-0000-0000-0000-000000000001");
     let enabled = false,
       calls = 0;
-    const runtime = createRuntime({
-      business,
+    const runtime = await createRuntime({
+      business: runtimeFixtureBusiness(business),
       permissionConfigPath: file,
       browserStateSecret: testBrowserStateSecret,
       gateway: {
@@ -520,6 +525,7 @@ describe("application runtime lifecycle", () => {
       const app = createApp({
         business,
         gateway,
+        externalActions: () => [],
         browserStateSecret: testBrowserStateSecret,
       });
       expect((await app.request("/sessions")).status).toBe(200);
@@ -527,10 +533,10 @@ describe("application runtime lifecycle", () => {
       business.close();
     }
   });
-  it("closes the business database when service construction fails", () => {
+  it("closes the business database when service construction fails", async () => {
     const business = openBusinessDb();
     let closed = false;
-    expect(() =>
+    await expect(
       createRuntime({
         business: {
           ...business,
@@ -544,10 +550,10 @@ describe("application runtime lifecycle", () => {
         },
         browserStateSecret: testBrowserStateSecret,
       }),
-    ).toThrow("synthetic construction failure");
+    ).rejects.toThrow("synthetic construction failure");
     expect(closed).toBe(true);
   });
-  it("closes the business database when startup OneBot backfill fails", () => {
+  it("closes the business database when startup OneBot backfill fails", async () => {
     const business = openBusinessDb();
     let closed = false;
     let intercepted = 0;
@@ -602,15 +608,15 @@ describe("application runtime lifecycle", () => {
     });
     let thrown: unknown;
     try {
-      createRuntime({
-        business: {
+      await createRuntime({
+        business: runtimeFixtureBusiness({
           db: db as Database,
           orm: business.orm,
           close() {
             closed = true;
             business.close();
           },
-        },
+        }),
         gateway,
         browserStateSecret: testBrowserStateSecret,
       });

@@ -92,7 +92,7 @@ it("非全量档不显示目录批次输入，payload 不夹带给 context 页",
   expect(context.catalog_batch_size).toBe(30);
 });
 
-it("存量 full 档：两输入按真实模式显示，改批次保存仍 full；未改点保存不发 PUT；主动切普通档则持久化该档", async () => {
+it("存量 full 档：两输入按真实模式显示且为 disabled，改批次不生效无无效保存，普通预设独立修改触发 dirty 保存并保真 full 与批次；未改点保存不发 PUT；主动切普通档则持久化该档", async () => {
   persisted = {
     ...persisted,
     p5_config: {
@@ -108,25 +108,35 @@ it("存量 full 档：两输入按真实模式显示，改批次保存仍 full�
   // 模式选择按真实值显示 full_catalog，不伪装成 broad。
   const modeSelect = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
   expect(modeSelect.value).toBe("full_catalog");
-  // 两输入按存量值显示。
+  // 两输入按存量值显示且为 disabled（只读展示，不维护校验与重置状态）。
   const batches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
   const batch = screen.getByLabelText("每批目录条数") as HTMLInputElement;
   expect(batches.value).toBe("17");
   expect(batch.value).toBe("23");
+  expect(batches.disabled).toBe(true);
+  expect(batch.disabled).toBe(true);
 
   // 负例 1：未改任何东西时保存按钮禁用（不因 full 而进页即保存）。
   expect((screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement).disabled).toBe(
     true,
   );
 
-  // 正例：改批次 → dirty → 保存 → PUT 载荷 mode 保持 full_catalog，两字段落地。
+  // 改批次不生效：inactive 字段不制造 dirty，不修改草稿，无无效保存。
   fireEvent.change(batches, { target: { value: "40" } });
   fireEvent.change(batch, { target: { value: "9" } });
+  expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
+  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
+  expect(store.getState().pageEditor?.draft.p5_config.catalog_batch_size).toBe(23);
+
+  // 正例：普通预设独立修改（candidate_limit）→ dirty → 保存 → PUT 载荷 mode 保持 full_catalog，批次与新值落地。
+  const candidateInputs = screen.getAllByLabelText("每次查询扫描候选上限") as HTMLInputElement[];
+  fireEvent.change(candidateInputs[0], { target: { value: "35" } });
   expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
   expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
   expect(persisted.p5_config.retrieval_mode).toBe("full_catalog");
-  expect(persisted.p5_config.max_catalog_batches).toBe(40);
-  expect(persisted.p5_config.catalog_batch_size).toBe(9);
+  expect(persisted.p5_config.max_catalog_batches).toBe(17);
+  expect(persisted.p5_config.catalog_batch_size).toBe(23);
+  expect(persisted.p5_config.retrieval_presets.conservative.candidate_limit).toBe(35);
 
   // 负例 2：重新进入后未改点保存不发 PUT（updateAgent 调用数不变）。
   const callsBefore = (client.updateAgent as ReturnType<typeof vi.fn>).mock.calls.length;
@@ -142,11 +152,11 @@ it("存量 full 档：两输入按真实模式显示，改批次保存仍 full�
   expect(screen.queryByLabelText("最多目录批次")).toBeNull();
   expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
   expect(persisted.p5_config.retrieval_mode).toBe("standard");
-  expect(persisted.p5_config.max_catalog_batches).toBe(40);
-  expect(persisted.p5_config.catalog_batch_size).toBe(9);
+  expect(persisted.p5_config.max_catalog_batches).toBe(17);
+  expect(persisted.p5_config.catalog_batch_size).toBe(23);
 });
 
-it("目录批次非法原文：空/0/越界显示错误且拦保存，不误写草稿其它字段", async () => {
+it("目录批次非法原文：空/0/越界在 inactive 下不执行告警且拦保存，普通预设独立修改保存保真且不误写草稿其它字段", async () => {
   persisted = {
     ...persisted,
     p5_config: {
@@ -160,30 +170,52 @@ it("目录批次非法原文：空/0/越界显示错误且拦保存，不误写�
   store.getState().openSettingsRoute("memory-tools");
   await act(async () => render(<MemoryReadingRules />));
   const batches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
+  const batchSize = screen.getByLabelText("每批目录条数") as HTMLInputElement;
   const save = () => screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement;
 
-  // 空：非法、无错误写草稿、拦保存。
-  fireEvent.change(batches, { target: { value: "" } });
-  expect(screen.getByRole("alert")).toBeTruthy();
+  // 两输入按存量值只读显示且为 disabled
+  expect(batches.value).toBe("17");
+  expect(batches.disabled).toBe(true);
+  expect(batchSize.value).toBe("23");
+  expect(batchSize.disabled).toBe(true);
   expect(save().disabled).toBe(true);
-  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
 
-  // 0 与越界：同样拦。
+  // 空：inactive 字段不执行告警（无 alert）、不写草稿、拦保存（未产生 dirty）。
+  fireEvent.change(batches, { target: { value: "" } });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(save().disabled).toBe(true);
+  expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
+  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
+  expect(store.getState().pageEditor?.draft.p5_config.catalog_batch_size).toBe(23);
+
+  // 0 与越界：同样不执行告警且拦保存。
   fireEvent.change(batches, { target: { value: "0" } });
+  expect(screen.queryByRole("alert")).toBeNull();
   expect(save().disabled).toBe(true);
   fireEvent.change(batches, { target: { value: "10001" } });
+  expect(screen.queryByRole("alert")).toBeNull();
   expect(save().disabled).toBe(true);
   expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
+  expect(store.getState().pageEditor?.draft.p5_config.catalog_batch_size).toBe(23);
 
-  // 改成合法值：错误消失、保存恢复可用（禁用/可用切换会替换 DOM 节点，取当前按钮），且另一字段草稿未被动过。
-  fireEvent.change(batches, { target: { value: "55" } });
+  // 改普通预设合法值：保存恢复可用，且存量 full 批次字段未被动过。
+  const candidateInputs = screen.getAllByLabelText("每次查询扫描候选上限") as HTMLInputElement[];
+  fireEvent.change(candidateInputs[0], { target: { value: "55" } });
   expect(screen.queryByRole("alert")).toBeNull();
   expect(save().isConnected).toBe(true);
   expect(save().disabled).toBe(false);
-  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(55);
+  expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
+  expect(
+    store.getState().pageEditor?.draft.p5_config.retrieval_presets.conservative.candidate_limit,
+  ).toBe(55);
+  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
   expect(store.getState().pageEditor?.draft.p5_config.catalog_batch_size).toBe(23);
+  expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+  expect(persisted.p5_config.retrieval_mode).toBe("full_body");
+  expect(persisted.p5_config.max_catalog_batches).toBe(17);
+  expect(persisted.p5_config.catalog_batch_size).toBe(23);
+  expect(persisted.p5_config.retrieval_presets.conservative.candidate_limit).toBe(55);
 });
-
 function persona(id = "A") {
   return PersonaResponseSchema.parse({
     id,

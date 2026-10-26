@@ -88,8 +88,8 @@ describe("editable QQ prompt storage and HTTP", () => {
     try {
       const row = createQqScheme(h.orm, { name: "reserves" });
       expect(schemeOutputReserve(row)).toEqual({
-        judgement_output_reserved: 512,
-        reply_output_reserved: 2048,
+        judgement_output_reserved: 32768,
+        reply_output_reserved: 32768,
       });
       const changed = updateQqScheme(h.orm, row.id, {
         name: row.name,
@@ -276,7 +276,7 @@ describe("editable QQ prompt storage and HTTP", () => {
   }
   it("creates, updates and reads all six slots through real routes", async () => {
     const h = openBusinessDb();
-    const app = createApp({ business: h });
+    const app = createApp({ business: h, externalActions: () => [] });
     const send = (method: string, url: string, value: unknown) =>
       app.request(url, {
         method,
@@ -406,7 +406,7 @@ describe("QQ prompt assembly", () => {
     expect(timeline).toContain("标注「（管理员）」");
     expect(timeline).toContain("群友(20002)（管理员）");
     // Priority stays within the host's authorized target, source, and configuration scope.
-    expect(timeline).toContain("此会话 Agent 的主人，名单由用户配置、多人同级");
+    expect(timeline).toContain("用户为此会话配置的管理员，名单可含多人且同级");
     expect(timeline).toContain("优先听从其要求");
     expect(timeline).toContain("宿主权限、来源范围与发言门槛不变");
     // Someone outside the list is rendered exactly as before.

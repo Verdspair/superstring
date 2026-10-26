@@ -1,5 +1,5 @@
 import { ArrowLeft, BookOpen, Check, FileText, Layers, RotateCcw } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Field } from "@/components/form-field";
@@ -21,7 +21,8 @@ import { agentPageDirty } from "@/features/agents/page-drafts";
 import { knowledgeReadDirty } from "@/features/knowledge/types";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
-import { P5ConfigSchema, RetrievalPresetSchema } from "../../../shared/contracts/models";
+import { resolveMemoryReadPolicy } from "../../../shared/contracts/memory";
+import { RetrievalPresetSchema } from "../../../shared/contracts/models";
 import { openContextAllocation } from "../../features/context-allocation";
 
 const MODES = {
@@ -33,93 +34,23 @@ const MODES = {
 // 三个预设默认全部展开，额度字段直接可见。
 const PRESET_MODES = ["conservative", "standard", "broad"] as const;
 
-/** 记忆工具设置：只拥有 retrieval_mode / retrieval_presets 与全量档目录批次两项（max_catalog_batches / catalog_batch_size），正文在资料库的记忆分区管理。 */
-type CatalogKey = "max_catalog_batches" | "catalog_batch_size";
-
-/** 契约叶子校验（P5ConfigSchema 现读，不自抄边界）：空/非整数/越界都非法。 */
-function catalogValid(key: CatalogKey, raw: string): boolean {
-  const leaf = P5ConfigSchema.shape[key] as { safeParse: (v: unknown) => { success: boolean } };
-  const n = Number(raw);
-  return raw.trim() !== "" && Number.isFinite(n) && leaf.safeParse(n).success;
-}
-
-/**
- * 目录批次两输入（仅全量档挂载）：原文留底属本组件生命周期。
- * - 组件按外层 key 随 Agent/编辑会话/config_version 重挂载，切目标即拿到新原文；
- * - 草稿值外部变化（放弃/刷新/别处保存推进）按值复位原文；本组件自己输入的合法值与草稿一致，
- *   复位是同串写回，不丢正在输入的内容；
- * - 非法原文只在本组件提示，不写入草稿，也不 clamp。
- */
-function CatalogBatchFields({
-  batches,
-  batch,
-  disabled,
-  onPatch,
-  onInvalidChange,
-}: {
-  batches: number;
-  batch: number;
-  disabled: boolean;
-  onPatch: (key: CatalogKey, value: number) => void;
-  onInvalidChange: (invalid: boolean) => void;
-}) {
+/** 存量全量档目录批次参数展示（仅全量档挂载）：退役字段只读展示原始数值，不维护草稿与校验状态。 */
+function CatalogBatchFields({ batches, batch }: { batches: number; batch: number }) {
   const { t } = useTranslation();
-  const [raws, setRaws] = useState<Record<CatalogKey, string>>({
-    max_catalog_batches: String(batches),
-    catalog_batch_size: String(batch),
-  });
-  // 外部草稿变化（放弃/刷新/别处保存）按值复位原文。
-  useEffect(() => {
-    setRaws({ max_catalog_batches: String(batches), catalog_batch_size: String(batch) });
-  }, [batches, batch]);
-  const invalid =
-    !catalogValid("max_catalog_batches", raws.max_catalog_batches) ||
-    !catalogValid("catalog_batch_size", raws.catalog_batch_size);
-  useEffect(() => {
-    onInvalidChange(invalid);
-  }, [invalid, onInvalidChange]);
   return (
     <div className="grid min-w-0 gap-4 sm:grid-cols-2">
-      {(
-        [
-          ["library.maximum.catalog.batches", "max_catalog_batches"],
-          ["library.catalog.entries.per.batch", "catalog_batch_size"],
-        ] as const
-      ).map(([labelKey, key]) => {
-        const fieldInvalid = !catalogValid(key, raws[key]);
-        return (
-          <Field
-            key={key}
-            label={labelKey}
-            tooltip={t(
-              key === "max_catalog_batches"
-                ? "hints.fieldExtra.catalogBatches"
-                : "hints.fieldExtra.catalogSize",
-            )}
-          >
-            <Input
-              type="number"
-              disabled={disabled}
-              min={1}
-              max={10000}
-              value={raws[key]}
-              aria-invalid={fieldInvalid || undefined}
-              aria-describedby={fieldInvalid ? `catalog-${key}-error` : undefined}
-              onChange={(e) => {
-                const raw = e.target.value;
-                setRaws((old) => ({ ...old, [key]: raw }));
-                // 非法原文不写入草稿：保留原文与错误提示，不把空/0/越界洗成数字。
-                if (raw.trim() !== "" && catalogValid(key, raw)) onPatch(key, Number(raw));
-              }}
-            />
-            {fieldInvalid && (
-              <p id={`catalog-${key}-error`} role="alert" className="mt-1 text-xs text-destructive">
-                {t("connections.enterAValidIntegerWithinTheAllowedRange")}
-              </p>
-            )}
-          </Field>
-        );
-      })}
+      <Field
+        label="library.maximum.catalog.batches"
+        tooltip={t("hints.fieldExtra.catalogBatchesDisabled")}
+      >
+        <Input type="number" disabled={true} readOnly={true} value={batches} />
+      </Field>
+      <Field
+        label="library.catalog.entries.per.batch"
+        tooltip={t("hints.fieldExtra.catalogSizeDisabled")}
+      >
+        <Input type="number" disabled={true} readOnly={true} value={batch} />
+      </Field>
     </div>
   );
 }
@@ -158,14 +89,12 @@ export function MemoryReadingRules({
   const t = useTranslation().t;
   const editor = s.pageEditor;
   const isWorkspace = Boolean(renderWorkspace);
-  // 目录批次非法原文只存在于全量档子组件：普通档不挂载，不拦普通档保存。
-  const [catalogInvalid, setCatalogInvalid] = useState(false);
-  // 放弃时递增：强制子组件重挂载，清掉非法原文。
-  const [catalogResetSeq, setCatalogResetSeq] = useState(0);
+  // 存量全量批次字段为只读展示，不维护校验与重置状态。
 
   if (!editor) return null;
   const p5 = editor.draft.p5_config;
-  const legacyFull = p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body";
+  const readPolicy = resolveMemoryReadPolicy(p5.retrieval_mode, p5.retrieval_presets);
+  const legacyFull = readPolicy.legacyFieldsInactive;
   const patchMemoryRules = (value: Partial<typeof p5>) =>
     s.patchPageAgent("memory-tools", { p5_config: { ...p5, ...value } });
 
@@ -212,7 +141,7 @@ export function MemoryReadingRules({
       isByteValid(String(p5.retrieval_presets[mode].max_tokens)),
   );
 
-  const canDiscardMemory = (isMemoryDirty || (legacyFull && catalogInvalid)) && !busy;
+  const canDiscardMemory = isMemoryDirty && !busy;
   const canDiscardContext = (isContextDirty || hasPresetBytesInvalid) && !busy;
 
   const handleDiscardContext = () => {
@@ -222,10 +151,10 @@ export function MemoryReadingRules({
   const statusBadge = (
     <span
       role="status"
-      className={`rounded-[9999px] border px-[12px] py-[4px] text-[12px] font-semibold whitespace-nowrap ${isMemoryDirty || isContextDirty || hasPresetBytesInvalid || catalogInvalid ? "border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning)]" : "border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success)]"}`}
+      className={`rounded-[9999px] border px-[12px] py-[4px] text-[12px] font-semibold whitespace-nowrap ${isMemoryDirty || isContextDirty || hasPresetBytesInvalid ? "border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning)]" : "border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success)]"}`}
     >
       {t(
-        isMemoryDirty || isContextDirty || hasPresetBytesInvalid || catalogInvalid
+        isMemoryDirty || isContextDirty || hasPresetBytesInvalid
           ? "strict.reading.dirty"
           : "strict.reading.clean",
       )}
@@ -250,7 +179,6 @@ export function MemoryReadingRules({
         onClick={() => {
           s.discardSettingsPages("memory-tools");
           s.discardSettingsPages("context");
-          if (legacyFull) setCatalogResetSeq((n) => n + 1);
         }}
       >
         <RotateCcw className="size-[15px]" />
@@ -263,7 +191,7 @@ export function MemoryReadingRules({
         data-testid="reading-save-rules-btn"
         className={isWorkspace ? "max-sm:size-8 max-sm:p-0" : undefined}
         aria-label={t("library.save.memory.rules")}
-        disabled={!isMemoryDirty || (legacyFull && catalogInvalid) || busy}
+        disabled={!isMemoryDirty || busy}
         tooltip={t("hints.agent.rulesSave")}
         disabledReason={t("hints.agent.rulesSaveDisabled")}
         onClick={() => void s.saveSettingsPage("memory-tools")}
@@ -370,25 +298,18 @@ export function MemoryReadingRules({
                   {t("library.memory.tools.use.broad")}
                 </Button>
               </p>
-              <CatalogBatchFields
-                key={`${editor.agent.id}:${editor.agent.config_version}:${catalogResetSeq}`}
-                batches={p5.max_catalog_batches}
-                batch={p5.catalog_batch_size}
-                disabled={busy}
-                onPatch={(key, value) => patchMemoryRules({ [key]: value })}
-                onInvalidChange={setCatalogInvalid}
-              />
+              <CatalogBatchFields batches={p5.max_catalog_batches} batch={p5.catalog_batch_size} />
             </>
           )}
 
           <Field
             label="strict.reading.prompt"
-            tooltip={t("strict.reading.promptHelp")}
+            tooltip={t("hints.agent.fieldPromptReadingDisabled")}
             labelAside={t("strict.reading.promptBounds")}
           >
             <Textarea
               aria-label={t("library.memory.tools.retrieval.prompt")}
-              disabled={busy}
+              disabled={true}
               maxLength={16000}
               className="min-h-[76px] px-[12px] py-[10px] text-[13.5px] leading-[1.5]"
               value={editor.draft.memory_retrieval_prompt}
@@ -526,11 +447,11 @@ export function MemoryReadingRules({
                     <Field
                       label="strict.reading.instruction"
                       labelAside={t("strict.reading.instructionBounds")}
-                      tooltip={t("hints.fieldExtra.relevance")}
+                      tooltip={t("hints.agent.fieldRelevanceReadingDisabled")}
                     >
                       <Textarea
                         aria-label={t("library.memory.tools.relevance.instruction")}
-                        disabled={busy}
+                        disabled={true}
                         maxLength={16000}
                         value={preset.relevance_instruction}
                         className="min-h-[38px] px-[12px] py-[8px] text-[13.5px] leading-[20px]"
@@ -578,7 +499,6 @@ export function MemoryReadingRules({
           tooltip={t("hints.agent.discardMemoryRules")}
           onClick={() => {
             s.discardSettingsPages("memory-tools");
-            if (legacyFull) setCatalogResetSeq((n) => n + 1);
           }}
         >
           {t("strict.reading.discardRules")}

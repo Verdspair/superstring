@@ -88,22 +88,39 @@ export function AgentModelPurpose({
           embedded ? "bg-transparent border-0 divide-y-0 rounded-none shadow-none" : undefined
         }
       >
-        {modelFields.map(([key, label]) => (
-          <div key={key} className={embedded ? "py-2 px-0" : "p-4 sm:p-5"}>
-            <Field label={label} tooltip={t("hints.agent.fieldModelName")}>
-              <InputSuggestions
-                suggestions={modelSuggestions}
-                value={d[key] ?? ""}
-                placeholder={key === "model_name" ? undefined : t("library.unset")}
-                onValueChange={(value) =>
-                  s.patchPageAgent("models", {
-                    [key]: key === "model_name" ? value : value || null,
-                  } as Partial<AgentDraft>)
+        {modelFields.map(([key, label]) => {
+          const isReadingModel = key === "memory_retrieval_model_name";
+          return (
+            <div key={key} className={embedded ? "py-2 px-0" : "p-4 sm:p-5"}>
+              <Field
+                label={label}
+                tooltip={
+                  isReadingModel
+                    ? t("hints.agent.fieldModelNameReadingDisabled")
+                    : t("hints.agent.fieldModelName")
                 }
-              />
-            </Field>
-          </div>
-        ))}
+              >
+                <InputSuggestions
+                  disabled={isReadingModel}
+                  suggestions={modelSuggestions}
+                  value={d[key] ?? ""}
+                  placeholder={
+                    isReadingModel
+                      ? t("library.unset")
+                      : key === "model_name"
+                        ? undefined
+                        : t("library.unset")
+                  }
+                  onValueChange={(value) =>
+                    s.patchPageAgent("models", {
+                      [key]: key === "model_name" ? value : value || null,
+                    } as Partial<AgentDraft>)
+                  }
+                />
+              </Field>
+            </div>
+          );
+        })}
 
         <div className={embedded ? "py-2 px-0" : "p-4 sm:p-5"}>
           <Field label="library.temperature" tooltip={t("hints.agent.fieldTemperature")}>

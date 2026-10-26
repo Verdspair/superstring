@@ -11,6 +11,7 @@ import {
 } from "../../src/server/channels/onebot11/message-projection";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
+import { enqueue } from "../../src/server/db/memory-repository";
 import { recordObservation } from "../../src/server/db/qq-observation-intake";
 import {
   DEFAULT_AGENT_ID,
@@ -21,6 +22,7 @@ import {
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
+import { qqMemoryScopeKey } from "../../src/server/services/qq-binding-contract";
 import {
   qqMessageFactConsumableCap,
   qqMessageFactSourceAccess,
@@ -683,3 +685,111 @@ function factExpiresOf(h: ReturnType<typeof setup>, eventKey: string): string {
     .get(eventKey) as { expires_at: string };
   return row.expires_at;
 }
+
+describe("batched context source dispatch retains owner-specific keepers", () => {
+  it("keeps a memory job's selected fact readable without accepting another event from the same conversation", () => {
+    const h = setup();
+    try {
+      const { conversation, journal } = bind(h);
+      const selected = alinObservation(-801, "selected job input");
+      const unrelated = alinObservation(-802, "not selected by this job");
+      recordWithJournal(h, journal, "binding", selected);
+      recordWithJournal(h, journal, "binding", unrelated);
+      const live = liveScope(h, conversation);
+      const job = enqueue(h.orm, DEFAULT_AGENT_ID, "keeper-parity", {
+        kind: "manual",
+        eventIds: [selected.eventKey],
+        scope: {
+          scope: "reality_user",
+          scopeKey: qqMemoryScopeKey({
+            kind: "qq",
+            accountId: "90001",
+            conversationKind: "group",
+            peerId: "30003",
+            agentId: DEFAULT_AGENT_ID,
+          }),
+        },
+      });
+      const owner: RunOwner = {
+        kind: "memory_job",
+        id: job.id,
+        userId: DEFAULT_USER_ID,
+        agentId: DEFAULT_AGENT_ID,
+      };
+      const selectedFact = loadQqMessageFact(h, live, "-801", now);
+      const unrelatedFact = loadQqMessageFact(h, live, "-802", now);
+      if (!selectedFact || !unrelatedFact) throw new Error("synthetic facts missing");
+      const selectedRef = factRefOf(selectedFact);
+      const unrelatedRef = factRefOf(unrelatedFact);
+      const assert = (sources: SourceRef[]) =>
+        assertContextSources({
+          db: h.db,
+          sources,
+          owner,
+          now,
+          memoryRevisions: () => new Map(),
+          resolveSource: () => "available",
+          messages: { memory: "memory changed", other: "source changed" },
+        });
+      expect(sourceAccess(h.db, selectedRef, owner, { userId: DEFAULT_USER_ID }, now)).toBe(
+        "available",
+      );
+      expect(sourceAccess(h.db, unrelatedRef, owner, { userId: DEFAULT_USER_ID }, now)).toBe(
+        "revoked",
+      );
+      expect(() => assert([selectedRef])).not.toThrow();
+      expect(() => assert([selectedRef, unrelatedRef])).toThrow();
+      expect(() => assert([{ ...selectedRef, revision: "changed" }])).toThrow();
+      h.db
+        .query(
+          "UPDATE memory_jobs SET config_snapshot=json_set(config_snapshot,'$.source_event_ids',json('[]')) WHERE id=?",
+        )
+        .run(job.id);
+      expect(() => assert([selectedRef])).toThrow();
+    } finally {
+      h.close();
+    }
+  });
+
+  it("keeps scalar and batch projection identical for direct and secondary-only journal membership", () => {
+    const h = setup();
+    try {
+      const { conversation, journal } = bind(h);
+      const observation = alinObservation(-803, "journal membership parity");
+      recordWithJournal(h, journal, "binding", observation);
+      const live = liveScope(h, conversation);
+      const scalar = loadQqMessageFact(h, live, "-803", now);
+      expect(scalar).not.toBeNull();
+      expect(projectQqMessageFacts(h, live, [observation.eventKey], now)).toEqual([scalar!]);
+      // Keep the original source in the secondary sources array, but remove its direct inbound identity.
+      h.db
+        .query(
+          "UPDATE conversation_events SET source_kind='synthetic_secondary',source_id='secondary-anchor' WHERE conversation_id=? AND source_kind='qq_event' AND source_id=?",
+        )
+        .run(conversation.id, observation.eventKey);
+      expect(loadQqMessageFact(h, live, "-803", now)).toBeNull();
+      expect(projectQqMessageFacts(h, live, [observation.eventKey], now)).toEqual([]);
+    } finally {
+      h.close();
+    }
+  });
+});
+
+it("keeps scalar and batch projection equally fail-closed for duplicate platform identities", () => {
+  const h = setup();
+  try {
+    const { conversation, journal } = bind(h);
+    const first = alinObservation(-804, "first recorded message");
+    const duplicate = alinObservation(-805, "second recorded message");
+    recordWithJournal(h, journal, "binding", first);
+    recordWithJournal(h, journal, "binding", duplicate);
+    const live = liveScope(h, conversation);
+    h.db
+      .query("UPDATE qq_events SET message_id=? WHERE event_key=?")
+      .run("-804", duplicate.eventKey);
+    expect(loadQqMessageFact(h, live, "-804", now)).toBeNull();
+    expect(projectQqMessageFacts(h, live, [first.eventKey, duplicate.eventKey], now)).toEqual([]);
+  } finally {
+    h.close();
+  }
+});

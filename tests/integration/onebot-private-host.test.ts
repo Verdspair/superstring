@@ -39,14 +39,19 @@ import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createSqliteQueryFactory } from "../../src/server/modules/composition";
 import { PermissionService } from "../../src/server/permissions/service";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
 import {
   nextQqImmediateReplyTask,
   peekQqImmediateReplyTask,
 } from "../../src/server/services/qq-dispatch";
 import { recordInbound } from "../../src/server/services/qq-intake";
+import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
 import { qqStickerSelectionForScheme } from "../../src/server/services/qq-sticker-candidates";
 import { qqStickerUsable } from "../../src/server/services/qq-sticker-contract";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
 import type { PermissionPolicy } from "../../src/shared/contracts/permissions";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -67,11 +72,18 @@ function setup(
   } = {},
 ) {
   const clock = { seconds: nowSeconds };
-  const h = openBusinessDb();
+  const h = runtimeFixtureBusiness(openBusinessDb(), "chat-model");
   handles.push(h);
   ensureDefaults(h.orm, "chat-model");
   updateQqSettings(h.orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
+    context: { ...fixtureLegacyContext },
+    rhythm: { ...fixtureLegacyRhythm },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     name: "test",
     reply: { split_by_speaker: false },
     // 连续与自主互斥（保存边界拒绝双 true）；私聊恒 direct，这里只保 direct/idle 开。

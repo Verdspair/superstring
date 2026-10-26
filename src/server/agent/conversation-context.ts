@@ -30,6 +30,11 @@ import { correctionsForTurns } from "../db/memory-content-repository";
 import { DEFAULT_USER_ID, immediate, type Orm } from "../db/repositories";
 import { AppError, fail } from "../errors";
 import type { ModelGateway } from "../llm/model-gateway";
+import {
+  measureContextTokens,
+  measurePreparedRequest,
+  type PreparedRequestFormat,
+} from "../llm/request-format";
 import { type ModuleSourceResolver, resolveSourceStates } from "../modules/composition";
 import { estimateMessages, validateContextIds } from "../modules/memory-query";
 import { turnSources } from "../modules/provenance";
@@ -37,7 +42,6 @@ import { requireChat } from "../services/runtime-config";
 import { estimateTokens } from "../services/token-estimate";
 import { createAgentRuntime, type LeafAgentRuntime } from "./agent-runtime";
 import { sourceAccess } from "./context-access";
-import { measureContextTokens } from "./context-engine";
 import { type ModelContextBudget, textMessages } from "./model-port";
 import { SUMMARY_RESULT_JSON_SCHEMA, SummaryResultSchema } from "./summary-contract";
 
@@ -266,6 +270,7 @@ export class ContextBuilder {
     outputTokens: number,
     cfg: P5Config,
     responseSchema?: Record<string, unknown>,
+    format?: PreparedRequestFormat,
   ): PricedRequest {
     const counter = this.measured(budget);
     if (counter === undefined) {
@@ -278,9 +283,17 @@ export class ContextBuilder {
     if (!Number.isSafeInteger(capacity) || capacity < 1) {
       throw new AppError("CONTEXT_CAPACITY_ERROR", "模型上下文预算返回无效容量", 503);
     }
-    const measured = measureContextTokens(textMessages(messages), counter, {
-      ...(responseSchema === undefined ? {} : { responseSchema }),
-    });
+    const preparedMeasure =
+      format !== undefined
+        ? measurePreparedRequest(textMessages(messages), budget, format)
+        : undefined;
+    const fallbackMeasure =
+      preparedMeasure === undefined
+        ? measureContextTokens(textMessages(messages), counter, {
+            ...(responseSchema === undefined ? {} : { responseSchema }),
+          })
+        : undefined;
+    const measured = preparedMeasure ?? fallbackMeasure!;
     return {
       inputTokens: measured.textTokens,
       mediaState: measured.mediaState,
@@ -462,6 +475,13 @@ export class ContextBuilder {
         ? await this.prepareFor(args.state, args.model, args.cfg)
         : undefined;
     const measured = this.measured(budget);
+    const requestFormat =
+      budget !== undefined && this.gateway.prepareRequestFormat !== undefined
+        ? this.gateway.prepareRequestFormat({
+            model: budget.model,
+            responseSchema: args.responseSchema,
+          })
+        : undefined;
     if (measured !== undefined && budget) {
       const priced = this.priced(
         budget,
@@ -469,6 +489,7 @@ export class ContextBuilder {
         args.outputTokens,
         args.cfg,
         args.responseSchema,
+        requestFormat,
       );
       if (args.outputTokens < 1 || priced.inputTokens > priced.inputLimit) {
         fail("CONTEXT_AUX_BUDGET", "辅助模型输入与输出预留超过容量，不能截断来源");
@@ -503,16 +524,17 @@ export class ContextBuilder {
               retryOrigin: "system",
               assertSources: () =>
                 this.assertCurrent(args.state.turnId, args.state.runtime.agent_id),
-              ...(budget === undefined || measured === undefined
-                ? {}
-                : {
-                    contextBudget: budget,
+              ...(budget !== undefined ? { contextBudget: budget } : {}),
+              ...(budget !== undefined && measured !== undefined && budget.capacity !== null
+                ? {
                     contextInputLimit: this.inputLimit(
-                      budget.capacity as number,
+                      budget.capacity,
                       args.outputTokens,
                       args.cfg,
                     ),
-                  }),
+                  }
+                : {}),
+              ...(requestFormat !== undefined ? { requestFormat } : {}),
               signal,
               validate: args.parse,
               owner: {

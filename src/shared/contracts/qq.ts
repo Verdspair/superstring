@@ -654,7 +654,7 @@ export const QQ_REPLY_DEFAULT: QqSchemeReply = Object.freeze({ split_by_speaker:
  */
 export const QQ_REPLY_SPLIT_PROMPT = [
   "写这一轮要发的话：一到两句、短，直接说内容，不写开场白、不写总结。只写一条消息，不要写多条，也不要在文字里写 @——开头由程序 @ 他。",
-  "猫味放在语气里，不放在字数上：看情况一个“喵”或“嘛”，大多数句子正常说。被问到就正面回答；没被问到只接话，不反问、不催。",
+  "按当前对话自然说话，不添加固定角色口癖。被问到就正面回答；没被问到只接话，不反问、不催。",
 ].join("\n");
 
 /** 关掉开关时用的那一份（与方案的 prompt_reply 默认值同文，服务端 QQ_PROMPT_DEFAULTS.reply 引用它）。 */
@@ -772,6 +772,85 @@ export const QqBindingInputAntiSpamSchema = z.strictObject({
 });
 export type QqBindingInputAntiSpam = z.infer<typeof QqBindingInputAntiSpamSchema>;
 
+/** Explicit defaults for newly created schemes; stored rows retain their existing values. */
+export function newQqSchemeDefaults() {
+  return {
+    triggers: QqSpeechTriggersSchema.parse({
+      direct_reply: true,
+      follow_up: false,
+      chiming_in: true,
+      idle_topic: true,
+    }),
+    rhythm: QqSchemeRhythmSchema.parse({
+      participation_timing: "quiet_preferred",
+      merge_window_seconds: 15,
+      reply_cooldown_seconds: 1,
+      hourly_speech_limit: 300,
+      idle_quiet_minutes: 15,
+      active_hours_enabled: false,
+      active_hours_start_minutes: 0,
+      active_hours_end_minutes: 1439,
+      max_recompute_count: 2,
+      max_sticker_count: 1,
+      media_frame_count: 1,
+      media_max_dimension: 512,
+      initiative_min_score: 1,
+      judgement_interval_turns: 2,
+      initiative_batch_target_count: 15,
+      initiative_batch_jitter_count: 5,
+      initiative_queue_on_busy: true,
+      initiative_time_window_enabled: true,
+      initiative_time_target_seconds: 30,
+      initiative_time_jitter_seconds: 10,
+    }),
+    context: QqSchemeContextSchema.parse({
+      judgement_message_limit: 400,
+      judgement_window_minutes: 300,
+      judgement_token_budget: 2000,
+      reply_message_limit: 300,
+      reply_window_minutes: 300,
+      reply_token_budget: 16384,
+    }),
+    compression: QqSchemeCompressionSchema.parse({
+      watermark_trigger: 50,
+      package_limit: 15,
+      headroom_ratio: 0.05,
+    }),
+    outputReserve: QqSchemeOutputReserveSchema.parse({
+      judgement_output_reserved: 32768,
+      reply_output_reserved: 32768,
+    }),
+    stickers: QqSchemeStickersSchema.parse({
+      sticker_min_repeat_minutes: 0,
+      sticker_recent_avoid_count: 0,
+      frequency: "high",
+    }),
+    reply: QqSchemeReplySchema.parse(QQ_REPLY_DEFAULT),
+    messageSettings: QqSchemeMessageSettingsSchema.parse({
+      reply_depth: 2,
+      reply_mode: "one_then_on_demand",
+      time_display: "hybrid",
+      timezone: "Asia/Shanghai",
+    }),
+    mediaInput: QqSchemeMediaInputSchema.parse({
+      mode: "native",
+      stages: { decision: false, evaluation: false, generation: false },
+      max_images: 8,
+      ordinary_still_max_dimension: null,
+    }),
+    taskLimits: QqSchemeTaskLimitsSchema.parse({ mention_task_limit: 5, ordinary_task_limit: 5 }),
+    inputAntiSpam: QqSchemeInputAntiSpamSchema.parse({
+      enabled: true,
+      burst_min_messages: 3,
+      burst_window_seconds: 5,
+    }),
+    allocation: QqSchemeAllocationSchema.parse({
+      judgement: { mode: "auto" },
+      reply: { mode: "auto" },
+    }),
+  };
+}
+
 export const QqSchemeResponseSchema = z.strictObject({
   id: UuidSchema,
   // `nonBlankString` rather than a bare min(1): a name of spaces is not a name, and the
@@ -814,7 +893,7 @@ export type QqSchemeResponse = z.infer<typeof QqSchemeResponseSchema>;
 export const CreateQqSchemeRequestSchema = z.strictObject({
   name: nonBlankString(1, 200),
   description: z.string().max(2000).nullable().default(null),
-  /** Omitted means the project's default: every switch off, so a new scheme is quiet. */
+  /** Omitted groups use newQqSchemeDefaults(); explicit groups replace the whole group. */
   triggers: QqSpeechTriggersSchema.optional(),
   /** Omitted means the project's defaults; the whole group travels or none of it does. */
   rhythm: QqSchemeRhythmSchema.optional(),
@@ -830,15 +909,15 @@ export const CreateQqSchemeRequestSchema = z.strictObject({
   prompts: QqSchemePromptsSchema.optional(),
   /** 回复的形状（0035）。省略＝新建用默认（按发言人分条）、更新保持不动。 */
   reply: QqSchemeReplySchema.optional(),
-  /** 消息设置组（0052）。省略＝新建用默认（`QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT`）、更新保持不动。 */
+  /** 消息设置组（0052）。省略＝新建工厂默认；旧行的缺省读取不变。 */
   message_settings: QqSchemeMessageSettingsSchema.optional(),
-  /** 图片输入组（0052）。省略＝新建用默认（`QQ_MEDIA_INPUT_SCHEME_DEFAULT`）、更新保持不动。 */
+  /** 图片输入组（0052）。省略＝新建工厂默认；旧行的缺省读取不变。 */
   media_input: QqSchemeMediaInputSchema.optional(),
-  /** 并行任务上限组（0059）。省略＝新建用默认（`QQ_TASK_LIMITS_SCHEME_DEFAULT`）。 */
+  /** 并行任务上限组（0059）。省略＝新建工厂默认。 */
   task_limits: QqSchemeTaskLimitsSchema.optional(),
-  /** 输入防抖组（0059）。省略＝新建显式落开（`QQ_INPUT_ANTI_SPAM_SCHEME_DEFAULT`）。 */
+  /** 输入防抖组（0059）。省略＝新建工厂默认。 */
   input_anti_spam: QqSchemeInputAntiSpamSchema.optional(),
-  /** 分配组（0068）。省略＝新建用 `QQ_ALLOCATION_DEFAULT`（两档 fixed），与其他组同规矩。 */
+  /** 分配组（0068）。省略＝新建工厂的两档自动模式；旧行缺省仍按原规则读取。 */
   allocation: QqSchemeAllocationSchema.optional(),
 });
 export type CreateQqSchemeRequest = z.infer<typeof CreateQqSchemeRequestSchema>;

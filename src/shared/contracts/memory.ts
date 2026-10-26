@@ -4,8 +4,10 @@ import {
   IsoTimestampSchema,
   MemoryEntryStatusSchema,
   MemoryJobStatusSchema,
+  type RetrievalMode,
   UuidSchema,
 } from "./common";
+import type { RetrievalPreset, RetrievalPresets } from "./models";
 import { MemorySummarySchema } from "./summary";
 
 /**
@@ -162,6 +164,43 @@ export const EntriesListSchema = z.strictObject({
 });
 
 export type EntriesList = z.infer<typeof EntriesListSchema>;
+
+/**
+ * Effective memory read policy (ADR0019 §8.11): the single pure mapping from the
+ * stored P5 retrieval mode to what the active tool path actually does. The raw
+ * stored identity is never rewritten here; retired legacy full modes fold to the
+ * broad bounded catalog with explicit reads (never an automatic full scan or
+ * body fill) and their legacy batch/model/prompt fields stay stored but
+ * inactive; `off` short-circuits before any access while keeping the
+ * conservative preset for its read-only bounds. Pure and cache-free: every
+ * consumer calls it with its own frozen snapshot, no mutable policy state.
+ */
+export interface MemoryEffectiveReadPolicy {
+  readonly storedMode: RetrievalMode;
+  readonly effectiveMode: "off" | "conservative" | "standard" | "broad";
+  readonly presetName: "conservative" | "standard" | "broad";
+  readonly legacyFieldsInactive: boolean;
+  readonly preset: RetrievalPreset;
+}
+
+export function resolveMemoryReadPolicy(
+  mode: RetrievalMode,
+  presets: RetrievalPresets,
+): MemoryEffectiveReadPolicy {
+  const presetName =
+    mode === "conservative" || mode === "standard" || mode === "broad"
+      ? mode
+      : mode === "off"
+        ? "conservative"
+        : "broad";
+  return {
+    storedMode: mode,
+    effectiveMode: mode === "off" ? "off" : presetName,
+    presetName,
+    legacyFieldsInactive: mode === "full_catalog" || mode === "full_body",
+    preset: presets[presetName],
+  };
+}
 
 export const MemoryScopeViewSchema = z.strictObject({
   scope_key: z.string(),

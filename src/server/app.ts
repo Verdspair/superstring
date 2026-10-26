@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { BrowserStateConfig } from "../shared/contracts";
 import { executionPolicy, toolExecutionEnabled } from "../shared/contracts/permissions";
@@ -7,7 +8,7 @@ import { type AgentRuntime, createAgentRuntime } from "./agent/agent-runtime";
 import type { BuiltInAction } from "./agent/built-in-actions";
 import { ConversationHost } from "./agent/conversation-host";
 import type { AgentTaskService } from "./agent/task-service";
-import { agentRoutes } from "./api/agents";
+import { agentRoutes, snapshotAgentCreationRequirements } from "./api/agents";
 import { chatV2Routes } from "./api/chat-v2";
 import { conversationRoutes } from "./api/conversations";
 import { deliveryRoutes } from "./api/deliveries";
@@ -29,6 +30,9 @@ import { webAccessRoutes } from "./api/web-access";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import type { BusinessDbHandle } from "./db/connection";
 import { ConversationEventRepository } from "./db/conversation-event-repository";
+import { KnowledgeRepository } from "./db/knowledge-repository";
+import { DEFAULT_AGENT_ID } from "./db/repositories";
+import * as schema from "./db/schema";
 import type { LocalModelEncodingStore } from "./llm/local-model-encodings";
 import { createLmStudioClient, type ModelGateway } from "./llm/model-gateway";
 import { createLmStudioVisionClient } from "./llm/vision-client";
@@ -45,6 +49,7 @@ import { type QqManagedEventsPort, qqManagedComponentRoutes } from "./napcat/rou
 import { QqGroupCapabilityGuard } from "./permissions/qq-group-capabilities";
 import { type PermissionService, unconfiguredPermissions } from "./permissions/service";
 import { projectToolDirectory } from "./permissions/tool-directory";
+import { initializeDefaultAgent } from "./services/agent-service";
 import {
   createQqStickerAnnotator,
   type QqStickerAnnotator,
@@ -106,7 +111,7 @@ export interface CreateAppOptions {
   telemetryRetentionDays?: () => number;
 }
 
-/** Pure Hono factory: does not open databases, start workers or bind sockets. */
+/** Initializes a missing builtin in the supplied DB; opens no DB, workers or sockets. */
 export function createApp(opts: CreateAppOptions): Hono {
   const { business } = opts;
   const permissions = opts.permissions ?? unconfiguredPermissions;
@@ -155,7 +160,30 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   if (business) {
     const gateway = opts.gateway ?? createLmStudioClient();
-    app.route("/agents", agentRoutes(business.orm, gateway.config.model));
+    const knowledge = new KnowledgeRepository(business.db);
+    const defaultAgent = business.orm
+      .select({ id: schema.agents.id })
+      .from(schema.agents)
+      .where(eq(schema.agents.id, DEFAULT_AGENT_ID))
+      .get();
+    if (!defaultAgent) {
+      const requirements = snapshotAgentCreationRequirements(externalActions, opts.mcpManagement);
+      initializeDefaultAgent(business.orm, gateway.config.model, {
+        permissions,
+        requirements,
+        knowledge,
+      });
+    }
+    app.route(
+      "/agents",
+      agentRoutes(business.orm, gateway.config.model, {
+        permissions,
+        // Creation grants the installed catalog, including globally paused actions.
+        externalActions,
+        knowledge,
+        mcpManagement: opts.mcpManagement,
+      }),
+    );
     app.route(
       "/models",
       modelRoutes(business.orm, gateway, opts.modelProviderKeyPath, opts.localModelEncodings),
@@ -242,6 +270,7 @@ export function createApp(opts: CreateAppOptions): Hono {
         stickerDirectory: opts.qqStickerDirectory,
         gateway,
         annotator: opts.qqStickerAnnotator ?? createQqStickerAnnotator(agentRuntime),
+        prepareVisionRequestFormat: vision.prepareRequestFormat?.bind(vision),
       }),
     );
     app.route(

@@ -446,7 +446,7 @@ describe("counting what was already said", () => {
   it("walks a scheme's numbers all the way to a verdict", () => {
     const h = setup();
     try {
-      const scheme = createQqScheme(h.orm, { name: "安静方案" });
+      const scheme = createQqScheme(h.orm, { name: "安静方案", rhythm: { ...QQ_RHYTHM_DEFAULT } });
       const rhythm = schemeRhythm(scheme);
       const now = 300_000;
       // Delivered a moment ago in this conversation.
@@ -485,7 +485,7 @@ describe("the store's side of the contract", () => {
   it("accepts a stored scheme's rhythm and rejects a corrupted one", () => {
     const h = setup();
     try {
-      const scheme = createQqScheme(h.orm, { name: "方案" });
+      const scheme = createQqScheme(h.orm, { name: "方案", rhythm: { ...QQ_RHYTHM_DEFAULT } });
       expect(schemeRhythm(scheme)).toEqual(QQ_RHYTHM_DEFAULT);
       // Writing past the range straight to the database is refused by the CHECK, which is
       // what keeps schemeRhythm from ever seeing such a row.

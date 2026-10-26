@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentResponse,
@@ -55,7 +55,7 @@ afterEach(() => {
 });
 
 describe("memory retrieval model purpose", () => {
-  it("renders the selected Agent memory retrieval model in the agent purpose controls", async () => {
+  it("renders the selected Agent memory retrieval model as truthful inactive (disabled) in UI controls while retaining raw value", async () => {
     store.getState().resetForTests();
     store.setState({
       agents: [selectedAgent, otherAgent],
@@ -71,10 +71,8 @@ describe("memory retrieval model purpose", () => {
     );
     const retrievalModel = screen.getByLabelText("记忆读取模型") as HTMLInputElement;
     expect(retrievalModel.value).toBe("saved-retrieval-model");
-    fireEvent.change(retrievalModel, { target: { value: "edited-retrieval-model" } });
-    expect(store.getState().pageEditor?.draft.memory_retrieval_model_name).toBe(
-      "edited-retrieval-model",
-    );
+    // Inactive retrieval model is disabled in UI to reflect effective policy without false editability
+    expect(retrievalModel.disabled).toBe(true);
   });
 
   it("saves the selected Agent retrieval model through the models page CAS whitelist only", async () => {

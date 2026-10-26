@@ -5,6 +5,7 @@ import path from "node:path";
 import { browserStateSecret } from "../../src/server/browser-state";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createRuntime } from "../../src/server/runtime";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const gateway: ModelGateway = {
   config: { baseUrl: "http://127.0.0.1:1234/v1", model: "qwen/test", timeoutSeconds: 1 },
@@ -48,8 +49,8 @@ describe("browser-state fixed secret", () => {
   });
 
   it("exposes the secret only through a no-store runtime config response", async () => {
-    const runtime = createRuntime({
-      businessDbPath: ":memory:",
+    const runtime = await createRuntime({
+      business: runtimeFixtureBusiness(),
       gateway,
       browserStateSecret: "A".repeat(40),
     });

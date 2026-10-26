@@ -20,6 +20,7 @@ import type {
   NapCatManagedSession,
 } from "../../src/server/napcat/management";
 import { createRuntime } from "../../src/server/runtime";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 
 type ManagedSessionFactoryOptions = Parameters<typeof createNapCatManagedSession>[0];
 type ManagedSessionFactory = typeof createNapCatManagedSession;
@@ -59,7 +60,7 @@ function temporaryDirectory(): string {
   return directory;
 }
 
-function runtimeFor(
+async function runtimeFor(
   napcatConfigPath?: string,
   managedSession?: { runtimeConfigPath?: string; factory: ManagedSessionFactory },
 ) {
@@ -79,7 +80,7 @@ function runtimeFor(
         }
       : {}),
   };
-  return createRuntime(options);
+  return await createRuntime(options);
 }
 
 function managedSessionHarness(onStop?: () => Promise<void>) {
@@ -141,7 +142,7 @@ function managedSessionHarness(onStop?: () => Promise<void>) {
   return { state, factory };
 }
 
-async function saveConfig(app: ReturnType<typeof createRuntime>["app"], enabled: boolean) {
+async function saveConfig(app: Awaited<ReturnType<typeof createRuntime>>["app"], enabled: boolean) {
   return app.request(CONFIG, {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -195,7 +196,7 @@ describe("NapCat runtime management wiring", () => {
     const directory = temporaryDirectory();
     const configDirectory = path.join(directory, "not-created-yet");
     const harness = managedSessionHarness();
-    const runtime = runtimeFor(path.join(configDirectory, "napcat.json"), {
+    const runtime = await runtimeFor(path.join(configDirectory, "napcat.json"), {
       runtimeConfigPath: path.join(configDirectory, "napcat-runtime.json"),
       factory: harness.factory,
     });
@@ -221,7 +222,7 @@ describe("NapCat runtime management wiring", () => {
       releaseStop = resolve;
     });
     const harness = managedSessionHarness(() => stopGate);
-    const runtime = runtimeFor(path.join(directory, "napcat.json"), {
+    const runtime = await runtimeFor(path.join(directory, "napcat.json"), {
       runtimeConfigPath: path.join(directory, "napcat-runtime.json"),
       factory: harness.factory,
     });
@@ -249,7 +250,7 @@ describe("NapCat runtime management wiring", () => {
   it("keeps the old blocked management port when no runtime config path is injected", async () => {
     const directory = temporaryDirectory();
     const harness = managedSessionHarness();
-    const runtime = runtimeFor(path.join(directory, "napcat.json"), {
+    const runtime = await runtimeFor(path.join(directory, "napcat.json"), {
       factory: harness.factory,
     });
     try {
@@ -281,7 +282,7 @@ describe("NapCat runtime management wiring", () => {
   });
 
   it("keeps management unconfigured when no private config path is injected", async () => {
-    const runtime = runtimeFor();
+    const runtime = await runtimeFor();
     try {
       const before = await (await runtime.app.request("/qq/settings")).json();
       const config = await runtime.app.request(CONFIG);
@@ -312,7 +313,7 @@ describe("NapCat runtime management wiring", () => {
     const directory = temporaryDirectory();
     const configDirectory = path.join(directory, "not-created-yet");
     const file = path.join(configDirectory, "napcat.json");
-    const runtime = runtimeFor(file);
+    const runtime = await runtimeFor(file);
     try {
       expect(existsSync(configDirectory)).toBe(false);
       const config = await runtime.app.request(CONFIG);
@@ -336,7 +337,7 @@ describe("NapCat runtime management wiring", () => {
   it("saves enabled only to the injected NapCat file and leaves QQ settings unchanged", async () => {
     const directory = temporaryDirectory();
     const file = path.join(directory, "napcat.json");
-    const runtime = runtimeFor(file);
+    const runtime = await runtimeFor(file);
     try {
       const qqSettings = await (await runtime.app.request("/qq/settings")).json();
       const databaseChanges = runtime.business.db.query("SELECT total_changes() AS n").get();
@@ -376,7 +377,7 @@ describe("NapCat runtime management wiring", () => {
     const file = path.join(directory, "napcat.json");
     const invalid = "{ invalid synthetic managed config";
     writeFileSync(file, invalid);
-    const runtime = runtimeFor(file);
+    const runtime = await runtimeFor(file);
     let releaseDrain!: () => void;
     const requestDrain = new Promise<void>((resolve) => {
       releaseDrain = resolve;
@@ -498,8 +499,8 @@ describe("NapCat event source runtime composition", () => {
     let clock = insertedAt;
     const clockSpy = spyOn(Date, "now").mockImplementation(() => clock);
     try {
-      const runtime = createRuntime({
-        business,
+      const runtime = await createRuntime({
+        business: runtimeFixtureBusiness(business),
         qqTransportKeyPath: keyPath,
         browserStateSecret: "synthetic-event-runtime-secret",
         gateway: {

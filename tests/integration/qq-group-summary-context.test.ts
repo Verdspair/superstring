@@ -254,7 +254,15 @@ describe("本群历史摘要的上下文边界", () => {
               kind: "fact",
               speaker: "member:20002",
               text: "STALE-PACKAGE-MARKER-7391",
-              source_ids: [],
+              source_ids: [
+                JSON.stringify([
+                  [
+                    "qq_observation",
+                    covered,
+                    createHash("sha256").update("old covered fact").digest("hex"),
+                  ],
+                ]),
+              ],
             },
           ],
           fromSeq: 1,
@@ -282,7 +290,7 @@ describe("本群历史摘要的上下文边界", () => {
     setGroupConfig(h.orm, h.binding.id, { capabilities: ["history_summary"] });
     const source = h.newSource();
     const material = await source.read(readInput());
-    const pending = JSON.stringify(material.pending);
+    const pending = JSON.stringify(material.history);
     expect(pending).not.toContain("STALE-PACKAGE-MARKER-7391");
     expect(pending).not.toContain("old covered fact");
     expect(pending).not.toContain("old pending fact");
@@ -303,7 +311,7 @@ describe("本群历史摘要的上下文边界", () => {
     // 只排队：本轮没有已存包可装，引用不得凭空出现（否则停用会打死这一轮）。
     const queued = h.newSource();
     const first = await queued.read(readInput());
-    expect(JSON.stringify(first.pending)).not.toContain("qq_context_packages");
+    expect(JSON.stringify(first.history)).not.toContain("qq_context_packages");
     expect(capRefs(first.sources)).toEqual([]);
     const job = queued.takeCompressionJob();
     if (!job) throw new Error("expected the queued compression job");
@@ -311,8 +319,8 @@ describe("本群历史摘要的上下文边界", () => {
     expect(compressionRuns(h)).toHaveLength(1);
     // 装入包：能力引用按签发时刻的纪元进材料，且必须能被 guard 复验为可用。
     const shipped = await h.newSource().read(readInput());
-    expect(JSON.stringify(shipped.pending)).toContain("qq_context_packages");
-    expect(JSON.stringify(shipped.pending)).toContain("old fact");
+    expect(JSON.stringify(shipped.history)).toContain("qq_context_packages");
+    expect(JSON.stringify(shipped.history)).toContain("old fact");
     const refs = capRefs(shipped.sources);
     expect(refs).toHaveLength(1);
     const ref = refs[0];
@@ -332,7 +340,7 @@ describe("本群历史摘要的上下文边界", () => {
     expect(compressionRuns(h)).toHaveLength(1);
     const source = h.newSource();
     const material = await source.read(readInput());
-    expect(JSON.stringify(material.pending)).toContain("old fact");
+    expect(JSON.stringify(material.history)).toContain("old fact");
     expect(capRefs(material.sources)).toHaveLength(1);
     setGroupConfig(h.orm, h.binding.id, { capabilities: ["history_summary"] });
     // 缓存视图的渲染与重读都在能力边界上结账：不泄旧包正文。
@@ -352,7 +360,7 @@ describe("本群历史摘要的上下文边界", () => {
       code: "QQ_GROUP_CAPABILITY_DISABLED",
     });
     const revived = await h.newSource().read(readInput());
-    expect(JSON.stringify(revived.pending)).toContain("old fact");
+    expect(JSON.stringify(revived.history)).toContain("old fact");
     expect(capRefs(revived.sources)).toHaveLength(1);
   });
 
@@ -364,10 +372,10 @@ describe("本群历史摘要的上下文边界", () => {
     await compress(h.source);
     const source = h.newSource();
     const material = await source.read(readInput());
-    expect(JSON.stringify(material.pending)).toContain("old fact");
+    expect(JSON.stringify(material.history)).toContain("old fact");
     setGroupConfig(h.orm, h.binding.id, { capabilities: ["memory_read"] });
     const again = await source.read(readInput());
-    expect(JSON.stringify(again.pending)).toContain("old fact");
+    expect(JSON.stringify(again.history)).toContain("old fact");
     expect(capRefs(again.sources)).toHaveLength(1);
     // 摘要之外的真实来源照旧复验：正文行一旦消失，缓存视图不能继续。
     h.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(covered);
@@ -449,7 +457,11 @@ describe("真实宿主：停用历史摘要后已存包不再进入上下文", (
               kind: "fact",
               speaker: "member:20002",
               text: "STALE-PACKAGE-MARKER-7391",
-              source_ids: [],
+              source_ids: [
+                JSON.stringify([
+                  ["qq_observation", row.key, createHash("sha256").update(row.body).digest("hex")],
+                ]),
+              ],
             },
           ],
           fromSeq: 1,

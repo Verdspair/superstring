@@ -17,7 +17,7 @@
 // channel 侧经 re-export 提供投影 API。`botScope` 与 `collectMentions` 为入站与出站
 // 投影共用，唯一实现在本文件。
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type {
   QqConversationScope,
@@ -36,9 +36,10 @@ import { evidenceScopeExists } from "../modules/conversation-evidence";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
 import { inTimeline } from "../modules/conversation-evidence-store";
 import {
-  qqMessageFactConsumableCap,
+  type QqMessageFactVisibleState,
   qqMessageFactSourceRevision,
   visibleFactState,
+  visibleFactStates,
 } from "./qq-message-fact-sources";
 import { isObservationExpired } from "./qq-retention";
 
@@ -151,43 +152,6 @@ interface EventRow {
   recordedAt: string;
 }
 
-function eventById(orm: Orm, scope: QqConversationScope, eventKey: string): EventRow | null {
-  return (
-    (orm
-      .select()
-      .from(schema.qqEvents)
-      .where(
-        and(
-          eq(schema.qqEvents.eventKey, eventKey),
-          eq(schema.qqEvents.accountId, scope.accountId),
-          eq(schema.qqEvents.conversationKind, scope.conversationKind),
-          eq(schema.qqEvents.peerId, scope.peerId),
-          eq(schema.qqEvents.agentId, scope.agentId),
-        ),
-      )
-      .get() as EventRow | null) ?? null
-  );
-}
-
-/**
- * The body is separately expiring evidence: a deleted or expired `qq_observation_text`
- * row removes the text source, and the facts parts alone must never restore it. The
- * observation source rides the same window as the body.
- */
-function bodyRow(
-  orm: Orm,
-  eventKey: string,
-  now: string,
-): { body: string; expiresAt: string } | null {
-  const row = orm
-    .select({ body: schema.qqObservationText.body, expiresAt: schema.qqObservationText.expiresAt })
-    .from(schema.qqObservationText)
-    .where(eq(schema.qqObservationText.eventKey, eventKey))
-    .get();
-  if (!row || isObservationExpired(row.expiresAt, now)) return null;
-  return row;
-}
-
 /**
  * The single state-faithful read behind both projections (spec §4.3: unreadable states
  * are expressed separately, never collapsed). One authorization path for both consumers:
@@ -240,6 +204,24 @@ function projectOneState(
   if (isObservationExpired(fact.expiresAt, now)) return { state: "expired", fact: null };
   const state = visibleFactState(store.db, scope, event.eventKey, now);
   if (!state) return { state: "missing", fact: null };
+  return factStateOf(
+    scope,
+    fact,
+    event,
+    seqRow.seq,
+    state,
+    currentNameOf(store, scope, event.speakerId, now),
+  );
+}
+
+function factStateOf(
+  scope: QqConversationScope,
+  fact: QqMessageFactRow,
+  event: EventRow,
+  seq: number,
+  state: QqMessageFactVisibleState,
+  currentName: QqIdentity["currentName"],
+): QqReplyTargetState {
   const { visibleParts: parts, textConsistency: consistency } = state;
   // 可见事实摘要 + 期限 + 正文修订：正文/快照变化都会改变 revision，旧 projection 失效。
   const revision = qqMessageFactSourceRevision(scope, fact, parts, state.bodyRevisionValue);
@@ -250,11 +232,11 @@ function projectOneState(
       kind: "qq_message_fact",
       id: event.eventKey,
       revision,
-      expiresAt: qqMessageFactConsumableCap(store.db, scope, event.eventKey, fact.expiresAt, now),
+      expiresAt: state.consumableCap,
     },
   ];
   // 正文只经自己的 qq_observation 来源可读（独立帽）；正文行不在时不产出该 ref。
-  const body = bodyRow(store.orm, event.eventKey, now);
+  const body = state.body;
   if (body) {
     sources.push({
       kind: "qq_observation",
@@ -285,14 +267,9 @@ function projectOneState(
     fact: {
       id: event.eventKey,
       platformMessageId: event.messageId,
-      seq: seqRow.seq,
+      seq,
       occurredAtSeconds: event.occurredAtSeconds,
-      speaker: identityOf(
-        fact,
-        event.speakerId,
-        event.speakerKind,
-        currentNameOf(store, scope, event.speakerId, now),
-      ),
+      speaker: identityOf(fact, event.speakerId, event.speakerKind, currentName),
       parts,
       mentions: collectMentions(parts),
       replyTo: fact.replyToMessageId ? { platformMessageId: fact.replyToMessageId } : null,
@@ -369,14 +346,89 @@ export function projectQqMessageFacts(
 ): QqMessageFact[] {
   if (eventIds.length === 0) return [];
   if (!evidenceScopeExists(store.db, botScope(scope))) return [];
-  const facts: QqMessageFact[] = [];
-  for (const eventKey of eventIds) {
-    const event = eventById(store.orm, scope, eventKey);
-    if (!event) continue;
-    const fact = projectOne(store, scope, event.messageId, now);
-    if (fact && fact.id === eventKey) facts.push(fact);
+  const events = store.orm
+    .select()
+    .from(schema.qqEvents)
+    .where(
+      and(
+        inArray(schema.qqEvents.eventKey, [...new Set(eventIds)]),
+        eq(schema.qqEvents.accountId, scope.accountId),
+        eq(schema.qqEvents.conversationKind, scope.conversationKind),
+        eq(schema.qqEvents.peerId, scope.peerId),
+        eq(schema.qqEvents.agentId, scope.agentId),
+      ),
+    )
+    .all();
+  if (events.length === 0) return [];
+  // Count matching fact-bearing platform identities, including duplicates outside this selection.
+  const candidates = store.orm
+    .select({ fact: schema.qqMessageFacts, event: schema.qqEvents })
+    .from(schema.qqEvents)
+    .innerJoin(schema.qqMessageFacts, eq(schema.qqMessageFacts.eventKey, schema.qqEvents.eventKey))
+    .where(
+      and(
+        inArray(schema.qqEvents.messageId, [...new Set(events.map((event) => event.messageId))]),
+        eq(schema.qqEvents.accountId, scope.accountId),
+        eq(schema.qqEvents.conversationKind, scope.conversationKind),
+        eq(schema.qqEvents.peerId, scope.peerId),
+        eq(schema.qqEvents.agentId, scope.agentId),
+      ),
+    )
+    .all();
+  const byPlatform = new Map<string, typeof candidates>();
+  for (const candidate of candidates) {
+    const entries = byPlatform.get(candidate.event.messageId) ?? [];
+    entries.push(candidate);
+    byPlatform.set(candidate.event.messageId, entries);
   }
-  return facts;
+  const sequences = new Map(
+    (
+      store.db
+        .query(`SELECT source_id AS id,seq FROM conversation_events
+    WHERE conversation_id=? AND source_kind='qq_event' AND kind='inbound'
+      AND source_id IN (SELECT value FROM json_each(?)) ORDER BY seq`)
+        .all(scope.conversationId, JSON.stringify(eventIds)) as { id: string; seq: number }[]
+    )
+      .reverse()
+      .map((row) => [row.id, row.seq]),
+  );
+  const eligible = events.filter((event) => {
+    const found = byPlatform.get(event.messageId);
+    return (
+      found?.length === 1 &&
+      found[0]!.event.eventKey === event.eventKey &&
+      sequences.has(event.eventKey) &&
+      !isObservationExpired(found[0]!.fact.expiresAt, now)
+    );
+  });
+  const states = visibleFactStates(
+    store.db,
+    scope,
+    eligible.map((event) => event.eventKey),
+    now,
+  );
+  const names = new Map<string, QqIdentity["currentName"]>();
+  const facts = new Map<string, QqMessageFact>();
+  for (const event of eligible) {
+    const state = states.get(event.eventKey);
+    if (!state) continue;
+    const speaker = event.speakerId;
+    if (speaker !== null && !names.has(speaker))
+      names.set(speaker, currentNameOf(store, scope, speaker, now));
+    const projected = factStateOf(
+      scope,
+      state.fact,
+      event,
+      sequences.get(event.eventKey)!,
+      state,
+      speaker === null ? undefined : names.get(speaker),
+    ).fact;
+    if (projected) facts.set(event.eventKey, projected);
+  }
+  return eventIds.flatMap((id) => {
+    const fact = facts.get(id);
+    return fact ? [fact] : [];
+  });
 }
 
 /** 点名对象（§4.1 第 2 项）来自片段里的 at 段；片段没有身份细节，identity 留 null。 */

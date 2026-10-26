@@ -1,3 +1,8 @@
+import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
+import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
+import { QQ_ALLOCATION_DEFAULT as fixtureLegacyAllocation } from "../../src/shared/contracts/context-allocation";
+import * as fixtureLegacyQq from "../../src/shared/contracts/qq";
+import { runtimeFixtureBusiness } from "../harness/business-db";
 // 每人一条消息（0037，）：不同人的消息分开成各自的任务来跑。
 //
 // 用户看到的问题是"一次生成写多行、按行切开"这种做法**在结构上**允许搞混：模型要自己记住谁说了
@@ -65,10 +70,17 @@ function message(
 }
 
 function setup(options: { splitBySpeaker?: boolean } = {}) {
-  const h = openBusinessDb();
+  const h = runtimeFixtureBusiness(openBusinessDb(), "synthetic-model");
   ensureDefaults(h.orm, "synthetic-model");
   updateQqSettings(h.orm, { accountId: "10001", enabled: true, expectedRevision: 1 });
   const scheme = createQqScheme(h.orm, {
+    context: { ...fixtureLegacyContext },
+    rhythm: { ...fixtureLegacyRhythm },
+    compression: { ...fixtureLegacyQq.QQ_COMPRESSION_DEFAULT },
+    outputReserve: { ...fixtureLegacyQq.QQ_MODEL_OUTPUT_RESERVE_DEFAULT },
+    allocation: structuredClone(fixtureLegacyAllocation),
+    stickers: { ...fixtureLegacyQq.QQ_STICKER_DEDUP_DEFAULT },
+    mediaInput: structuredClone(fixtureLegacyQq.QQ_MEDIA_INPUT_SCHEME_DEFAULT),
     name: "synthetic",
     triggers: { direct_reply: false, follow_up: false, chiming_in: true, idle_topic: true },
     prompts: { ...QQ_PROMPT_DEFAULTS, judge: "自定义判断任务" },

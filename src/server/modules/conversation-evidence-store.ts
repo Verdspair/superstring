@@ -3,7 +3,7 @@ import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ConversationSummaryFacts } from "../agent/conversation-compression";
 import { bodyRevision } from "../db/conversation-event-repository";
 import { memoryRevision } from "../db/memory-content-repository";
-import { readQqConversationSummary, resolveQqSummaryProvenance } from "../db/qq-summary-repository";
+import { qqSummaryModelFacts, readQqConversationSummary } from "../db/qq-summary-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import {
   qqMessageFactConsumableCap,
@@ -572,7 +572,7 @@ function botSummary(
   }
   let facts: ConversationSummaryFacts;
   try {
-    facts = resolveQqSummaryProvenance(item, sources);
+    facts = qqSummaryModelFacts(item, sources);
   } catch (error) {
     if (error instanceof SyntaxError || (error instanceof Error && error.name === "ZodError"))
       return null;
