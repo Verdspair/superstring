@@ -788,6 +788,8 @@ it("keeps scalar and batch projection equally fail-closed for duplicate platform
       .query("UPDATE qq_events SET message_id=? WHERE event_key=?")
       .run("-804", duplicate.eventKey);
     expect(loadQqMessageFact(h, live, "-804", now)).toBeNull();
+    // The duplicate is outside the selection, but still makes the platform identity ambiguous.
+    expect(projectQqMessageFacts(h, live, [first.eventKey], now)).toEqual([]);
     expect(projectQqMessageFacts(h, live, [first.eventKey, duplicate.eventKey], now)).toEqual([]);
   } finally {
     h.close();

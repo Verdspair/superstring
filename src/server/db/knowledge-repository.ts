@@ -23,7 +23,7 @@ type DocumentMetadata = Omit<
 >;
 type DocumentRow = DocumentMetadata & { original_text: string };
 const DOCUMENT_COLUMNS =
-  "id, category_id, name, import_type, content_mode, content_version, revision, created_at, updated_at";
+  "id, category_id, name, import_type, visibility, content_mode, content_version, revision, created_at, updated_at";
 type DraftRow = { id: string; summary: string; tags: string; body: string; sources: string };
 type SettingsRow = Omit<KnowledgeSettings, "auto_enabled"> & { auto_enabled: number };
 type CategoryRow = { id: string; name: string; revision: number };
@@ -262,7 +262,7 @@ export class KnowledgeRepository {
         // Binding a JS string through bun:sqlite strips its leading BOM. Bind bytes instead.
         this.db
           .query(
-            "INSERT INTO knowledge_documents (id, category_id, name, original_text, import_type, created_at, updated_at) VALUES (?, ?, CAST(? AS TEXT), CAST(? AS TEXT), ?, ?, ?)",
+            "INSERT INTO knowledge_documents (id, category_id, name, original_text, import_type, visibility, created_at, updated_at) VALUES (?, ?, CAST(? AS TEXT), CAST(? AS TEXT), ?, 'private', ?, ?)",
           )
           .run(
             id,
@@ -293,6 +293,7 @@ export class KnowledgeRepository {
       category_id: row.category_id,
       name: row.name,
       import_type: row.import_type,
+      visibility: row.visibility,
       content_mode: row.content_mode,
       content_version: row.content_version,
       revision: row.revision,
@@ -554,10 +555,16 @@ export class KnowledgeRepository {
       .run(nowIso(), id);
   }
 
-  replaceGrants(id: string, expected: number, agentIds: string[]): KnowledgeDocumentDetail {
+  replaceGrants(
+    id: string,
+    expected: number,
+    agentIds: string[],
+    visibility?: "private" | "public",
+  ): KnowledgeDocumentDetail {
     return this.db
       .transaction(() => {
-        this.checkRevision(this.document(id).revision, expected);
+        const document = this.document(id);
+        this.checkRevision(document.revision, expected);
         for (const agentId of agentIds) this.requireAgent(agentId);
         const old = this.db
           .query<{ agent_id: string }, [string]>(
@@ -569,6 +576,12 @@ export class KnowledgeRepository {
           if (!agentIds.includes(grant.agent_id))
             changed = this.changeGrant(id, grant.agent_id, false) || changed;
         for (const agentId of agentIds) changed = this.changeGrant(id, agentId, true) || changed;
+        if (visibility !== undefined && visibility !== document.visibility) {
+          this.db
+            .query("UPDATE knowledge_documents SET visibility = ? WHERE id = ?")
+            .run(visibility, id);
+          changed = true;
+        }
         if (changed) this.touch(id);
         return this.detail(id);
       })
@@ -589,24 +602,6 @@ export class KnowledgeRepository {
       .immediate();
   }
 
-  /**
-   * 默认向新创建的 Agent 授予当前所有管理资料的阅读 Token。
-   * 复用既有 changeGrant 生成 token，不 touch 文档修订，不读取文档正文，旧文档与历史 Token 不变。
-   */
-  grantAllDocuments(agentId: string): void {
-    this.db
-      .transaction(() => {
-        this.requireAgent(agentId);
-        const docs = this.db
-          .query<{ id: string }, []>("SELECT id FROM knowledge_documents ORDER BY created_at, id")
-          .all();
-        for (const doc of docs) {
-          this.changeGrant(doc.id, agentId, true);
-        }
-      })
-      .immediate();
-  }
-
   /** Do not derive this from the management list: filter grants before loading metadata. */
   agentDocuments(agentId: string): AgentKnowledge[] {
     this.requireAgent(agentId);
@@ -620,6 +615,7 @@ export class KnowledgeRepository {
       const view = this.view(row);
       return {
         id: view.id,
+        visibility: view.visibility,
         name: view.name,
         summary: view.summary,
         tags: view.tags,

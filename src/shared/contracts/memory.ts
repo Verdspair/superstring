@@ -107,6 +107,42 @@ export const GovernRequestSchema = z
 
 export type GovernRequest = z.infer<typeof GovernRequestSchema>;
 
+export const MemoryAccessMetadataSchema = z.strictObject({
+  visibility: z.enum(["session_private", "agent_shared", "public"]).nullable(),
+  visibility_revision: z.number().int().positive(),
+  recipient_agent_ids: z.array(UuidSchema),
+  origins: z.array(
+    z.strictObject({
+      channel: z.enum(["web", "onebot11", "unknown"]),
+      conversation_id: UuidSchema.nullable(),
+    }),
+  ),
+  origin_complete: z.boolean(),
+  source_validity: z.literal("not_evaluated"),
+  runtime_eligibility: z.literal("not_evaluated"),
+  raw_preview: z.literal("not_evaluated"),
+});
+export type MemoryAccessMetadata = z.infer<typeof MemoryAccessMetadataSchema>;
+
+export const MemoryVisibilityUpdateSchema = z.strictObject({
+  expected_revision: z.number().int().positive(),
+  visibility: z.enum(["session_private", "agent_shared", "public"]),
+  recipient_agent_ids: z.array(UuidSchema).refine((ids) => new Set(ids).size === ids.length),
+});
+export type MemoryVisibilityUpdate = z.infer<typeof MemoryVisibilityUpdateSchema>;
+
+export const MemoryVisibilityResponseSchema = z.strictObject({
+  visibility: z.enum(["session_private", "agent_shared", "public"]),
+  visibility_revision: z.number().int().positive(),
+  recipient_agent_ids: z.array(UuidSchema),
+});
+export type MemoryVisibilityResponse = z.infer<typeof MemoryVisibilityResponseSchema>;
+
+export const MemorySearchRebuildSchema = z.strictObject({
+  after_id: z.string().min(1).optional(),
+  limit: z.number().int().min(1).max(300),
+});
+
 /** Memory entry detail view (api-contract.md §1.4 route 28). */
 export const MemoryEntryResponseSchema = z.strictObject({
   id: z.string(),

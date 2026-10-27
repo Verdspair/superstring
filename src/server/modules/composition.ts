@@ -110,7 +110,7 @@ export function createSqliteQueryFactory(options: {
   agentRuntime: LeafAgentRuntime;
 }): ModuleQueryFactory {
   return ({ runtime, assertSources }) => ({
-    memory: new SqliteMemoryModule({ ...options, runtime: () => runtime, assertSources }),
+    memory: new SqliteMemoryModule({ orm: options.orm, runtime: () => runtime, assertSources }),
     knowledge: new SqliteKnowledgeModule({ ...options, runtime: () => runtime, assertSources }),
   });
 }
@@ -147,7 +147,7 @@ export function createSqliteModules(options: {
     memory: {
       query: (input) => bind({ runtime: runtimeFor(input.agentId) }).memory.query(input),
       read: (input) =>
-        new SqliteMemoryModule({ ...options, runtime: () => runtimeFor(input.agentId) }).read(
+        new SqliteMemoryModule({ orm: options.orm, runtime: () => runtimeFor(input.agentId) }).read(
           input,
         ),
       observe(source) {

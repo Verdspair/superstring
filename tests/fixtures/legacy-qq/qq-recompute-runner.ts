@@ -33,10 +33,6 @@ import {
 } from "../../../src/server/services/qq-context-contract";
 import { qqJudgementQuestion } from "../../../src/server/services/qq-judgement-material";
 import {
-  qqMemoryReadIsCurrent,
-  recallQqReplyMemory,
-} from "../../../src/server/services/qq-memory-recall";
-import {
   buildQqPrompt,
   type QqPromptInput,
   qqPromptMessages,
@@ -49,6 +45,7 @@ import {
 } from "../../../src/server/services/qq-speaking-contract";
 import { compileSystemPrompt, runtimeFromAgent } from "../../../src/server/services/runtime-config";
 import { qqEffectiveReplyPrompt } from "../../../src/shared/contracts/qq";
+import { qqMemoryReadIsCurrent, recallQqReplyMemory } from "./qq-memory-recall";
 import type { QqPendingReview } from "./qq-reply-runner";
 import type { QqReviewResult } from "./qq-review-runner";
 

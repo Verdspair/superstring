@@ -55,7 +55,7 @@ afterEach(() => {
 });
 
 describe("memory retrieval model purpose", () => {
-  it("renders the selected Agent memory retrieval model as truthful inactive (disabled) in UI controls while retaining raw value", async () => {
+  it("verifies the retired memory retrieval model is not rendered in UI controls while retaining stored value in state", async () => {
     store.getState().resetForTests();
     store.setState({
       agents: [selectedAgent, otherAgent],
@@ -69,10 +69,16 @@ describe("memory retrieval model purpose", () => {
         </DesignSystemProvider>,
       ),
     );
-    const retrievalModel = screen.getByLabelText("记忆读取模型") as HTMLInputElement;
-    expect(retrievalModel.value).toBe("saved-retrieval-model");
-    // Inactive retrieval model is disabled in UI to reflect effective policy without false editability
-    expect(retrievalModel.disabled).toBe(true);
+    // Retired retrieval model UI is removed from DOM
+    expect(screen.queryByLabelText("记忆读取模型")).toBeNull();
+
+    // Raw value in draft and saved agent is strictly preserved
+    expect(store.getState().pageEditor?.draft.memory_retrieval_model_name).toBe(
+      "saved-retrieval-model",
+    );
+    expect(store.getState().pageEditor?.agent.memory_retrieval_model_name).toBe(
+      "saved-retrieval-model",
+    );
   });
 
   it("saves the selected Agent retrieval model through the models page CAS whitelist only", async () => {

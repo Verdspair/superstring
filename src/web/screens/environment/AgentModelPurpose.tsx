@@ -63,7 +63,6 @@ export function AgentModelPurpose({
   const modelFields = [
     ["model_name", "library.chat.model"],
     ["memory_consolidation_model_name", "library.memory.organization.model"],
-    ["memory_retrieval_model_name", "library.memory.reading.model"],
     ["context_compression_model_name", "library.context.compression.model"],
   ] as const;
 
@@ -89,28 +88,13 @@ export function AgentModelPurpose({
         }
       >
         {modelFields.map(([key, label]) => {
-          const isReadingModel = key === "memory_retrieval_model_name";
           return (
             <div key={key} className={embedded ? "py-2 px-0" : "p-4 sm:p-5"}>
-              <Field
-                label={label}
-                tooltip={
-                  isReadingModel
-                    ? t("hints.agent.fieldModelNameReadingDisabled")
-                    : t("hints.agent.fieldModelName")
-                }
-              >
+              <Field label={label} tooltip={t("hints.agent.fieldModelName")}>
                 <InputSuggestions
-                  disabled={isReadingModel}
                   suggestions={modelSuggestions}
                   value={d[key] ?? ""}
-                  placeholder={
-                    isReadingModel
-                      ? t("library.unset")
-                      : key === "model_name"
-                        ? undefined
-                        : t("library.unset")
-                  }
+                  placeholder={key === "model_name" ? undefined : t("library.unset")}
                   onValueChange={(value) =>
                     s.patchPageAgent("models", {
                       [key]: key === "model_name" ? value : value || null,
@@ -169,30 +153,32 @@ export function AgentModelPurpose({
             <p className="text-xs text-muted-foreground">{translateNotice(s.modelStatus)}</p>
           )}
 
-          <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs text-muted-foreground">{t("models.agentModelSaveScope")}</p>
-            <div className="flex items-center justify-end gap-2">
-              <Button
-                variant="outline"
-                disabled={!isDirty || s.settingsSaving}
-                tooltip={t("hints.agent.discard")}
-                disabledReason={t("hints.agent.noModelsDirty")}
-                onClick={() => s.discardSettingsPages("models")}
-              >
-                <Undo2 className="mr-1.5 size-4" />
-                {t("workspace.discard")}
-              </Button>
-              <Button
-                disabled={!isDirty || s.settingsSaving}
-                tooltip={t("hints.agent.modelsSave")}
-                disabledReason={t("hints.agent.modelsSaveDisabled")}
-                onClick={() => void s.saveSettingsPage("models")}
-              >
-                <Save className="mr-1.5 size-4" />
-                {t("workspace.save")}
-              </Button>
+          {!embedded && (
+            <div className="flex flex-col gap-3 border-t border-border/60 pt-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-muted-foreground">{t("models.agentModelSaveScope")}</p>
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  variant="outline"
+                  disabled={!isDirty || s.settingsSaving}
+                  tooltip={t("hints.agent.discard")}
+                  disabledReason={t("hints.agent.noModelsDirty")}
+                  onClick={() => s.discardSettingsPages("models")}
+                >
+                  <Undo2 className="mr-1.5 size-4" />
+                  {t("workspace.discard")}
+                </Button>
+                <Button
+                  disabled={!isDirty || s.settingsSaving}
+                  tooltip={t("hints.agent.modelsSave")}
+                  disabledReason={t("hints.agent.modelsSaveDisabled")}
+                  onClick={() => void s.saveSettingsPage("models")}
+                >
+                  <Save className="mr-1.5 size-4" />
+                  {t("workspace.save")}
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </SettingsGroup>
 

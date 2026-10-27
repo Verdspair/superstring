@@ -44,6 +44,10 @@ import { loadTextTokenCounter } from "../../src/server/llm/text-token-counter";
 import { QqGroupCapabilityGuard } from "../../src/server/permissions/qq-group-capabilities";
 import { PermissionService } from "../../src/server/permissions/service";
 import {
+  MEMORY_SEARCH_FOLD_VERSION,
+  memorySearchProjection,
+} from "../../src/server/services/memory-contract";
+import {
   captureQqTask,
   createQqBinding,
   qqConversationKey,
@@ -262,6 +266,8 @@ function setup(
         name: body,
         summary: body,
         tags: "[]",
+        foldedSearch: memorySearchProjection({ id, name: body, summary: body, tags: "[]", body }),
+        foldVersion: MEMORY_SEARCH_FOLD_VERSION,
         kinds: '["semantic"]',
         body,
         scope: "reality_user",
@@ -1096,8 +1102,19 @@ describe("shared Bot context source", () => {
     const h = setup({ mode: "full_body" });
     const id = h.memory("private full body with details");
     h.db
-      .query("UPDATE memory_entries SET name='title', summary='short preview' WHERE id=?")
-      .run(id);
+      .query(
+        "UPDATE memory_entries SET name='title', summary='short preview', folded_search=? WHERE id=?",
+      )
+      .run(
+        memorySearchProjection({
+          id,
+          name: "title",
+          summary: "short preview",
+          tags: "[]",
+          body: "private full body with details",
+        }),
+        id,
+      );
     h.seed("question");
     await h.source.read(readInput());
     const query = h.source.actions.find((a) => a.description.name === "memory.query");
@@ -1768,7 +1785,18 @@ describe("shared Bot context source", () => {
     h.gateway.loadedContextCapacity = async () => 16384;
     const id = h.memory("short title");
     // A valid stored body, still much larger than this model's foreground allowance.
-    h.db.query("UPDATE memory_entries SET body=? WHERE id=?").run("huge body ".repeat(1500), id);
+    const body = "huge body ".repeat(1500);
+    h.db.query("UPDATE memory_entries SET body=?, folded_search=? WHERE id=?").run(
+      body,
+      memorySearchProjection({
+        id,
+        name: "short title",
+        summary: "short title",
+        tags: "[]",
+        body,
+      }),
+      id,
+    );
     h.seed("question");
     await h.source.read(readInput());
     expect(h.spec.limits.inputUnits).toBeLessThan(15000);

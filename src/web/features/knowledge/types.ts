@@ -66,7 +66,12 @@ export type KnowledgeEditor =
       original_text: string;
       content_mode: "original" | "draft";
     }
-  | { kind: "grants"; source: KnowledgeDocumentDetail; agent_ids: string[] }
+  | {
+      kind: "grants";
+      source: KnowledgeDocumentDetail;
+      agent_ids: string[];
+      visibility: "private" | "public" | null;
+    }
   | {
       kind: "settings";
       source: KnowledgeSettings;

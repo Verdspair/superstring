@@ -43,7 +43,7 @@ export function grantDraftOf(
   };
 }
 
-function sameAgentOverrides(
+export function sameAgentOverrides(
   a?: Record<string, AgentOverrideDraft>,
   b?: Record<string, AgentOverrideDraft>,
 ): boolean {
@@ -79,10 +79,57 @@ export function applyGrantEdits(
   policy: PermissionPolicy,
   resources: readonly PermissionResource[],
   drafts: Readonly<Record<string, GrantDraft>>,
+  agentOverrides?: readonly { resource: string; agentId: string }[],
 ): PermissionPolicy {
   const grants = [...policy.grants];
   const execution = executionPolicy(policy);
   const paused = new Set(execution.pausedTools);
+
+  if (agentOverrides && agentOverrides.length > 0) {
+    for (const target of agentOverrides) {
+      const draft = drafts[target.resource];
+      if (!draft) continue;
+      let index = grants.findIndex((grant) => grant.resource === target.resource);
+      if (index < 0) {
+        const targetResource = resources.find((r) => r.resource === target.resource);
+        const newGrant: PermissionGrant = {
+          resource: target.resource,
+          approved: false,
+          agentIds: [],
+          revision: targetResource?.revision,
+          directories: [],
+          agentOverrides: {},
+        };
+        grants.push(newGrant);
+        index = grants.length - 1;
+      }
+
+      const currentOverrides = grants[index].agentOverrides
+        ? { ...grants[index].agentOverrides }
+        : {};
+      const draftOverride = draft.agentOverrides?.[target.agentId];
+
+      if (draftOverride === undefined) {
+        delete currentOverrides[target.agentId];
+      } else {
+        currentOverrides[target.agentId] = {
+          ...(draftOverride.enabled !== undefined ? { enabled: draftOverride.enabled } : {}),
+          approved: draftOverride.approved,
+          ...(draftOverride.revision !== undefined ? { revision: draftOverride.revision } : {}),
+          directories: [...draftOverride.directories],
+        };
+      }
+
+      grants[index] = {
+        ...grants[index],
+        agentOverrides: Object.keys(currentOverrides).length > 0 ? currentOverrides : undefined,
+      };
+    }
+    return {
+      ...policy,
+      grants,
+    };
+  }
   for (const resource of resources) {
     const draft = drafts[resource.resource];
     const baseline = grantDraftOf(policy, resource.resource, resource.revision);

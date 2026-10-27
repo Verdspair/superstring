@@ -420,7 +420,7 @@ export class OutboundIntentRepository {
   ): Array<{ occurredAtSeconds: number; text: string; sources: SourceRef[] }> {
     const rows = this.db
       .query(
-        "SELECT id,expires_at FROM outbound_intents WHERE conversation_id=? AND status<>'confirmed' AND expires_at>? ORDER BY created_at DESC,output_ordinal DESC",
+        "SELECT intent_id AS id,expires_at FROM outbound_intent_metadata WHERE conversation_id=? AND status<>'confirmed' AND expires_at>? ORDER BY created_at DESC,output_ordinal DESC",
       )
       .all(conversationId, input.at) as { id: string; expires_at: string }[];
     const speech = rows.flatMap((row) => {

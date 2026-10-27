@@ -235,7 +235,21 @@ describe("R5 B 区记忆面板状态", () => {
     const state = useSuperstringStore.getState();
     expect(state.policy?.every_turns).toBe(20);
     expect(state.memorySessions).toEqual([{ id: SESSION_ID, title: "测试会话" }]);
-    expect(state.feedback).toContain("整理完成后可在“记忆列表与治理”中查看结果");
+    expect(state.memoryJobs).toEqual([]);
+    expect(state.memoryEntryTotal).toBe(1);
+    expect(state.memoryManagementError).toBeNull();
+    expect(state.apiClient.getPolicy).toHaveBeenCalledTimes(1);
+    expect(state.apiClient.listMemorySessions).toHaveBeenCalledTimes(1);
+    expect(state.apiClient.listMemoryJobs).toHaveBeenCalledTimes(1);
+    expect(state.apiClient.listMemoryEntries).toHaveBeenCalledTimes(1);
+    const metadataOrder = [
+      state.apiClient.getPolicy,
+      state.apiClient.listMemorySessions,
+      state.apiClient.listMemoryJobs,
+    ].map((call) => vi.mocked(call).mock.invocationCallOrder[0]!);
+    expect(
+      vi.mocked(state.apiClient.listMemoryEntries).mock.invocationCallOrder[0],
+    ).toBeGreaterThan(Math.max(...metadataOrder));
   });
 
   it("按页码换算 offset，并加载第一条已选记忆的详情", async () => {
@@ -244,8 +258,15 @@ describe("R5 B 区记忆面板状态", () => {
     useSuperstringStore.setState({ editorAgentId: AGENT_ID });
 
     await useSuperstringStore.getState().loadMemoryPage(3);
-    expect(client.listMemoryEntries).toHaveBeenCalledWith(AGENT_ID, 200, 100, undefined);
-    expect(useSuperstringStore.getState().feedback).toBe("共 1 条记忆，当前第 3 页。");
+    expect(client.listMemoryEntries).toHaveBeenCalledWith(
+      AGENT_ID,
+      200,
+      100,
+      {},
+      expect.any(AbortSignal),
+    );
+    expect(useSuperstringStore.getState().memoryEntries).toEqual([memory]);
+    expect(useSuperstringStore.getState().memoryEntryTotal).toBe(1);
 
     await useSuperstringStore.getState().loadMemoryEntryDetail(MEMORY_ID);
     expect(client.getMemoryEntry).toHaveBeenCalledWith(AGENT_ID, MEMORY_ID);
@@ -260,9 +281,10 @@ describe("R5 B 区记忆面板状态", () => {
 
     await useSuperstringStore.getState().loadMemoryPage(3);
 
-    expect(listMemoryEntries).toHaveBeenCalledWith(AGENT_ID, 200, 100, undefined);
+    expect(listMemoryEntries).toHaveBeenCalledWith(AGENT_ID, 200, 100, {}, expect.any(AbortSignal));
     expect(useSuperstringStore.getState().memoryEntryTotal).toBe(205);
-    expect(useSuperstringStore.getState().feedback).toBe("共 205 条记忆，当前第 3 页。");
+    expect(useSuperstringStore.getState().memoryEntries).toEqual([]);
+    expect(useSuperstringStore.getState().memoryManagementError).toBeNull();
   });
 
   it("手动整理提交后轮询，并报告成功结果", async () => {

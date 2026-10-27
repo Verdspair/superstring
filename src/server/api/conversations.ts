@@ -4,6 +4,7 @@ import type { ConversationEvent, ConversationSummary } from "../../shared/contra
 import {
   ConversationChannelSchema,
   ConversationGroupNamePatchSchema,
+  ConversationMemoryReadModeUpdateSchema,
 } from "../../shared/contracts/conversation";
 import type { QqConversationScope, QqMessageFact } from "../../shared/contracts/qq-message";
 import { visibleConversation, visibleConversationMetadata } from "../agent/conversation-access";
@@ -22,6 +23,7 @@ import { ConversationAvatarRepository } from "../db/conversation-avatar-reposito
 import { ConversationEventRepository } from "../db/conversation-event-repository";
 import { saveQqCustomName } from "../db/qq-group-name-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
+import { AppError } from "../errors";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
 import { ownerScope } from "../services/qq-media-sources";
 import {
@@ -31,7 +33,7 @@ import {
 } from "../services/qq-member-sources";
 import { conversationAvatarRoutes } from "./conversation-avatars";
 import { createSseResponse } from "./sse";
-import { parseUuidParam, validationFailed } from "./validation";
+import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
 
 const principal = { userId: DEFAULT_USER_ID };
 export const conversationNotFound = {
@@ -197,6 +199,30 @@ export function conversationRoutes(
     return conversation
       ? c.json({ ...conversation, avatar: avatars.metadata(conversation.id) })
       : c.json(conversationNotFound, 404);
+  });
+  router.get("/:id/memory-read-mode", (c) => {
+    const id = parseUuidParam(c.req.param("id"));
+    const conversation = visibleConversation(db, repository, id, principal, options.includeShared);
+    if (!conversation) return c.json(conversationNotFound, 404);
+    const mode = repository.memoryReadMode(id, principal.userId);
+    if (!mode) return c.json(conversationNotFound, 404);
+    return c.json({ mode: mode.mode, revision: mode.revision });
+  });
+  router.put("/:id/memory-read-mode", async (c) => {
+    const id = parseUuidParam(c.req.param("id"));
+    const conversation = visibleConversation(db, repository, id, principal, options.includeShared);
+    if (!conversation) return c.json(conversationNotFound, 404);
+    const body = parseBody(ConversationMemoryReadModeUpdateSchema, await readJsonBody(c.req.raw));
+    const result = repository.setMemoryReadMode(
+      id,
+      principal.userId,
+      body.mode,
+      body.expected_revision,
+    );
+    if (!result) return c.json(conversationNotFound, 404);
+    if (result.kind === "conflict")
+      throw new AppError("CONFIG_VERSION_CONFLICT", "会话记忆读取模式已变化，请刷新后重试", 409);
+    return c.json({ mode: result.mode, revision: result.revision });
   });
   // 0053 QQ 群显示备注：null / trim 空串恢复群默认名；只对 QQ 群开放，Web 会话沿用
   // 既有改名入口，私聊一律 404（不新增错误码）。

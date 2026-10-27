@@ -101,6 +101,8 @@ export interface ConversationContextSource {
   prepareModelContext?(model: string, signal: AbortSignal): Promise<ModelContextBudget | undefined>;
   assertCurrent?(): void;
   assertSources?(sources: readonly SourceRef[]): void;
+  /** Recheck the rendered material while preserving host-owned carrier selection semantics. */
+  assertRenderedSources?(sources: readonly SourceRef[]): void;
   bindRun?(context: ActionContext): void;
   /** May use a leaf summarizer. A leaf itself never calls this interface. */
   read(input: {

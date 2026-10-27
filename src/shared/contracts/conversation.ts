@@ -6,6 +6,24 @@ import { SourceRefSchema } from "./evidence";
 import { QqMessageFactSchema } from "./qq-message";
 import { QqConversationTaskStatusSchema } from "./qq-task";
 
+export const ConversationMemoryReadModeSchema = z.enum(["current_conversation", "agent_shared"]);
+export const ConversationMemoryReadModeUpdateSchema = z.strictObject({
+  mode: ConversationMemoryReadModeSchema,
+  expected_revision: z.number().int().positive(),
+});
+export type ConversationMemoryReadMode = z.infer<typeof ConversationMemoryReadModeSchema>;
+export type ConversationMemoryReadModeUpdate = z.infer<
+  typeof ConversationMemoryReadModeUpdateSchema
+>;
+
+export const ConversationMemoryReadModeResponseSchema = z.strictObject({
+  mode: ConversationMemoryReadModeSchema,
+  revision: z.number().int().positive(),
+});
+export type ConversationMemoryReadModeResponse = z.infer<
+  typeof ConversationMemoryReadModeResponseSchema
+>;
+
 export const ConversationChannelSchema = z.enum(["web", "onebot11"]);
 export const WakeStatusSchema = z.enum(["pending", "leased", "completed", "no_output", "failed"]);
 export const ConversationParticipantSchema = z.strictObject({

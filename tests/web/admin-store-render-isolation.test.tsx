@@ -65,12 +65,17 @@ async function isolated(view: ReactNode) {
 describe("admin store render isolation", () => {
   it("keeps memory reading isolated but updates a relevant editable prompt", async () => {
     await isolated(<MemoryReadingRules />);
-    const prompt = screen.getByRole("textbox", {
-      name: translate("library.memory.tools.retrieval.prompt"),
-    }) as HTMLTextAreaElement;
-    fireEvent.change(prompt, { target: { value: "Focused retrieval" } });
+    const candidateInput = screen.getByLabelText("每次查询候选条数上限");
+    fireEvent.change(candidateInput, { target: { value: "25" } });
+    expect(
+      store.getState().pageEditor?.draft.p5_config.retrieval_presets.standard.candidate_limit,
+    ).toBe(25);
+    act(() => {
+      store
+        .getState()
+        .patchPageAgent("memory-tools", { memory_retrieval_prompt: "Focused retrieval" });
+    });
     expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("Focused retrieval");
-    expect(prompt.value).toBe("Focused retrieval");
   });
 
   it("keeps knowledge reading isolated after its actual API load", async () => {

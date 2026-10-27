@@ -1,3 +1,4 @@
+// Historical QQ memory oracle, used only by legacy fixtures and the dev-only dry run.
 // QQ 回复档的记忆读取（按方案的读取强度）。
 //
 // 明确：**回复侧的记忆必须始终受「读取强度」影响**——关闭/保守/标准/宽泛/全目录/
@@ -16,24 +17,24 @@
 // 在模型调用前后与发送前各查一次（`qqMemoryReadIsCurrent`）。
 
 import type { Database } from "bun:sqlite";
-import type { RuntimeConfig } from "../../shared/contracts";
-import type { SourceRef } from "../../shared/contracts/evidence";
-import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
-import { AgentRunRepository } from "../db/agent-run-repository";
-import { memoryFingerprintByScopeKeys } from "../db/context-repository";
-import { contextDumps } from "../db/json-text";
-import { readQqBinding } from "../db/qq-binding-repository";
-import { readQqOwnerIdentity } from "../db/qq-owner-repository";
-import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
-import { fail } from "../errors";
-import type { ModelGateway } from "../llm/model-gateway";
-import { SqliteMemoryModule } from "../modules/memory-module";
-import { estimateMessages } from "../modules/memory-query";
-import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
-import { contentBlocks } from "./content-format";
-import { qqMemoryScopeKeyset } from "./memory-scope";
-import { checkQqTask, type QqTaskSnapshot } from "./qq-binding-contract";
-import type { QqPromptMaterial } from "./qq-prompt-contract";
+import { createAgentRuntime, type LeafAgentRuntime } from "../../../src/server/agent/agent-runtime";
+import { AgentRunRepository } from "../../../src/server/db/agent-run-repository";
+import { memoryFingerprintByScopeKeys } from "../../../src/server/db/context-repository";
+import { contextDumps } from "../../../src/server/db/json-text";
+import { readQqBinding } from "../../../src/server/db/qq-binding-repository";
+import { readQqOwnerIdentity } from "../../../src/server/db/qq-owner-repository";
+import { DEFAULT_USER_ID, type Orm } from "../../../src/server/db/repositories";
+import { fail } from "../../../src/server/errors";
+import type { ModelGateway } from "../../../src/server/llm/model-gateway";
+import { estimateMessages } from "../../../src/server/modules/memory-query";
+import { QqGroupCapabilityGuard } from "../../../src/server/permissions/qq-group-capabilities";
+import { contentBlocks } from "../../../src/server/services/content-format";
+import { qqMemoryScopeKeyset } from "../../../src/server/services/memory-scope";
+import { checkQqTask, type QqTaskSnapshot } from "../../../src/server/services/qq-binding-contract";
+import type { QqPromptMaterial } from "../../../src/server/services/qq-prompt-contract";
+import type { RuntimeConfig } from "../../../src/shared/contracts";
+import type { SourceRef } from "../../../src/shared/contracts/evidence";
+import { LegacyMemorySelector } from "./memory-selector";
 
 export interface QqMemoryReadSnapshot {
   readonly keys: readonly string[];
@@ -103,7 +104,7 @@ export async function recallQqReplyMemory(
       gateway: gateway as ModelGateway,
       repository: new AgentRunRepository((orm as Orm & { $client: Database }).$client),
     });
-  const module = new SqliteMemoryModule({
+  const module = new LegacyMemorySelector({
     orm,
     gateway,
     agentRuntime,

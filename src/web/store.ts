@@ -41,46 +41,56 @@ export type {
   SuperstringState,
 } from "./state/types";
 
-export const useSuperstringStore = create<SuperstringState>()((set, get) => ({
-  ...initial,
-  apiClient: api,
-  effects: defaultEffects,
-  ...createBootstrapActions(set, get),
-  ...createNavigationActions(set, get),
-  ...createChatActions(set, get),
-  ...createDirectoryActions(set, get),
-  ...createAgentActions(set, get),
-  ...createPageActions(set, get),
-  ...createPermissionSettingsActions(set, get),
-  ...createWebAccessActions(set, get),
-  ...createModelActions(set, get),
-  ...createMemoryActions(set, get),
-  ...createRunActions(set, get),
-  ...createKnowledgeActions(set, get),
-  ...createKnowledgeModelActions(set, get),
-  ...createKnowledgeReadActions(set, get),
-  ...createOrganizationActions(set, get),
-  ...createQqStickerActions(set, get),
-  ...createQqSchemeActions(set, get),
-  ...createQqStorageActions(set, get),
-  ...createQqAccessActions(set, get),
-  ...createQqManagedEventsActions(set, get),
-  ...createQqManagedActions(set, get),
-  ...createQqGroupConfigActions(set, get),
-  ...createQqDraftActions(set, get),
-  ...createDesktopSettingsActions(set, get),
-  setNotice: (patch) => set(patch),
-  clearMemoryDetail: () => {
-    if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
-    get().discardMemoryCorrection();
-    set({ memoryEntryDetail: null });
-  },
-  resetForTests: (client = api, effects = {}) =>
-    set({
-      ...initial,
-      qqManagedLifecycleId: get().qqManagedLifecycleId + 1,
-      qqInputs: emptyQqInputs(),
-      apiClient: client,
-      effects: { ...defaultEffects, ...effects },
-    }),
-}));
+export const useSuperstringStore = create<SuperstringState>()((set, get) => {
+  const knowledgeRead = createKnowledgeReadActions(set, get);
+  return {
+    ...initial,
+    apiClient: api,
+    effects: defaultEffects,
+    ...createBootstrapActions(set, get),
+    ...createNavigationActions(set, get),
+    ...createChatActions(set, get),
+    ...createDirectoryActions(set, get),
+    ...createAgentActions(set, get),
+    ...createPageActions(set, get, knowledgeRead.taskStep),
+    ...createPermissionSettingsActions(set, get),
+    ...createWebAccessActions(set, get),
+    ...createModelActions(set, get),
+    ...createMemoryActions(set, get),
+    ...createRunActions(set, get),
+    ...createKnowledgeActions(set, get),
+    ...createKnowledgeModelActions(set, get),
+    ...knowledgeRead.actions,
+    ...createOrganizationActions(set, get),
+    ...createQqStickerActions(set, get),
+    ...createQqSchemeActions(set, get),
+    ...createQqStorageActions(set, get),
+    ...createQqAccessActions(set, get),
+    ...createQqManagedEventsActions(set, get),
+    ...createQqManagedActions(set, get),
+    ...createQqGroupConfigActions(set, get),
+    ...createQqDraftActions(set, get),
+    ...createDesktopSettingsActions(set, get),
+    setNotice: (patch) => set(patch),
+    clearMemoryDetail: () => {
+      if (
+        get().memoryCorrectionDirty ||
+        get().memoryCorrectionSaving ||
+        get().memoryVisibilityDirty ||
+        get().memoryVisibilitySaving
+      )
+        return;
+      get().discardMemoryCorrection();
+      get().clearMemoryMetadata();
+      set({ memoryEntryDetail: null });
+    },
+    resetForTests: (client = api, effects = {}) =>
+      set({
+        ...initial,
+        qqManagedLifecycleId: get().qqManagedLifecycleId + 1,
+        qqInputs: emptyQqInputs(),
+        apiClient: client,
+        effects: { ...defaultEffects, ...effects },
+      }),
+  };
+});

@@ -12,6 +12,7 @@ const readable: KnowledgeDocument = {
   category_id: "default",
   name: "资料",
   import_type: "text",
+  visibility: null,
   content_mode: "original",
   content_version: 1,
   revision: 1,

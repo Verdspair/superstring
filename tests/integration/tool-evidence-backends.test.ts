@@ -1,8 +1,13 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { openConnection, toOrmHandle } from "../../src/server/db/connection";
+import { rankedMemoryCandidates } from "../../src/server/db/context-repository";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
+import { rebuildMemorySearchProjection } from "../../src/server/db/memory-repository";
+import { recordObservation } from "../../src/server/db/qq-observation-intake";
 import {
   createSession,
   DEFAULT_AGENT_ID,
@@ -10,16 +15,20 @@ import {
   ensureDefaults,
   getAgentRow,
   getTurnByRequest,
+  immediate,
   nowIso,
   prepareTurn,
   saveCompletedAssistantMessage,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { createSqliteQueryFactory } from "../../src/server/modules/composition";
 import { evidenceQueryPage, type MemoryQuery } from "../../src/server/modules/contracts";
 import { SqliteKnowledgeModule } from "../../src/server/modules/knowledge-module";
 import { SqliteMemoryModule } from "../../src/server/modules/memory-module";
 import { KnowledgeOrganizer } from "../../src/server/services/knowledge-organizer";
+import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
+import { qqConversationKey, qqMemoryScopeKey } from "../../src/server/services/qq-binding-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import type { RuntimeConfig } from "../../src/shared/contracts";
 import type { Evidence } from "../../src/shared/contracts/evidence";
@@ -28,11 +37,12 @@ let serialized: Uint8Array;
 let business: BusinessDbHandle;
 let runtime: RuntimeConfig;
 let repo: KnowledgeRepository;
-let memory: SqliteMemoryModule;
+let memory: ReturnType<ReturnType<typeof createSqliteQueryFactory>>["memory"] & {
+  read: NonNullable<ReturnType<ReturnType<typeof createSqliteQueryFactory>>["memory"]["read"]>;
+};
 let knowledge: SqliteKnowledgeModule;
 let sessionId: string;
 const owner = { kind: "synthetic", id: "run", agentId: DEFAULT_AGENT_ID, userId: DEFAULT_USER_ID };
-const selector = mock(async () => [] as string[]);
 const capacity = mock(async () => 32768);
 const leaf = mock(async () => '{"ids":[]}');
 const observed: string[] = [];
@@ -58,7 +68,6 @@ beforeEach(() => {
     auto_enabled: true,
   };
   sessionId = createSession(business.orm, "synthetic", { modelName: "synthetic" }).id;
-  selector.mockClear();
   capacity.mockClear();
   leaf.mockClear();
   observed.length = 0;
@@ -70,7 +79,14 @@ beforeEach(() => {
       observed.push(...sources.map((source) => source.id));
     },
   };
-  memory = new SqliteMemoryModule({ ...options, orm: business.orm, select: selector });
+  const module = createSqliteQueryFactory({
+    db: business.db,
+    orm: business.orm,
+    gateway: options.gateway,
+    agentRuntime: options.agentRuntime,
+  })({ runtime, assertSources: options.assertSources }).memory;
+  if (!module.read) throw new Error("Missing memory read capability");
+  memory = { ...module, query: module.query.bind(module), read: module.read.bind(module) };
   knowledge = new SqliteKnowledgeModule({ ...options, db: business.db });
 });
 afterEach(() => business.close());
@@ -194,7 +210,6 @@ describe("tool evidence backends", () => {
     expect(first(k.items).text).toBe("");
     expect((await readMemory(first(m.items))).text).toBe("不应预取的记忆正文");
     expect((await readKnowledge(first(k.items))).text).toBe("不应预取的资料正文");
-    expect(selector).not.toHaveBeenCalled();
     expect(capacity).not.toHaveBeenCalled();
     expect(leaf).not.toHaveBeenCalled();
   });
@@ -236,15 +251,20 @@ describe("tool evidence backends", () => {
     seedMemory("m1");
     seedMemory("m2");
     seedMemory("m3", "needle");
+    seedMemory("m4", "needle");
+    immediate(business.db, () =>
+      rebuildMemorySearchProjection(business.orm, DEFAULT_AGENT_ID, { limit: 10 }),
+    );
     const input = memoryInput({ mode: "full_body", query: "needle" });
     const one = evidenceQueryPage(await memory.query(input));
-    expect(one.items).toEqual([]);
+    expect(one.items.map((item) => item.id)).toEqual(["m3"]);
     expect(one.nextCursor).toBeString();
     const two = evidenceQueryPage(
       await memory.query({ ...input, cursor: one.nextCursor ?? undefined }),
     );
-    expect(two.items.map((item) => item.id)).toEqual(["m3"]);
-    expect(selector).not.toHaveBeenCalled();
+    expect(two.items.map((item) => item.id)).toEqual(["m4"]);
+    expect(capacity).not.toHaveBeenCalled();
+    expect(leaf).not.toHaveBeenCalled();
   });
 
   it("returns unavailable for an insufficient metadata budget, not a false no-match", async () => {
@@ -510,13 +530,13 @@ describe("tool evidence backends", () => {
   it("caps memory scans at 300 rows and knowledge scans at 120 rows", async () => {
     seedMemory("m0000", "ordinary");
     business.db.transaction(() => {
-      for (let i = 1; i <= 300; i++) {
+      for (let i = 1; i <= 301; i++) {
         const id = `m${String(i).padStart(4, "0")}`;
         business.db
           .query(`INSERT INTO memory_entries
           (id, agent_id, user_id, name, summary, tags, kinds, body, scope, scope_key, status, config_snapshot, created_at)
           SELECT ?, agent_id, user_id, name, summary, tags, kinds, ?, scope, scope_key, status, config_snapshot, created_at FROM memory_entries WHERE id = 'm0000'`)
-          .run(id, i === 300 ? "needle" : "ordinary");
+          .run(id, "needle");
         business.db
           .query(
             `INSERT INTO memory_sources SELECT ?, turn_id, user_message_id, assistant_message_id, sequence_no FROM memory_sources WHERE memory_id = 'm0000'`,
@@ -530,15 +550,59 @@ describe("tool evidence backends", () => {
       max_tokens: 65536,
       relevance_instruction: "bounded",
     };
+    const firstRebuild = immediate(business.db, () =>
+      rebuildMemorySearchProjection(business.orm, DEFAULT_AGENT_ID, { limit: 300 }),
+    );
+    const nextAfterId = firstRebuild.nextAfterId;
+    if (!nextAfterId) throw new Error("expected a second rebuild page");
+    immediate(business.db, () =>
+      rebuildMemorySearchProjection(business.orm, DEFAULT_AGENT_ID, {
+        afterId: nextAfterId,
+        limit: 300,
+      }),
+    );
+    const queries: Array<{ query: string; params: unknown[] }> = [];
+    const measured = drizzle(business.db, {
+      schema,
+      logger: {
+        logQuery(query, params) {
+          queries.push({ query, params });
+        },
+      },
+    });
+    const bounded = rankedMemoryCandidates(measured, DEFAULT_AGENT_ID, null, {
+      sessionId,
+      terms: ["needle"],
+      limit: 1000,
+    });
+    expect(bounded.positions).toHaveLength(300);
+    expect(bounded.hasMore).toBe(true);
+    const ranked = queries.find(
+      (entry) => /json_each/i.test(entry.query) && /order by/i.test(entry.query),
+    );
+    expect(ranked).toBeDefined();
+    expect(ranked?.params).toContain(301);
     const input = memoryInput({ mode: "full_catalog", query: "needle" });
-    const page = evidenceQueryPage(await memory.query(input));
-    expect(page.items).toEqual([]);
-    expect(JSON.parse(JSON.parse(page.nextCursor ?? "{}").payload).after.id).toBe("m0299");
-    expect(
-      evidenceQueryPage(
-        await memory.query({ ...input, cursor: page.nextCursor ?? undefined }),
-      ).items.map((item) => item.id),
-    ).toEqual(["m0300"]);
+    const seen = new Set<string>();
+    const fixtureCount = 301;
+    const pageSize = Math.min(runtime.p5_config.retrieval_presets.broad.max_entries, 20);
+    const maxPages = Math.ceil(fixtureCount / pageSize) + 1;
+    let cursor: string | undefined;
+    for (let pageNumber = 0; pageNumber < maxPages; pageNumber++) {
+      const previous = cursor;
+      const page = evidenceQueryPage(await memory.query({ ...input, cursor }));
+      expect(page.status).toBe("ok");
+      expect(page.items.length).toBeLessThanOrEqual(pageSize);
+      for (const item of page.items) {
+        expect(seen.has(item.id)).toBe(false);
+        seen.add(item.id);
+      }
+      cursor = page.nextCursor ?? undefined;
+      if (cursor === undefined) break;
+      expect(cursor).not.toBe(previous);
+    }
+    expect(seen.size).toBe(fixtureCount);
+    expect(cursor).toBeUndefined();
     for (let i = 0; i < 121; i++) addDocument("ordinary");
     const firstPage = evidenceQueryPage(await knowledge.query(knowledgeInput({ query: "absent" })));
     expect(firstPage.items).toEqual([]);
@@ -597,43 +661,93 @@ describe("tool evidence backends", () => {
   });
 
   it("validates observation provenance against the bounded memory's own QQ scope", async () => {
-    const scopeKey = JSON.stringify(["qq", "10001", "group", "20001", DEFAULT_AGENT_ID]);
-    seedMemory("qq", "群资料", scopeKey);
-    business.db.query("DELETE FROM memory_sources WHERE memory_id = 'qq'").run();
+    const now = nowIso();
+    const schemeId = crypto.randomUUID();
+    const bindingId = crypto.randomUUID();
     business.orm
-      .insert(schema.qqEvents)
+      .insert(schema.qqSchemes)
+      .values({ id: schemeId, name: "synthetic", revision: 1, createdAt: now, updatedAt: now })
+      .run();
+    business.orm
+      .insert(schema.qqBindings)
       .values({
-        eventKey: "event",
+        id: bindingId,
         accountId: "10001",
         conversationKind: "group",
         peerId: "20001",
         agentId: DEFAULT_AGENT_ID,
-        messageId: "message",
-        occurredAtSeconds: 123,
-        speakerKind: "member",
-        speakerId: "speaker",
-        recordedAt: nowIso(),
+        schemeId,
+        paused: 0,
+        shareWebMemory: 0,
+        memoryBatchSize: null,
+        ownerIdentityRevision: null,
+        revision: 1,
+        authorityRevision: 1,
+        createdAt: now,
+        updatedAt: now,
       })
       .run();
+    const journal = new ConversationEventRepository(business.db);
+    const conversation = journal.ensureOneBot(bindingId);
+    if (!conversation) throw new Error("Missing QQ canonical conversation");
+    const event = normalizeOneBotMessage(
+      {
+        time: Math.floor(Date.now() / 1000),
+        self_id: 10001,
+        post_type: "message",
+        message_type: "group",
+        sub_type: "normal",
+        message_id: 123,
+        user_id: 30001,
+        group_id: 20001,
+        message: [{ type: "text", data: { text: "合成群消息" } }],
+      },
+      "10001",
+    );
+    if (event.kind !== "message") throw new Error("Missing QQ observation");
+    recordObservation(business.orm, event.observation, DEFAULT_AGENT_ID);
+    journal.ingestOneBotEvent(event.observation.eventKey, bindingId);
+    const scopeKey = qqMemoryScopeKey({
+      kind: "qq",
+      accountId: "10001",
+      conversationKind: "group",
+      peerId: "20001",
+      agentId: DEFAULT_AGENT_ID,
+    });
+    seedMemory("qq", "群资料", scopeKey);
+    business.db.query("DELETE FROM memory_sources WHERE memory_id = 'qq'").run();
     business.orm
       .insert(schema.qqMemorySources)
       .values({
         memoryId: "qq",
-        eventKey: "event",
+        eventKey: event.observation.eventKey,
         scopeKey,
-        conversationKey: JSON.stringify(["qq", "10001", "group", "20001"]),
-        messageId: "message",
-        occurredAtSeconds: 123,
+        conversationKey: qqConversationKey({ accountId: "10001", kind: "group", peerId: "20001" }),
+        messageId: event.observation.messageId,
+        occurredAtSeconds: event.observation.occurredAtSeconds,
         speakerKind: "member",
-        speakerId: "speaker",
+        speakerId: event.observation.speaker.id,
       })
       .run();
-    const input = memoryInput({ scopes: [scopeKey] });
+    const qqOwner = {
+      kind: "qq_binding",
+      id: bindingId,
+      userId: DEFAULT_USER_ID,
+      agentId: DEFAULT_AGENT_ID,
+    } as const;
+    const input = memoryInput({
+      sessionId: undefined,
+      conversationId: conversation.id,
+      owner: qqOwner,
+      scopes: [scopeKey],
+    });
     const item = first(evidenceQueryPage(await memory.query(input)).items);
     expect((await memory.read({ ...input, evidence: item, offset: 0, limit: 4096 })).text).toBe(
       "群资料",
     );
-    business.db.query("UPDATE qq_events SET peer_id = 'foreign' WHERE event_key = 'event'").run();
+    business.db
+      .query("UPDATE qq_events SET peer_id = 'foreign' WHERE event_key = ?")
+      .run(event.observation.eventKey);
     await expect(
       memory.read({ ...input, evidence: item, offset: 0, limit: 4096 }),
     ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });

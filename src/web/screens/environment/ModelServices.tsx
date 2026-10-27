@@ -82,7 +82,9 @@ function UsageEstimateField({
             }
           >
             <option value="">{t("models.tokenizerUnspecified")}</option>
+            {/* i18next-instrument-ignore-next-line */}
             <option value="cl100k_base">cl100k_base</option>
+            {/* i18next-instrument-ignore-next-line */}
             <option value="o200k_base">o200k_base</option>
           </NativeSelect>
         </Field>

@@ -143,12 +143,13 @@ it("access内编辑knowledgeRead并真实save不夹Agent identity dirty；CAS失
   const pageEditor = state().pageEditor;
   if (!pageEditor) throw new Error("missing pageEditor");
   expect(dirtyPages(pageEditor)).not.toContain("identity");
-  expect(state().dirty).toBe(false);
-  expect(screen.queryByText("有未保存的修改")).toBeNull();
+  expect(state().settingsTaskDirty("identity")).toBe(false);
+  expect(state().settingsTaskDirty("materials")).toBe(true);
+  expect(screen.getByText("有未保存的修改")).toBeTruthy();
   expect(client.updateAgent).not.toHaveBeenCalled();
   expect(client.savePersona).not.toHaveBeenCalled();
   // 真实 save：只提交 knowledgeRead，revision CAS 前进。
-  await user.click(screen.getByRole("button", { name: "保存知识规则" }));
+  await user.click(screen.getByRole("button", { name: "保存 Agent" }));
   await act(async () => {});
   expect(client.saveAgentKnowledgeRead).toHaveBeenCalledTimes(1);
   expect(client.saveAgentKnowledgeRead).toHaveBeenCalledWith(B, {
@@ -162,7 +163,7 @@ it("access内编辑knowledgeRead并真实save不夹Agent identity dirty；CAS失
   );
   await user.click(screen.getByRole("checkbox", { name: "启用知识读取" }));
   expect(knowledgeReadDirty(editor())).toBe(true);
-  await user.click(screen.getByRole("button", { name: "保存知识规则" }));
+  await user.click(screen.getByRole("button", { name: "保存 Agent" }));
   await act(async () => {});
   expect(
     screen
@@ -187,10 +188,14 @@ it("取消切换保留access活动视图与草稿；identity往返不重读读�
   await user.click(screen.getByRole("checkbox", { name: "启用知识读取" }));
   expect(knowledgeReadDirty(editor())).toBe(true);
   // 读取草稿未决时切换 Agent 走统一守卫；取消后保留 access 活动视图与草稿。
-  act(() => state().requestAgentNavigation(A));
+  await act(async () => {
+    void state().requestAgentNavigation(A);
+  });
   expect(state().navigationConfirmOpen).toBe(true);
   expect(state().pendingNavigation).toMatchObject({ kind: "agent", id: A });
-  act(() => state().cancelPendingNavigation());
+  await act(async () => {
+    state().cancelPendingNavigation();
+  });
   expect(state().navigationConfirmOpen).toBe(false);
   expect(state().pendingNavigation).toBeNull();
   expect(state().editorAgentId).toBe(B);

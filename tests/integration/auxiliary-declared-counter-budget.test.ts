@@ -225,6 +225,34 @@ function seedSuppressedEntry(ctx: Ctx): void {
 async function runOne(ctx: Ctx, requestKey: string): Promise<string> {
   const sessionId = createSession(ctx.orm, "宣告计数预算", { modelName: MODEL }).id;
   const turnId = completedTurn(ctx.orm, sessionId, requestKey);
+  const blocked = ctx.orm
+    .select()
+    .from(schema.memoryEntries)
+    .where(eq(schema.memoryEntries.status, "suppressed"))
+    .all();
+  if (blocked.length > 0) {
+    const sourceTurnId = completedTurn(ctx.orm, sessionId, `${requestKey}-blocked-source`);
+    const messages = ctx.orm
+      .select()
+      .from(schema.messages)
+      .where(eq(schema.messages.turnId, sourceTurnId))
+      .all();
+    const user = messages.find((message) => message.role === "user");
+    const assistant = messages.find((message) => message.role === "assistant");
+    if (!user || !assistant) throw new Error("completed blocked source messages missing");
+    for (const entry of blocked) {
+      ctx.orm
+        .insert(schema.memorySources)
+        .values({
+          memoryId: entry.id,
+          turnId: sourceTurnId,
+          userMessageId: user.id,
+          assistantMessageId: assistant.id,
+          sequenceNo: user.sequenceNo,
+        })
+        .run();
+    }
+  }
   const job = immediate(ctx.db, () =>
     enqueue(ctx.orm, AGENT_ID, requestKey, { kind: "manual", sessionId, turnIds: [turnId] }),
   );

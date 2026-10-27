@@ -1,6 +1,7 @@
 import type { StoreApi } from "zustand";
 import type {
   AgentResponse,
+  MemoryAccessMetadata,
   MemoryContentResponse,
   MemoryCorrection,
   MemoryEntryResponse,
@@ -118,6 +119,8 @@ export interface AgentDraft {
   persona_intensity: number;
 }
 
+export type AgentWorkspaceTask = "identity" | "conversation" | "materials";
+
 export interface SuperstringState
   extends ConversationState,
     PermissionSettingsState,
@@ -154,6 +157,9 @@ export interface SuperstringState
     page: import("../features/agents/page-drafts").EditablePage,
   ) => Promise<boolean>;
   saveAllSettingsPages: () => Promise<boolean>;
+  saveSettingsTask: (task: AgentWorkspaceTask) => Promise<boolean>;
+  settingsTaskDirty: (task: AgentWorkspaceTask) => boolean;
+  discardSettingsTask: (task: AgentWorkspaceTask) => void;
   /** 显式刷新保存基线：GET 当前 Agent，只推进未修改字段与 config_version，保留已改草稿且不自动重试保存。 */
   refreshSettingsAgent: () => Promise<boolean>;
   /**
@@ -201,15 +207,45 @@ export interface SuperstringState
   memoryTurns: MemoryTurnRow[];
   memoryEntries: MemorySummary[];
   memoryEntryTotal: number;
+  memoryManagementError: string | null;
+  memoryManagementLoading: boolean;
   memoryEntryDetail: MemoryEntryResponse | null;
   memoryContent: MemoryContentResponse | null;
   memoryCorrectionDraft: MemoryCorrection | null;
   memoryCorrectionDirty: boolean;
   memoryCorrectionSaving: boolean;
+  memoryMetadata: MemoryAccessMetadata | null;
+  memoryMetadataBaseline: {
+    agentId: string;
+    memoryId: string;
+    visibility: "session_private" | "agent_shared" | "public" | null;
+    revision: number;
+    recipient_agent_ids: string[];
+    api: SuperstringState["apiClient"];
+  } | null;
+  memoryVisibilityDraft: {
+    visibility: "session_private" | "agent_shared" | "public" | null;
+    recipient_agent_ids: string[];
+  } | null;
+  memoryVisibilityDirty: boolean;
+  memoryMetadataLoading: boolean;
+  memoryVisibilitySaving: boolean;
+  memoryVisibilityError: string | null;
   loadMemoryContent: () => Promise<void>;
   patchMemoryCorrection: (patch: Partial<MemoryCorrection>) => void;
   saveMemoryCorrection: () => Promise<boolean>;
   discardMemoryCorrection: () => void;
+  loadMemoryAccessMetadata: (
+    memoryId?: string,
+    options?: { advanceRevisionIfDirty?: boolean },
+  ) => Promise<boolean>;
+  patchMemoryVisibilityDraft: (patch: {
+    visibility?: "session_private" | "agent_shared" | "public" | null;
+    recipient_agent_ids?: string[];
+  }) => void;
+  saveMemoryVisibility: () => Promise<boolean>;
+  discardMemoryVisibilityDraft: () => void;
+  clearMemoryMetadata: () => void;
   memoryJobs: MemoryJobView[];
   qqMemoryBatchDrafts: Record<string, { value: string; revision: number }>;
   qqMemoryBatchSaving: boolean;
@@ -297,6 +333,12 @@ export interface SuperstringState
     probeModels?: readonly [string, string | null, string | null],
   ) => Promise<void>;
   reloadMemory: () => Promise<void>;
+  loadMemoryManagement: (
+    page: number,
+    filters?: { scope_key?: string; search?: string; status?: string },
+    options?: { metadata?: boolean },
+  ) => Promise<boolean>;
+  cancelMemoryManagementRead: () => void;
   loadMemoryPolicy: () => Promise<void>;
   loadMemoryTurns: (sessionId: string, limit: number) => Promise<void>;
   loadMemoryPage: (

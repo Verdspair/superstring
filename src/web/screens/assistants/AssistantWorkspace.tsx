@@ -14,11 +14,11 @@ import { InputSuggestions } from "@/components/ui/input-suggestions";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { dirtyPages } from "@/features/agents/page-drafts";
 import { returnFromContextAllocation } from "@/features/context-allocation";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 import type { AgentResponse } from "../../../shared/contracts";
+import type { AgentWorkspaceTask } from "../../state/types";
 import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { KnowledgeToolSettings, MemoryToolSettings } from "./ResourceRules";
 import { AgentToolScope, CapabilityEditor, IdentityEditor } from "./StudioEditors";
@@ -39,7 +39,13 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       refreshModels: state.refreshModels,
       requestAgentNavigation: state.requestAgentNavigation,
       saveAllSettingsPages: state.saveAllSettingsPages,
+      saveSettingsTask: state.saveSettingsTask,
+      settingsTaskDirty: state.settingsTaskDirty,
+      discardSettingsTask: state.discardSettingsTask,
+      knowledgeReadEditor: state.knowledgeReadEditor,
+      knowledgeReadLoading: state.knowledgeReadLoading,
       saveCurrentSection: state.saveCurrentSection,
+      feedback: state.feedback,
       selectedNewSessionAgentId: state.selectedNewSessionAgentId,
       setNewSessionAgent: state.setNewSessionAgent,
       settingsRoute: state.settingsRoute,
@@ -234,7 +240,15 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
   }, []);
   const current = s.pageEditor;
   const isNew = s.editorAgentId === "__new__";
-  const dirty = dirtyPages(current).length > 0;
+  const currentTask: AgentWorkspaceTask | "tools" =
+    tab === "identity"
+      ? "identity"
+      : tab === "capabilities"
+        ? "conversation"
+        : tab === "access"
+          ? "materials"
+          : "tools";
+  const isTaskDirty = currentTask !== "tools" && s.settingsTaskDirty(currentTask);
   const taskNavigation = (
     <TabsList className="mb-[24px] h-auto group-data-horizontal/tabs:h-auto w-fit max-w-full justify-start flex-wrap gap-[6px] rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:rounded-[6px] [&_[role=tab]]:shrink-0 [&_[role=tab]]:flex-none [&_[role=tab]]:border-0 [&_[role=tab][data-state=active]]:border [&_[role=tab][data-state=active]]:border-border [&_[role=tab][data-state=active]]:bg-card [&_[role=tab][data-state=active]]:font-semibold [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px] [&_[role=tab]]:font-medium">
       <TabsTrigger value="identity" tooltip={t("hints.custom.agentTab.identity")}>
@@ -461,137 +475,109 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
           </SettingsGroup>
         </div>
       ) : current ? (
-        <MemoryToolSettings
-          active={active && tab === "access"}
-          renderWorkspace={({ actions, content, status }) => (
-            <>
-              <div
-                data-visual="agent-workspace-toolbar"
-                className="mb-[16px] grid grid-cols-1 gap-2.5 sm:flex sm:flex-wrap sm:items-center sm:justify-between"
+        <>
+          <div
+            data-visual="agent-workspace-toolbar"
+            className="mb-[16px] grid grid-cols-1 gap-2.5 sm:flex sm:flex-wrap sm:items-center sm:justify-between"
+          >
+            <div className="flex flex-wrap items-center gap-[8px]">
+              <Badge variant="outline">{current.agent.id.slice(0, 8)}</Badge>
+              <Badge
+                variant="secondary"
+                className="max-w-[200px] truncate"
+                title={current.agent.model_name}
               >
-                <div className="flex flex-wrap items-center gap-[8px]">
-                  <Badge variant="outline">{current.agent.id.slice(0, 8)}</Badge>
-                  <Badge
-                    variant="secondary"
-                    className="max-w-[200px] truncate"
-                    title={current.agent.model_name}
+                {current.agent.model_name}
+              </Badge>
+              {isTaskDirty && <Badge>{t("library.unsaved.changes")}</Badge>}
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2 sm:ml-auto">
+              {currentTask !== "tools" && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!isTaskDirty || s.settingsSaving}
+                    tooltip={t("hints.agent.discard")}
+                    disabledReason={t("hints.agent.noChangesToDiscard")}
+                    onClick={() => s.discardSettingsTask(currentTask)}
                   >
-                    {current.agent.model_name}
-                  </Badge>
-                  <div className="grid">
-                    <div
-                      className="[grid-area:1/1]"
-                      style={{ visibility: tab === "access" ? "visible" : "hidden" }}
-                      aria-hidden={tab !== "access"}
-                      inert={tab !== "access"}
-                    >
-                      {status}
-                    </div>
-                    <div
-                      className="[grid-area:1/1]"
-                      style={{ visibility: tab !== "access" && dirty ? "visible" : "hidden" }}
-                      aria-hidden={tab === "access" || !dirty}
-                      inert={tab === "access" || !dirty}
-                    >
-                      {tab !== "access" && dirty && <Badge>{t("library.unsaved.changes")}</Badge>}
-                    </div>
-                  </div>
-                </div>
-                <div className="grid min-w-0 max-w-full sm:ml-auto">
-                  <div
-                    className="[grid-area:1/1]"
-                    style={{ visibility: tab === "access" ? "hidden" : "visible" }}
-                    aria-hidden={tab === "access"}
-                    inert={tab === "access"}
+                    {t("library.discard.changes")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={!isTaskDirty || s.settingsSaving}
+                    tooltip={t("hints.agent.saveAll")}
+                    disabledReason={t("hints.agent.noChangesToSave")}
+                    onClick={() => void s.saveSettingsTask(currentTask)}
                   >
-                    <div className="flex flex-wrap items-center justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={!dirty || s.settingsSaving}
-                        tooltip={t("hints.agent.discard")}
-                        disabledReason={t("hints.agent.noChangesToDiscard")}
-                        onClick={() => s.discardSettingsPages()}
-                      >
-                        {t("library.discard.changes")}
-                      </Button>
-                      <Button
-                        size="sm"
-                        disabled={!dirty || s.settingsSaving}
-                        tooltip={t("hints.agent.saveAll")}
-                        disabledReason={t("hints.agent.noChangesToSave")}
-                        onClick={() => void s.saveAllSettingsPages()}
-                      >
-                        {t("library.save.agent")}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={t("library.delete.agent")}
-                        tooltip={t("hints.agent.deleteSingle")}
-                        onClick={() => requestDelete([current.agent.id])}
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  </div>
-                  <div
-                    className="[grid-area:1/1]"
-                    style={{ visibility: tab === "access" ? "visible" : "hidden" }}
-                    aria-hidden={tab !== "access"}
-                    inert={tab !== "access"}
-                  >
-                    {actions}
-                  </div>
-                </div>
-              </div>
-              <Tabs
-                value={tab}
-                onValueChange={(next) => {
-                  setTab(next);
-                  // 标签页是已落地工作区内的本地视图：只同步落点路由，不重复运行页面/Agent 离开守卫。
-                  if (next === "capabilities") {
-                    s.syncSettingsRoute("context");
-                  } else if (next === "identity") {
-                    s.syncSettingsRoute("identity");
-                  }
-                  // "access" stays in the current agent identity route domain without triggering route jump
-                }}
-                className="agent-workspace-content gap-0"
+                    {t("library.save.agent")}
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t("library.delete.agent")}
+                tooltip={t("hints.agent.deleteSingle")}
+                onClick={() => requestDelete([current.agent.id])}
               >
-                {taskNavigation}
-
-                {(tab === "identity" || visitedTabs.includes("identity")) && (
-                  <TabsContent value="identity" forceMount className="data-[state=inactive]:hidden">
-                    <IdentityEditor />
-                  </TabsContent>
-                )}
-                {(tab === "access" || visitedTabs.includes("access")) && (
-                  <TabsContent value="access" forceMount className="data-[state=inactive]:hidden">
-                    <div className="space-y-6">
-                      {content}
-                      <KnowledgeToolSettings active={active && tab === "access"} />
-                    </div>
-                  </TabsContent>
-                )}
-                {(tab === "capabilities" || visitedTabs.includes("capabilities")) && (
-                  <TabsContent
-                    value="capabilities"
-                    forceMount
-                    className="data-[state=inactive]:hidden"
-                  >
-                    <CapabilityEditor active={active && tab === "capabilities"} />
-                  </TabsContent>
-                )}
-                {(tab === "tools" || visitedTabs.includes("tools")) && (
-                  <TabsContent value="tools" forceMount className="data-[state=inactive]:hidden">
-                    <AgentToolScope agentId={current.agent.id} active={active && tab === "tools"} />
-                  </TabsContent>
-                )}
-              </Tabs>
-            </>
+                <Trash2 />
+              </Button>
+            </div>
+          </div>
+          {s.error && (
+            <p role="alert" className="mb-3 text-sm text-destructive">
+              {translateNotice(s.error)}
+            </p>
           )}
-        />
+          {s.feedback && !s.error && (
+            <p role="status" className="mb-3 text-sm text-muted-foreground">
+              {translateNotice(s.feedback)}
+            </p>
+          )}
+          <Tabs
+            value={tab}
+            onValueChange={(next) => {
+              setTab(next);
+              if (!visitedTabs.includes(next)) setVisitedTabs((prev) => [...prev, next]);
+              if (next === "capabilities") {
+                s.syncSettingsRoute("context");
+              } else if (next === "identity") {
+                s.syncSettingsRoute("identity");
+              } else if (next === "access") {
+                s.syncSettingsRoute("memory-tools");
+              }
+            }}
+            className="agent-workspace-content gap-0"
+          >
+            {taskNavigation}
+
+            {(tab === "identity" || visitedTabs.includes("identity")) && (
+              <TabsContent value="identity" forceMount className="data-[state=inactive]:hidden">
+                <IdentityEditor />
+              </TabsContent>
+            )}
+            {(tab === "capabilities" || visitedTabs.includes("capabilities")) && (
+              <TabsContent value="capabilities" forceMount className="data-[state=inactive]:hidden">
+                <CapabilityEditor active={active && tab === "capabilities"} embedded />
+              </TabsContent>
+            )}
+            {(tab === "tools" || visitedTabs.includes("tools")) && (
+              <TabsContent value="tools" forceMount className="data-[state=inactive]:hidden">
+                <AgentToolScope agentId={current.agent.id} active={active && tab === "tools"} />
+              </TabsContent>
+            )}
+            {(tab === "access" || visitedTabs.includes("access")) && (
+              <TabsContent value="access" forceMount className="data-[state=inactive]:hidden">
+                <div className="space-y-6">
+                  <MemoryToolSettings active={active && tab === "access"} embedded />
+                  <KnowledgeToolSettings active={active && tab === "access"} embedded />
+                </div>
+              </TabsContent>
+            )}
+          </Tabs>
+        </>
       ) : s.agents.length === 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
           <p className="text-sm text-muted-foreground">{t("capabilities.memory.noAgent")}</p>

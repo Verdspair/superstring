@@ -12,7 +12,13 @@ import {
   executionDraftOf,
   executionPayload,
 } from "../runs/execution-draft";
-import { applyGrantEdits, type GrantDraft, grantDraftOf, sameGrantDraft } from "./permission-draft";
+import {
+  applyGrantEdits,
+  type GrantDraft,
+  grantDraftOf,
+  sameAgentOverrides,
+  sameGrantDraft,
+} from "./permission-draft";
 
 /** 执行草稿里可单独成组保存的字段：除模块映射与暂停表以外的全部键。 */
 export type ExecutionFieldKey = Exclude<keyof ExecutionDraft, "modules" | "pausedTools">;
@@ -21,10 +27,16 @@ export type ExecutionModuleKey = keyof ExecutionDraft["modules"];
  * 对象作用域：只覆盖显式列出的字段，未列出的字段既不算 dirty，也不会被保存或放弃。
  * 字符串 "execution"/"grants"/"all" 保持原有整域语义不变。
  */
+export interface AgentOverrideScopeSelection {
+  resource: string;
+  agentId: string;
+}
+
 export interface PermissionScopeSelection {
   executionKeys?: ExecutionFieldKey[];
   modules?: ExecutionModuleKey[];
   resources?: string[];
+  agentOverrides?: AgentOverrideScopeSelection[];
 }
 export type PermissionScope = "execution" | "grants" | "all" | PermissionScopeSelection;
 /** 最近一次动作错误的归属面板，用于面板过滤：在修不了该错误的页面不再重复提示。 */
@@ -106,6 +118,7 @@ interface ResolvedScope {
   modules: ReadonlySet<ExecutionModuleKey>;
   allResources: boolean;
   resources: ReadonlySet<string>;
+  agentOverrides: readonly AgentOverrideScopeSelection[];
 }
 
 function scopeOf(scope: PermissionScope): ResolvedScope {
@@ -116,6 +129,7 @@ function scopeOf(scope: PermissionScope): ResolvedScope {
       modules: new Set(),
       allResources: true,
       resources: new Set(),
+      agentOverrides: [],
     };
   if (scope === "execution")
     return {
@@ -124,6 +138,7 @@ function scopeOf(scope: PermissionScope): ResolvedScope {
       modules: new Set(),
       allResources: false,
       resources: new Set(),
+      agentOverrides: [],
     };
   if (scope === "grants")
     return {
@@ -132,6 +147,7 @@ function scopeOf(scope: PermissionScope): ResolvedScope {
       modules: new Set(),
       allResources: true,
       resources: new Set(),
+      agentOverrides: [],
     };
   return {
     allExecution: false,
@@ -139,6 +155,7 @@ function scopeOf(scope: PermissionScope): ResolvedScope {
     modules: new Set(scope.modules ?? []),
     allResources: false,
     resources: new Set(scope.resources ?? []),
+    agentOverrides: [...(scope.agentOverrides ?? [])],
   };
 }
 
@@ -152,7 +169,8 @@ const resourceSelected = (scope: ResolvedScope, resource: string) =>
   scope.allResources || scope.resources.has(resource);
 const executionSelected = (scope: ResolvedScope) =>
   scope.allExecution || scope.executionKeys.size > 0 || scope.modules.size > 0;
-const grantsSelected = (scope: ResolvedScope) => scope.allResources || scope.resources.size > 0;
+const grantsSelected = (scope: ResolvedScope) =>
+  scope.allResources || scope.resources.size > 0 || scope.agentOverrides.length > 0;
 
 export function permissionSettingsDirty(
   editor: PermissionEditor | null,
@@ -172,6 +190,23 @@ export function permissionSettingsDirty(
     if (fieldSelected(resolved, key) && editor.execution[key] !== editor.baseline[key]) return true;
   }
   if (!grantsSelected(resolved)) return false;
+  if (resolved.agentOverrides.length > 0) {
+    for (const pair of resolved.agentOverrides) {
+      const draft = editor.grants[pair.resource];
+      const baseline = grantDraftOf(editor.snapshot.policy, pair.resource);
+      const draftOv = draft?.agentOverrides?.[pair.agentId];
+      const baseOv = baseline?.agentOverrides?.[pair.agentId];
+      if (
+        !sameAgentOverrides(
+          draftOv ? { [pair.agentId]: draftOv } : undefined,
+          baseOv ? { [pair.agentId]: baseOv } : undefined,
+        )
+      ) {
+        return true;
+      }
+    }
+    if (!resolved.allResources && resolved.resources.size === 0) return false;
+  }
   return permissionResources(editor.snapshot).some((resource) => {
     if (!resourceSelected(resolved, resource.resource)) return false;
     const draft = editor.grants[resource.resource];
@@ -231,7 +266,54 @@ function preserveUnselectedDrafts(
     if (resourceSelected(scope, resource.resource)) continue;
     const draft = current.grants[resource.resource];
     const baseline = grantDraftOf(current.snapshot.policy, resource.resource, resource.revision);
-    if (!draft || sameGrantDraft(draft, baseline)) continue;
+    if (!draft) continue;
+
+    const targetedOverridesOnThisResource = scope.agentOverrides.filter(
+      (item) => item.resource === resource.resource,
+    );
+
+    if (targetedOverridesOnThisResource.length > 0) {
+      const merged = { ...(next.grants[resource.resource] ?? baseline) };
+      for (const key of Object.keys(draft) as (keyof GrantDraft)[]) {
+        if (key === "agentOverrides") continue;
+        if (JSON.stringify(draft[key]) !== JSON.stringify(baseline[key])) {
+          Object.assign(merged, {
+            [key]:
+              draft[key] !== null && typeof draft[key] === "object"
+                ? structuredClone(draft[key])
+                : draft[key],
+          });
+        }
+      }
+      const mergedOverrides = { ...(merged.agentOverrides ?? {}) };
+      const allAgentKeys = new Set([
+        ...Object.keys(baseline.agentOverrides ?? {}),
+        ...Object.keys(draft.agentOverrides ?? {}),
+      ]);
+      for (const id of allAgentKeys) {
+        const isTargetedInScope = targetedOverridesOnThisResource.some(
+          (item) => item.agentId === id,
+        );
+        if (isTargetedInScope) continue;
+        const draftOv = draft.agentOverrides?.[id];
+        const baseOv = baseline.agentOverrides?.[id];
+        const isDirty = !sameAgentOverrides(
+          draftOv ? { [id]: draftOv } : undefined,
+          baseOv ? { [id]: baseOv } : undefined,
+        );
+        if (isDirty) {
+          if (draftOv === undefined) {
+            delete mergedOverrides[id];
+          } else {
+            mergedOverrides[id] = structuredClone(draftOv);
+          }
+        }
+      }
+      merged.agentOverrides = Object.keys(mergedOverrides).length > 0 ? mergedOverrides : undefined;
+      next.grants[resource.resource] = merged;
+      continue;
+    }
+    if (sameGrantDraft(draft, baseline)) continue;
     const refreshed = permissionResources(next.snapshot).find(
       (item) => item.resource === resource.resource,
     );
@@ -328,11 +410,12 @@ export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
     },
     patchToolGrant: (resource: string, patch: Partial<GrantDraft>) => {
       const editor = get().permissionEditor;
-      if (!editor || get().permissionSaving || !editor.grants[resource]) return;
+      if (!editor || get().permissionSaving) return;
+      const targetGrant = editor.grants[resource] ?? grantDraftOf(editor.snapshot.policy, resource);
       set({
         permissionEditor: {
           ...editor,
-          grants: { ...editor.grants, [resource]: { ...editor.grants[resource], ...patch } },
+          grants: { ...editor.grants, [resource]: { ...targetGrant, ...patch } },
         },
         permissionNotice: "",
       });
@@ -352,10 +435,38 @@ export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
             : "";
       let policy = editor.snapshot.policy;
       if (savesGrants) {
-        const resources = permissionResources(editor.snapshot).filter((resource) =>
-          resourceSelected(resolved, resource.resource),
-        );
-        policy = applyGrantEdits(policy, resources, editor.grants);
+        if (
+          resolved.agentOverrides.length > 0 &&
+          (resolved.allResources || resolved.resources.size > 0)
+        ) {
+          const resources = permissionResources(editor.snapshot).filter((resource) =>
+            resourceSelected(resolved, resource.resource),
+          );
+          policy = applyGrantEdits(policy, resources, editor.grants);
+          const remainingOverrides = resolved.agentOverrides.filter(
+            (item) => !resourceSelected(resolved, item.resource),
+          );
+          if (remainingOverrides.length > 0) {
+            policy = applyGrantEdits(
+              policy,
+              permissionResources(editor.snapshot),
+              editor.grants,
+              remainingOverrides,
+            );
+          }
+        } else if (resolved.agentOverrides.length > 0) {
+          policy = applyGrantEdits(
+            policy,
+            permissionResources(editor.snapshot),
+            editor.grants,
+            resolved.agentOverrides,
+          );
+        } else {
+          const resources = permissionResources(editor.snapshot).filter((resource) =>
+            resourceSelected(resolved, resource.resource),
+          );
+          policy = applyGrantEdits(policy, resources, editor.grants);
+        }
       }
       if (savesExecution) {
         const payload = executionPayload(

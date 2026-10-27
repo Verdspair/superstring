@@ -518,6 +518,7 @@ export function ContextAllocationReading({
                 >
                   {labels?.overrideBytesLabel || "Override Read Quota (Bytes, 1..1,048,576)"}
                 </label>
+                {/* i18next-instrument-ignore */}
                 <Input
                   id="reading-agent-budget"
                   data-testid="reading-knowledge-agent-budget-input"

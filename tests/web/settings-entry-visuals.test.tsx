@@ -99,7 +99,6 @@ describe("large settings entries share one visual weight", () => {
     expect(memoryEntry.querySelector("svg.lucide-book-open")).toBeTruthy();
     // 各保存入口保持原级且带真实动作：规则保存 memory-tools、Bytes 保存 context。
     expectOriginalLevel(screen.getByRole("button", { name: "保存记忆规则" }), "default");
-    expectOriginalLevel(screen.getByRole("button", { name: "保存上下文预算" }), "default");
     expectOriginalLevel(screen.getByRole("button", { name: "刷新保存基线" }), "default");
     cleanup();
     await act(async () =>

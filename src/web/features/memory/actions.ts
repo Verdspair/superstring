@@ -1,6 +1,7 @@
 import type { PolicyView } from "../../../shared/contracts";
 import { msg } from "../../i18n";
 import { consumePreloadedMemory } from "../../services/agent-preload";
+import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { type PageEditor, POLICY_FIELDS } from "../agents/page-drafts";
@@ -28,6 +29,8 @@ export function createMemoryActions(
   | "loadMemoryPolicy"
   | "clearMemoryTurns"
   | "reloadMemory"
+  | "loadMemoryManagement"
+  | "cancelMemoryManagementRead"
   | "loadMemoryContent"
   | "patchMemoryCorrection"
   | "saveMemoryCorrection"
@@ -42,10 +45,22 @@ export function createMemoryActions(
   | "patchQqMemoryBatchDraft"
   | "saveQqMemoryBatchDrafts"
   | "discardQqMemoryBatchDrafts"
+  | "loadMemoryAccessMetadata"
+  | "patchMemoryVisibilityDraft"
+  | "saveMemoryVisibility"
+  | "discardMemoryVisibilityDraft"
+  | "clearMemoryMetadata"
 > {
   let selectionRequest = 0;
   let managementEpoch = 0;
   let turnsRequest = 0;
+  let metadataReadRequest = 0;
+  let metadataSaveRequest = 0;
+  let metadataReadTask: ReadTask | null = null;
+  let activeMetadataResolve: ((value: boolean) => void) | null = null;
+  let managementReadTask: ReadTask | null = null;
+  let managementResolve: ((value: boolean) => void) | null = null;
+  let managementReadRequest = 0;
   const currentContext = () => {
     const { editorAgentId, page, settingsView, settingsRoute, pageEditor, apiClient } = get();
     const epoch = managementEpoch;
@@ -62,7 +77,141 @@ export function createMemoryActions(
       );
     };
   };
+  let loadedManagement: { api: SuperstringState["apiClient"]; agentId: string } | null = null;
+  const cancelManagement = () => {
+    managementReadRequest++;
+    managementReadTask?.cancel();
+    managementReadTask = null;
+    managementResolve?.(false);
+    managementResolve = null;
+    loadedManagement = null;
+    set({ memoryManagementLoading: false });
+  };
+  const loadManagement = (
+    page: number,
+    filters: { scope_key?: string; search?: string; status?: string } = {},
+    options: { metadata?: boolean } = {},
+  ): Promise<boolean> => {
+    if (
+      get().memoryCorrectionDirty ||
+      get().memoryCorrectionSaving ||
+      get().memoryVisibilityDirty ||
+      get().memoryVisibilitySaving
+    )
+      return Promise.resolve(false);
+    if (!Number.isInteger(page) || page < 1) {
+      set({ memoryManagementError: msg("页码必须为正整数") });
+      return Promise.resolve(false);
+    }
+    const id = get().editorAgentId;
+    if (id === "__new__") return Promise.resolve(false);
+    const api = get().apiClient;
+    const previousLoaded = loadedManagement;
+    managementReadTask?.cancel();
+    managementReadTask = null;
+    managementResolve?.(false);
+    managementResolve = null;
+    const request = ++managementReadRequest;
+    get().discardMemoryCorrection();
+    const selection = selectionRequest;
+    const matches = currentContext();
+    const metadata =
+      options.metadata !== false || previousLoaded?.api !== api || previousLoaded?.agentId !== id;
+    const isCurrent = () =>
+      request === managementReadRequest &&
+      matches() &&
+      selection === selectionRequest &&
+      get().editorAgentId === id &&
+      get().apiClient === api &&
+      !get().memoryCorrectionDirty &&
+      !get().memoryCorrectionSaving &&
+      !get().memoryVisibilityDirty &&
+      !get().memoryVisibilitySaving;
+    set({ memoryManagementLoading: true, memoryManagementError: null });
+    type Stage =
+      | {
+          kind: "metadata";
+          policy: PolicyView;
+          sessions: SuperstringState["memorySessions"];
+          jobs: SuperstringState["memoryJobs"];
+        }
+      | { kind: "page"; result: Awaited<ReturnType<typeof api.listMemoryEntries>> };
+    return new Promise<boolean>((resolve) => {
+      managementResolve = resolve;
+      const task = startRead<Stage>(
+        async (signal, progress) => {
+          if (metadata) {
+            const [policy, sessions, jobs] = await Promise.all([
+              api.getPolicy(id, signal),
+              api.listMemorySessions(id, signal),
+              api.listMemoryJobs(id, signal),
+            ]);
+            signal.throwIfAborted();
+            progress({ kind: "metadata", policy, sessions, jobs });
+          }
+          signal.throwIfAborted();
+          const preloaded =
+            page === 1 &&
+            get().memoryEntries.length === 0 &&
+            !filters.scope_key &&
+            !filters.search &&
+            !filters.status
+              ? consumePreloadedMemory(api, id)
+              : null;
+          return {
+            kind: "page",
+            result:
+              preloaded ??
+              (await api.listMemoryEntries(id, (page - 1) * 100, 100, filters, signal)),
+          };
+        },
+        {
+          progress: (stage) => {
+            if (!isCurrent() || stage.kind !== "metadata") return;
+            const editor = get().pageEditor;
+            set({
+              policy: stage.policy,
+              memorySessions: stage.sessions,
+              memoryJobs: stage.jobs,
+              ...(editor && editor.agent.id === id
+                ? { pageEditor: mergePolicyIntoEditor(editor, stage.policy) }
+                : {}),
+            });
+            loadedManagement = { api, agentId: id };
+          },
+          success: (stage) => {
+            if (managementReadTask === task) managementReadTask = null;
+            if (managementResolve === resolve) managementResolve = null;
+            if (!isCurrent() || stage.kind !== "page") {
+              if (request === managementReadRequest) set({ memoryManagementLoading: false });
+              resolve(false);
+              return;
+            }
+            set({
+              memoryEntries: stage.result.items,
+              memoryEntryTotal: stage.result.total,
+              memoryEntryDetail: null,
+              memoryManagementError: null,
+              memoryManagementLoading: false,
+            });
+            resolve(true);
+          },
+          failure: (reason) => {
+            if (managementReadTask === task) managementReadTask = null;
+            if (managementResolve === resolve) managementResolve = null;
+            if (isCurrent())
+              set({ memoryManagementError: errorText(reason), memoryManagementLoading: false });
+            else if (request === managementReadRequest) set({ memoryManagementLoading: false });
+            resolve(false);
+          },
+        },
+      );
+      managementReadTask = task;
+    });
+  };
   return {
+    loadMemoryManagement: loadManagement,
+    cancelMemoryManagementRead: cancelManagement,
     patchQqMemoryBatchDraft: (id, draft) => {
       if (get().qqMemoryBatchSaving) return;
       const drafts = { ...get().qqMemoryBatchDrafts };
@@ -113,14 +262,23 @@ export function createMemoryActions(
       }
     },
     resetMemoryManagement: () => {
+      cancelManagement();
       managementEpoch += 1;
       selectionRequest += 1;
       turnsRequest += 1;
-      if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
+      if (
+        get().memoryCorrectionDirty ||
+        get().memoryCorrectionSaving ||
+        get().memoryVisibilityDirty ||
+        get().memoryVisibilitySaving
+      )
+        return;
+      get().clearMemoryMetadata();
       set({
         memoryTurns: [],
         memoryEntries: [],
         memoryEntryTotal: 0,
+        memoryManagementError: null,
         memoryEntryDetail: null,
         memoryContent: null,
         memoryCorrectionDraft: null,
@@ -183,18 +341,34 @@ export function createMemoryActions(
       }
     },
     saveMemoryCorrection: async () => {
+      if (get().memoryVisibilityDirty) {
+        set({ error: msg("存在未保存的共享设置修改，请先保存或放弃共享设置后再保存内容纠正。") });
+        return false;
+      }
       const agentId = get().editorAgentId;
       const detail = get().memoryContent;
       const draft = get().memoryCorrectionDraft;
       if (!get().memoryCorrectionDirty) return true;
       if (!detail || !draft || get().memoryCorrectionSaving) return false;
+      const capturedApi = get().apiClient;
+      const capturedDetailId = detail.content.id;
+      const capturedEpoch = managementEpoch;
+      const matches = currentContext();
       set({ memoryCorrectionSaving: true });
       try {
-        const saved = await get().apiClient.correctMemory(agentId, detail.content.id, {
+        const saved = await capturedApi.correctMemory(agentId, detail.content.id, {
           ...draft,
           tags: draft.tags.filter((tag) => tag.trim().length > 0),
         });
-        if (get().editorAgentId !== agentId) return true;
+        if (
+          !matches() ||
+          managementEpoch !== capturedEpoch ||
+          get().editorAgentId !== agentId ||
+          get().apiClient !== capturedApi ||
+          get().memoryEntryDetail?.id !== capturedDetailId
+        ) {
+          return false;
+        }
         const c = saved.content;
         const old = get().memoryEntryDetail;
         set({
@@ -224,12 +398,26 @@ export function createMemoryActions(
           feedback: msg("记忆已纠正，后续新轮使用新修订；旧内容及派生已停用。"),
           error: null,
         });
+        void get().loadMemoryAccessMetadata(c.id);
         return true;
       } catch (error) {
-        set({ error: errorText(error) });
+        if (
+          matches() &&
+          managementEpoch === capturedEpoch &&
+          get().editorAgentId === agentId &&
+          get().apiClient === capturedApi
+        ) {
+          set({ error: errorText(error) });
+        }
         return false;
       } finally {
-        set({ memoryCorrectionSaving: false });
+        if (
+          managementEpoch === capturedEpoch &&
+          get().editorAgentId === agentId &&
+          get().apiClient === capturedApi
+        ) {
+          set({ memoryCorrectionSaving: false });
+        }
       }
     },
     // 记忆页要显示"网页自动整理开没开"，但不需要 `reloadMemory` 那种整页重置（它会清空列表与详情）。
@@ -251,69 +439,11 @@ export function createMemoryActions(
       } catch (error) {
         // 读不到保留旧基线与草稿，只提示失败，不假装已关闭或已成功。
         if (!matches() || get().editorAgentId !== id) return;
-        set({ error: errorText(error) });
+        set({ memoryManagementError: errorText(error) });
       }
     },
     reloadMemory: async () => {
-      if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
-      get().discardMemoryCorrection();
-      const request = selectionRequest;
-      const matches = currentContext();
-      const id = get().editorAgentId;
-      if (id === "__new__") {
-        set({
-          policy: null,
-          memorySessions: [],
-          memoryTurns: [],
-          memoryEntries: [],
-          memoryEntryTotal: 0,
-          memoryEntryDetail: null,
-          memoryJobs: [],
-          feedback: msg("请先创建或选择一个 Agent，这里会显示它的记忆设置。"),
-        });
-        return;
-      }
-      try {
-        const [policy, memorySessions, memoryJobs] = await Promise.all([
-          get().apiClient.getPolicy(id),
-          get().apiClient.listMemorySessions(id),
-          get().apiClient.listMemoryJobs(id),
-        ]);
-        if (!matches() || request !== selectionRequest || get().editorAgentId !== id) return;
-        let feedback = msg("已加载。整理完成后可在“记忆列表与治理”中查看结果。");
-        const latest = memoryJobs[0];
-        if (latest?.status === "failed") {
-          feedback += msg(
-            " 上次整理未成功（{0}）。请重新勾选相同轮次，再次点击“第 5 步：开始整理所选轮次”。",
-            latest.error_code ?? msg("未知原因"),
-          );
-        } else if (latest && ["queued", "running"].includes(latest.status)) {
-          feedback += msg("上次提交的整理任务仍在后台处理，稍后可重新打开本分区查看结果。");
-        }
-        const editor = get().pageEditor;
-        set({
-          ...(editor && editor.agent.id === id
-            ? { pageEditor: mergePolicyIntoEditor(editor, policy) }
-            : {}),
-          policy,
-          memorySessions,
-          memoryTurns: [],
-          memoryEntries: [],
-          memoryEntryTotal: 0,
-          memoryEntryDetail: null,
-          memoryJobs,
-          feedback: get().settingsView === "workspace" ? "" : feedback,
-          error: null,
-        });
-      } catch (error) {
-        if (!matches() || request !== selectionRequest || get().editorAgentId !== id) return;
-        // 读取失败保留旧基线与草稿（含已加载列表），给出错误提示，不伪装成加载成功。
-        const text = errorText(error);
-        set({
-          error: text,
-          feedback: msg("记忆设置未能加载：{0}", text),
-        });
-      }
+      await loadManagement(1, {}, { metadata: true });
     },
     loadMemoryTurns: async (sessionId, limit) => {
       const id = get().editorAgentId;
@@ -338,49 +468,7 @@ export function createMemoryActions(
       }
     },
     loadMemoryPage: async (page, filters) => {
-      if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
-      get().discardMemoryCorrection();
-      const request = selectionRequest;
-      const matches = currentContext();
-      const id = get().editorAgentId;
-      if (id === "__new__") return;
-      if (!Number.isInteger(page) || page < 1) {
-        set({ feedback: msg("页码必须为正整数") });
-        return;
-      }
-      try {
-        // 首屏预热只覆盖第 1 页无筛选的摘要预览，且仅在当前列表为空（首次进入）时消费；
-        // 治理/纠正后的刷新永远走真实读取，纠正草稿与详情在上游守卫中已保护。
-        const preloaded =
-          page === 1 &&
-          get().memoryEntries.length === 0 &&
-          !filters?.scope_key &&
-          !filters?.search &&
-          !filters?.status
-            ? consumePreloadedMemory(get().apiClient, id)
-            : null;
-        const result =
-          preloaded ??
-          (await get().apiClient.listMemoryEntries(id, (page - 1) * 100, 100, filters));
-        if (
-          !matches() ||
-          request !== selectionRequest ||
-          get().editorAgentId !== id ||
-          get().memoryCorrectionDirty ||
-          get().memoryCorrectionSaving
-        )
-          return;
-        set({
-          memoryEntries: result.items,
-          memoryEntryTotal: result.total,
-          memoryEntryDetail: null,
-          feedback: msg("共 {0} 条记忆，当前第 {1} 页。", result.total, page),
-          error: null,
-        });
-      } catch (error) {
-        if (!matches() || request !== selectionRequest) return;
-        set({ feedback: msg("记忆设置未能加载：{0}", errorText(error)) });
-      }
+      await loadManagement(page, filters, { metadata: false });
     },
     loadMemoryEntryDetail: async (memoryId) => {
       if (get().memoryCorrectionDirty || get().memoryCorrectionSaving) return;
@@ -561,6 +649,285 @@ export function createMemoryActions(
         if (!matches()) return false;
         set({ feedback: msg("操作未完成：{0}", errorText(error)) });
         return false;
+      }
+    },
+    clearMemoryMetadata: () => {
+      if (activeMetadataResolve) {
+        activeMetadataResolve(false);
+        activeMetadataResolve = null;
+      }
+      metadataReadTask?.cancel();
+      metadataReadTask = null;
+      set({
+        memoryMetadata: null,
+        memoryMetadataBaseline: null,
+        memoryVisibilityDraft: null,
+        memoryVisibilityDirty: false,
+        memoryMetadataLoading: false,
+        memoryVisibilitySaving: false,
+        memoryVisibilityError: null,
+      });
+    },
+    loadMemoryAccessMetadata: async (memoryId, options?: { advanceRevisionIfDirty?: boolean }) => {
+      const agentId = get().editorAgentId;
+      const id = memoryId ?? get().memoryEntryDetail?.id;
+      if (!id || !agentId || agentId === "__new__") return false;
+
+      if (activeMetadataResolve) {
+        activeMetadataResolve(false);
+        activeMetadataResolve = null;
+      }
+      metadataReadTask?.cancel();
+      metadataReadTask = null;
+
+      const request = ++metadataReadRequest;
+      const matches = currentContext();
+      const capturedApi = get().apiClient;
+      set({ memoryMetadataLoading: true, memoryVisibilityError: null });
+
+      return new Promise<boolean>((resolve) => {
+        activeMetadataResolve = resolve;
+        const task = startRead(
+          (signal) => capturedApi.getMemoryAccessMetadata(agentId, id, signal),
+          {
+            success: (metadata) => {
+              if (metadataReadTask === task) {
+                metadataReadTask = null;
+              }
+              if (activeMetadataResolve === resolve) {
+                activeMetadataResolve = null;
+              }
+              if (
+                !matches() ||
+                request !== metadataReadRequest ||
+                get().editorAgentId !== agentId ||
+                get().memoryEntryDetail?.id !== id ||
+                get().apiClient !== capturedApi
+              ) {
+                resolve(false);
+                return;
+              }
+              set((state) => {
+                const prevBase = state.memoryMetadataBaseline;
+                const isSame =
+                  prevBase !== null &&
+                  prevBase.agentId === agentId &&
+                  prevBase.memoryId === id &&
+                  prevBase.api === capturedApi;
+                const isDirty =
+                  isSame && state.memoryVisibilityDirty && state.memoryVisibilityDraft !== null;
+
+                const advanceRevision = options?.advanceRevisionIfDirty === true;
+                const revisionConflict =
+                  isDirty &&
+                  prevBase !== null &&
+                  metadata.visibility_revision !== prevBase.revision;
+
+                const baseline =
+                  isDirty && !advanceRevision
+                    ? prevBase
+                    : {
+                        agentId,
+                        memoryId: id,
+                        visibility: metadata.visibility,
+                        revision: metadata.visibility_revision,
+                        recipient_agent_ids: [...metadata.recipient_agent_ids],
+                        api: capturedApi,
+                      };
+
+                return {
+                  memoryMetadata: metadata,
+                  memoryMetadataBaseline: baseline,
+                  memoryVisibilityDraft: isDirty
+                    ? state.memoryVisibilityDraft
+                    : {
+                        visibility: metadata.visibility,
+                        recipient_agent_ids: [...metadata.recipient_agent_ids],
+                      },
+                  memoryVisibilityDirty: isDirty,
+                  memoryMetadataLoading: false,
+                  memoryVisibilityError:
+                    revisionConflict && !advanceRevision
+                      ? msg(
+                          "远端记忆版本已更新为 rev {0}，请核对最新状态或刷新重试。",
+                          metadata.visibility_revision,
+                        )
+                      : null,
+                };
+              });
+              resolve(true);
+            },
+            failure: (reason) => {
+              if (metadataReadTask === task) {
+                metadataReadTask = null;
+              }
+              if (activeMetadataResolve === resolve) {
+                activeMetadataResolve = null;
+              }
+              if (
+                matches() &&
+                request === metadataReadRequest &&
+                get().editorAgentId === agentId &&
+                get().memoryEntryDetail?.id === id &&
+                get().apiClient === capturedApi
+              ) {
+                set({
+                  memoryMetadataLoading: false,
+                  memoryVisibilityError: errorText(reason),
+                });
+              }
+              resolve(false);
+            },
+          },
+        );
+        metadataReadTask = task;
+      });
+    },
+    patchMemoryVisibilityDraft: (patch) => {
+      const baseline = get().memoryMetadataBaseline;
+      const current = get().memoryVisibilityDraft;
+      if (!baseline || get().memoryVisibilitySaving) return;
+      const next = {
+        visibility:
+          patch.visibility !== undefined
+            ? patch.visibility
+            : (current?.visibility ?? baseline.visibility),
+        recipient_agent_ids:
+          patch.recipient_agent_ids !== undefined
+            ? patch.recipient_agent_ids
+            : (current?.recipient_agent_ids ?? baseline.recipient_agent_ids),
+      };
+      const equalRecipients = (a: string[], b: string[]) =>
+        a.length === b.length &&
+        a
+          .slice()
+          .sort()
+          .every((v, i) => v === b.slice().sort()[i]);
+      const isDirty =
+        next.visibility !== baseline.visibility ||
+        !equalRecipients(next.recipient_agent_ids, baseline.recipient_agent_ids);
+      set({
+        memoryVisibilityDraft: next,
+        memoryVisibilityDirty: isDirty,
+      });
+    },
+    discardMemoryVisibilityDraft: () => {
+      if (get().memoryVisibilitySaving) return;
+      const baseline = get().memoryMetadataBaseline;
+      set({
+        memoryVisibilityDraft: baseline
+          ? {
+              visibility: baseline.visibility,
+              recipient_agent_ids: [...baseline.recipient_agent_ids],
+            }
+          : null,
+        memoryVisibilityDirty: false,
+        memoryVisibilityError: null,
+      });
+    },
+    saveMemoryVisibility: async () => {
+      const baseline = get().memoryMetadataBaseline;
+      const draft = get().memoryVisibilityDraft;
+      const agentId = get().editorAgentId;
+      const entryId = get().memoryEntryDetail?.id;
+      const capturedApi = get().apiClient;
+
+      if (!baseline || !draft || !agentId || !entryId) return false;
+      if (
+        baseline.agentId !== agentId ||
+        baseline.memoryId !== entryId ||
+        baseline.api !== capturedApi
+      ) {
+        return false;
+      }
+      if (!get().memoryVisibilityDirty) return true;
+      if (draft.visibility === null) return true;
+      if (get().memoryVisibilitySaving) return false;
+
+      let recipientsToSend: string[] = [];
+      if (draft.visibility === "session_private") {
+        recipientsToSend = [];
+      } else if (draft.visibility === "agent_shared") {
+        recipientsToSend = [agentId];
+      } else if (draft.visibility === "public") {
+        recipientsToSend = Array.from(new Set(draft.recipient_agent_ids));
+        if (recipientsToSend.length === 0) {
+          set({ memoryVisibilityError: msg("公共记忆必须指定至少一个接收助手") });
+          return false;
+        }
+      }
+
+      const matches = currentContext();
+      const thisSaveToken = ++metadataSaveRequest;
+      set({ memoryVisibilitySaving: true, memoryVisibilityError: null });
+
+      try {
+        const res = await capturedApi.saveMemoryVisibility(agentId, entryId, {
+          expected_revision: baseline.revision,
+          visibility: draft.visibility,
+          recipient_agent_ids: recipientsToSend,
+        });
+
+        if (
+          !matches() ||
+          thisSaveToken !== metadataSaveRequest ||
+          get().editorAgentId !== agentId ||
+          get().memoryEntryDetail?.id !== entryId ||
+          get().apiClient !== capturedApi
+        ) {
+          return false;
+        }
+
+        const newBaseline = {
+          agentId,
+          memoryId: entryId,
+          visibility: res.visibility,
+          revision: res.visibility_revision,
+          recipient_agent_ids: [...res.recipient_agent_ids],
+          api: capturedApi,
+        };
+
+        set((state) => ({
+          memoryMetadata: state.memoryMetadata
+            ? {
+                ...state.memoryMetadata,
+                visibility: res.visibility,
+                visibility_revision: res.visibility_revision,
+                recipient_agent_ids: [...res.recipient_agent_ids],
+              }
+            : null,
+          memoryMetadataBaseline: newBaseline,
+          memoryVisibilityDraft: {
+            visibility: res.visibility,
+            recipient_agent_ids: [...res.recipient_agent_ids],
+          },
+          memoryVisibilityDirty: false,
+          memoryVisibilitySaving: false,
+          memoryVisibilityError: null,
+          memoryEntries: state.memoryEntries.map((item) =>
+            item.id === entryId ? { ...item } : item,
+          ),
+          feedback: msg("记忆可见性已更新。"),
+        }));
+        return true;
+      } catch (reason: unknown) {
+        if (
+          matches() &&
+          thisSaveToken === metadataSaveRequest &&
+          get().editorAgentId === agentId &&
+          get().memoryEntryDetail?.id === entryId &&
+          get().apiClient === capturedApi
+        ) {
+          set({
+            memoryVisibilitySaving: false,
+            memoryVisibilityError: errorText(reason),
+          });
+        }
+        return false;
+      } finally {
+        if (thisSaveToken === metadataSaveRequest) {
+          set({ memoryVisibilitySaving: false });
+        }
       }
     },
   };

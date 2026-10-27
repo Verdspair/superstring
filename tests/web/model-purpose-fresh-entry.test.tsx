@@ -163,7 +163,6 @@ it("names the reading save action for its complete Agent context scope", async (
   await waitFor(() => expect(store.getState().pageEditor?.agent.id).toBe(A));
   expect(store.getState().settingsRoute).toBe("memory-tools");
   render(<AssistantWorkspace active={true} />);
-  await waitFor(() => expect(screen.getByTestId("reading-save-memory-btn")).toBeTruthy());
-  expect(screen.getByTestId("reading-save-memory-btn").textContent).toContain("保存上下文预算");
-  expect(screen.getByText(/全部上下文草稿/)).toBeTruthy();
+  await waitFor(() => expect(screen.getByRole("button", { name: "保存 Agent" })).toBeTruthy());
+  expect(screen.getByRole("tab", { name: "资料读取" }).getAttribute("data-state")).toBe("active");
 });

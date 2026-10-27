@@ -1562,5 +1562,12 @@
   "必须在 0 < x <= 1 范围内": "Must be within 0 < x <= 1",
   "必须为 0 到 3600 秒之间的正数": "Must be a positive number between 0 and 3600 seconds",
   "必须为 1024 到 1,048,576 之间的整数，或留空": "Must be an integer between 1024 and 1,048,576, or empty",
-  "外部模型列表加载失败：{0}；本地模型仍可选择。": "Could not load the external model list: {0}. Local models are still selectable."
+  "外部模型列表加载失败：{0}；本地模型仍可选择。": "Could not load the external model list: {0}. Local models are still selectable.",
+  "公共记忆必须指定至少一个接收助手": "Public memory requires at least one recipient assistant.",
+  "存在未保存的共享设置修改，请先保存或放弃共享设置后再保存内容纠正。": "Unsaved visibility changes exist; please save or discard visibility settings before saving corrections.",
+  "记忆共享设置保存失败：{0}": "Could not save memory visibility settings: {0}",
+  "记忆共享设置未能加载：{0}": "Could not load memory visibility settings: {0}",
+  "记忆共享设置需要单独确认发布，请在记忆详情中完成或放弃后再继续。": "Memory visibility settings require individual publication confirmation; please complete or discard them in memory details before continuing.",
+  "记忆可见性已更新。": "Memory visibility updated.",
+  "远端记忆版本已更新为 rev {0}，请核对最新状态或刷新重试。": "Remote memory version updated to rev {0}; please check latest state or refresh to retry."
 }

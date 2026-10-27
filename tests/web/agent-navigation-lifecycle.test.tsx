@@ -42,7 +42,7 @@ describe("Agent navigation read ownership", () => {
     release();
     await editing;
     expect(blocked).toBe(false);
-    expect(reloadMemory).toHaveBeenCalledTimes(1);
+    expect(store.getState().editorLoading).toBe(false);
     store.getState().openSettingsRoute("scheme-library");
     expect(store.getState().settingsRoute).toBe("scheme-library");
   });

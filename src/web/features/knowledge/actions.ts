@@ -35,6 +35,7 @@ export function createKnowledgeActions(
   // 不牵连并行的编辑器读取（编辑器读取仍走 knowledgeReadId）。
   let listRead = 0;
   let listAbort: AbortController | null = null;
+  let saveToken = 0;
   /** 后台预热的在途记录：来源 api、过滤条件与承诺，供前台接管同一次首页读取。 */
   let warmInflight: {
     api: ReturnType<StoreGet>["apiClient"];
@@ -185,7 +186,12 @@ export function createKnowledgeActions(
                   original_text: source.original_text,
                   content_mode: source.content_mode,
                 }
-              : { kind: "grants", source, agent_ids: [...source.agent_ids] };
+              : {
+                  kind: "grants",
+                  source,
+                  agent_ids: [...source.agent_ids],
+                  visibility: source.visibility ?? null,
+                };
         } else if (target.kind === "settings") {
           const source = await get().apiClient.getKnowledgeSettings();
           // 资料设置只维护自动整理；预算归系统能力→知识查询的全局分组，不在此保留第二份副本。
@@ -248,9 +254,26 @@ export function createKnowledgeActions(
       const editor = get().knowledgeEditor;
       if (!editor || get().knowledgeBusy || get().knowledgeLoading || get().settingsSaving)
         return false;
+      const capturedApi = get().apiClient;
+      const capturedEditor = editor;
+      const capturedReadId = get().knowledgeReadId;
+      const thisToken = ++saveToken;
+      let expectedEditor: KnowledgeEditor = capturedEditor;
+
+      const isCurrentTarget = () => {
+        if (
+          get().apiClient !== capturedApi ||
+          get().knowledgeReadId !== capturedReadId ||
+          saveToken !== thisToken
+        ) {
+          return false;
+        }
+        return get().knowledgeEditor === expectedEditor;
+      };
+
       set({ knowledgeBusy: true, error: null });
       try {
-        const api = get().apiClient;
+        const api = capturedApi;
         if (editor.kind === "import") {
           if (editor.file) {
             if (!editor.name.trim() || !/\.(txt|md)$/i.test(editor.file.name))
@@ -275,9 +298,19 @@ export function createKnowledgeActions(
           });
           if (!parsed.success) throw new Error(msg("请填写有效的名称和完整原文。"));
           await api.updateKnowledgeDocument(editor.source.id, parsed.data);
-        } else if (editor.kind === "grants")
-          await api.saveKnowledgeGrants(editor.source.id, editor.source.revision, editor.agent_ids);
-        else if (editor.kind === "settings") {
+        } else if (editor.kind === "grants") {
+          const visibilityToSend =
+            editor.visibility === "private" || editor.visibility === "public"
+              ? editor.visibility
+              : undefined;
+          await api.saveKnowledgeGrants(
+            editor.source.id,
+            editor.source.revision,
+            editor.agent_ids,
+            visibilityToSend,
+          );
+        } else if (editor.kind === "settings") {
+          const settingsEditor = editor;
           // 资料设置只提交 auto_enabled；模型与预算从共享的最新基线合并，避免用陈旧预算
           // 覆盖另一处刚保存的新值（旧编辑器副本里的值一律不提交）。基线若仍被并发推进，
           // CAS 冲突只报错并保留草稿，等用户刷新后重试。
@@ -285,19 +318,31 @@ export function createKnowledgeActions(
             latestKnowledgeSettings([
               get().knowledgeSettings,
               get().knowledgeModelEditor?.source,
-              editor.source,
-            ]) ?? editor.source;
+              settingsEditor.source,
+            ]) ?? settingsEditor.source;
           const parsed = KnowledgeSettingsUpdateSchema.safeParse({
             expected_revision: baseline.revision,
-            auto_enabled: editor.auto_enabled,
+            auto_enabled: settingsEditor.auto_enabled,
             model_name: baseline.model_name,
             context_budget: baseline.context_budget,
           });
           if (!parsed.success) throw new Error(msg("上下文预算必须为正整数。"));
           const saved = await api.saveKnowledgeSettings(parsed.data);
+
+          if (!isCurrentTarget()) {
+            return false;
+          }
+
           const modelEditor = get().knowledgeModelEditor;
+          const keepSettingsOpen = knowledgeSettingsDirty({ ...get(), knowledgeDirty: false });
+
+          if (keepSettingsOpen) {
+            expectedEditor = { ...settingsEditor, source: saved };
+          }
+
           set({
             knowledgeSettings: saved,
+            ...(keepSettingsOpen ? { knowledgeEditor: expectedEditor } : {}),
             ...(modelEditor
               ? {
                   knowledgeModelEditor: {
@@ -343,13 +388,14 @@ export function createKnowledgeActions(
               editor.source.revision,
             );
         }
+        if (!isCurrentTarget()) {
+          return false;
+        }
+
         const keepSettingsOpen =
           editor.kind === "settings" && knowledgeSettingsDirty({ ...get(), knowledgeDirty: false });
         set({
-          knowledgeEditor:
-            keepSettingsOpen && editor.kind === "settings"
-              ? { ...editor, source: get().knowledgeSettings ?? editor.source }
-              : null,
+          knowledgeEditor: keepSettingsOpen && editor.kind === "settings" ? expectedEditor : null,
           knowledgeDirty: false,
           knowledgeBusy: false,
           feedback: msg("知识库修改已保存。"),
@@ -358,10 +404,18 @@ export function createKnowledgeActions(
         if (get().knowledgeReadEditor) await get().loadKnowledgeRead();
         return true;
       } catch (error) {
-        set({ error: errorText(error) });
+        if (isCurrentTarget()) {
+          set({ error: errorText(error) });
+        }
         return false;
       } finally {
-        set({ knowledgeBusy: false });
+        if (
+          get().apiClient === capturedApi &&
+          get().knowledgeReadId === capturedReadId &&
+          saveToken === thisToken
+        ) {
+          set({ knowledgeBusy: false });
+        }
       }
     },
     deleteKnowledgeItem: async (kind, id, revision, moveTo) => {

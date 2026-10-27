@@ -376,36 +376,25 @@ describe("统一上下文分配真实接线", () => {
     const client = setupHarness({ updateAgent });
     await renderAssistantWorkspace("memory-tools");
 
+    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
     fireEvent.change(screen.getByTestId("reading-preset-max-tokens-broad"), {
       target: { value: "10000" },
     });
-    // 外来脏稿：memory-tools 页拥有的 max_entries 与提示词草稿——context 保存不得夹带。
+    // 外来脏稿：models 页的模型草稿与 context 页的轮数草稿——materials 任务保存不得夹带。
     await act(async () => {
-      store.setState({
-        pageEditor: store.getState().pageEditor
-          ? {
-              ...store.getState().pageEditor!,
-              draft: {
-                ...store.getState().pageEditor!.draft,
-                memory_retrieval_prompt: "draft prompt",
-                p5_config: {
-                  ...store.getState().pageEditor!.draft.p5_config,
-                  retrieval_presets: {
-                    ...store.getState().pageEditor!.draft.p5_config.retrieval_presets,
-                    standard: {
-                      ...store.getState().pageEditor!.draft.p5_config.retrieval_presets.standard,
-                      max_entries: 9999,
-                    },
-                  },
-                },
-              },
-            }
-          : null,
+      store.getState().patchPageAgent("models", {
+        model_name: "draft-model",
+      });
+      store.getState().patchPageAgent("context", {
+        p5_config: {
+          ...store.getState().pageEditor!.draft.p5_config,
+          recent_turns: 88,
+        },
       });
     });
 
     await act(async () => {
-      fireEvent.click(screen.getByTestId("reading-save-memory-btn"));
+      fireEvent.click(screen.getByRole("button", { name: "保存 Agent" }));
     });
 
     expect(client.updateAgent).toHaveBeenCalledTimes(1);
@@ -416,8 +405,9 @@ describe("统一上下文分配真实接线", () => {
       standard: expect.objectContaining({ max_tokens: 2000, max_entries: 10 }),
       conservative: expect.objectContaining({ max_tokens: 1000, max_entries: 5 }),
     });
-    expect(payload).not.toHaveProperty("memory_retrieval_prompt");
+    expect(payload).not.toHaveProperty("model_name");
     expect(payload).toHaveProperty("expected_version", 1);
+    expect(store.getState().pageEditor?.draft.model_name).toBe("draft-model");
   });
 
   it("QQ 本群：headroom 输入 7 存比例 0.07 稀疏保存且基线不动；空原文拦保存；恢复跟随删除覆盖", async () => {
@@ -560,7 +550,11 @@ describe("统一上下文分配真实接线", () => {
     expect(
       (screen.getByTestId("aux-input-limit-memory_consolidate") as HTMLInputElement).value,
     ).toBe("-50");
-    expect((screen.getByTestId("aux-save-agent-btn") as HTMLButtonElement).disabled).toBe(true);
+    // 非法输入阻止工具栏保存：点击不发起请求
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "保存 Agent" }));
+    });
+    expect(client.updateAgent).not.toHaveBeenCalled();
 
     // 读取域的非法原文同样持久：主 store 映射保存原文，跨卸载渲染一致，保存被拦不旁路。
     await act(async () => {
@@ -580,9 +574,11 @@ describe("统一上下文分配真实接线", () => {
     expect(
       (screen.getByTestId("reading-preset-max-tokens-standard") as HTMLInputElement).value,
     ).toBe("-1");
-    expect((screen.getByTestId("reading-save-memory-btn") as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    // 工作区内嵌模式下只留工具栏保存：点击被非法原文拦截，不发请求
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "保存 Agent" }));
+    });
+    expect(client.updateAgent).not.toHaveBeenCalled();
 
     // 完整映射在主 store：两个域的原文同时可见；保存入口不再发请求。
     const invalid = store.getState().allocationInvalidInputs;

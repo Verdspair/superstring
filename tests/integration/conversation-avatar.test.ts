@@ -304,6 +304,8 @@ describe("server-shared conversation avatars", () => {
       (prior as Record<string, unknown>[]).map((row) => ({
         chiming_in_observed_seq: 0,
         chiming_in_judged_at: null,
+        memory_read_mode: "current_conversation",
+        memory_config_revision: 1,
         ...row,
       })),
     );

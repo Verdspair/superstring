@@ -74,6 +74,7 @@ export const document: KnowledgeDocumentDetail = {
   category_id: "default",
   name: "Reference",
   import_type: "md",
+  visibility: null,
   content_mode: "original",
   content_version: 1,
   revision: 3,

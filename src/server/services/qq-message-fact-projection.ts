@@ -346,19 +346,24 @@ export function projectQqMessageFacts(
 ): QqMessageFact[] {
   if (eventIds.length === 0) return [];
   if (!evidenceScopeExists(store.db, botScope(scope))) return [];
-  const events = store.orm
-    .select()
-    .from(schema.qqEvents)
-    .where(
-      and(
-        inArray(schema.qqEvents.eventKey, [...new Set(eventIds)]),
-        eq(schema.qqEvents.accountId, scope.accountId),
-        eq(schema.qqEvents.conversationKind, scope.conversationKind),
-        eq(schema.qqEvents.peerId, scope.peerId),
-        eq(schema.qqEvents.agentId, scope.agentId),
-      ),
+  const events = store.db
+    .query(
+      `SELECT e.event_key AS eventKey,e.account_id AS accountId,
+      e.conversation_kind AS conversationKind,e.peer_id AS peerId,e.agent_id AS agentId,
+      e.message_id AS messageId,e.occurred_at_seconds AS occurredAtSeconds,
+      e.speaker_kind AS speakerKind,e.speaker_id AS speakerId,
+      e.recorded_at AS recordedAt,e.addressed AS addressed
+      FROM json_each(?) requested
+      CROSS JOIN qq_events e ON e.event_key=requested.value
+      WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?`,
     )
-    .all();
+    .all(
+      JSON.stringify([...new Set(eventIds)]),
+      scope.accountId,
+      scope.conversationKind,
+      scope.peerId,
+      scope.agentId,
+    ) as (typeof schema.qqEvents.$inferSelect)[];
   if (events.length === 0) return [];
   // Count matching fact-bearing platform identities, including duplicates outside this selection.
   const candidates = store.orm

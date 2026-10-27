@@ -7,6 +7,7 @@
 import { permissionSettingsDirty } from "../features/access/permission-state";
 import { webAccessDraftDirty } from "../features/access/web-access-state";
 import { dirtyPages } from "../features/agents/page-drafts";
+import { conversationModeDirty } from "../features/conversations/directory-state";
 import {
   knowledgeModelDirty,
   knowledgeReadDirty,
@@ -21,6 +22,7 @@ export function hasUnsavedDrafts(state: SuperstringState): boolean {
     Object.keys(state.allocationInvalidInputs).length > 0 ||
     state.dirty ||
     state.memoryCorrectionDirty ||
+    state.memoryVisibilityDirty ||
     state.knowledgeDirty ||
     permissionSettingsDirty(state.permissionEditor) ||
     webAccessDraftDirty(state.webAccessSnapshot, state.webAccessDraft) ||
@@ -29,7 +31,8 @@ export function hasUnsavedDrafts(state: SuperstringState): boolean {
     knowledgeModelDirty(state.knowledgeModelEditor) ||
     knowledgeReadDirty(state.knowledgeReadEditor) ||
     Object.keys(state.qqMemoryBatchDrafts).length > 0 ||
-    qqDraftChanges(state).length > 0
+    qqDraftChanges(state).length > 0 ||
+    conversationModeDirty(state)
   );
 }
 
@@ -48,7 +51,9 @@ export function navigationBusy(state: SuperstringState): boolean {
     state.webAccessSaving ||
     state.webAccessTesting ||
     state.memoryCorrectionSaving ||
+    state.memoryVisibilitySaving ||
     state.qqMemoryBatchSaving ||
+    state.memoryReadModeSaving ||
     state.knowledgeBusy
   );
 }

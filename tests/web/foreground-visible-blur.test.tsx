@@ -1,5 +1,7 @@
 import { act, cleanup, fireEvent, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type ReadTask, startRead } from "../../src/web/services/read-task";
+import { useForegroundRead } from "../../src/web/services/use-foreground-read";
 import { useLiveResource } from "../../src/web/services/use-live-resource";
 
 type Visibility = "visible" | "hidden";
@@ -34,6 +36,62 @@ afterEach(() => {
   if (originalVisibilityDesc) {
     Object.defineProperty(document, "visibilityState", originalVisibilityDesc);
   }
+});
+
+describe("visibility-only read lifecycle", () => {
+  it("starts once when visible, suspends in-flight on hide and reloads once without polling or blur reads", async () => {
+    vi.useFakeTimers();
+    try {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      const first = deferred<string>();
+      const second = deferred<string>();
+      const published: string[] = [];
+      const signals: AbortSignal[] = [];
+      let task: ReadTask | null = null;
+      const read = vi.fn((signal: AbortSignal) => {
+        signals.push(signal);
+        return signals.length === 1 ? first.promise : second.promise;
+      });
+      const load = vi.fn(() => {
+        task = startRead((signal) => read(signal), {
+          success: (value) => published.push(value),
+          failure: () => {},
+        });
+      });
+      const suspend = vi.fn(() => {
+        task?.cancel();
+        task = null;
+      });
+      const clear = vi.fn();
+      renderHook(() => useForegroundRead(load, clear, { intervalMs: null, onSuspend: suspend }));
+      expect(load).not.toHaveBeenCalled();
+      act(() => setVisibility("visible"));
+      expect(load).toHaveBeenCalledTimes(1);
+      act(() => setVisibility("hidden"));
+      expect(signals[0]?.aborted).toBe(true);
+      await act(async () => {
+        first.resolve("late");
+        await first.promise;
+      });
+      expect(published).toEqual([]);
+      act(() => setVisibility("visible"));
+      expect(load).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        second.resolve("current");
+        await second.promise;
+      });
+      expect(published).toEqual(["current"]);
+      act(() => {
+        fireEvent.blur(window);
+        fireEvent.focus(window);
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(load).toHaveBeenCalledTimes(2);
+      expect(suspend).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("visible-window read lifecycle", () => {

@@ -328,13 +328,11 @@ describe("记忆与知识读取规则的渲染、加载、错误与内容直达"
     expect(screen.getByText("资料读取")).toBeTruthy();
     const mode = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
     expect(mode.value).toBe("standard");
-    expect(screen.getAllByLabelText("每次查询扫描候选上限")).toHaveLength(3);
-    const broadItem = screen
-      .getByRole("button", { name: /^广泛/ })
-      .closest("[data-slot=accordion-item]");
-    if (!(broadItem instanceof HTMLElement)) throw new Error("Missing broad preset item");
-    expect(within(broadItem).getByLabelText("每次查询扫描候选上限")).toBeTruthy();
-    expect(within(broadItem).getByTestId("reading-preset-max-tokens-broad")).toBeTruthy();
+    expect(screen.getAllByLabelText("每次查询候选条数上限")).toHaveLength(1);
+    expect(screen.getByTestId("reading-preset-max-tokens-standard")).toBeTruthy();
+    fireEvent.change(mode, { target: { value: "broad" } });
+    expect(screen.getByTestId("reading-preset-max-tokens-broad")).toBeTruthy();
+    fireEvent.change(mode, { target: { value: "standard" } });
     // 精准入口只保留在全局知识预算卡；跳转保留草稿、不隐式保存。
     const budgetCard = screen.getByText("全局知识读取预算").closest('[data-slot="card"]');
     if (!(budgetCard instanceof HTMLElement)) throw new Error("Missing global budget card");
@@ -355,7 +353,7 @@ describe("记忆与知识读取规则的渲染、加载、错误与内容直达"
     expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.standard.max_tokens).toBe(
       5000,
     );
-    expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
     expect(client.updateAgent).not.toHaveBeenCalled();
   });
 
@@ -365,7 +363,7 @@ describe("记忆与知识读取规则的渲染、加载、错误与内容直达"
     await act(async () => render(<MemoryReadingRules />));
     const mode = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
     expect(mode.value).toBe("standard");
-    expect(screen.getAllByLabelText("每次查询扫描候选上限")).toHaveLength(3);
+    expect(screen.getAllByLabelText("每次查询候选条数上限")).toHaveLength(1);
     const save = () => screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement;
     const discard = () => screen.getByRole("button", { name: "放弃修改" }) as HTMLButtonElement;
     expect(save().disabled).toBe(true);
@@ -622,49 +620,32 @@ describe("保存基线显式刷新", () => {
     expect(screen.queryByLabelText("最多目录批次")).toBeNull();
     await act(async () => store.getState().editAgent(A));
 
-    // 1. 存量 full 批次字段保真显示，但在 UI 必须为 disabled（非伪可编辑），真实运行按有界策略生效
-    const batches = screen.getByLabelText("最多目录批次") as HTMLInputElement;
-    const batchSize = screen.getByLabelText("每批目录条数") as HTMLInputElement;
-    expect(batches.value).toBe("17");
-    expect(batchSize.value).toBe("23");
-    expect(batches.disabled).toBe(true);
-    expect(batchSize.disabled).toBe(true);
+    // 1. 存量 full 批次字段已从 DOM 移除，存量值严格保真，真实运行按有界策略生效
+    expect(screen.queryByLabelText("最多目录批次")).toBeNull();
+    expect(screen.queryByLabelText("每批目录条数")).toBeNull();
+    expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
+    expect(store.getState().pageEditor?.draft.p5_config.catalog_batch_size).toBe(23);
 
-    // 2. 生产按需 Tool 交互中未被消费的检索提示词与相关性要求，在 UI 明确禁用（非伪可编辑）
-    const promptTextarea = screen.getByLabelText(
-      label("library.memory.tools.retrieval.prompt"),
-    ) as HTMLTextAreaElement;
-    expect(promptTextarea.disabled).toBe(true);
-    const relevanceTextareas = screen.getAllByLabelText(
-      label("library.memory.tools.relevance.instruction"),
-    ) as HTMLTextAreaElement[];
-    expect(relevanceTextareas.length).toBeGreaterThan(0);
-    for (const rel of relevanceTextareas) {
-      expect(rel.disabled).toBe(true);
-    }
+    // 2. 生产按需 Tool 交互中未被消费的检索提示词与相关性要求，在 UI 彻底移除，草稿严格保真
+    expect(screen.queryByLabelText(label("library.memory.tools.retrieval.prompt"))).toBeNull();
+    expect(screen.queryByLabelText(label("library.memory.tools.relevance.instruction"))).toBeNull();
 
-    // 3. 有效的普通 3 档预设扫描/返回上限及 Bytes 额度仍正常可编辑
-    const candidateInputs = screen.getAllByLabelText(
+    // 3. 有效的生效预设扫描/返回上限及 Bytes 额度仍正常可编辑
+    const candidateInput = screen.getByLabelText(
       label("library.memory.tools.scan.limit"),
-    ) as HTMLInputElement[];
-    expect(candidateInputs.length).toBe(3);
-    for (const input of candidateInputs) {
-      expect(input.disabled).toBe(false);
-    }
-    const maxEntriesInputs = screen.getAllByLabelText(
+    ) as HTMLInputElement;
+    expect(candidateInput.disabled).toBe(false);
+    const maxEntriesInput = screen.getByLabelText(
       label("library.memory.tools.page.limit"),
-    ) as HTMLInputElement[];
-    expect(maxEntriesInputs.length).toBe(3);
-    for (const input of maxEntriesInputs) {
-      expect(input.disabled).toBe(false);
-    }
+    ) as HTMLInputElement;
+    expect(maxEntriesInput.disabled).toBe(false);
 
     // 4. 无修改时点击保存遵循 no-op：不发起网络请求，已存数据保持不变
     expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
     expect(updateAgent).not.toHaveBeenCalled();
 
     // 5. 修改有效普通预设 candidate_limit：触发 dirty，保存时 payload 完整保真保留存量 full_catalog 与批次配置
-    fireEvent.change(candidateInputs[0], { target: { value: "35" } });
+    fireEvent.change(candidateInput, { target: { value: "35" } });
     expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
     expect(updateAgent).toHaveBeenCalledWith(
       A,
@@ -703,7 +684,7 @@ describe("保存基线显式刷新", () => {
     expect(getAgent).toHaveBeenCalledTimes(1);
     act(() => store.setState({ settingsSaving: true }));
     expect((screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement).disabled).toBe(true);
-    for (const input of screen.getAllByLabelText("每次查询扫描候选上限")) {
+    for (const input of screen.getAllByLabelText("每次查询候选条数上限")) {
       expect((input as HTMLInputElement).disabled).toBe(true);
     }
     expect(refresh().disabled).toBe(true);

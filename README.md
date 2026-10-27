@@ -121,13 +121,13 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 导航按**日常**（对话、Agent、资料）、**应用**（方案）与**系统**（模型服务、系统能力、扩展）组织为 7 个工作区入口，底部设**偏好**与搜索入口；主导航与会话列表均支持通过细线拖动调整宽度。
 
 - **工作区整合**：对话工作区整合消息、运行状态与任务三页签，支持在当前会话与全局范围之间切换。 新消息通过会话通知更新消息记录，查看历史时保留阅读位置并提示新消息。运行记录按任务用途显示名称，原始标识可在详情查看。
-- **系统能力分类**：按资料读取、联网、QQ、任务执行和外置扩展查看相关工具、技能与 MCP，点击进入功能配置或组件详情。记忆读取规则、候选数、返回条数与字节额度在 Agent 的访问规则中配置；旧检索字段保留原值，不再生效的设置以只读方式说明。
+- **系统能力分类**：按资料读取、联网、QQ、任务执行和外置扩展查看相关工具、技能与 MCP，点击进入功能配置或组件详情。当前 main 源码中的 Agent 可按需查询记忆；搜索以关键词为主，不保证找回没有共同词语的同义表达；未找到不等于记忆不存在，可换词再查。旧检索模型与提示词值保留，不再用于自动选择记忆。
 - **QQ 群成员查询**：助手可按需查看当前群的成员 ID、昵称、群名片和群主／管理员／成员身份，包括自己；支持查找、筛选和按需详情。普通聊天不查询，同轮名单复用；平台未提供的信息明确标为未知。开关在系统能力配置，各群可单独停用。
 - **扩展与 MCP 客户端**：在「扩展 → 工具」中查看已注册的系统工具与外部 MCP 工具；支持通过 stdio、HTTP 与 SSE 连接外部 Model Context Protocol 服务，登记的服务默认未启用，支持配置超时与结果限额；环境变量凭据仅保存变量名。
 - **技能目录**：在「扩展 → 技能」中查看技能文档与随包提供的 6 个系统技能（证据读取、媒体读取、QQ成员查询、QQ回复、任务执行、网络研究）。
 - **程序化工具调用（PTC）**：基于 QuickJS WASM 沙箱的可选执行模式，支持在本地编排与聚合已授权的只读工具调用；默认关闭，在「系统能力 → 执行设置」开启，不需要逐模型许可。
 - **联网工具与只读研究**：支持网络搜索（SearXNG 端点与必应备用通道）与带私网拦截护栏的网页提取；支持受控只读研究模式（每次运行最多发起 2 个子任务，每个子任务最多执行 6 步）；默认均保持关闭。
-- **工具授权与本地审批**：当前源码中新建助手默认获得当前已安装工具和知识文档的助手级授权，不修改既有助手，也不自动开启服务或授权以后新增的资源。可在「扩展 → 工具」单独禁用某助手或恢复基础继承；持续批准与单次审批分别管理。工具修订变化仍须复验，需要审批的任务继续在本地确认。
+- **工具授权与本地审批**：当前源码中新建助手及首次初始化的内置助手获得创建时已安装、已发现工具的助手级授权；知识文档须通过文档授权明确分配给助手。创建不会修改既有助手的授权，也不会自动开启服务或授权以后新增的资源。可在「扩展 → 工具」单独禁用某助手或恢复基础继承；持续批准与单次审批分别管理。工具修订变化仍须复验，需要审批的任务继续在本地确认。
 - **调用与唤醒重试**：在「系统能力 → 执行设置」中可配置模型与只读工具调用失败重试（默认共 3 次尝试，含首次，间隔 2 秒，仅对明确的 HTTP 429／503 拒收重试，写操作与超时不盲目重试）；在「方案 → QQ连接 → 运行设置」中可配置唤醒失败重试（默认共 3 次尝试，含首次，间隔 15 秒）。
 - **运行概览与步骤选择**：运行概览聚焦结果与依据，采用竖列步骤卡片展示模型调用，打开时默认选定首个步骤并在下方展示详情。
 - **技术追踪与执行排查**：面向过程诊断，通过时间线查看执行顺序、耗时与错误，点击步骤直接联动下方详情；父任务下的实际模型调用也可查看，消除多余的重复列表。
@@ -138,8 +138,10 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 
 ### 记忆与知识库
 
-- 按 Agent 和来源分区管理长期记忆，查看出处并纠正或屏蔽内容。QQ 记忆按会话与绑定隔离，与本人私聊共享需显式配置。
-- 导入 UTF-8 文本或 Markdown 到知识库，分类管理并逐个授权 Agent；导入不等于自动授权。
+以下记忆与资料变化属于当前 main 源码，不在已发布的 v0.4.0-alpha-2 安装包中。在 Agent 工作区选择身份与表达、模型与上下文、资料与记忆或工具权限；保存只提交当前任务的修改。跨端点保存部分成功时，保留未成功的草稿，重试不会重复已成功部分。
+
+- 长期记忆由会话内容整理，可按 Agent 和来源管理、查看出处并纠正或屏蔽。每个对话默认只使用当前会话的私有记忆；可在对话中选择同时使用明确授予该 Agent 的共享或公共记忆，不会自动开放其他会话的私有内容。共享派生记忆不授予查看原始私聊正文的权限。QQ 本人私聊与网页的共享仍需显式配置。
+- 知识库保存用户提供的外部原文：可手输或粘贴文本、导入 UTF-8 `.txt` / `.md` 并编辑，整理内容仍从属于原文。文档可分类并明确授权给 Agent；新建 Agent 不会自动获得未分配的文档，已有授权不会因此被撤销。
 - 为对话、判断、视觉、记忆与整理等用途独立选择本地模型或外部 OpenAI 兼容模型，分别保存端点、加密凭据与声明的能力。
 
 当前版本不提供语音转写、完整视频理解、AI 绘图或未受控的多 Agent 协作。
@@ -171,7 +173,7 @@ LM Studio 需要鉴权时，启动前设置 `LM_STUDIO_API_KEY`。外部服务�
 
 Windows 版本的会话与配置保存在安装目录的 `userdata` 文件夹；原生 macOS/Linux 安装包使用系统应用数据目录。关闭桌面窗口后，Superstring 自行启动的服务与相关进程一起退出。再次双击启动器即可重新启动。
 
-升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 72（新增迁移 0055–0072；已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
+升级前请完全退出程序并备份整个数据目录。切勿使用旧版程序打开已迁移的数据库。当前 main 分支源码数据库结构版本为 75（相对已发布版本新增迁移 0055–0075；已发布的 v0.4.0-alpha-2 安装包仍为 54，未重新打包发布）。版本差异、数据位置与回退步骤见 [UPGRADING.md](UPGRADING.md)。
 
 ### 源码运行
 
@@ -301,13 +303,13 @@ Operational details:
 The navigation organizes seven workspace sections across three groups: **Daily** (Conversations, Agents, Library), **Apps** (Schemes), and **System** (Model services, System capabilities, Extensions), with **Preferences** and search at the bottom; both the main navigation and the conversation list can be resized by dragging a subtle divider line.
 
 - **Workspace tabs**: The conversation workspace integrates Messages, Runs, and Tasks tabs, switchable between conversation and global scopes. Conversation notifications update message records while preserving your position when reading history and marking new arrivals. Run records show task names by purpose, with original identifiers available in details.
-- **Capability groups**: Browse related tools, skills, and MCP services under material reading, web access, QQ, execution, and external extensions. Open the existing settings or component details directly. Configure memory reading rules, candidate counts, page entries and byte allowances under Agent access rules. Legacy retrieval values are preserved, with inactive settings shown as read-only.
+- **Capability groups**: Browse related tools, skills, and MCP services under material reading, web access, QQ, execution, and external extensions. Open the existing settings or component details directly. In current main source, an Agent can query memory when needed. Search is keyword-based and may not find paraphrases with no shared words. No match does not mean a memory does not exist; try different words. Stored legacy retrieval model and prompt values are retained but are no longer used for automatic memory selection.
 - **QQ group members**: Assistants can look up IDs, nicknames, group cards, and owner/admin/member roles in the current group, including their own identity. Search, filters, and individual details are available on demand. Ordinary chat needs no lookup; a roster is reused within the run, and missing fields remain unknown. Configure the global switch in System capabilities or disable it per group.
 - **Extensions & MCP client**: View registered built-in and external MCP tools under Extensions → Tools; connect to external Model Context Protocol services over stdio, HTTP, and SSE; registered servers are disabled by default, with configurable timeouts and result caps; environment credentials store variable names only.
 - **Skills catalog**: View installed skill documentation and six bundled system skills (evidence reading, media reading, QQ members, QQ reply, task execution, web research) under Extensions → Skills.
 - **Programmatic Tool Calling (PTC)**: An optional QuickJS WASM execution mode for orchestrating and aggregating authorized read-only tool calls locally. It is disabled by default and enabled under System capabilities → Execution settings, without a per-model opt-in.
 - **Web access and read-only research**: Optional web search (SearXNG and Bing) and page fetching with private network address guards; optional read-only research mode (up to 2 subtasks per run, up to 6 steps per subtask); both default to off.
-- **Tool authorisation and local approvals**: In current source builds, new assistants receive assistant-level access to currently installed tools and knowledge documents. Existing assistants are not changed, services are not enabled automatically, and later resources are not granted automatically. Under Extensions → Tools, you can disable access for one assistant or restore base inheritance. Standing approval and per-call approval remain separate; tool revisions are rechecked and task calls requiring approval still need local confirmation.
+- **Tool authorisation and local approvals**: In current source builds, new assistants and the built-in assistant when first initialised receive assistant-level access to tools installed and discovered at creation. Knowledge documents must be explicitly assigned to assistants through document authorisation. Creation does not change existing assistants’ permissions, enable services, or automatically grant access to later resources. Under Extensions → Tools, you can disable access for one assistant or restore base inheritance. Standing approval and per-call approval remain separate; tool revisions are rechecked and task calls requiring approval still need local confirmation.
 - **Call and wake retries**: Configure model and read-only tool call retries under System capabilities → Execution settings (default: 3 attempts including the first, with a 2-second delay, retrying only explicit 429/503 rejections, without blind retries for writes or timeouts); configure wake retries under Schemes → QQ connection → Runtime settings (default: 3 attempts including the first, with a 15-second delay).
 - **Run overview and step selection**: Run overviews focus on results and evidence, presenting model calls as vertical step cards, selecting the first step by default, and displaying its details below.
 - **Technical trace and execution inspection**: Focuses on process diagnosis, using a timeline to inspect execution order, duration, and errors. Selecting a step links directly to its details below, and actual model calls under parent runs can also be inspected, eliminating redundant duplicate step listings.
@@ -318,8 +320,10 @@ The navigation organizes seven workspace sections across three groups: **Daily**
 
 ### Memory and knowledge library
 
-- Manage long-term memories partitioned by Agent and source, inspect references, and correct or block inaccurate content. QQ memory is isolated by conversation, and sharing with personal private chats requires explicit configuration.
-- Import UTF-8 text or Markdown into the knowledge library, organize documents into categories, and grant access per Agent; importing does not grant automatic access.
+The following memory and materials changes are in current main source, not the published v0.4.0-alpha-2 installers. In the Agent workspace, choose identity and expression, models and context, materials and memory, or tool permissions. Saving submits only the current task’s changes. If a save succeeds only in part across endpoints, unsaved drafts remain and a retry does not repeat successful steps.
+
+- Long-term memories are organized from conversations. Manage them by Agent and source, inspect references, and correct or block content. Each conversation uses only its own private memories by default. You can choose to also use shared or public memories explicitly granted to that Agent; this does not unlock private memories from other conversations. Reading a shared derived memory does not grant access to the original private chat. Sharing between your QQ private chat and web memory still requires explicit configuration.
+- The knowledge library holds external text supplied by the user: type or paste text, import UTF-8 `.txt` / `.md` files, and edit the original. Organized content remains derived from that original. Categorize documents and explicitly grant access per Agent. A new Agent does not automatically receive unassigned documents; existing grants are not revoked by this change.
 - Select local or external OpenAI-compatible models for conversation, judgement, vision, memory, and organization roles. External providers maintain endpoints, encrypted credentials, model IDs, and context capacity.
 
 Speech transcription, full-video understanding, image generation, and arbitrary unconstrained multi-agent collaboration are not available in this release.
@@ -351,7 +355,7 @@ If LM Studio requires a token, set `LM_STUDIO_API_KEY` before starting. Provider
 
 On Windows, conversations and settings live under the installation's `userdata` directory; native macOS/Linux packages use system application data profiles. Closing the desktop window exits background services and processes started by Superstring. Double-click the launcher again to restart.
 
-Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 72 (with migrations 0055–0072; the published v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
+Fully exit the application and back up your complete data directory before upgrading. Do not open migrated databases with older versions. The current main source branch database schema version is 75 (with migrations 0055–0075 since the published release; the v0.4.0-alpha-2 installer remains on schema 54 and has not been repackaged). See [UPGRADING.md](UPGRADING.md) for version differences, data paths, and rollback procedures.
 
 ### Run from source
 

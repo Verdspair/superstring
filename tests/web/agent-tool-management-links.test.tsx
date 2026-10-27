@@ -1,5 +1,5 @@
-// 助手「工具范围」卡的双入口用例：内置能力在系统能力页管理，外置 MCP/Skills 授权仍在工具授权页。
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+// 助手「工具范围」卡用例：内置能力与外置 MCP/Skills 授权在同一工具目录内联呈现与管理。
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ExecutionPolicySchema,
@@ -45,9 +45,47 @@ function permissions(): PermissionsResponse {
   };
 }
 
+const toolDirectoryFixture = {
+  tools: [
+    {
+      name: "web.search",
+      description: "联网搜索",
+      parameters: {},
+      capability: "web",
+      effect: "read" as const,
+      sandboxCallable: false,
+      origin: "system" as const,
+      globalEnabled: true,
+      functionId: "web-access" as const,
+      resource: "web",
+      revision: "w1",
+      approvalRequired: true,
+      directories: [],
+    },
+    {
+      name: "mcp.echo.read",
+      description: "read notes",
+      parameters: {},
+      capability: "notes",
+      effect: "read" as const,
+      sandboxCallable: false,
+      origin: "mcp" as const,
+      globalEnabled: true,
+      functionId: null,
+      resource: "mcp.echo.read",
+      revision: "r1",
+      approvalRequired: false,
+      directories: [],
+    },
+  ],
+};
+
 beforeEach(() => {
   localStorage.clear();
-  setupLibrary({ getPermissions: vi.fn().mockResolvedValue(permissions()) });
+  setupLibrary({
+    getPermissions: vi.fn().mockResolvedValue(permissions()),
+    getToolDirectory: vi.fn().mockResolvedValue(toolDirectoryFixture),
+  });
   selectLocale("zh-CN");
 });
 
@@ -59,8 +97,7 @@ afterEach(() => {
 
 describe("agent tool scope management links", () => {
   it("keeps the built-in capability entry next to the external grant entry while web is in scope", async () => {
-    const open = vi.fn();
-    store.setState({ openSettingsRoute: open });
+    store.setState({ editorAgentId: A });
     await act(async () =>
       render(
         <DesignSystemProvider>
@@ -68,15 +105,25 @@ describe("agent tool scope management links", () => {
         </DesignSystemProvider>,
       ),
     );
-    // 卡片确实展示了内置 web 资源：这正是原先只有外部授权入口时的管理盲区。
+    // 卡片展示了内置 web 资源与外置 mcp 资源
     await screen.findByText("web");
-    const builtIn = screen.getByRole("button", { name: translate("workspace.capabilities") });
-    const external = screen.getByRole("button", { name: translate("library.tools.manage") });
-    expect(builtIn.getAttribute("data-variant")).toBe("default");
-    expect(external.getAttribute("data-variant")).toBe("outline");
-    fireEvent.click(builtIn);
-    fireEvent.click(external);
-    expect(open).toHaveBeenNthCalledWith(1, "system-capabilities");
-    expect(open).toHaveBeenNthCalledWith(2, "tool-grants");
+    expect(screen.getByText("mcp.echo.read")).toBeTruthy();
+
+    // 验证卡片说明文案清晰标示内置与扩展工具的分工
+    expect(screen.getByText(translate("library.tools.for.agent.hint"))).toBeTruthy();
+
+    // 验证内置 web 资源的内联控制项
+    const webEnable = screen.getByTestId("agent-tool-enable-web");
+    expect(webEnable.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("agent-tool-save-web")).toBeTruthy();
+
+    // 验证外置 MCP 资源的内联控制项
+    const mcpEnable = screen.getByTestId("agent-tool-enable-mcp.echo.read");
+    expect(mcpEnable).toBeTruthy();
+    expect(screen.getByTestId("agent-tool-save-mcp.echo.read")).toBeTruthy();
+
+    // 验证原 origin 标记：web 标为系统，mcp 标为 MCP
+    expect(screen.getByText(translate("connections.components.system"))).toBeTruthy();
+    expect(screen.getByText("MCP")).toBeTruthy();
   });
 });

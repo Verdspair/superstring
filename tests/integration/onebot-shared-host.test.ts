@@ -4030,56 +4030,93 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     },
   );
 
-  it("rejects an oversized mixed read/write batch before write effects", async () => {
-    let writes = 0;
-    let modelCalls = 0;
-    const write: BuiltInAction = {
-      description: {
-        name: "test.write",
-        capability: "test",
-        description: "write",
-        effect: "write",
-        parameters: { type: "object", properties: {} },
-      },
-      async execute() {
-        writes++;
-        return { value: {}, sources: [] };
-      },
-    };
-    const h = setup(
-      {
-        complete: async () => {
-          modelCalls++;
-          return JSON.stringify({
-            kind: "invoke",
-            calls: [
-              { name: "media.list", arguments: { limit: 50 } },
-              { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
-              { name: "test.write", arguments: {} },
-            ],
-          });
+  it.each([
+    [16_400, "CONTEXT_BUDGET_EXCEEDED", true],
+    [16_600, "STICKER_SEARCH_CONTEXT_LIMIT", false],
+  ] as const)(
+    "rejects a mixed read/write batch at %d before write effects",
+    async (length, code, reachesBarrier) => {
+      let writes = 0;
+      let modelCalls = 0;
+      const write: BuiltInAction = {
+        description: {
+          name: "test.write",
+          capability: "test",
+          description: "write",
+          effect: "write",
+          parameters: { type: "object", properties: {} },
         },
-      },
-      {
-        stickersAvailable: true,
-        mediaAdapter: () => ({
-          capabilities: ["image"],
-          read: async () => {
-            throw new Error("unexpected media read");
+        async execute() {
+          writes++;
+          return { value: {}, sources: [] };
+        },
+      };
+      const h = setup(
+        {
+          complete: async () => {
+            modelCalls++;
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                { name: "media.list", arguments: { limit: 50 } },
+                { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
+                { name: "test.write", arguments: {} },
+              ],
+            });
           },
-        }),
-        externalActions: () => [write],
-      },
-    );
-    addSticker(h);
-    h.receive("8891", "20002", true, "b".repeat(16_600));
-    await expect(h.activate("direct_reply")).rejects.toMatchObject({
-      code: "CONTEXT_BUDGET_EXCEEDED",
-    });
-    expect(modelCalls).toBe(1);
-    expect(writes).toBe(0);
-    expect(h.outbox.list({})).toEqual([]);
-  });
+        },
+        {
+          stickersAvailable: true,
+          mediaAdapter: () => ({
+            capabilities: ["image"],
+            read: async () => {
+              throw new Error("unexpected media read");
+            },
+          }),
+          externalActions: () => [write],
+        },
+      );
+      const stickerId = addSticker(h);
+      const barriers: Parameters<BotContextSource["assertBeforeActionEffects"]>[0][] = [];
+      const originalBarrier = BotContextSource.prototype.assertBeforeActionEffects;
+      const barrierSpy = spyOn(
+        BotContextSource.prototype,
+        "assertBeforeActionEffects",
+      ).mockImplementation(async function (this: BotContextSource, input) {
+        barriers.push(input);
+        return originalBarrier.call(this, input);
+      });
+      try {
+        h.receive("8891", "20002", true, "b".repeat(length));
+        await expect(h.activate("direct_reply")).rejects.toMatchObject({ code });
+        expect(modelCalls).toBe(1);
+        expect(writes).toBe(0);
+        expect(h.outbox.list({})).toEqual([]);
+        expect(barriers).toHaveLength(reachesBarrier ? 1 : 0);
+        if (reachesBarrier) {
+          expect(barriers[0]!.effects).toEqual([{ name: "test.write", arguments: {} }]);
+          expect(barriers[0]!.observations).toEqual([
+            expect.objectContaining({
+              name: "media.list",
+              value: { status: "ok", items: [], nextCursor: null },
+            }),
+            expect.objectContaining({
+              name: "sticker.search",
+              value: expect.objectContaining({
+                status: "available",
+                items: [expect.objectContaining({ id: stickerId, name: "wave" })],
+              }),
+              sources: expect.arrayContaining([
+                expect.objectContaining({ kind: "qq_sticker", id: stickerId }),
+              ]),
+            }),
+          ]);
+        }
+      } finally {
+        barrierSpy.mockRestore();
+      }
+    },
+  );
   it("does not allow terminal media recovery in a batch containing a write", async () => {
     let writes = 0;
     let modelCalls = 0;

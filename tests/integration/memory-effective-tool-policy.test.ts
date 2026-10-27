@@ -25,8 +25,8 @@ import {
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
+import { createSqliteQueryFactory } from "../../src/server/modules/composition";
 import { evidenceQueryPage, type MemoryQuery } from "../../src/server/modules/contracts";
-import { SqliteMemoryModule } from "../../src/server/modules/memory-module";
 import { updateAgent } from "../../src/server/services/agent-service";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import type { RuntimeConfig } from "../../src/shared/contracts";
@@ -115,14 +115,16 @@ function frozenRuntime(): RuntimeConfig {
 }
 
 function moduleFor(runtime: RuntimeConfig) {
-  const selector = mock(async () => [] as string[]);
+  const capacity = mock(async () => 32768);
   const leaf = mock(async () => '{"ids":[]}');
-  const memory = new SqliteMemoryModule({
+  const { memory } = createSqliteQueryFactory({
+    db: business.db,
     orm: business.orm,
-    runtime: () => runtime,
-    select: selector,
+    gateway: { loadedContextCapacity: capacity },
     agentRuntime: { completeLeaf: leaf, completeVisionLeaf: leaf },
-  });
+  })({ runtime });
+  if (!memory.read) throw new Error("Missing memory read capability");
+  const readMemory = memory.read.bind(memory);
   const query = async (extra: Partial<MemoryQuery> = {}) =>
     evidenceQueryPage(
       await memory.query({
@@ -136,8 +138,8 @@ function moduleFor(runtime: RuntimeConfig) {
       }),
     );
   const read = (evidence: Evidence, offset = 0, limit = 4096) =>
-    memory.read({ agentId: DEFAULT_AGENT_ID, owner, scopes: null, evidence, offset, limit });
-  return { memory, selector, leaf, query, read };
+    readMemory({ agentId: DEFAULT_AGENT_ID, owner, scopes: null, evidence, offset, limit });
+  return { memory, capacity, leaf, query, read };
 }
 
 describe("memory effective tool policy", () => {
@@ -195,7 +197,7 @@ describe("memory effective tool policy", () => {
     runtime.p5_config.retrieval_mode = "full_body";
     for (let index = 0; index < 18; index += 1)
       seedMemory(`m${String(index).padStart(2, "0")}`, `正文${index} ${"x".repeat(200)}`);
-    const { selector, leaf, query, read } = moduleFor(runtime);
+    const { capacity, leaf, query, read } = moduleFor(runtime);
     const page = await query({ mode: "full_body" });
     expect(page.status).toBe("ok");
     expect(page.items).toHaveLength(16); // broad preset cap (fold), no automatic full scan/body fill
@@ -208,7 +210,7 @@ describe("memory effective tool policy", () => {
     const tail = await read(evidence, head.nextOffset ?? 0, 4096);
     expect(tail.nextOffset).toBeNull();
     expect(tail.text.length).toBeGreaterThan(0);
-    expect(selector).not.toHaveBeenCalled();
+    expect(capacity).not.toHaveBeenCalled();
     expect(leaf).not.toHaveBeenCalled();
   });
 

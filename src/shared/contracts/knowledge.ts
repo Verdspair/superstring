@@ -37,6 +37,7 @@ export const KnowledgeDocumentUpdateSchema = z
 export const KnowledgeGrantUpdateSchema = z.strictObject({
   expected_revision: revision,
   agent_ids: z.array(UuidSchema).refine((ids) => new Set(ids).size === ids.length),
+  visibility: z.enum(["private", "public"]).optional(),
 });
 export const KnowledgeBatchGrantSchema = z.strictObject({
   documents: z
@@ -79,6 +80,7 @@ export const KnowledgeDocumentSchema = z.strictObject({
   category_id: categoryId,
   name,
   import_type: z.enum(["text", "txt", "md"]),
+  visibility: z.enum(["private", "public"]).nullable(),
   content_mode: z.enum(["draft", "original"]),
   content_version: revision,
   revision,
@@ -117,6 +119,7 @@ export const KnowledgeDocumentsPageSchema = z.strictObject({
 });
 export const AgentKnowledgeSchema = KnowledgeDocumentSchema.pick({
   id: true,
+  visibility: true,
   name: true,
   summary: true,
   tags: true,

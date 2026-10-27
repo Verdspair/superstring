@@ -34,7 +34,7 @@ it("upgrades exact schema68 with only four additive indexes and no table row cha
   if (!indexMigration) throw new Error("Missing known index migration");
   db.exec(indexMigration);
   db.exec("PRAGMA user_version=69");
-  expect(BUSINESS_SCHEMA_VERSION).toBe(72);
+  expect(BUSINESS_SCHEMA_VERSION).toBe(75);
   expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 69 });
   expect(
     db.query("SELECT name,sql FROM sqlite_schema WHERE type='table' ORDER BY name").all(),

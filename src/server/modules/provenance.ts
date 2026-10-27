@@ -1,9 +1,9 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
-import { memoryRevision } from "../db/memory-content-repository";
 import type { MemoryEntryRow } from "../db/memory-repository";
 import type { Orm } from "../db/repositories";
 import * as schema from "../db/schema";
+import { memoryRevision } from "../services/memory-revision";
 
 /** Metadata only: source URLs, auth tokens, image bytes and source bodies never enter references. */
 export function turnSources(orm: Orm, ids: readonly string[]): SourceRef[] {

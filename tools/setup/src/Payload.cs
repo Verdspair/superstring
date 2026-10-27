@@ -130,6 +130,9 @@ namespace Superstring.Setup
         "app/resources/migrations/versions/0070_context_source_lookup.sql",
         "app/resources/migrations/versions/0071_context_storage_metadata.sql",
         "app/resources/migrations/versions/0072_outbound_intent_metadata.sql",
+        "app/resources/migrations/versions/0073_memory_conversation_visibility.sql",
+        "app/resources/migrations/versions/0074_knowledge_visibility.sql",
+        "app/resources/migrations/versions/0075_memory_search_index.sql",
         };
 
         /// <summary>Total uncompressed size, used for the conservative space budget.</summary>

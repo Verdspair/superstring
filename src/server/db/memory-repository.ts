@@ -1,10 +1,6 @@
 // Agent-scoped memory persistence
-// Ownership model (do not "fix")
-// Memory belongs to the **Agent**, not to a session. `scope` / `scope_key` are
-// retained as historical labels so the contract isolation architecture can be
-// reinstated later without a data migration, but today every scope keys to the
-// owning Agent. Recall is deliberately
-// NOT narrowed by `scope`.
+// Entries retain their Agent owner and source provenance; scope_key is a storage
+// destination, not permission to read. Runtime eligibility belongs to memory-scope.
 // Transactions
 // The contract explicitly says "callers own transactions; all mutations lock
 // Agent first". Row locks (`with_for_update`) do not
@@ -20,7 +16,11 @@ import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
 import {
   type ConsolidationConfig,
   DEFAULT_SCOPE,
+  MEMORY_SEARCH_FOLD_VERSION,
   type MemoryDraft,
+  memoryJobScopes,
+  memorySearchProjection,
+  type QqMemoryRouteSnapshot,
   scopeKey,
   TEMPLATE_VERSION,
 } from "../services/memory-contract";
@@ -28,10 +28,13 @@ import {
   correctionMetadata,
   correctionSnapshot,
   isCorrectionRetired,
+  memoryRevision,
 } from "../services/memory-revision";
 import type { MemoryScopeKeys } from "../services/memory-scope";
+import { resolveQqMemoryAccess } from "../services/qq-binding-contract";
 import {
   acceptsObservationSources,
+  memoryPublicationSourceRevisions,
   observationSourceRows,
   observationSources,
   observationSourcesIntact,
@@ -39,6 +42,7 @@ import {
 } from "./memory-source-repository";
 import { readOrganizationSettings } from "./organization-repository";
 import { readBindingByConversation } from "./qq-binding-repository";
+import { readQqOwnerIdentity } from "./qq-owner-repository";
 import {
   DEFAULT_USER_ID,
   getAgent,
@@ -58,6 +62,7 @@ export interface TurnTriple {
   turn: typeof schema.turns.$inferSelect;
   user: typeof schema.messages.$inferSelect;
   assistant: typeof schema.messages.$inferSelect;
+  session: Pick<typeof schema.sessions.$inferSelect, "userId" | "agentId">;
 }
 
 /** local `fail` helper, default status **409**. */
@@ -201,7 +206,7 @@ export function turns(
     // Only merge jobs reach here, and they never call `turns`.
     fail("MEMORY_SOURCE_FORBIDDEN", "来源会话不存在或不属于当前 Agent", 404);
   }
-  ownedSession(orm, agentId, sessionId);
+  const session = ownedSession(orm, agentId, sessionId);
 
   const user = alias(schema.messages, "u");
   const assistant = alias(schema.messages, "a");
@@ -247,7 +252,10 @@ export function turns(
   else if (options.limit !== undefined && options.ids === undefined)
     query = query.limit(options.limit) as typeof query;
 
-  const rows = query.all() as TurnTriple[];
+  const rows: TurnTriple[] = query.all().map((row) => ({
+    ...row,
+    session: { userId: session.userId, agentId: session.agentId },
+  }));
 
   if (options.ids !== undefined) {
     const found = new Set(rows.map((r) => r.turn.id));
@@ -260,24 +268,65 @@ export function turns(
 }
 
 export function sourceData(rows: TurnTriple[]): Array<Record<string, unknown>> {
-  return rows.map(({ turn, user, assistant }) => ({
+  return rows.map(({ turn, user, assistant, session }) => ({
     turn_id: turn.id,
     sequence_no: user.sequenceNo,
     user_message_id: user.id,
     assistant_message_id: assistant.id,
     user: user.content,
     assistant: assistant.content,
+    user_source: { actor: { kind: "user", id: session.userId }, recorded_at: user.createdAt },
+    assistant_source: {
+      actor: { kind: "agent", id: session.agentId },
+      recorded_at: assistant.createdAt,
+    },
   }));
 }
 
 // Entries
 
+/** Rebuild a bounded page of derived search fields inside the caller's transaction. */
+export function rebuildMemorySearchProjection(
+  orm: Orm,
+  agentId: string,
+  options: { afterId?: string; limit: number; signal?: AbortSignal },
+): { rebuilt: number; nextAfterId: string | null } {
+  options.signal?.throwIfAborted();
+  if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 300)
+    throw new RangeError("invalid rebuild page size");
+  getAgent(orm, agentId);
+  const conditions = [
+    eq(schema.memoryEntries.agentId, agentId),
+    eq(schema.memoryEntries.userId, DEFAULT_USER_ID),
+  ];
+  if (options.afterId !== undefined)
+    conditions.push(sql`${schema.memoryEntries.id} > ${options.afterId}`);
+  const rows = orm
+    .select()
+    .from(schema.memoryEntries)
+    .where(and(...conditions))
+    .orderBy(asc(schema.memoryEntries.id))
+    .limit(options.limit + 1)
+    .all();
+  const selected = rows.slice(0, options.limit);
+  for (const row of selected) {
+    options.signal?.throwIfAborted();
+    orm
+      .update(schema.memoryEntries)
+      .set({ foldedSearch: memorySearchProjection(row), foldVersion: MEMORY_SEARCH_FOLD_VERSION })
+      .where(eq(schema.memoryEntries.id, row.id))
+      .run();
+  }
+  options.signal?.throwIfAborted();
+  return {
+    rebuilt: selected.length,
+    nextAfterId: rows.length > options.limit ? (selected[selected.length - 1]?.id ?? null) : null,
+  };
+}
+
 /**
- * `ids` asserts full resolution (MEMORY_NOT_FOUND
- * 404) so a caller can never act on a subset of what it thinks it selected.
- * `scopeKeys` narrows the read to explicit `scope_key` values; omitting it keeps
- * the historical agent-level read (see memory-scope.ts). An empty list matches
- * nothing, so a caller that resolved no readable scope fails closed.
+ * `ids` asserts full resolution (MEMORY_NOT_FOUND 404).
+ * `scopeKeys` narrows reads to explicit keys; an empty list matches nothing.
  */
 export function entries(
   orm: Orm,
@@ -336,17 +385,54 @@ export function validateEntrySources(
     .all();
   const observations = observationSources(orm, ids);
 
-  const broken = items.filter((item) => {
-    const turnSources = sources.filter((source) => source.memoryId === item.id);
-    if (turnSources.length > 0 && turnSources.every((source) => turnSourceIntact(orm, source))) {
-      return false;
+  const routed: MemoryEntryRow[] = [];
+  const invalid = new Set<string>();
+  const sourcesById = new Map<string, typeof sources>();
+  for (const source of sources) {
+    const list = sourcesById.get(source.memoryId) ?? [];
+    list.push(source);
+    sourcesById.set(source.memoryId, list);
+  }
+  for (const item of items) {
+    let stored: ConsolidationConfig;
+    try {
+      stored = JSON.parse(item.configSnapshot) as ConsolidationConfig;
+    } catch {
+      invalid.add(item.id);
+      continue;
     }
+    const scopes = memoryJobScopes(stored);
+    const turnSources = sourcesById.get(item.id) ?? [];
     const observationRows = observations.get(item.id) ?? [];
-    return !(
-      acceptsObservationSources(item.scopeKey, item.agentId) &&
-      observationSourcesIntact(orm, observationRows)
-    );
-  });
+    if (scopes.route !== undefined) {
+      if (
+        scopes.destination !== item.scopeKey ||
+        !isQqMemoryScopeKey(scopes.source) ||
+        observationRows.length === 0 ||
+        observationRows.some((source) => source.scopeKey !== scopes.source)
+      ) {
+        invalid.add(item.id);
+      } else routed.push(item);
+      continue;
+    }
+    if (turnSources.length > 0 && turnSources.every((source) => turnSourceIntact(orm, source)))
+      continue;
+    if (
+      !(
+        acceptsObservationSources(item.scopeKey, item.agentId) &&
+        observationSourcesIntact(orm, observationRows)
+      )
+    )
+      invalid.add(item.id);
+  }
+  const proofs = memoryPublicationSourceRevisions(
+    orm,
+    routed,
+    new Map(routed.map((item) => [item.id, memoryRevision(item)])),
+    nowIso(),
+  );
+  for (const item of routed) if (!proofs.has(item.id)) invalid.add(item.id);
+  const broken = items.filter((item) => invalid.has(item.id));
   if (broken.length > 0) {
     fail("MEMORY_SOURCE_INVALID", "记忆来源缺失或已失效");
   }
@@ -405,6 +491,7 @@ export interface EnqueueArgs {
    * explicit `scope`: the events must belong to the very scope being written.
    */
   eventIds?: string[];
+  qqRoute?: QqMemoryRouteSnapshot;
 }
 
 /**
@@ -446,15 +533,18 @@ export function enqueue(
       const a = new Set(JSON.parse(stored) as string[]);
       return a.size === new Set(incoming).size && incoming.every((x) => a.has(x));
     };
-    const storedEvents =
-      (JSON.parse(existing.configSnapshot) as { source_event_ids?: string[] }).source_event_ids ??
-      [];
+    const storedSnapshot = JSON.parse(existing.configSnapshot) as {
+      source_event_ids?: string[];
+      qq_route?: QqMemoryRouteSnapshot;
+    };
+    const storedEvents = storedSnapshot.source_event_ids ?? [];
     if (
       existing.kind !== kind ||
       existing.sessionId !== sessionId ||
       !sameSet(existing.turnIds, turnIds) ||
       !sameSet(existing.memoryIds, memoryIds) ||
-      !sameSet(JSON.stringify(storedEvents), eventIds)
+      !sameSet(JSON.stringify(storedEvents), eventIds) ||
+      JSON.stringify(storedSnapshot.qq_route ?? null) !== JSON.stringify(args.qqRoute ?? null)
     ) {
       fail("MEMORY_REQUEST_CONFLICT", "请求键已用于不同整理内容");
     }
@@ -507,6 +597,8 @@ export function enqueue(
     if (sessionId !== null || turnIds.length > 0) {
       fail("MEMORY_SOURCE_INVALID", "观察来源不能与会话轮次混用");
     }
+    if (args.qqRoute !== undefined)
+      memoryJobScopes({ scope_key: args.scope.scopeKey, qq_route: args.qqRoute });
     ownedObservations(orm, agentId, eventIds, args.scope.scopeKey);
     scope = args.scope.scope;
     key = args.scope.scopeKey;
@@ -553,6 +645,7 @@ export function enqueue(
     scope,
     scope_key: key,
     source_event_ids: [...eventIds].sort(),
+    ...(args.qqRoute ? { qq_route: args.qqRoute } : {}),
     ...(typeof allocationSnapshot === "undefined" ? {} : { allocation: allocationSnapshot }),
   };
 
@@ -762,6 +855,44 @@ function isQqMemoryScopeKey(value: unknown): value is string {
  * 自己的 scope_key 找回来源绑定，因此排队中/运行中的任务都按**当下**的本群配置判定。
  * 非 QQ 任务与没有绑定的任务不经过这里，网页整理行为不变。
  */
+/** Recheck the frozen binding/owner authority of new QQ jobs; legacy jobs keep old semantics. */
+export function assertQqRouteCurrent(orm: Orm, agentId: string, configSnapshot: string): void {
+  const snapshot = JSON.parse(configSnapshot) as ConsolidationConfig;
+  const { route, source } = memoryJobScopes(snapshot);
+  if (!route) return;
+  if (!isQqMemoryScopeKey(source)) fail("MEMORY_SOURCE_INVALID", "观察来源范围不一致");
+  let identity: unknown;
+  try {
+    identity = JSON.parse(source);
+  } catch {
+    fail("MEMORY_SOURCE_INVALID", "观察来源范围无效");
+  }
+  if (
+    !Array.isArray(identity) ||
+    typeof identity[1] !== "string" ||
+    (identity[2] !== "group" && identity[2] !== "private") ||
+    typeof identity[3] !== "string"
+  )
+    fail("MEMORY_SOURCE_INVALID", "观察来源范围无效");
+  const binding = readBindingByConversation(orm, {
+    accountId: identity[1],
+    kind: identity[2],
+    peerId: identity[3],
+  });
+  if (
+    !binding ||
+    binding.id !== route.binding_id ||
+    binding.agentId !== agentId ||
+    binding.authorityRevision !== route.authority_revision ||
+    binding.ownerIdentityRevision !== route.owner_identity_revision
+  )
+    fail("MEMORY_STATE_CONFLICT", "本人共享授权已变化");
+  const access = resolveQqMemoryAccess(binding, readQqOwnerIdentity(orm));
+  if (access.kind !== "resolved") fail("MEMORY_STATE_CONFLICT", "本人共享授权不可用");
+  const destination = access.access.writeScope.kind === "web" ? agentId : route.source_scope_key;
+  if (destination !== route.destination_scope_key) fail("MEMORY_STATE_CONFLICT", "记忆目标已变化");
+}
+
 export function assertQqConsolidationPublishable(
   orm: Orm,
   jobId: string,
@@ -790,13 +921,13 @@ function qqJobStartBlocker(orm: Orm, job: MemoryJobRow): string | null {
     return "QQ_GROUP_CAPABILITY_DISABLED";
   }
   // 能力判定通过＝群绑定已确认且与任务助手一致；再看这一层暂停。
-  let snapshot: { scope_key?: unknown };
+  let snapshot: { scope_key?: string; qq_route?: QqMemoryRouteSnapshot };
   try {
-    snapshot = JSON.parse(job.configSnapshot) as { scope_key?: unknown };
+    snapshot = JSON.parse(job.configSnapshot) as typeof snapshot;
   } catch {
     return null;
   }
-  const scopeKey = snapshot.scope_key;
+  const scopeKey = memoryJobScopes(snapshot).source;
   if (!isQqMemoryScopeKey(scopeKey)) return null;
   let identity: unknown;
   try {
@@ -836,9 +967,12 @@ export function publish(
     scope: string;
     scope_key: string;
     source_event_ids?: string[];
+    qq_route?: QqMemoryRouteSnapshot;
   };
+  const scopes = memoryJobScopes(snapshot);
+  assertQqRouteCurrent(orm, agentId, job.configSnapshot);
   // 提交边界复验本群能力：停用后未提交的结果不得发布（与 worker 输入加载两层各自成立）。
-  assertQqConsolidationPublishable(orm, jobId, agentId, snapshot.scope_key);
+  assertQqConsolidationPublishable(orm, jobId, agentId, scopes.source);
 
   let sourceRows: Array<Record<string, unknown>> = [];
   let observationRows: Array<Record<string, unknown>> = [];
@@ -884,8 +1018,8 @@ export function publish(
     if (eventIds.length > 0) {
       // Re-validate against the job's own scope, so a hand-written id list cannot
       // attach another conversation's message to this memory.
-      const events = ownedObservations(orm, agentId, eventIds, snapshot.scope_key);
-      observationRows = observationSourceRows(events, snapshot.scope_key).map((row) => ({
+      const events = ownedObservations(orm, agentId, eventIds, scopes.source ?? "");
+      observationRows = observationSourceRows(events, scopes.source ?? "").map((row) => ({
         event_key: row.eventKey,
         scope_key: row.scopeKey,
         conversation_key: row.conversationKey,
@@ -908,19 +1042,30 @@ export function publish(
   }
 
   if (draft !== null) {
+    const id = newId();
+    const tags = JSON.stringify(draft.tags);
     const entry = orm
       .insert(schema.memoryEntries)
       .values({
-        id: newId(),
+        id,
         agentId,
         userId: DEFAULT_USER_ID,
         name: draft.name,
         summary: draft.summary,
-        tags: JSON.stringify(draft.tags),
+        tags,
         kinds: JSON.stringify(draft.kinds),
         body: draft.body,
+        foldedSearch: memorySearchProjection({
+          id,
+          name: draft.name,
+          summary: draft.summary,
+          tags,
+          body: draft.body,
+        }),
+        foldVersion: MEMORY_SEARCH_FOLD_VERSION,
         scope: snapshot.scope,
-        scopeKey: snapshot.scope_key,
+        scopeKey: scopes.destination ?? snapshot.scope_key,
+        visibility: "session_private",
         status: "active",
         configSnapshot: selected.some((item) => correctionMetadata(item.configSnapshot) !== null)
           ? correctionSnapshot(

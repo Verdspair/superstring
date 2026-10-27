@@ -37,11 +37,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { agentPageDirty, policyDirty } from "@/features/agents/page-drafts";
 import { translateNotice } from "@/i18n";
 import { formatDate } from "@/i18n/runtime";
+import { useForegroundRead } from "@/services/use-foreground-read";
 import { useLiveResource } from "@/services/use-live-resource";
 import { errorText } from "@/state/helpers";
 import { useSuperstringStore } from "@/store";
 import type { MemoryJobView } from "../../../shared/contracts";
 import { memoryScopeIdentity } from "../../../shared/memory-scope";
+import type { SuperstringApi } from "../../api";
 import { JobRunLink } from "../runs/RunEntry";
 import { BindingMemoryControls } from "./BindingMemoryControls";
 import { memoryScopeLabel } from "./scope-label";
@@ -64,6 +66,10 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
       loadMemoryPage: state.loadMemoryPage,
       loadMemoryPolicy: state.loadMemoryPolicy,
       loadMemoryTurns: state.loadMemoryTurns,
+      loadMemoryManagement: state.loadMemoryManagement,
+      cancelMemoryManagementRead: state.cancelMemoryManagementRead,
+      memoryManagementError: state.memoryManagementError,
+      memoryManagementLoading: state.memoryManagementLoading,
       manualConsolidate: state.manualConsolidate,
       memoryContent: state.memoryContent,
       memoryCorrectionDirty: state.memoryCorrectionDirty,
@@ -102,6 +108,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
     [selected, setSelected] = useState<string[]>([]),
     [manual, setManual] = useState(false),
     [purge, setPurge] = useState(false),
+    [rebuildOpen, setRebuildOpen] = useState(false),
     [shareBusy, setShareBusy] = useState(false),
     [retryJob, setRetryJob] = useState<MemoryJobView | null>(null),
     [retryBusy, setRetryBusy] = useState(false),
@@ -160,6 +167,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
     setSelected([]);
     setSearch("");
     setQuery("");
+    setStatus("all");
   }, [agentId]);
   // 切 Agent 或换设置分区时收起重试确认并作废在途重试：迟到响应不得写当前 Agent/列表/feedback。
   const retryAttempt = useRef(0);
@@ -177,14 +185,47 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
       retryAttempt.current += 1;
     };
   }, [agentId, s.settingsRoute]);
+  const managementSelection = useRef({ agentId, page, scope, query, status });
+  managementSelection.current =
+    managementSelection.current.agentId === agentId
+      ? { agentId, page, scope, query, status }
+      : { agentId, page: 1, scope: "", query: "", status: "all" };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: API and Agent identity own this foreground read; filters reuse it without resetting metadata.
+  const readManagement = useCallback(() => {
+    const selection = managementSelection.current;
+    void s.loadMemoryManagement(
+      selection.page,
+      {
+        ...(selection.scope ? { scope_key: selection.scope } : {}),
+        ...(selection.query ? { search: selection.query } : {}),
+        ...(selection.status !== "all" ? { status: selection.status } : {}),
+      },
+      { metadata: false },
+    );
+  }, [agentId, s.apiClient, s.loadMemoryManagement]);
+  useForegroundRead(readManagement, s.cancelMemoryManagementRead, {
+    enabled: ready && !!agentId && agentId !== "__new__",
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: s.cancelMemoryManagementRead,
+  });
+  const previousManagementSelection = useRef(managementSelection.current);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Filter values trigger the page read while the foreground callback stays identity-stable.
   useEffect(() => {
-    if (active && ready && agentId)
-      void s.loadMemoryPage(page, {
-        ...(scope ? { scope_key: scope } : {}),
-        ...(query ? { search: query } : {}),
-        ...(status !== "all" ? { status } : {}),
-      });
-  }, [active, ready, agentId, page, scope, query, status, s.loadMemoryPage]);
+    const previous = previousManagementSelection.current;
+    const current = managementSelection.current;
+    previousManagementSelection.current = current;
+    if (previous.agentId !== current.agentId) return;
+    if (
+      previous.page === current.page &&
+      previous.scope === current.scope &&
+      previous.query === current.query &&
+      previous.status === current.status
+    )
+      return;
+    if (active && ready && document.visibilityState !== "hidden") readManagement();
+  }, [active, ready, page, scope, query, status, readManagement]);
   const selectedScope = scopes.find((item) => item.scope_key === scope);
   const binding = connectionData?.bindings.find((item) => item.id === selectedScope?.binding?.id);
   const owner = connectionData?.owner;
@@ -216,9 +257,6 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
   // 维护保存只拥有整理提示词与网页整理策略；读取额度属于独立的 memory-tools 草稿。
   const maintenanceDirty =
     !!editor && (policyDirty(editor) || agentPageDirty(editor, "long-memory"));
-  useEffect(() => {
-    if (active && ready && !editor?.policy) void s.loadMemoryPolicy();
-  }, [active, ready, editor?.policy, s.loadMemoryPolicy]);
   const discardMaintenance = () => {
     if (!editor) return;
     if (editor.policy)
@@ -239,12 +277,15 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
   const refresh = async () => {
     resource.refresh();
     connections.refresh();
-    await s.reloadMemory();
-    await s.loadMemoryPage(page, {
-      ...(scope ? { scope_key: scope } : {}),
-      ...(query ? { search: query } : {}),
-      ...(status !== "all" ? { status } : {}),
-    });
+    await s.loadMemoryManagement(
+      page,
+      {
+        ...(scope ? { scope_key: scope } : {}),
+        ...(query ? { search: query } : {}),
+        ...(status !== "all" ? { status } : {}),
+      },
+      { metadata: true },
+    );
   };
   const retryFailedJob = async () => {
     const job = retryJob;
@@ -271,14 +312,26 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
       setRetryJob(null);
       setRetryError("");
       const state = useSuperstringStore.getState();
-      if (state.memoryCorrectionDirty || state.memoryCorrectionSaving) {
-        // 草稿在场时 reloadMemory 会整体早退（任务列表不更新）；这里只替换任务列表，不触碰草稿与详情。
+      if (
+        state.memoryCorrectionDirty ||
+        state.memoryCorrectionSaving ||
+        state.memoryVisibilityDirty ||
+        state.memoryVisibilitySaving
+      ) {
+        // 未保存内容在场时只更新作业，不触碰详情、列表或共享草稿。
         const jobs = await client.listMemoryJobs(targetAgent);
         if (!stillCurrent()) return;
         useSuperstringStore.setState({ memoryJobs: jobs });
       } else {
-        // 成功后走 reloadMemory 刷新任务列表与页面基线，纠正草稿与保存中的内容不会被清空。
-        await s.reloadMemory();
+        await s.loadMemoryManagement(
+          page,
+          {
+            ...(scope ? { scope_key: scope } : {}),
+            ...(query ? { search: query } : {}),
+            ...(status !== "all" ? { status } : {}),
+          },
+          { metadata: true },
+        );
       }
     } catch (error) {
       if (!stillCurrent()) return;
@@ -334,6 +387,15 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
           >
             {t("library.organize.memories.from.a.conversation")}
           </Button>
+          <Button
+            variant="outline"
+            disabled={!ready || locked}
+            tooltip={t("hints.library.memory.rebuildSearchProjection")}
+            onClick={() => setRebuildOpen(true)}
+          >
+            <Database />
+            {t("library.rebuildSearchProjection")}
+          </Button>
           {/* 读取额度已迁到系统能力页：内容区只保留直达入口，草稿安全跳转。 */}
           <Button
             variant="outline"
@@ -352,9 +414,11 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
           {t("library.connection.metadata.unavailable")}
         </p>
       )}
-      {(resource.error || s.error) && (
-        <p role="alert" className="text-sm text-destructive">
-          {resource.error || translateNotice(s.error ?? "")}
+      {(resource.error || s.memoryManagementError || s.error) && (
+        <p role="alert" className="mb-3 text-sm text-destructive">
+          {resource.error ||
+            (s.memoryManagementError ? translateNotice(s.memoryManagementError) : "") ||
+            (s.error ? translateNotice(s.error) : "")}
         </p>
       )}
       {s.feedback && !resource.error && !s.error && (
@@ -935,6 +999,16 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
       {/* 对话手动整理 Sheet */}
       {manual && <ManualMemory active={active} onClose={() => setManual(false)} />}
 
+      {/* 搜索投影重建 Sheet */}
+      {rebuildOpen && (
+        <RebuildSearchProjectionSheet
+          active={active}
+          agentId={agentId}
+          apiClient={s.apiClient}
+          onClose={() => setRebuildOpen(false)}
+        />
+      )}
+
       {/* 永久删除确认弹窗 */}
       <ConfirmDialog
         open={active && purge}
@@ -985,6 +1059,21 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
         memoryEntryDetail: state.memoryEntryDetail,
         patchMemoryCorrection: state.patchMemoryCorrection,
         saveMemoryCorrection: state.saveMemoryCorrection,
+        metadata: state.memoryMetadata,
+        metadataBaseline: state.memoryMetadataBaseline,
+        visibilityDraft: state.memoryVisibilityDraft,
+        visibilityDirty: state.memoryVisibilityDirty,
+        metadataLoading: state.memoryMetadataLoading,
+        visibilitySaving: state.memoryVisibilitySaving,
+        visibilityError: state.memoryVisibilityError,
+        loadMetadata: state.loadMemoryAccessMetadata,
+        patchVisibilityDraft: state.patchMemoryVisibilityDraft,
+        saveVisibility: state.saveMemoryVisibility,
+        discardVisibilityDraft: state.discardMemoryVisibilityDraft,
+        clearMetadata: state.clearMemoryMetadata,
+        agents: state.agents,
+        apiClient: state.apiClient,
+        editorAgentId: state.editorAgentId,
       })),
     ),
     t = useTranslation().t,
@@ -992,19 +1081,75 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
     content = s.memoryContent,
     draft = s.memoryCorrectionDraft;
   const [discard, setDiscard] = useState(false);
+  const [confirmSnapshot, setConfirmSnapshot] = useState<{
+    agentId: string;
+    entryId: string;
+    api: unknown;
+    revision: number;
+    visibility: "session_private" | "agent_shared" | "public" | null;
+    recipient_agent_ids: string[];
+  } | null>(null);
   const [tagText, setTagText] = useState(draft?.tags.join(", ") ?? "");
   const correctionRevision = draft?.expected_revision;
   const entryId = entry?.id;
+
+  const hasValidBaseline =
+    s.metadataBaseline !== null &&
+    s.metadataBaseline.agentId === s.editorAgentId &&
+    s.metadataBaseline.memoryId === entryId &&
+    s.metadataBaseline.api === s.apiClient;
+
+  useEffect(() => {
+    if (!confirmSnapshot) return;
+    const current = s.visibilityDraft;
+    const base = s.metadataBaseline;
+    const equalRecipients = (a: string[], b: string[]) =>
+      a.length === b.length &&
+      a
+        .slice()
+        .sort()
+        .every((v, i) => v === b.slice().sort()[i]);
+
+    if (
+      confirmSnapshot.entryId !== entryId ||
+      confirmSnapshot.agentId !== s.editorAgentId ||
+      confirmSnapshot.api !== s.apiClient ||
+      !base ||
+      confirmSnapshot.revision !== base.revision ||
+      !current ||
+      confirmSnapshot.visibility !== current.visibility ||
+      !equalRecipients(confirmSnapshot.recipient_agent_ids, current.recipient_agent_ids)
+    ) {
+      setConfirmSnapshot(null);
+    }
+  }, [
+    confirmSnapshot,
+    entryId,
+    s.editorAgentId,
+    s.apiClient,
+    s.metadataBaseline,
+    s.visibilityDraft,
+  ]);
+
   useEffect(() => {
     if (correctionRevision)
       setTagText(useSuperstringStore.getState().memoryCorrectionDraft?.tags.join(", ") ?? "");
   }, [correctionRevision]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The same entry on another API requires fresh content and access metadata.
   useEffect(() => {
-    if (active && entryId) void s.loadMemoryContent();
-  }, [active, entryId, s.loadMemoryContent]);
+    if (active && entryId) {
+      void s.loadMemoryContent();
+      void s.loadMetadata(entryId);
+    }
+  }, [active, entryId, s.apiClient, s.loadMemoryContent, s.loadMetadata]);
   const close = () => {
-    if (s.memoryCorrectionDirty) setDiscard(true);
-    else s.clearMemoryDetail();
+    if (s.memoryCorrectionSaving || s.visibilitySaving) return;
+    setConfirmSnapshot(null);
+    if (s.memoryCorrectionDirty || s.visibilityDirty) setDiscard(true);
+    else {
+      s.clearMemoryDetail();
+      s.clearMetadata();
+    }
   };
   return (
     <>
@@ -1037,6 +1182,7 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                   <TabsTrigger value="content">{t("library.content")}</TabsTrigger>
                   <TabsTrigger value="sources">{t("library.sources")}</TabsTrigger>
                   <TabsTrigger value="edit">{t("library.correct")}</TabsTrigger>
+                  <TabsTrigger value="access">{t("library.memory.accessTitle")}</TabsTrigger>
                   <TabsTrigger value="snapshot">{t("library.configuration.snapshot")}</TabsTrigger>
                 </TabsList>
                 <TabsContent value="content" className="space-y-4">
@@ -1141,6 +1287,222 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                     {JSON.stringify(entry.config_snapshot, null, 2)}
                   </pre>
                 </TabsContent>
+                <TabsContent value="access" className="space-y-4">
+                  <div className="space-y-3 rounded-lg border p-4 bg-card">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-semibold tracking-tight">
+                        {t("library.memory.accessTitle")}
+                      </h4>
+                      <div className="flex items-center gap-2">
+                        {s.metadataBaseline && (
+                          <Badge variant="outline" className="font-mono text-[10px]">
+                            {t("common.revision", { "0": s.metadataBaseline.revision })}
+                          </Badge>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 text-xs"
+                          disabled={s.metadataLoading || s.visibilitySaving}
+                          onClick={() => {
+                            if (entryId)
+                              void s.loadMetadata(entryId, { advanceRevisionIfDirty: true });
+                          }}
+                        >
+                          {t("library.refresh")}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* 来源链路 */}
+                    <div className="space-y-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="text-muted-foreground">{t("library.sources")}:</span>
+                        <Badge
+                          variant={
+                            s.metadata?.origin_complete === true
+                              ? "secondary"
+                              : s.metadata?.origin_complete === false
+                                ? "destructive"
+                                : "outline"
+                          }
+                          className="text-[10px]"
+                        >
+                          {t(
+                            s.metadata?.origin_complete === true
+                              ? "library.memory.originComplete"
+                              : s.metadata?.origin_complete === false
+                                ? "library.memory.originIncomplete"
+                                : "library.memory.originUnknown",
+                          )}
+                        </Badge>
+                        <Badge variant="outline" className="text-[10px]">
+                          {t("library.memory.notEvaluated")}
+                        </Badge>
+                      </div>
+                      <div className="space-y-1">
+                        {s.metadata?.origins.map((origin) => (
+                          <div
+                            key={`${origin.channel}:${origin.conversation_id ?? "unknown"}`}
+                            className="flex items-center gap-2 font-mono text-muted-foreground"
+                          >
+                            <span>[{origin.channel}]</span>
+                            <span>
+                              {origin.conversation_id ?? t("library.memory.originUnknown")}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 可见性选择 */}
+                    <div className="space-y-3 pt-2 border-t">
+                      <Field label={t("library.memory.accessTitle")}>
+                        <NativeSelect
+                          aria-label={t("library.memory.accessTitle")}
+                          disabled={!hasValidBaseline || s.metadataLoading || s.visibilitySaving}
+                          value={
+                            !hasValidBaseline
+                              ? "unknown"
+                              : (s.visibilityDraft?.visibility ?? "unclassified")
+                          }
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (
+                              val === "session_private" ||
+                              val === "agent_shared" ||
+                              val === "public"
+                            ) {
+                              s.patchVisibilityDraft({ visibility: val });
+                            }
+                          }}
+                        >
+                          {!hasValidBaseline ? (
+                            <option value="unknown">{t("connections.unknown")}</option>
+                          ) : s.metadataBaseline?.visibility === null ? (
+                            <option value="unclassified">
+                              {t("library.memory.visibility.unclassified")}
+                            </option>
+                          ) : null}
+                          <option value="session_private">
+                            {t("library.memory.visibility.session_private")}
+                          </option>
+                          <option value="agent_shared">
+                            {t("library.memory.visibility.agent_shared")}
+                          </option>
+                          <option value="public">{t("library.memory.visibility.public")}</option>
+                        </NativeSelect>
+                      </Field>
+                      <p className="text-xs text-muted-foreground">
+                        {s.visibilityDraft?.visibility === "session_private"
+                          ? t("library.memory.visibility.session_private_desc")
+                          : s.visibilityDraft?.visibility === "agent_shared"
+                            ? t("library.memory.visibility.agent_shared_desc")
+                            : s.visibilityDraft?.visibility === "public"
+                              ? t("library.memory.visibility.public_desc")
+                              : ""}
+                      </p>
+
+                      {/* 公共记忆接收助手勾选 */}
+                      {s.visibilityDraft?.visibility === "public" && (
+                        <div className="space-y-2 pt-2 border-t">
+                          <p className="text-xs font-medium">
+                            {t("library.memory.recipientsLabel")}
+                          </p>
+                          <div className="divide-y divide-border/60 overflow-hidden rounded-lg border bg-muted/20">
+                            {s.agents.map((ag) => (
+                              <label
+                                htmlFor={`recipient-agent-${ag.id}`}
+                                key={ag.id}
+                                className="flex items-center gap-2 px-3 py-2 text-xs cursor-pointer"
+                              >
+                                <Checkbox
+                                  id={`recipient-agent-${ag.id}`}
+                                  aria-label={ag.name}
+                                  checked={s.visibilityDraft?.recipient_agent_ids.includes(ag.id)}
+                                  onCheckedChange={(checked) => {
+                                    const current = s.visibilityDraft?.recipient_agent_ids ?? [];
+                                    const next =
+                                      checked === true
+                                        ? [...current, ag.id]
+                                        : current.filter((id) => id !== ag.id);
+                                    s.patchVisibilityDraft({ recipient_agent_ids: next });
+                                  }}
+                                />
+                                <span>{ag.name}</span>
+                                <Badge variant="outline" className="ml-auto text-[10px]">
+                                  {ag.model_name}
+                                </Badge>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {s.visibilityError && (
+                        <div
+                          role="alert"
+                          className="flex items-center justify-between rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive"
+                        >
+                          <p>{translateNotice(s.visibilityError)}</p>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-xs ml-2 shrink-0"
+                            disabled={s.metadataLoading || s.visibilitySaving}
+                            onClick={() => {
+                              if (entryId)
+                                void s.loadMetadata(entryId, { advanceRevisionIfDirty: true });
+                            }}
+                          >
+                            {t("capabilities.retry")}
+                          </Button>
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-end gap-2 pt-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!hasValidBaseline || !s.visibilityDirty || s.visibilitySaving}
+                          onClick={s.discardVisibilityDraft}
+                        >
+                          {t("library.memory.discardVisibility")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={
+                            !hasValidBaseline ||
+                            !s.visibilityDirty ||
+                            s.visibilitySaving ||
+                            (s.visibilityDraft?.visibility === "public" &&
+                              s.visibilityDraft.recipient_agent_ids.length === 0)
+                          }
+                          onClick={() => {
+                            if (
+                              hasValidBaseline &&
+                              s.metadataBaseline &&
+                              s.visibilityDraft &&
+                              entryId &&
+                              s.editorAgentId
+                            ) {
+                              setConfirmSnapshot({
+                                agentId: s.editorAgentId,
+                                entryId,
+                                api: s.apiClient,
+                                revision: s.metadataBaseline.revision,
+                                visibility: s.visibilityDraft.visibility,
+                                recipient_agent_ids: [...s.visibilityDraft.recipient_agent_ids],
+                              });
+                            }
+                          }}
+                        >
+                          {t("library.memory.saveVisibility")}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </TabsContent>
               </Tabs>
             </div>
           )}
@@ -1181,11 +1543,59 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
       <ConfirmDialog
         open={active && discard}
         message={t("library.discard.the.unsaved.memory.correction")}
+        busy={s.memoryCorrectionSaving || s.visibilitySaving}
         onCancel={() => setDiscard(false)}
         onConfirm={() => {
           s.discardMemoryCorrection();
+          s.discardVisibilityDraft();
+          s.clearMetadata();
           s.clearMemoryDetail();
           setDiscard(false);
+        }}
+      />
+      <ConfirmDialog
+        open={active && confirmSnapshot !== null}
+        message={t("library.memory.publicationConfirm", {
+          "0": confirmSnapshot?.visibility
+            ? t(`library.memory.visibility.${confirmSnapshot.visibility}`)
+            : t("library.memory.visibility.unclassified"),
+          "1":
+            confirmSnapshot?.visibility === "public"
+              ? confirmSnapshot.recipient_agent_ids.length
+              : confirmSnapshot?.visibility === "agent_shared"
+                ? 1
+                : 0,
+        })}
+        busy={s.visibilitySaving}
+        onCancel={() => setConfirmSnapshot(null)}
+        onConfirm={() => {
+          const snapshot = confirmSnapshot;
+          if (!snapshot) return;
+          const current = s.visibilityDraft;
+          const base = s.metadataBaseline;
+          const equalRecipients = (a: string[], b: string[]) =>
+            a.length === b.length &&
+            a
+              .slice()
+              .sort()
+              .every((v, i) => v === b.slice().sort()[i]);
+
+          if (
+            snapshot.entryId !== entryId ||
+            snapshot.agentId !== s.editorAgentId ||
+            snapshot.api !== s.apiClient ||
+            !base ||
+            snapshot.revision !== base.revision ||
+            !current ||
+            snapshot.visibility !== current.visibility ||
+            !equalRecipients(snapshot.recipient_agent_ids, current.recipient_agent_ids)
+          ) {
+            setConfirmSnapshot(null);
+            return;
+          }
+          return s.saveVisibility().then(() => {
+            setConfirmSnapshot(null);
+          });
         }}
       />
     </>
@@ -1308,6 +1718,274 @@ function ManualMemory({ onClose, active }: { onClose: () => void; active: boolea
           >
             {t("library.organize.value.selected.turns", { "0": selected.length })}
           </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+const REBUILD_DEFAULT_BATCH_SIZE = 100;
+const REBUILD_MIN_BATCH_SIZE = 1;
+const REBUILD_MAX_BATCH_SIZE = 300;
+
+export function RebuildSearchProjectionSheet({
+  active,
+  agentId,
+  apiClient,
+  onClose,
+}: {
+  active: boolean;
+  agentId: string;
+  apiClient: SuperstringApi;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const [batchSizeInput, setBatchSizeInput] = useState<string>(String(REBUILD_DEFAULT_BATCH_SIZE));
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
+  const [lastRebuilt, setLastRebuilt] = useState<number | null>(null);
+  const [traversalFinished, setTraversalFinished] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [unconfirmedOutcome, setUnconfirmedOutcome] = useState(false);
+
+  const abortRef = useRef<AbortController | null>(null);
+  const inFlightRef = useRef(false);
+  const requestTokenRef = useRef(0);
+  const currentAgentIdRef = useRef(agentId);
+  currentAgentIdRef.current = agentId;
+  const currentApiClientRef = useRef(apiClient);
+  currentApiClientRef.current = apiClient;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+
+  const parsedBatch = Number(batchSizeInput);
+  const isValidBatchSize =
+    Number.isInteger(parsedBatch) &&
+    parsedBatch >= REBUILD_MIN_BATCH_SIZE &&
+    parsedBatch <= REBUILD_MAX_BATCH_SIZE;
+
+  useEffect(() => {
+    if (!active && inFlightRef.current) {
+      abortRef.current?.abort();
+      requestTokenRef.current++;
+      inFlightRef.current = false;
+      setRebuilding(false);
+      setUnconfirmedOutcome(true);
+    }
+  }, [active]);
+
+  useEffect(() => {
+    if (agentId && apiClient && inFlightRef.current) {
+      abortRef.current?.abort();
+      inFlightRef.current = false;
+    }
+    requestTokenRef.current++;
+    setRebuilding(false);
+    setCursor(null);
+    setLastRebuilt(null);
+    setTraversalFinished(false);
+    setError(null);
+    setUnconfirmedOutcome(false);
+  }, [agentId, apiClient]);
+
+  useEffect(() => {
+    return () => {
+      if (inFlightRef.current) {
+        abortRef.current?.abort();
+        inFlightRef.current = false;
+      }
+    };
+  }, []);
+
+  const cancelInFlight = () => {
+    if (inFlightRef.current) {
+      abortRef.current?.abort();
+      requestTokenRef.current++;
+      inFlightRef.current = false;
+      setRebuilding(false);
+      setUnconfirmedOutcome(true);
+    }
+  };
+
+  const handleClose = () => {
+    cancelInFlight();
+    onClose();
+  };
+
+  const startNewPass = () => {
+    cancelInFlight();
+    requestTokenRef.current++;
+    setCursor(null);
+    setLastRebuilt(null);
+    setTraversalFinished(false);
+    setError(null);
+    setUnconfirmedOutcome(false);
+  };
+
+  const executeBatch = async () => {
+    if (rebuilding || !isValidBatchSize) return;
+    setError(null);
+    setUnconfirmedOutcome(false);
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    inFlightRef.current = true;
+
+    const thisToken = ++requestTokenRef.current;
+    const targetAgentId = currentAgentIdRef.current;
+    const targetApiClient = currentApiClientRef.current;
+
+    setRebuilding(true);
+
+    try {
+      const payload: { after_id?: string; limit: number } = { limit: parsedBatch };
+      if (cursor) payload.after_id = cursor;
+
+      const res = await targetApiClient.rebuildMemorySearchProjection(
+        targetAgentId,
+        payload,
+        controller.signal,
+      );
+
+      // 取消/过期/切 Agent：即使底层已 resolve 亦直接丢弃，不收成功，不进游标
+      if (
+        controller.signal.aborted ||
+        thisToken !== requestTokenRef.current ||
+        currentAgentIdRef.current !== targetAgentId ||
+        currentApiClientRef.current !== targetApiClient ||
+        !activeRef.current
+      ) {
+        return;
+      }
+
+      inFlightRef.current = false;
+      setRebuilding(false);
+      setLastRebuilt(res.rebuilt);
+      setCursor(res.next_after_id);
+      if (res.next_after_id === null) {
+        setTraversalFinished(true);
+      }
+    } catch (err: unknown) {
+      // 过期响应直接丢弃；取消本对象才标记未确认（unknown outcome）
+      if (
+        thisToken !== requestTokenRef.current ||
+        currentAgentIdRef.current !== targetAgentId ||
+        currentApiClientRef.current !== targetApiClient
+      ) {
+        return;
+      }
+
+      inFlightRef.current = false;
+      setRebuilding(false);
+
+      if (controller.signal.aborted || !activeRef.current) {
+        setUnconfirmedOutcome(true);
+        return;
+      }
+
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+    }
+  };
+
+  return (
+    <Sheet
+      open={active}
+      onOpenChange={(open) => {
+        if (!open) handleClose();
+      }}
+    >
+      <SheetContent className="w-full sm:max-w-xl">
+        <SheetHeader>
+          <SheetTitle>{t("library.rebuild.title")}</SheetTitle>
+          <SheetDescription>{t("library.rebuild.description")}</SheetDescription>
+        </SheetHeader>
+        <div className="space-y-4 py-4">
+          <Field label={t("library.rebuild.batchSize")}>
+            <Input
+              type="number"
+              min={REBUILD_MIN_BATCH_SIZE}
+              max={REBUILD_MAX_BATCH_SIZE}
+              disabled={rebuilding}
+              value={batchSizeInput}
+              onChange={(e) => setBatchSizeInput(e.target.value)}
+            />
+          </Field>
+
+          <div className="rounded-lg border border-border/80 bg-muted/30 p-3 space-y-1.5 text-xs">
+            <div className="flex justify-between items-center text-muted-foreground">
+              <span>{t("library.rebuild.currentCursor")}</span>
+              <span className="font-mono font-medium text-foreground">
+                {cursor ?? t("library.rebuild.startFromBeginning")}
+              </span>
+            </div>
+            {lastRebuilt !== null && (
+              <div className="text-muted-foreground">
+                {t("library.rebuild.batchSuccess", { "0": lastRebuilt })}
+              </div>
+            )}
+          </div>
+
+          {traversalFinished && (
+            <div
+              role="status"
+              className="rounded-lg border border-border/80 bg-muted/40 p-3 text-xs text-muted-foreground"
+            >
+              {t("library.rebuild.traversalFinished")}
+            </div>
+          )}
+
+          {unconfirmedOutcome && (
+            <div
+              role="status"
+              className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300"
+            >
+              {t("library.rebuild.abortedUnknown")}
+            </div>
+          )}
+
+          {error && (
+            <div
+              role="alert"
+              className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive"
+            >
+              <p className="font-medium">{error}</p>
+              <p className="mt-1 text-muted-foreground">{t("library.rebuild.failedRetry")}</p>
+            </div>
+          )}
+        </div>
+        <SheetFooter className="gap-2 sm:justify-end">
+          {rebuilding ? (
+            <>
+              <Button variant="outline" size="sm" onClick={cancelInFlight}>
+                {t("library.rebuild.cancel")}
+              </Button>
+              <Button size="sm" disabled>
+                {t("library.rebuild.inFlight")}
+              </Button>
+            </>
+          ) : traversalFinished ? (
+            <>
+              <Button variant="outline" size="sm" onClick={handleClose}>
+                {t("library.rebuild.close")}
+              </Button>
+              <Button size="sm" onClick={startNewPass}>
+                {t("library.rebuild.startNewPass")}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" size="sm" onClick={handleClose}>
+                {t("library.rebuild.close")}
+              </Button>
+              <Button size="sm" disabled={!isValidBatchSize} onClick={() => void executeBatch()}>
+                {cursor
+                  ? t("library.rebuild.continueNextBatch")
+                  : t("library.rebuild.executeBatch")}
+              </Button>
+            </>
+          )}
         </SheetFooter>
       </SheetContent>
     </Sheet>

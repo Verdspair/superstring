@@ -128,7 +128,6 @@ export function createAgentActions(
           activeSection: "A",
           editorLoading: false,
         });
-        await get().reloadMemory();
         return true;
       } catch (error) {
         if (ownsPage()) set({ error: errorText(error) });

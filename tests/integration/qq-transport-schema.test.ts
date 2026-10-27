@@ -90,6 +90,9 @@ const v69 = sql("0069_query_plan_indexes.sql");
 const v70 = sql("0070_context_source_lookup.sql");
 const v71 = sql("0071_context_storage_metadata.sql");
 const v72 = sql("0072_outbound_intent_metadata.sql");
+const v73 = sql("0073_memory_conversation_visibility.sql");
+const v74 = sql("0074_knowledge_visibility.sql");
+const v75 = sql("0075_memory_search_index.sql");
 const QQ_TABLES = ["qq_settings", "qq_owner_identities", "qq_bindings", "qq_events"] as const;
 const NOW = "2026-01-01T00:00:00.000000Z";
 
@@ -439,6 +442,9 @@ describe("0005 QQ transport schema", () => {
           v70,
           v71,
           v72,
+          v73,
+          v74,
+          v75,
         ].join("\n"),
       );
       for (const table of [qqSettings, qqOwnerIdentities, qqBindings, qqEvents, qqSchemes]) {
@@ -638,13 +644,28 @@ describe("0005 QQ transport schema", () => {
       const legacyNames = BUSINESS_TABLE_NAMES.slice(0, 26).filter(
         (table) => table !== "organization_settings",
       );
-      const legacyTables = legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all());
+      const legacyColumns = new Map(
+        legacyNames.map((table) => [
+          table,
+          (old.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+            (column) => column.name,
+          ),
+        ]),
+      );
+      const readLegacy = (table: string) =>
+        old
+          .query(
+            `SELECT ${legacyColumns
+              .get(table)!
+              .map((name) => `"${name}"`)
+              .join(",")} FROM ${table}`,
+          )
+          .all();
+      const legacyTables = legacyNames.map(readLegacy);
       const sharedRow = old.query("SELECT model_name, revision FROM organization_settings").get();
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 72 });
-      expect(legacyNames.map((table) => old.query(`SELECT * FROM ${table}`).all())).toEqual(
-        legacyTables,
-      );
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 75 });
+      expect(legacyNames.map(readLegacy)).toEqual(legacyTables);
       // The shared row keeps the value it had, and the new purposes arrive unset.
       expect(
         old
@@ -763,6 +784,9 @@ describe("0005 QQ transport schema", () => {
           v70,
           v71,
           v72,
+          v73,
+          v74,
+          v75,
         ]),
       ).toThrow();
       expect(db.query("SELECT type, name, sql FROM sqlite_master ORDER BY name").all()).toEqual(
@@ -771,7 +795,7 @@ describe("0005 QQ transport schema", () => {
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
       expect(db.query("SELECT count(*) AS n FROM agents").get()).toEqual({ n: 1 });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 72 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 75 });
       expect(db.query("SELECT count(*) AS n FROM qq_settings").get()).toEqual({ n: 1 });
     } finally {
       db.close();

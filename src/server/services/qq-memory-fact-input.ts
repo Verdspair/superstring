@@ -24,18 +24,27 @@
 //   自造/别成员拒；外部 resolveSource 不能翻转这两类（context-access 直连 keeper）。
 
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import { bodyRevision } from "../db/conversation-event-repository";
+import { readQqBinding } from "../db/qq-binding-repository";
+import { readQqOwnerIdentity } from "../db/qq-owner-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { fail } from "../errors";
 import { evidenceScopeExists } from "../modules/conversation-evidence";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
 import { inTimeline } from "../modules/conversation-evidence-store";
+import { memoryJobScopes, type QqMemoryRouteSnapshot } from "./memory-contract";
+import { correctionMetadata, memoryRevision } from "./memory-revision";
+import { qqConversationKey, qqMemoryScopeKey, resolveQqMemoryAccess } from "./qq-binding-contract";
 import { ownerScope } from "./qq-media-sources";
 import { createQqMemberNameSource, qqMemberNameSourceAccess } from "./qq-member-sources";
 import { projectQqMessageFacts } from "./qq-message-fact-projection";
-import { qqMessageFactSourceAccess } from "./qq-message-fact-sources";
+import {
+  qqMessageFactSourceAccess,
+  qqMessageFactSourceAccessMany,
+} from "./qq-message-fact-sources";
 import { isObservationExpired } from "./qq-retention";
 import { projectQqTextRelations } from "./qq-text-relations";
 
@@ -76,6 +85,7 @@ interface SnapshotShape {
   scope_key?: unknown;
   source_event_ids?: unknown;
   qq_fact_scope?: unknown;
+  qq_route?: QqMemoryRouteSnapshot;
 }
 
 /** scope_key 反解：`["qq",account,kind,peer,agent(可选)]`；kind 必须是 group|private。 */
@@ -114,6 +124,14 @@ export function resolveQqMemoryFactScope(
     .query("SELECT agent_id,user_id,config_snapshot FROM memory_jobs WHERE id=?")
     .get(jobId) as JobRow | null;
   if (!job || job.agent_id !== agentId || job.user_id !== DEFAULT_USER_ID) return null;
+  return resolveCurrentQqScope(db, agentId, scopeKey);
+}
+
+function resolveCurrentQqScope(
+  db: Database,
+  agentId: string,
+  scopeKey: string,
+): QqMemoryFactScope | null {
   const identity = parseQqMemoryScopeKey(scopeKey);
   if (!identity) return null;
   // 真实绑定行（唯一 (account,kind,peer)）；助手必须与任务一致。
@@ -257,8 +275,11 @@ export function qqMemoryJobSourceAccess(
   if (!found) return "revoked";
   const { job, parsed } = found;
   if (owner.agentId !== undefined && owner.agentId !== job.agent_id) return "revoked";
-  if (typeof parsed.scope_key !== "string") return "revoked";
-  const scope = resolveQqMemoryFactScope(db, job.agent_id, owner.id, parsed.scope_key);
+  const sourceScope = memoryJobScopes(
+    parsed as { scope_key?: string; qq_route?: QqMemoryRouteSnapshot },
+  ).source;
+  if (typeof sourceScope !== "string") return "revoked";
+  const scope = resolveQqMemoryFactScope(db, job.agent_id, owner.id, sourceScope);
   if (!scope) return "revoked";
   const eventIds = Array.isArray(parsed.source_event_ids)
     ? (parsed.source_event_ids as unknown[]).filter((id): id is string => typeof id === "string")
@@ -324,6 +345,10 @@ function qqInSelectedEvents(db: Database, eventIds: string[], qq: string): boole
 
 interface LoadRow {
   eventKey: string;
+  accountId: string;
+  conversationKind: string;
+  peerId: string;
+  agentId: string;
   body: string | null;
   bodyExpiresAt: string | null;
   factExpiresAt: string | null;
@@ -336,19 +361,414 @@ interface LoadRow {
 function loadRows(db: Database, eventKeys: readonly string[]): Map<string, LoadRow> {
   const rows = new Map<string, LoadRow>();
   const statement = db.query(
-    `SELECT e.event_key AS eventKey,t.body AS body,t.expires_at AS bodyExpiresAt,
+    `SELECT e.event_key AS eventKey,e.account_id AS accountId,e.conversation_kind AS conversationKind,
+    e.peer_id AS peerId,e.agent_id AS agentId,t.body AS body,t.expires_at AS bodyExpiresAt,
     f.expires_at AS factExpiresAt,e.message_id AS messageId,
     e.occurred_at_seconds AS occurredAtSeconds,e.speaker_kind AS speakerKind,
     e.speaker_id AS speakerId
-    FROM qq_events e LEFT JOIN qq_message_facts f ON f.event_key=e.event_key
-    LEFT JOIN qq_observation_text t ON t.event_key=e.event_key
-    WHERE e.event_key=?`,
+    FROM json_each(?) requested JOIN qq_events e ON e.event_key=requested.value
+    LEFT JOIN qq_message_facts f ON f.event_key=e.event_key
+    LEFT JOIN qq_observation_text t ON t.event_key=e.event_key`,
   );
-  for (const eventKey of eventKeys) {
-    const row = statement.get(eventKey) as LoadRow | null;
-    if (row) rows.set(eventKey, row);
+  for (const row of statement.all(JSON.stringify([...new Set(eventKeys)])) as LoadRow[]) {
+    rows.set(row.eventKey, row);
   }
   return rows;
+}
+
+type QqEntrySource = {
+  eventKey: string;
+  scopeKey: string;
+  conversationKey: string;
+  messageId: string;
+  occurredAtSeconds: number;
+  speakerKind: string;
+  speakerId: string | null;
+};
+
+/** Group every entry's QQ sources by actual owner and scope in this call only. */
+type QqPublicationBatchInput = {
+  db: Database;
+  orm: EvidenceStore["orm"];
+  entries: readonly { id: string; agentId: string; sources: readonly QqEntrySource[] }[];
+  now: string;
+};
+
+type QqFact = ReturnType<typeof projectQqMessageFacts>[number];
+
+function collectQqEntryPublicationSources(input: QqPublicationBatchInput): {
+  proof: ReadonlyMap<string, unknown[]>;
+  facts: ReadonlyMap<string, QqFact>;
+} {
+  const groups = new Map<
+    string,
+    { agentId: string; scopeKey: string; items: { id: string; source: QqEntrySource }[] }
+  >();
+  const proof = new Map<string, unknown[]>();
+  const facts = new Map<string, QqFact>();
+  const invalid = new Set<string>();
+  for (const entry of input.entries) {
+    proof.set(entry.id, []);
+    for (const source of entry.sources) {
+      const key = JSON.stringify([entry.agentId, source.scopeKey]);
+      const group = groups.get(key) ?? {
+        agentId: entry.agentId,
+        scopeKey: source.scopeKey,
+        items: [],
+      };
+      group.items.push({ id: entry.id, source });
+      groups.set(key, group);
+    }
+  }
+  for (const { agentId, scopeKey, items } of groups.values()) {
+    const scope = resolveCurrentQqScope(input.db, agentId, scopeKey);
+    if (
+      !scope ||
+      qqMemoryScopeKey({
+        kind: "qq",
+        accountId: scope.accountId,
+        conversationKind: scope.conversationKind,
+        peerId: scope.peerId,
+        agentId: scope.agentId,
+      }) !== scopeKey
+    ) {
+      for (const item of items) invalid.add(item.id);
+      continue;
+    }
+    const ids = [...new Set(items.map(({ source }) => source.eventKey))];
+    const matches = input.db
+      .query(`SELECT source_id AS eventKey, conversation_id AS conversationId
+      FROM conversation_events WHERE source_kind='qq_event' AND kind='inbound'
+      AND source_id IN (SELECT value FROM json_each(?))`)
+      .all(JSON.stringify(ids)) as {
+      eventKey: string;
+      conversationId: string;
+    }[];
+    const byEvent = new Map<string, string[]>();
+    for (const match of matches) {
+      const list = byEvent.get(match.eventKey) ?? [];
+      list.push(match.conversationId);
+      byEvent.set(match.eventKey, list);
+    }
+    const events = loadRows(input.db, ids);
+    const projected = new Map(
+      projectQqMessageFacts({ db: input.db, orm: input.orm }, scope, ids, input.now).map((fact) => [
+        fact.id,
+        fact,
+      ]),
+    );
+    for (const [eventKey, fact] of projected)
+      facts.set(JSON.stringify([agentId, scopeKey, eventKey]), fact);
+    const conversationKey = qqConversationKey({
+      accountId: scope.accountId,
+      kind: scope.conversationKind,
+      peerId: scope.peerId,
+    });
+    for (const { id, source } of items) {
+      const matchesForEvent = byEvent.get(source.eventKey) ?? [];
+      const event = events.get(source.eventKey);
+      if (
+        source.conversationKey !== conversationKey ||
+        matchesForEvent.length !== 1 ||
+        matchesForEvent[0] !== scope.conversationId ||
+        !event ||
+        event.accountId !== scope.accountId ||
+        event.conversationKind !== scope.conversationKind ||
+        event.peerId !== scope.peerId ||
+        event.agentId !== scope.agentId ||
+        event.messageId !== source.messageId ||
+        event.occurredAtSeconds !== source.occurredAtSeconds ||
+        event.speakerKind !== source.speakerKind ||
+        event.speakerId !== source.speakerId
+      ) {
+        invalid.add(id);
+        continue;
+      }
+      const fact = projected.get(source.eventKey);
+      let refs: SourceRef[];
+      if (fact && fact.completeness !== "unavailable") refs = [...fact.sources];
+      else if (
+        !fact &&
+        event.factExpiresAt === null &&
+        event.body !== null &&
+        event.bodyExpiresAt !== null &&
+        !isObservationExpired(event.bodyExpiresAt, input.now)
+      ) {
+        refs = [
+          {
+            kind: "qq_observation",
+            id: source.eventKey,
+            revision: bodyRevision(event.body),
+            expiresAt: event.bodyExpiresAt,
+          },
+        ];
+      } else {
+        invalid.add(id);
+        continue;
+      }
+      proof
+        .get(id)!
+        .push([
+          "qq",
+          source.eventKey,
+          source.scopeKey,
+          source.conversationKey,
+          source.messageId,
+          source.occurredAtSeconds,
+          source.speakerKind,
+          source.speakerId,
+          scope,
+          refs.map((ref) => [ref.kind, ref.id, ref.revision, ref.expiresAt ?? null]),
+        ]);
+    }
+  }
+  for (const id of invalid) proof.delete(id);
+  return { proof, facts };
+}
+
+export function qqEntryPublicationSourcesBatch(
+  input: QqPublicationBatchInput,
+): ReadonlyMap<string, unknown[]> {
+  return collectQqEntryPublicationSources(input).proof;
+}
+
+export interface SuppressionSourceContext {
+  readonly speaker: string | null;
+  readonly sourceIds: readonly string[];
+  readonly records: readonly Record<string, unknown>[];
+  readonly ref: SourceRef;
+}
+
+/** Current job source scope, frozen binding authority and route, without granting preview. */
+export function qqBlockedJobScope(
+  store: EvidenceStore,
+  jobId: string,
+  agentId: string,
+): { scope: QqMemoryFactScope; sourceKey: string } | null {
+  const job = snapshotOf(store.db, jobId);
+  if (!job || job.job.agent_id !== agentId) return null;
+  const sourceKey = memoryJobScopes(
+    job.parsed as { scope_key?: string; qq_route?: QqMemoryRouteSnapshot },
+  ).source;
+  if (typeof sourceKey !== "string") return null;
+  const scope = resolveQqMemoryFactScope(store.db, agentId, jobId, sourceKey);
+  if (!scope || !evidenceScopeExists(store.db, { channel: "onebot11", ...scope })) return null;
+  const frozen = job.parsed.qq_fact_scope;
+  if (!isQqMemoryFactScope(frozen) || !sameScope(scope, frozen)) return null;
+  const route = job.parsed.qq_route;
+  if (route) {
+    const binding = readQqBinding(store.orm, scope.bindingId);
+    if (
+      !binding ||
+      route.binding_id !== scope.bindingId ||
+      route.authority_revision !== scope.authorityRevision ||
+      binding.ownerIdentityRevision !== route.owner_identity_revision
+    )
+      return null;
+    const access = resolveQqMemoryAccess(binding, readQqOwnerIdentity(store.orm));
+    if (
+      access.kind !== "resolved" ||
+      qqMemoryScopeKey(access.access.writeScope) !== route.destination_scope_key
+    )
+      return null;
+  }
+  return { scope, sourceKey };
+}
+
+/** Current job may inspect only actual blocked entries backed wholly by its own QQ scope. */
+export function qqSuppressionContexts(
+  store: EvidenceStore,
+  jobId: string,
+  agentId: string,
+  entryIds: readonly string[],
+  now: string,
+): ReadonlyMap<string, SuppressionSourceContext> {
+  const result = new Map<string, SuppressionSourceContext>();
+  if (!entryIds.length) return result;
+  const jobScope = qqBlockedJobScope(store, jobId, agentId);
+  if (!jobScope) return result;
+  const { scope, sourceKey } = jobScope;
+  const candidates = store.db
+    .query(`SELECT m.id,m.name,m.summary,m.tags,m.config_snapshot AS configSnapshot,m.body,m.status,
+      q.event_key AS eventKey,q.scope_key AS scopeKey,q.conversation_key AS conversationKey,
+      q.message_id AS messageId,q.occurred_at_seconds AS occurredAtSeconds,q.speaker_kind AS speakerKind,q.speaker_id AS speakerId
+    FROM memory_entries m JOIN qq_memory_sources q ON q.memory_id=m.id
+    WHERE m.user_id=? AND m.agent_id=? AND m.status<>'invalid'
+      AND m.id IN (SELECT value FROM json_each(?))
+      AND NOT EXISTS (SELECT 1 FROM memory_sources w WHERE w.memory_id=m.id)
+      AND NOT EXISTS (SELECT 1 FROM qq_memory_sources x WHERE x.memory_id=m.id AND x.scope_key<>?)
+    ORDER BY m.id,q.event_key`)
+    .all(DEFAULT_USER_ID, agentId, JSON.stringify([...new Set(entryIds)]), sourceKey) as Array<{
+    id: string;
+    name: string;
+    summary: string;
+    tags: string;
+    configSnapshot: string;
+    body: string;
+    status: string;
+    eventKey: string;
+    scopeKey: string;
+    conversationKey: string;
+    messageId: string;
+    occurredAtSeconds: number;
+    speakerKind: string;
+    speakerId: string | null;
+  }>;
+  const grouped = new Map<string, typeof candidates>();
+  for (const row of candidates) {
+    const list = grouped.get(row.id) ?? [];
+    list.push(row);
+    grouped.set(row.id, list);
+  }
+  const entries = [...grouped].map(([id, rows]) => ({ id, agentId, sources: rows }));
+  const collected = collectQqEntryPublicationSources({
+    db: store.db,
+    orm: store.orm,
+    entries,
+    now,
+  });
+  const proof = collected.proof;
+  const valid = [...grouped].filter(
+    ([id, rows]) =>
+      proof.has(id) &&
+      rows.length > 0 &&
+      rows.every((row) => row.scopeKey === sourceKey) &&
+      (rows[0]!.status === "suppressed" ||
+        rows[0]!.status === "replaced" ||
+        !!correctionMetadata(rows[0]!.configSnapshot)?.rejected.length),
+  );
+  if (!valid.length) return result;
+  const known = valid.filter(
+    ([, rows]) =>
+      rows[0]!.speakerId !== null &&
+      rows.every((row) => row.speakerKind === "member" && row.speakerId === rows[0]!.speakerId),
+  );
+  const allIds = [...new Set(known.flatMap(([, rows]) => rows.map((row) => row.eventKey)))];
+  const facts = allIds.flatMap((id) => {
+    const fact = collected.facts.get(JSON.stringify([agentId, sourceKey, id]));
+    return fact && fact.completeness !== "unavailable" ? [fact] : [];
+  });
+  const factRefs = facts.map((fact) => fact.sources.find((ref) => ref.kind === "qq_message_fact"));
+  const present = factRefs.filter((ref): ref is SourceRef => ref !== undefined);
+  const verdicts = qqMessageFactSourceAccessMany(
+    store.db,
+    present,
+    resolveQqMemoryFactOwner(scope),
+    { userId: DEFAULT_USER_ID },
+    now,
+  );
+  const allowed = new Set(
+    present.filter((_, index) => verdicts[index] === "available").map((ref) => ref.id),
+  );
+  const factsById = new Map(
+    facts.filter((fact) => allowed.has(fact.id)).map((fact) => [fact.id, fact]),
+  );
+  const projected = projectQqTextRelations({ facts: [...factsById.values()], scope, now });
+  const records = new Map(
+    projected.records.flatMap((record) => {
+      const parts = record.parts;
+      if (
+        !Array.isArray(parts) ||
+        !parts.length ||
+        parts.some(
+          (part) =>
+            part === null ||
+            typeof part !== "object" ||
+            (part as { kind?: unknown }).kind !== "text",
+        )
+      )
+        return [];
+      return [
+        [
+          String(record.id),
+          { id: record.id, occurredAtSeconds: record.occurredAtSeconds, parts },
+        ] as const,
+      ];
+    }),
+  );
+  for (const [id, rows] of valid) {
+    const sourceIds = rows.map((row) => row.eventKey);
+    const possibleRecords = sourceIds.map((key) => records.get(key));
+    const isKnown =
+      rows[0]!.speakerId !== null &&
+      rows.every((row) => row.speakerKind === "member" && row.speakerId === rows[0]!.speakerId) &&
+      possibleRecords.every((record) => record !== undefined);
+    const ownRecords = isKnown ? (possibleRecords as Record<string, unknown>[]) : [];
+    const proofParts = proof.get(id)!;
+    const expiries = proofParts.flatMap((part) => {
+      if (!Array.isArray(part) || !Array.isArray(part[9])) return [];
+      return part[9].flatMap((ref: unknown) =>
+        Array.isArray(ref) && typeof ref[3] === "string" ? [ref[3]] : [],
+      );
+    });
+    const expiresAt = expiries.sort((a, b) => Date.parse(a) - Date.parse(b))[0];
+    const revision = createHash("sha256")
+      .update(JSON.stringify([jobId, id, memoryRevision(rows[0]!), scope, proofParts, ownRecords]))
+      .digest("hex");
+    result.set(id, {
+      speaker: isKnown ? rows[0]!.speakerId : null,
+      sourceIds,
+      records: ownRecords,
+      ref: {
+        kind: "memory_suppression_context",
+        id: JSON.stringify([jobId, id]),
+        revision,
+        ...(expiresAt ? { expiresAt } : {}),
+      },
+    });
+  }
+  return result;
+}
+
+/** Recompute grouped context proof; a ref never grants source access. */
+export function qqSuppressionContextStates(
+  store: EvidenceStore,
+  sources: readonly SourceRef[],
+  owner: RunOwner,
+  principal: { userId: string },
+  now: string,
+): SourceAccess[] {
+  const result: SourceAccess[] = sources.map(() => "revoked");
+  if (
+    owner.kind !== "memory_job" ||
+    owner.userId !== principal.userId ||
+    principal.userId !== DEFAULT_USER_ID ||
+    !owner.agentId
+  )
+    return result;
+  const parsed = sources.map((source) => {
+    try {
+      const value = JSON.parse(source.id);
+      return Array.isArray(value) &&
+        value.length === 2 &&
+        value[0] === owner.id &&
+        typeof value[1] === "string"
+        ? (value[1] as string)
+        : null;
+    } catch {
+      return null;
+    }
+  });
+  const contexts = qqSuppressionContexts(
+    store,
+    owner.id,
+    owner.agentId,
+    parsed.filter((id): id is string => id !== null),
+    now,
+  );
+  for (const [index, id] of parsed.entries()) {
+    const current = id === null ? undefined : contexts.get(id);
+    const source = sources[index]!;
+    if (current && current.ref.id === source.id && current.ref.revision === source.revision) {
+      const cap = source.expiresAt;
+      const currentCap = current.ref.expiresAt;
+      if (cap !== undefined && !Number.isFinite(Date.parse(cap))) continue;
+      if (currentCap && (!cap || Date.parse(cap) > Date.parse(currentCap))) continue;
+      result[index] =
+        cap !== undefined && Date.parse(cap) <= Date.parse(now) ? "expired" : "available";
+    }
+  }
+  return result;
 }
 
 /** image 片段只作存在/unknown 标记：不透传任何非 unknown 分类，不 join 模型分类/OCR/note。 */

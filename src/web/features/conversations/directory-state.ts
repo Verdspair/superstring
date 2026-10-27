@@ -1,5 +1,9 @@
-import type { ConversationSummary } from "../../../shared/contracts/conversation";
+import type {
+  ConversationMemoryReadMode,
+  ConversationSummary,
+} from "../../../shared/contracts/conversation";
 import { clearAllCaches, saveDirectoryCache } from "../../services/page-snapshot-cache";
+import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 
@@ -21,6 +25,25 @@ export interface ConversationDirectoryState {
   loadConversations: (mode?: "refresh" | "more" | "refresh-loaded") => Promise<boolean>;
   selectConversation: (id: string) => Promise<void>;
   requestConversationNavigation: (id: string) => Promise<void>;
+  memoryReadModeBaseline: {
+    id: string;
+    mode: ConversationMemoryReadMode;
+    revision: number;
+    api: SuperstringState["apiClient"];
+  } | null;
+  memoryReadModeDraft: ConversationMemoryReadMode | null;
+  memoryReadModeLoading: boolean;
+  memoryReadModeSaving: boolean;
+  memoryReadModeError: string | null;
+  loadConversationMemoryReadMode: (
+    id: string,
+    options?: { force?: boolean; preserveDraft?: boolean },
+  ) => Promise<boolean>;
+  cancelConversationMemoryReadMode: () => void;
+  patchConversationMemoryReadModeDraft: (mode: ConversationMemoryReadMode) => void;
+  saveConversationMemoryReadMode: (id: string) => Promise<boolean>;
+  discardConversationMemoryReadMode: () => void;
+  refreshConversationMemoryReadMode: (id: string) => Promise<boolean>;
 }
 
 export const directoryInitial = {
@@ -31,6 +54,16 @@ export const directoryInitial = {
   directoryError: null as string | null,
   directoryRevision: 0,
   selectionRevision: 0,
+  memoryReadModeBaseline: null as {
+    id: string;
+    mode: ConversationMemoryReadMode;
+    revision: number;
+    api: SuperstringState["apiClient"];
+  } | null,
+  memoryReadModeDraft: null as ConversationMemoryReadMode | null,
+  memoryReadModeLoading: false,
+  memoryReadModeSaving: false,
+  memoryReadModeError: null as string | null,
 };
 export function selectedConversation(state: SuperstringState) {
   return state.currentConversationId
@@ -40,6 +73,24 @@ export function selectedConversation(state: SuperstringState) {
 export function currentSessionId(state: SuperstringState): string | null {
   const selected = selectedConversation(state);
   return selected?.channel === "web" ? selected.sourceId : null;
+}
+
+export function conversationModeDirty(state: {
+  memoryReadModeBaseline: {
+    id: string;
+    mode: ConversationMemoryReadMode;
+    revision: number;
+    api: SuperstringState["apiClient"];
+  } | null;
+  memoryReadModeDraft: ConversationMemoryReadMode | null;
+  currentConversationId: string | null;
+  apiClient: SuperstringState["apiClient"];
+}): boolean {
+  if (!state.currentConversationId || !state.memoryReadModeBaseline) return false;
+  if (state.memoryReadModeBaseline.id !== state.currentConversationId) return false;
+  if (state.memoryReadModeBaseline.api !== state.apiClient) return false;
+  if (state.memoryReadModeDraft === null) return false;
+  return state.memoryReadModeDraft !== state.memoryReadModeBaseline.mode;
 }
 
 export function createDirectoryActions(
@@ -52,9 +103,19 @@ export function createDirectoryActions(
   | "refreshConversationSummary"
   | "loadConversations"
   | "selectConversation"
+  | "loadConversationMemoryReadMode"
+  | "cancelConversationMemoryReadMode"
+  | "patchConversationMemoryReadModeDraft"
+  | "saveConversationMemoryReadMode"
+  | "discardConversationMemoryReadMode"
+  | "refreshConversationMemoryReadMode"
 > {
   let activeRead = 0;
   let nextSummaryToken = 0;
+  let nextModeReadToken = 0;
+  let nextModeSaveToken = 0;
+  let activeModeReadTask: ReadTask | null = null;
+  let activeModeResolve: ((success: boolean) => void) | null = null;
   const activeSummaryReads = new Map<
     string,
     { api: SuperstringState["apiClient"]; token: number; dirty: boolean; promise: Promise<boolean> }
@@ -224,6 +285,156 @@ export function createDirectoryActions(
         });
         persistBrowserState(get().browserStateStorage, "superstring-conversation", id);
       }
+    },
+    cancelConversationMemoryReadMode: () => {
+      if (activeModeResolve) {
+        activeModeResolve(false);
+        activeModeResolve = null;
+      }
+      if (activeModeReadTask) {
+        activeModeReadTask.cancel();
+        activeModeReadTask = null;
+      }
+    },
+    loadConversationMemoryReadMode: (id, options) => {
+      const capturedApi = get().apiClient;
+      if (
+        !options?.force &&
+        get().memoryReadModeBaseline?.id === id &&
+        get().memoryReadModeBaseline?.api === capturedApi
+      ) {
+        return Promise.resolve(true);
+      }
+      if (activeModeResolve) {
+        activeModeResolve(false);
+        activeModeResolve = null;
+      }
+      activeModeReadTask?.cancel();
+      const token = ++nextModeReadToken;
+      set({ memoryReadModeLoading: true, memoryReadModeError: null });
+
+      return new Promise<boolean>((resolve) => {
+        activeModeResolve = resolve;
+        const task = startRead((signal) => capturedApi.getConversationMemoryReadMode(id, signal), {
+          success: (res) => {
+            activeModeResolve = null;
+            activeModeReadTask = null;
+            if (
+              get().apiClient !== capturedApi ||
+              nextModeReadToken !== token ||
+              get().currentConversationId !== id
+            ) {
+              resolve(false);
+              return;
+            }
+            set((state) => {
+              const prevBaseline = state.memoryReadModeBaseline;
+              const isSameEntry =
+                prevBaseline !== null && prevBaseline.id === id && prevBaseline.api === capturedApi;
+              const isActuallyDirty =
+                isSameEntry &&
+                state.memoryReadModeDraft !== null &&
+                state.memoryReadModeDraft !== prevBaseline.mode;
+              return {
+                memoryReadModeBaseline: {
+                  id,
+                  mode: res.mode,
+                  revision: res.revision,
+                  api: capturedApi,
+                },
+                memoryReadModeDraft: isActuallyDirty ? state.memoryReadModeDraft : res.mode,
+                memoryReadModeLoading: false,
+                memoryReadModeError: null,
+              };
+            });
+            resolve(true);
+          },
+          failure: (reason) => {
+            activeModeResolve = null;
+            activeModeReadTask = null;
+            if (
+              get().apiClient === capturedApi &&
+              nextModeReadToken === token &&
+              get().currentConversationId === id
+            ) {
+              set({
+                memoryReadModeLoading: false,
+                memoryReadModeError: errorText(reason),
+              });
+            }
+            resolve(false);
+          },
+        });
+        activeModeReadTask = task;
+      });
+    },
+    patchConversationMemoryReadModeDraft: (mode) => {
+      set({ memoryReadModeDraft: mode });
+    },
+    discardConversationMemoryReadMode: () => {
+      set((state) => ({
+        memoryReadModeDraft: state.memoryReadModeBaseline
+          ? state.memoryReadModeBaseline.mode
+          : null,
+        memoryReadModeError: null,
+      }));
+    },
+    saveConversationMemoryReadMode: async (id) => {
+      const baseline = get().memoryReadModeBaseline;
+      const draft = get().memoryReadModeDraft;
+      const capturedApi = get().apiClient;
+      if (!baseline || baseline.id !== id || baseline.api !== capturedApi || !draft) return false;
+      if (draft === baseline.mode) return true;
+      if (get().memoryReadModeSaving) return false;
+
+      const thisSaveToken = ++nextModeSaveToken;
+      set({ memoryReadModeSaving: true, memoryReadModeError: null });
+
+      try {
+        const res = await capturedApi.saveConversationMemoryReadMode(id, {
+          mode: draft,
+          expected_revision: baseline.revision,
+        });
+        if (
+          get().apiClient !== capturedApi ||
+          nextModeSaveToken !== thisSaveToken ||
+          get().currentConversationId !== id
+        ) {
+          return false;
+        }
+
+        set({
+          memoryReadModeBaseline: {
+            id,
+            mode: res.mode,
+            revision: res.revision,
+            api: capturedApi,
+          },
+          memoryReadModeDraft: res.mode,
+          memoryReadModeSaving: false,
+          memoryReadModeError: null,
+        });
+        return true;
+      } catch (reason: unknown) {
+        if (
+          get().apiClient === capturedApi &&
+          nextModeSaveToken === thisSaveToken &&
+          get().currentConversationId === id
+        ) {
+          set({
+            memoryReadModeSaving: false,
+            memoryReadModeError: errorText(reason),
+          });
+        }
+        return false;
+      } finally {
+        if (get().apiClient === capturedApi && nextModeSaveToken === thisSaveToken) {
+          set({ memoryReadModeSaving: false });
+        }
+      }
+    },
+    refreshConversationMemoryReadMode: (id) => {
+      return get().loadConversationMemoryReadMode(id, { force: true });
     },
   };
 }

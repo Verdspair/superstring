@@ -1,5 +1,6 @@
 import type {
   AgentResponse,
+  MemoryAccessMetadata,
   MemoryContentResponse,
   MemoryCorrection,
   MemoryEntryResponse,
@@ -12,6 +13,7 @@ import type {
 } from "../../shared/contracts";
 import type { ModelProviderResponse } from "../../shared/contracts/models";
 import type { SystemComponentTarget } from "../../shared/contracts/tool-directory";
+import type { SuperstringApi } from "../api";
 import type { BrowserStateStorage } from "../browser-state";
 import { permissionInitial } from "../features/access/permission-state";
 import { webAccessInitial } from "../features/access/web-access-state";
@@ -98,11 +100,30 @@ export const initial = {
   memoryTurns: [] as MemoryTurnRow[],
   memoryEntries: [] as MemorySummary[],
   memoryEntryTotal: 0,
+  memoryManagementError: null as string | null,
+  memoryManagementLoading: false,
   memoryEntryDetail: null as MemoryEntryResponse | null,
   memoryContent: null as MemoryContentResponse | null,
   memoryCorrectionDraft: null as MemoryCorrection | null,
   memoryCorrectionDirty: false,
   memoryCorrectionSaving: false,
+  memoryMetadata: null as MemoryAccessMetadata | null,
+  memoryMetadataBaseline: null as {
+    agentId: string;
+    memoryId: string;
+    visibility: "session_private" | "agent_shared" | "public" | null;
+    revision: number;
+    recipient_agent_ids: string[];
+    api: SuperstringApi;
+  } | null,
+  memoryVisibilityDraft: null as {
+    visibility: "session_private" | "agent_shared" | "public" | null;
+    recipient_agent_ids: string[];
+  } | null,
+  memoryVisibilityDirty: false,
+  memoryMetadataLoading: false,
+  memoryVisibilitySaving: false,
+  memoryVisibilityError: null as string | null,
   memoryJobs: [] as MemoryJobView[],
   qqMemoryBatchDrafts: {} as Record<string, { value: string; revision: number }>,
   qqMemoryBatchSaving: false,

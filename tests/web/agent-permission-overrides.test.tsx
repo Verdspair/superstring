@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ExecutionPolicySchema,
@@ -564,7 +564,27 @@ describe("agent permission overrides (round-trip closure)", () => {
       ],
     };
 
-    setupLibrary({ getPermissions: vi.fn().mockResolvedValue(permissions) });
+    const confirmedExecution = ExecutionPolicySchema.parse(permissions.policy.execution);
+    setupLibrary({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      getToolDirectory: vi.fn().mockResolvedValue({
+        tools: permissions.resources.map((r) => ({
+          name: r.name,
+          description: r.description,
+          parameters: {},
+          capability: "test",
+          effect: r.effect,
+          sandboxCallable: false,
+          origin: r.name.startsWith("mcp.") ? "mcp" : "system",
+          globalEnabled: !r.name.startsWith("skill.") || confirmedExecution.modules.skills,
+          functionId: null,
+          resource: r.resource,
+          revision: r.revision,
+          approvalRequired: r.approvalRequired,
+          directories: [],
+        })),
+      }),
+    });
     store.setState({ editorAgentId: AGENT_ALPHA });
 
     await act(async () =>
@@ -575,14 +595,14 @@ describe("agent permission overrides (round-trip closure)", () => {
       ),
     );
 
-    // Resource 1 shows in approved tools
+    // Full catalog renders all discovered tools; disabled and paused tools remain visible with restricted status
     await screen.findByText("mcp.tool.one");
-    // Resource 2 (disabled) does not show
-    expect(screen.queryByText("mcp.tool.two")).toBeNull();
-    // Resource 4 (module paused) does not show
-    expect(screen.queryByText("skill.search")).toBeNull();
-    // Resource 3 is pending approval: pending count badge is 1
-    expect(screen.getByText(translate("library.tools.pending", 1))).toBeTruthy();
+    expect(screen.getByText("mcp.tool.two")).toBeTruthy();
+    expect(screen.getByText("skill.search")).toBeTruthy();
+    expect(screen.getByText("mcp.tool.three")).toBeTruthy();
+
+    // Resource 2 (mcp.tool.two) shows explicit disabled override badge
+    expect(screen.getByText(translate("connections.grants.agentOverrideDisabled"))).toBeTruthy();
   });
 
   it("scopeindependentdirty/discard: dirty checking and discard work independently per scope without leaking", async () => {
@@ -657,5 +677,392 @@ describe("agent permission overrides (round-trip closure)", () => {
     expect(
       store.getState().permissionEditor?.grants["mcp.search.query"]?.agentOverrides,
     ).toBeUndefined();
+  });
+
+  it("AgentToolScope declared directories lifecycle: inherit -> select one -> empty [] -> revert to base", async () => {
+    const permissions: PermissionsResponse = {
+      revision: "rev-dir-1",
+      policy: {
+        version: 1,
+        execution: ExecutionPolicySchema.parse({ modules: { mcp: true } }),
+        grants: [
+          {
+            resource: "mcp.search.query",
+            approved: false,
+            revision: "v1",
+            directories: ["/data/search", "/data/docs"],
+          },
+        ],
+      },
+      resources: [
+        {
+          name: "mcp.search.query",
+          resource: "mcp.search.query",
+          description: "Search documents",
+          effect: "read",
+          revision: "v1",
+          approvalRequired: true,
+          directories: ["/data/search", "/data/docs"],
+        },
+      ],
+    };
+
+    setupLibrary({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      getToolDirectory: vi.fn().mockResolvedValue({
+        tools: [
+          {
+            name: "mcp.search.query",
+            description: "Search documents",
+            parameters: {},
+            capability: "search",
+            effect: "read",
+            sandboxCallable: false,
+            origin: "mcp",
+            globalEnabled: true,
+            functionId: null,
+            resource: "mcp.search.query",
+            revision: "v1",
+            approvalRequired: true,
+            directories: ["/data/search", "/data/docs"],
+          },
+        ],
+      }),
+    });
+    store.setState({ editorAgentId: AGENT_ALPHA });
+
+    await act(async () =>
+      render(
+        <DesignSystemProvider>
+          <AgentToolScope agentId={AGENT_ALPHA} active />
+        </DesignSystemProvider>,
+      ),
+    );
+
+    // Initial state: inherited from base grant, both directories checked
+    const searchCheckbox = screen.getByTestId("agent-dir-mcp.search.query-/data/search");
+    const docsCheckbox = screen.getByTestId("agent-dir-mcp.search.query-/data/docs");
+    expect(searchCheckbox.getAttribute("aria-checked")).toBe("true");
+    expect(docsCheckbox.getAttribute("aria-checked")).toBe("true");
+
+    // Inheritance status shown within directories fieldset container; revert button is absent
+    const dirFieldset = screen.getByTestId("agent-directories-mcp.search.query");
+    expect(
+      within(dirFieldset).getByText(translate("connections.grants.agentOverrideInherited")),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("agent-tool-revert-mcp.search.query")).toBeNull();
+
+    // 1. Uncheck /data/docs -> creates explicit override with only ["/data/search"]
+    await act(async () => {
+      fireEvent.click(docsCheckbox);
+    });
+
+    expect(docsCheckbox.getAttribute("aria-checked")).toBe("false");
+    expect(searchCheckbox.getAttribute("aria-checked")).toBe("true");
+
+    // Revert button now present, status shows explicit override within fieldset
+    expect(screen.getByTestId("agent-tool-revert-mcp.search.query")).toBeTruthy();
+    expect(
+      within(dirFieldset).getByText(translate("connections.grants.agentOverrideExplicit")),
+    ).toBeTruthy();
+
+    const overrideDraft1 =
+      store.getState().permissionEditor?.grants["mcp.search.query"]?.agentOverrides?.[AGENT_ALPHA];
+    expect(overrideDraft1).toBeDefined();
+    expect(overrideDraft1?.directories).toEqual(["/data/search"]);
+
+    // 2. Uncheck /data/search -> explicit empty array [], NOT inheritance!
+    await act(async () => {
+      fireEvent.click(searchCheckbox);
+    });
+
+    expect(searchCheckbox.getAttribute("aria-checked")).toBe("false");
+    expect(docsCheckbox.getAttribute("aria-checked")).toBe("false");
+
+    const overrideDraft2 =
+      store.getState().permissionEditor?.grants["mcp.search.query"]?.agentOverrides?.[AGENT_ALPHA];
+    expect(overrideDraft2?.directories).toEqual([]);
+    // Still shows explicit override and revert button is still present!
+    expect(screen.getByTestId("agent-tool-revert-mcp.search.query")).toBeTruthy();
+    expect(
+      within(dirFieldset).getByText(translate("connections.grants.agentOverrideExplicit")),
+    ).toBeTruthy();
+
+    // 3. Click revert button -> deletes override completely, restores base inheritance
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("agent-tool-revert-mcp.search.query"));
+    });
+
+    expect(screen.queryByTestId("agent-tool-revert-mcp.search.query")).toBeNull();
+    expect(
+      store.getState().permissionEditor?.grants["mcp.search.query"]?.agentOverrides?.[AGENT_ALPHA],
+    ).toBeUndefined();
+    // Checkboxes reflect base grant again
+    expect(searchCheckbox.getAttribute("aria-checked")).toBe("true");
+    expect(docsCheckbox.getAttribute("aria-checked")).toBe("true");
+    expect(
+      within(dirFieldset).getByText(translate("connections.grants.agentOverrideInherited")),
+    ).toBeTruthy();
+  });
+
+  it("no escalation: directory modification does not escalate approved or enabled status", async () => {
+    const permissions: PermissionsResponse = {
+      revision: "rev-noesc-1",
+      policy: {
+        version: 1,
+        execution: ExecutionPolicySchema.parse({ modules: { mcp: true } }),
+        grants: [
+          {
+            resource: "mcp.search.query",
+            approved: false, // Base unapproved!
+            revision: "v1",
+            directories: ["/data/search", "/data/docs"],
+          },
+        ],
+      },
+      resources: [
+        {
+          name: "mcp.search.query",
+          resource: "mcp.search.query",
+          description: "Search documents",
+          effect: "read",
+          revision: "v1",
+          approvalRequired: true,
+          directories: ["/data/search", "/data/docs"],
+        },
+      ],
+    };
+
+    setupLibrary({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      getToolDirectory: vi.fn().mockResolvedValue({
+        tools: [
+          {
+            name: "mcp.search.query",
+            description: "Search documents",
+            parameters: {},
+            capability: "search",
+            effect: "read",
+            sandboxCallable: false,
+            origin: "mcp",
+            globalEnabled: true,
+            functionId: null,
+            resource: "mcp.search.query",
+            revision: "v1",
+            approvalRequired: true,
+            directories: ["/data/search", "/data/docs"],
+          },
+        ],
+      }),
+    });
+    store.setState({ editorAgentId: AGENT_ALPHA });
+
+    await act(async () =>
+      render(
+        <DesignSystemProvider>
+          <AgentToolScope agentId={AGENT_ALPHA} active />
+        </DesignSystemProvider>,
+      ),
+    );
+
+    const docsCheckbox = screen.getByTestId("agent-dir-mcp.search.query-/data/docs");
+    await act(async () => {
+      fireEvent.click(docsCheckbox);
+    });
+
+    const overrideDraft =
+      store.getState().permissionEditor?.grants["mcp.search.query"]?.agentOverrides?.[AGENT_ALPHA];
+    expect(overrideDraft).toBeDefined();
+    // Directory is updated
+    expect(overrideDraft?.directories).toEqual(["/data/search"]);
+    // Approval is NOT escalated to true!
+    expect(overrideDraft?.approved).toBe(false);
+    // Effective approval checkbox in UI is still unchecked
+    const approveCheckbox = screen.getByTestId("agent-tool-approve-mcp.search.query");
+    expect(approveCheckbox.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("basefalse: editing directories when base grant is disabled retains enabled: false without privilege escalation", async () => {
+    const permissions: PermissionsResponse = {
+      revision: "rev-basefalse-1",
+      policy: {
+        version: 1,
+        execution: ExecutionPolicySchema.parse({ modules: { mcp: true } }),
+        grants: [
+          {
+            resource: "mcp.search.query",
+            approved: false,
+            revision: "v1",
+            directories: ["/data/search", "/data/docs"],
+          },
+        ],
+      },
+      resources: [
+        {
+          name: "mcp.search.query",
+          resource: "mcp.search.query",
+          description: "Search documents",
+          effect: "read",
+          revision: "v1",
+          approvalRequired: true,
+          directories: ["/data/search", "/data/docs"],
+        },
+      ],
+    };
+    (permissions.policy.grants[0] as { enabled?: boolean }).enabled = false;
+
+    setupLibrary({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      getToolDirectory: vi.fn().mockResolvedValue({
+        tools: [
+          {
+            name: "mcp.search.query",
+            description: "Search documents",
+            parameters: {},
+            capability: "search",
+            effect: "read",
+            sandboxCallable: false,
+            origin: "mcp",
+            globalEnabled: true,
+            functionId: null,
+            resource: "mcp.search.query",
+            revision: "v1",
+            approvalRequired: true,
+            directories: ["/data/search", "/data/docs"],
+          },
+        ],
+      }),
+    });
+    store.setState({ editorAgentId: AGENT_ALPHA });
+
+    await act(async () =>
+      render(
+        <DesignSystemProvider>
+          <AgentToolScope agentId={AGENT_ALPHA} active />
+        </DesignSystemProvider>,
+      ),
+    );
+
+    const docsCheckbox = screen.getByTestId("agent-dir-mcp.search.query-/data/docs");
+    await act(async () => {
+      fireEvent.click(docsCheckbox);
+    });
+
+    const overrideDraft =
+      store.getState().permissionEditor?.grants["mcp.search.query"]?.agentOverrides?.[AGENT_ALPHA];
+    expect(overrideDraft).toBeDefined();
+    expect(overrideDraft?.directories).toEqual(["/data/search"]);
+    // Enabled must remain explicitly false!
+    expect(overrideDraft?.enabled).toBe(false);
+    expect(overrideDraft?.approved).toBe(false);
+  });
+
+  it("persisted saved override: revert immediately restores base [A,B] and re-edit derives from base without reviving old override", async () => {
+    const permissions: PermissionsResponse = {
+      revision: "rev-persisted-apo-1",
+      policy: {
+        version: 1,
+        execution: ExecutionPolicySchema.parse({ modules: { mcp: true } }),
+        grants: [
+          {
+            resource: "mcp.search.query",
+            approved: true,
+            revision: "v1-base",
+            directories: ["/synthetic/dirA", "/synthetic/dirB"],
+            agentOverrides: {
+              [AGENT_ALPHA]: {
+                enabled: true,
+                approved: true,
+                revision: "v1-old-alpha",
+                directories: ["/synthetic/dirA"],
+              },
+            },
+          },
+        ],
+      },
+      resources: [
+        {
+          name: "mcp.search.query",
+          resource: "mcp.search.query",
+          description: "Search documents",
+          effect: "read",
+          revision: "v1-base",
+          approvalRequired: true,
+          directories: ["/synthetic/dirA", "/synthetic/dirB"],
+        },
+      ],
+    };
+
+    setupLibrary({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      getToolDirectory: vi.fn().mockResolvedValue({
+        tools: [
+          {
+            name: "mcp.search.query",
+            description: "Search documents",
+            parameters: {},
+            capability: "search",
+            effect: "read",
+            sandboxCallable: false,
+            origin: "mcp",
+            globalEnabled: true,
+            functionId: null,
+            resource: "mcp.search.query",
+            revision: "v1-base",
+            approvalRequired: true,
+            directories: ["/synthetic/dirA", "/synthetic/dirB"],
+          },
+        ],
+      }),
+    });
+    store.setState({ editorAgentId: AGENT_ALPHA });
+
+    await act(async () =>
+      render(
+        <DesignSystemProvider>
+          <AgentToolScope agentId={AGENT_ALPHA} active />
+        </DesignSystemProvider>,
+      ),
+    );
+
+    const dirFieldset = screen.getByTestId("agent-directories-mcp.search.query");
+    const dirACb = screen.getByTestId("agent-dir-mcp.search.query-/synthetic/dirA");
+    const dirBCb = screen.getByTestId("agent-dir-mcp.search.query-/synthetic/dirB");
+
+    // Initially dirA is checked, dirB unchecked (per saved override)
+    expect(dirACb.getAttribute("aria-checked")).toBe("true");
+    expect(dirBCb.getAttribute("aria-checked")).toBe("false");
+    expect(
+      within(dirFieldset).getByText(translate("connections.grants.agentOverrideExplicit")),
+    ).toBeTruthy();
+
+    const revertBtn = screen.getByTestId("agent-tool-revert-mcp.search.query");
+    expect(revertBtn).toBeTruthy();
+
+    // Click revert -> immediately displays base [dirA, dirB]
+    await act(async () => {
+      fireEvent.click(revertBtn);
+    });
+
+    expect(dirACb.getAttribute("aria-checked")).toBe("true");
+    expect(dirBCb.getAttribute("aria-checked")).toBe("true");
+    expect(
+      within(dirFieldset).getByText(translate("connections.grants.agentOverrideInherited")),
+    ).toBeTruthy();
+    expect(screen.queryByTestId("agent-tool-revert-mcp.search.query")).toBeNull();
+
+    // Uncheck dirA -> derives from base [dirA, dirB], leaving [dirB]
+    await act(async () => {
+      fireEvent.click(dirACb);
+    });
+
+    expect(dirACb.getAttribute("aria-checked")).toBe("false");
+    expect(dirBCb.getAttribute("aria-checked")).toBe("true");
+
+    const overrideDraft =
+      store.getState().permissionEditor?.grants["mcp.search.query"]?.agentOverrides?.[AGENT_ALPHA];
+    expect(overrideDraft).toBeDefined();
+    expect(overrideDraft?.directories).toEqual(["/synthetic/dirB"]);
+    expect(overrideDraft?.revision).toBe("v1-base");
   });
 });

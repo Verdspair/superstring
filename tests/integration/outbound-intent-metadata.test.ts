@@ -305,3 +305,134 @@ it("expires payloads by compact authoritative expiry without touching future pay
   expect(repository.parts("future-2")[0]?.payload).not.toBeNull();
   expect(repository.purgeExpired(NOW)).toBe(0);
 });
+
+it("selects partial speech candidates from compact metadata without loading wide targets", () => {
+  const h = fixture();
+  const repository = new OutboundIntentRepository(h.db);
+  const wideTarget = (qqTaskId: string) => ({
+    accountId: "100",
+    conversationKind: "group" as const,
+    peerId: "200",
+    agentId: DEFAULT_AGENT_ID,
+    bindingId: "binding",
+    bindingEpoch: 1,
+    qqTaskId,
+    padding: "x".repeat(32_768),
+  });
+  const commit = (
+    id: string,
+    ordinal: number,
+    parts: Array<{ text: string }>,
+    expiresAt: string = EXPIRY,
+  ) =>
+    repository.commit({
+      id,
+      runId: "metadata-run",
+      conversationId: "metadata-conversation",
+      ordinal,
+      target: wideTarget(id),
+      speechKind: "direct_reply",
+      sourceThroughSeq: 7,
+      deliverBy: expiresAt,
+      createdAt: NOW,
+      expiresAt,
+      parts: parts.map((part) => ({ kind: "text" as const, ...part })),
+    });
+  const receipt = (
+    id: string,
+    status: "confirmed" | "unknown" | "failed",
+    at: string,
+    messageId?: string,
+  ) => {
+    const part = repository.claimPart(id, at);
+    expect(part).not.toBeNull();
+    if (!part) throw new Error("partial speech part missing");
+    if (status === "confirmed" && !messageId) throw new Error("confirmed message id missing");
+    repository.settlePart(
+      part.part.id,
+      status === "confirmed" ? { status, messageId } : { status },
+      at,
+    );
+  };
+
+  commit("partial-1", 1, [{ text: "partial words" }, { text: "unsettled revision" }]);
+  commit("unknown-2", 2, [{ text: "unknown words" }]);
+  commit("confirmed-3", 3, [{ text: "already complete" }]);
+  commit("expired-4", 4, [{ text: "expired words" }], "2029-01-01T00:00:00.000Z");
+  commit("revision-5", 5, [{ text: "revision words" }, { text: "failed revision" }]);
+
+  receipt("partial-1", "confirmed", "2030-06-01T00:00:10.000Z", "platform-partial");
+  receipt("partial-1", "unknown", "2030-06-01T00:00:11.000Z");
+  receipt("unknown-2", "unknown", "2030-06-01T00:00:20.000Z");
+  receipt("confirmed-3", "confirmed", "2030-06-01T00:00:30.000Z", "platform-confirmed");
+  receipt("expired-4", "confirmed", "2028-06-01T00:00:40.000Z", "platform-expired");
+  receipt("revision-5", "confirmed", "2030-06-01T00:00:50.000Z", "platform-revision");
+  receipt("revision-5", "failed", "2030-06-01T00:00:51.000Z");
+
+  // Keep a real partially settled row after the receipt sequence.
+  const residualPart = h.db
+    .query("SELECT id FROM outbound_parts WHERE intent_id=? AND ordinal=1")
+    .get("partial-1") as { id: string };
+  h.db.query("UPDATE outbound_parts SET status='planned' WHERE id=?").run(residualPart.id);
+  h.db.query("UPDATE outbound_intents SET status='delivering' WHERE id='partial-1'").run();
+
+  const original = h.db.query;
+  const observed: string[] = [];
+  h.db.query = ((sql: string) => {
+    observed.push(sql);
+    return original.call(h.db, sql);
+  }) as typeof original;
+  let result: ReturnType<OutboundIntentRepository["partialSpeechSince"]>;
+  try {
+    result = repository.partialSpeechSince("metadata-conversation", {
+      sinceSeconds: Math.floor(Date.parse("2030-06-01T00:00:00.000Z") / 1000),
+      limit: 2,
+      at: NOW,
+    });
+  } finally {
+    h.db.query = original;
+  }
+
+  const candidate = observed.find(
+    (sql) =>
+      /SELECT[\s\S]*\bexpires_at\b/i.test(sql) &&
+      /FROM\s+outbound_(?:intents|intent_metadata)/i.test(sql),
+  );
+  expect(candidate).toBeDefined();
+  if (!candidate) throw new Error("partial speech candidate query missing");
+  const plan = h.db
+    .query(`EXPLAIN QUERY PLAN ${candidate}`)
+    .all("metadata-conversation", NOW) as Array<{ detail: string }>;
+  expect(plan.some((row) => /outbound_intent_metadata/i.test(row.detail))).toBe(true);
+  expect(plan.some((row) => /outbound_intents\b/i.test(row.detail))).toBe(false);
+
+  expect(result).toHaveLength(2);
+  expect(result.map((entry) => entry.sources[0]?.id)).toEqual(["revision-5", "partial-1"]);
+  expect(result.map((entry) => entry.text)).toEqual(["revision words", "partial words"]);
+  expect(result.every((entry) => entry.occurredAtSeconds > 0)).toBe(true);
+  expect(result[0]?.sources).toEqual([
+    {
+      kind: "outbound_intent",
+      id: "revision-5",
+      revision: digest("revision words"),
+      expiresAt: EXPIRY,
+    },
+  ]);
+  expect(result[1]?.sources).toEqual([
+    {
+      kind: "outbound_intent",
+      id: "partial-1",
+      revision: digest("partial words"),
+      expiresAt: EXPIRY,
+    },
+  ]);
+  expect(
+    repository
+      .partialSpeechSince("metadata-conversation", {
+        sinceSeconds: Math.floor(Date.parse("2030-06-01T00:00:20.000Z") / 1000),
+        limit: 10,
+        at: NOW,
+      })
+      .map((entry) => entry.sources[0]?.id),
+  ).toEqual(["revision-5"]);
+});

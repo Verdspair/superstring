@@ -182,6 +182,34 @@ function completedTurn(orm: Ctx["orm"], sessionId: string, key: string): string 
 async function runOne(ctx: Ctx, requestKey: string): Promise<string> {
   const sessionId = createSession(ctx.orm, "动态抑制分组", { modelName: MODEL }).id;
   const turnId = completedTurn(ctx.orm, sessionId, requestKey);
+  const blocked = ctx.orm
+    .select()
+    .from(schema.memoryEntries)
+    .where(eq(schema.memoryEntries.status, "suppressed"))
+    .all();
+  if (blocked.length > 0) {
+    const sourceTurnId = completedTurn(ctx.orm, sessionId, `${requestKey}-blocked-source`);
+    const messages = ctx.orm
+      .select()
+      .from(schema.messages)
+      .where(eq(schema.messages.turnId, sourceTurnId))
+      .all();
+    const user = messages.find((message) => message.role === "user");
+    const assistant = messages.find((message) => message.role === "assistant");
+    if (!user || !assistant) throw new Error("completed blocked source messages missing");
+    for (const entry of blocked) {
+      ctx.orm
+        .insert(schema.memorySources)
+        .values({
+          memoryId: entry.id,
+          turnId: sourceTurnId,
+          userMessageId: user.id,
+          assistantMessageId: assistant.id,
+          sequenceNo: user.sequenceNo,
+        })
+        .run();
+    }
+  }
   const job = immediate(ctx.db, () =>
     enqueue(ctx.orm, AGENT_ID, requestKey, { kind: "manual", sessionId, turnIds: [turnId] }),
   );
@@ -356,6 +384,13 @@ function assertFlexibleGreedyPartition(
 
 describe("dynamic suppression packing (C4)", () => {
   const all8Items = Array.from({ length: 8 }, (_, i) => makeBlockedItem(i));
+  const autoItems = all8Items.map((item) => ({
+    ...item,
+    body: `${item.body}该项还有单独的维护窗口记录和访问范围说明，需要结合配置的原始上下文核对。`,
+  }));
+  const autoPrompt8 = suppressionPrompt(CANDIDATE_DRAFT, autoItems);
+  const autoPrompt4First = suppressionPrompt(CANDIDATE_DRAFT, autoItems.slice(0, 4));
+  const autoPrompt4Second = suppressionPrompt(CANDIDATE_DRAFT, autoItems.slice(4, 8));
   const prompt8 = suppressionPrompt(CANDIDATE_DRAFT, all8Items);
   const prompt4First = suppressionPrompt(CANDIDATE_DRAFT, all8Items.slice(0, 4));
   const prompt4Second = suppressionPrompt(CANDIDATE_DRAFT, all8Items.slice(4, 8));
@@ -368,7 +403,7 @@ describe("dynamic suppression packing (C4)", () => {
     let consolidateCost = 0;
     try {
       setAgentAuxProfile(probeCtx.orm, { mode: "auto", output_reserved: OUTPUT_RESERVED });
-      seedSuppressedEntries(probeCtx, [all8Items[0]]);
+      seedSuppressedEntries(probeCtx, [autoItems[0]]);
       const probeId = await runOne(probeCtx, "probe-auto-no-match");
       expect(jobOf(probeCtx, probeId)?.status).toBe("succeeded");
       expect(probeGateway.calls.length).toBe(2);
@@ -381,9 +416,9 @@ describe("dynamic suppression packing (C4)", () => {
     }
 
     // Step 2: Measure suppression request costs via the production prompt builder.
-    const cost8 = measureRequestTokens(prompt8, SUPPRESSION_RESULT_JSON_SCHEMA);
-    const cost4First = measureRequestTokens(prompt4First, SUPPRESSION_RESULT_JSON_SCHEMA);
-    const cost4Second = measureRequestTokens(prompt4Second, SUPPRESSION_RESULT_JSON_SCHEMA);
+    const cost8 = measureRequestTokens(autoPrompt8, SUPPRESSION_RESULT_JSON_SCHEMA);
+    const cost4First = measureRequestTokens(autoPrompt4First, SUPPRESSION_RESULT_JSON_SCHEMA);
+    const cost4Second = measureRequestTokens(autoPrompt4Second, SUPPRESSION_RESULT_JSON_SCHEMA);
     const maxCost4 = Math.max(cost4First, cost4Second);
 
     // Baseline conditions: consolidate and 4-batches fit, while the 8-batch overflows.
@@ -403,7 +438,7 @@ describe("dynamic suppression packing (C4)", () => {
     const ctx = setup(gateway);
     try {
       setAgentAuxProfile(ctx.orm, { mode: "auto", output_reserved: OUTPUT_RESERVED });
-      seedSuppressedEntries(ctx, all8Items);
+      seedSuppressedEntries(ctx, autoItems);
       const { items: orderedBlocked, ids: orderedIds } = getOrderedDbBlocked(ctx);
       expect(orderedBlocked.length).toBe(8);
 
@@ -454,7 +489,7 @@ describe("dynamic suppression packing (C4)", () => {
     let consolidateCost = 0;
     try {
       setAgentAuxProfile(probeCtx.orm, { mode: "auto", output_reserved: OUTPUT_RESERVED });
-      seedSuppressedEntries(probeCtx, [all8Items[0]]);
+      seedSuppressedEntries(probeCtx, [autoItems[0]]);
       const probeId = await runOne(probeCtx, "probe-auto-later-match");
       expect(jobOf(probeCtx, probeId)?.status).toBe("succeeded");
       consolidateCost = measureRequestTokens(
@@ -465,10 +500,10 @@ describe("dynamic suppression packing (C4)", () => {
       probeCtx.business.close();
     }
 
-    const cost8 = measureRequestTokens(prompt8, SUPPRESSION_RESULT_JSON_SCHEMA);
+    const cost8 = measureRequestTokens(autoPrompt8, SUPPRESSION_RESULT_JSON_SCHEMA);
     const maxCost4 = Math.max(
-      measureRequestTokens(prompt4First, SUPPRESSION_RESULT_JSON_SCHEMA),
-      measureRequestTokens(prompt4Second, SUPPRESSION_RESULT_JSON_SCHEMA),
+      measureRequestTokens(autoPrompt4First, SUPPRESSION_RESULT_JSON_SCHEMA),
+      measureRequestTokens(autoPrompt4Second, SUPPRESSION_RESULT_JSON_SCHEMA),
     );
     const ceiling = Math.max(consolidateCost, maxCost4) + 60;
     expect(ceiling).toBeLessThan(cost8);
@@ -483,7 +518,7 @@ describe("dynamic suppression packing (C4)", () => {
     const ctx = setup(gateway);
     try {
       setAgentAuxProfile(ctx.orm, { mode: "auto", output_reserved: OUTPUT_RESERVED });
-      seedSuppressedEntries(ctx, all8Items);
+      seedSuppressedEntries(ctx, autoItems);
       const { items: orderedBlocked, ids: orderedIds } = getOrderedDbBlocked(ctx);
       expect(orderedBlocked.length).toBe(8);
 

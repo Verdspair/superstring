@@ -175,6 +175,7 @@ export function knowledgeRoutes(
         parseUuidParam(c.req.param("id")),
         body.expected_revision,
         body.agent_ids,
+        body.visibility,
       ),
     );
   });

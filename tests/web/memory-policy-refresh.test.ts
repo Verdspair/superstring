@@ -76,6 +76,7 @@ beforeEach(async () => {
     ),
     listMemorySessions: vi.fn(async () => structuredClone(sessions)),
     listMemoryJobs: vi.fn(async () => []),
+    listMemoryEntries: vi.fn(async () => ({ items: [], total: 0 })),
     updateAgent: vi.fn(async (_id: string, body: Record<string, unknown>) => {
       const { expected_version, ...patch } = body;
       expect(expected_version).toBe(persisted.config_version);
@@ -95,6 +96,8 @@ beforeEach(async () => {
     settingsRoute: "long-memory",
   });
   await store.getState().editAgent("A");
+  expect(await store.getState().loadMemoryManagement(1)).toBe(true);
+  expect(store.getState().pageEditor?.policy?.version).toBe(1);
 });
 
 describe("记忆策略显式刷新合并", () => {
@@ -177,10 +180,12 @@ describe("记忆策略显式刷新合并", () => {
     expect(editor?.policyDraft?.every_turns).toBe(30);
     expect(editor?.policyDraft?.auto_enabled).toBe(true);
 
+    store.setState({ error: "配置保存错误" });
     vi.mocked(client.getPolicy).mockRejectedValueOnce(new Error("读取失败"));
     await store.getState().loadMemoryPolicy();
     editor = store.getState().pageEditor;
-    expect(store.getState().error).toContain("读取失败");
+    expect(store.getState().memoryManagementError).toContain("读取失败");
+    expect(store.getState().error).toBe("配置保存错误");
     expect(editor?.policy?.version).toBe(2);
     expect(editor?.policyDraft?.target_chars).toBe(999);
   });
@@ -190,6 +195,7 @@ describe("记忆策略显式刷新合并", () => {
     store.getState().patchPagePolicy({ target_chars: 999 });
     const before = store.getState().pageEditor;
 
+    store.setState({ error: "配置保存错误" });
     vi.mocked(client.getPolicy).mockRejectedValueOnce(new Error("网络失败"));
     await store.getState().reloadMemory();
 
@@ -199,8 +205,8 @@ describe("记忆策略显式刷新合并", () => {
     expect(after?.policyDraft?.target_chars).toBe(999);
     expect(store.getState().policy?.version).toBe(1);
     expect(store.getState().memorySessions).toEqual(sessions);
-    expect(store.getState().error).toContain("网络失败");
-    expect(store.getState().feedback).toContain("记忆设置未能加载");
+    expect(store.getState().memoryManagementError).toContain("网络失败");
+    expect(store.getState().error).toBe("配置保存错误");
   });
 
   it("迟到策略响应不覆盖切换后的编辑会话", async () => {

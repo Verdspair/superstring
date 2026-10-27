@@ -10,6 +10,7 @@ const document: KnowledgeDocument = {
   category_id: "default",
   name: "预热资料",
   import_type: "md",
+  visibility: null,
   content_mode: "draft",
   content_version: 1,
   revision: 2,

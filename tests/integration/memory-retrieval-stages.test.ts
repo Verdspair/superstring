@@ -7,13 +7,13 @@
 
 import { describe, expect, it } from "bun:test";
 import type { MemoryItem } from "../../src/server/db/context-repository";
+import { contextKeywords } from "../../src/server/modules/memory-query";
+import { type RuntimeConfig, RuntimeConfigSchema } from "../../src/shared/contracts";
 import {
-  contextKeywords,
   recallMemoryItems,
   retrieveMemoryCandidates,
   selectRecallIds,
-} from "../../src/server/modules/memory-query";
-import { type RuntimeConfig, RuntimeConfigSchema } from "../../src/shared/contracts";
+} from "../fixtures/legacy-qq/memory-query";
 
 const item = (id: string, body: string, createdAt = "2026-01-01T00:00:00.000Z"): MemoryItem => ({
   id,

@@ -221,6 +221,7 @@ export function QqJudgementModel({
       description={t("models.qqHint")}
       action={
         <span className="text-xs text-muted-foreground">
+          {/* i18next-instrument-ignore-next-line */}
           QQ · {t("connections.judgementContext")}
         </span>
       }

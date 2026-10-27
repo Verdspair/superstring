@@ -43,6 +43,7 @@ export interface ContextAllocationAuxiliaryProps {
   roleDetails?: Record<string, ReactNode>;
   agentName?: string;
   readOnly?: boolean;
+  embedded?: boolean;
   labels?: Partial<Record<string, string>>;
   /** 只渲染/校验所选的全局辅助角色；缺省渲染全部三个（Agent3 不受影响）。 */
   globalRoles?: readonly (keyof GlobalAuxiliaryAllocation)[];
@@ -159,6 +160,7 @@ export function ContextAllocationAuxiliary({
   roleDetails,
   agentName,
   readOnly = false,
+  embedded = false,
   labels = {},
   globalRoles,
 }: ContextAllocationAuxiliaryProps) {
@@ -674,18 +676,20 @@ export function ContextAllocationAuxiliary({
               {labels["agentScopeNotice"] ||
                 "Saving updates only this assistant's P5 configuration, not other assistants or global settings."}
             </span>
-            <Button
-              tooltip={<Trans i18nKey="hints.complete.auxAgentSave" />}
-              data-testid="aux-save-agent-btn"
-              size="sm"
-              disabled={readOnly || !canSaveAgent || !agentValid || savingAgent}
-              onClick={() => onSaveAgent?.()}
-              className="shrink-0"
-            >
-              {savingAgent
-                ? labels["saving"] || "Saving..."
-                : labels["saveAgent"] || "Save Assistant Aux Allocation"}
-            </Button>
+            {!embedded && onSaveAgent && (
+              <Button
+                tooltip={<Trans i18nKey="hints.complete.auxAgentSave" />}
+                data-testid="aux-save-agent-btn"
+                size="sm"
+                disabled={readOnly || !canSaveAgent || !agentValid || savingAgent}
+                onClick={() => onSaveAgent?.()}
+                className="shrink-0"
+              >
+                {savingAgent
+                  ? labels["saving"] || "Saving..."
+                  : labels["saveAgent"] || "Save Assistant Aux Allocation"}
+              </Button>
+            )}
           </CardFooter>
         </Card>
       )}

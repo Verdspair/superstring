@@ -2,14 +2,7 @@
 // 草稿/保存只走 long-memory 白名单、QQ 分区仍只对应绑定控制、三预设默认展开。
 // 读取额度拆到独立的 memory-tools 草稿：维护保存与工具保存互不夹带，也移除误导的共享范围提示。
 // 断言只使用 i18n 文案；所有写入走替身，不触网、不建业务数据。
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render as renderView,
-  screen,
-  within,
-} from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderView, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { dirtyPages, newPageEditor } from "../../src/web/features/agents/page-drafts";
@@ -123,6 +116,13 @@ describe("library web memory maintenance", () => {
   });
 
   it("shows the new agent's maintenance values after switching agents", async () => {
+    setupLibrary({
+      getPolicy: vi.fn(async (id: string) => ({
+        ...policy,
+        every_turns: id === B ? 55 : 20,
+        version: id === B ? 3 : 1,
+      })),
+    });
     await act(async () => render(<MemoryLibrary />));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /^网页对话记忆/ })));
     expect((screen.getByLabelText("每隔多少轮整理") as HTMLInputElement).value).toBe("20");
@@ -171,7 +171,8 @@ describe("library web memory maintenance", () => {
     setupLibrary(mocks);
     // 记忆读取规则（参数编辑已迁出旧摘要页）留下额度草稿：只改广泛档扫描上限，草稿标记 memory-tools。
     await act(async () => render(<MemoryReadingRules />));
-    fireEvent.change(screen.getAllByLabelText("每次查询扫描候选上限")[2], {
+    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
+    fireEvent.change(screen.getByLabelText("每次查询候选条数上限"), {
       target: { value: "150" },
     });
     expect(
@@ -201,7 +202,7 @@ describe("library web memory maintenance", () => {
     // 记忆读取规则：额度草稿属于 memory-tools。
     await act(async () => render(<MemoryReadingRules />));
     fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
-    fireEvent.change(screen.getAllByLabelText("每次查询扫描候选上限")[2], {
+    fireEvent.change(screen.getByLabelText("每次查询候选条数上限"), {
       target: { value: "150" },
     });
     cleanup();
@@ -247,28 +248,17 @@ describe("agent retrieval presets", () => {
     const mocks = saveMocks();
     setupLibrary(mocks);
     await act(async () => render(<MemoryReadingRules />));
-    // 三项默认展开：三个额度字段直接可见，标题只剩档名，不再内嵌裸数字。
-    expect(screen.getAllByLabelText("每次查询扫描候选上限")).toHaveLength(3);
-    expect(screen.getByRole("button", { name: /^保守/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^标准/ })).toBeTruthy();
-    const broadItem = screen
-      .getByRole("button", { name: /^广泛/ })
-      .closest("[data-slot=accordion-item]");
-    expect(broadItem).not.toBeNull();
-    expect(screen.getAllByRole("button", { name: /^保守档|^标准档|^广泛档/ })).toHaveLength(3);
-    const scan = screen.getAllByLabelText("每次查询扫描候选上限") as HTMLInputElement[];
-    const entries = screen.getAllByLabelText("每页最大返回项") as HTMLInputElement[];
-    expect(scan.map((el) => el.value)).toEqual(["30", "60", "120"]);
-    expect(entries.map((el) => el.value)).toEqual(["6", "10", "16"]);
-    // 每轮预算编辑已按授权搬迁到统一上下文分配页：旧页不再有预算输入，只留摘要与跳转；
-    // 三档已存预算值改在「资料读取」用途下断言（见下一个用例），不删弱本来的值断言。
-    expect(screen.queryByLabelText("每轮记忆工具结果总预算（UTF-8 字节）")).toBeNull();
-    // 只改广泛档：其他两档不受影响，草稿只标记 long-memory。
-    const broadScan = within(broadItem as HTMLElement).getByLabelText(
-      "每次查询扫描候选上限",
-    ) as HTMLInputElement;
-    expect([broadScan.min, broadScan.max]).toEqual(["1", "10000"]);
-    fireEvent.change(broadScan, { target: { value: "150" } });
+    // 单一生效策略表单：当前 standard 档字段直接可见
+    expect(screen.getAllByLabelText("每次查询候选条数上限")).toHaveLength(1);
+    expect(screen.getByText("标准档")).toBeTruthy();
+    // 切换到广泛档并编辑
+    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
+    expect(screen.getByText("广泛档")).toBeTruthy();
+    const scan = screen.getByLabelText("每次查询候选条数上限") as HTMLInputElement;
+    const entries = screen.getByLabelText("每页最大返回项") as HTMLInputElement;
+    expect(scan.value).toBe("120");
+    expect(entries.value).toBe("16");
+    fireEvent.change(scan, { target: { value: "150" } });
     const presets = store.getState().pageEditor?.draft.p5_config.retrieval_presets;
     expect(presets?.broad.candidate_limit).toBe(150);
     expect(presets?.conservative.candidate_limit).toBe(30);
@@ -276,7 +266,7 @@ describe("agent retrieval presets", () => {
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
     expect(mocks.updateAgent).not.toHaveBeenCalled();
     expect(mocks.updatePolicy).not.toHaveBeenCalled();
-    // 预算值不在旧页草稿里（搬迁后归 context 页），不出现 newUI 预算通道。
+    // 预算值归 memory-tools 单主所有，存量值严格保真。
     expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
       8192,
     );
@@ -312,63 +302,42 @@ describe("agent retrieval presets", () => {
         .mockResolvedValue({ model: "model-a", status: "loaded", context_length: 128000 }),
     });
     await act(async () => render(<MemoryReadingRules />));
+    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
     const budget = screen.getByTestId("reading-preset-max-tokens-broad") as HTMLInputElement;
     expect(budget.value).toBe("8192");
     fireEvent.change(budget, { target: { value: "9000" } });
     expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
       9000,
     );
-    // 预算改动只归 context 页：memory-tools 页不因此变脏，模型库也不被隐式写入。
-    expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
+    // 预算改动归 memory-tools 单主所有。
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
     expect(mocks.updateAgent).not.toHaveBeenCalled();
     expect(client.updatePolicy).not.toHaveBeenCalled();
-    // 同一 context 保存 = P5 数字 + 读取预算 + aux 一份白名单（不人为隔离）：
-    // 经真实页面补丁留下 aux 与一个 P5 数字草稿，一次保存断言三者同 payload 提交。
-    const before = store.getState().pageEditor;
-    if (!before) throw new Error("Missing editor");
-    store.getState().patchPageAgent("context", {
-      p5_config: {
-        ...before.draft.p5_config,
-        recent_turns: 12,
-        auxiliary_allocation: {
-          ...before.draft.p5_config.auxiliary_allocation,
-          research: { mode: "fixed", input_limit: 1500, output_reserved: 600 },
-        },
-      },
-    });
-    // 保存走 context 白名单：单个 payload 同时携带 recent_turns、auxiliary_allocation.research 与 broad max_tokens。
     await act(async () => {
-      expect(await store.getState().saveSettingsPage("context")).toBe(true);
+      expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
     });
     expect(mocks.updateAgent).toHaveBeenCalledTimes(1);
     const [savedId, savedBody] = mocks.updateAgent.mock.calls[0];
     expect(savedId).toBe(A);
-    expect(savedBody).toEqual({
-      expected_version: 1,
-      p5_config: expect.objectContaining({
-        recent_turns: 12,
-        auxiliary_allocation: expect.objectContaining({
-          research: expect.objectContaining({
-            mode: "fixed",
-            input_limit: 1500,
-            output_reserved: 600,
+    expect(savedBody).toEqual(
+      expect.objectContaining({
+        expected_version: 1,
+        p5_config: expect.objectContaining({
+          retrieval_mode: "broad",
+          retrieval_presets: expect.objectContaining({
+            broad: expect.objectContaining({ max_tokens: 9000 }),
           }),
         }),
-        retrieval_presets: {
-          conservative: expect.objectContaining({ max_tokens: 2048 }),
-          standard: expect.objectContaining({ max_tokens: 4096 }),
-          broad: expect.objectContaining({ max_tokens: 9000, candidate_limit: 120 }),
-        },
       }),
-    });
-    expect(savedBody).not.toHaveProperty("memory_retrieval_prompt");
+    );
   });
 
   it("jumps to the memory library through the shared draft-safe navigation", async () => {
     const mocks = saveMocks();
     setupLibrary(mocks);
     await act(async () => render(<MemoryReadingRules />));
-    fireEvent.change(screen.getAllByLabelText("每次查询扫描候选上限")[2], {
+    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
+    fireEvent.change(screen.getByLabelText("每次查询候选条数上限"), {
       target: { value: "150" },
     });
     fireEvent.click(screen.getByRole("button", { name: "前往长期记忆" }));

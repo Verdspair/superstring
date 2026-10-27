@@ -8,6 +8,7 @@ import { createOneBotConversationRuntime } from "../../src/server/channels/onebo
 import { failureCode } from "../../src/server/channels/onebot11/failure-code";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
+import { setMemoryVisibility } from "../../src/server/db/memory-content-repository";
 import {
   OutboundIntentRepository,
   type OutboundTarget,
@@ -38,6 +39,7 @@ import {
   DEFAULT_USER_ID,
   ensureDefaults,
   getAgentRow,
+  immediate,
   type Orm,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
@@ -468,6 +470,139 @@ describe("本群生效方案真的进入运行时取值面", () => {
   });
 });
 
+describe("memory source currentness after decision", () => {
+  it("keeps the legal QQ memory-read path able to deliver", async () => {
+    const h = createOneBotHarness({ model: [] });
+    const secret = "SYNTHETIC-QQ-LEGAL-MEMORY";
+    h.memory(secret, { name: "memory", summary: "summary" });
+    let readReached = false;
+    driveToolFirst(h, (observation) => {
+      if (observation?.name === "memory.query") {
+        const item = observation.value?.items?.[0];
+        if (item?.bodyRef)
+          return [decideInvoke("memory.read", { bodyRef: item.bodyRef, offset: 0, limit: 4096 })];
+      }
+      if (observation?.name === "memory.read") {
+        expect(JSON.stringify(observation)).toContain(secret);
+        readReached = true;
+        return [decideInline("20002", "allowed")];
+      }
+      return null;
+    });
+    h.model!.push([decideInvoke("memory.query", { query: "" })]);
+    h.receive({ id: "1", speaker: "20002", addressed: true, text: "recall" });
+    await h.activate("direct_reply");
+    await h.deliver();
+    expect(readReached).toBe(true);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  it("blocks a real QQ host output after a retained public grant is revoked and regranted", async () => {
+    const h = createOneBotHarness({ model: [] });
+    const secret = "SYNTHETIC-QQ-GRANT-ABA-SECRET";
+    const id = h.memory(secret, { name: "memory", summary: "summary" });
+    immediate(h.db, () =>
+      setMemoryVisibility(h.orm, DEFAULT_AGENT_ID, id, {
+        visibility: "public",
+        recipient_agent_ids: [DEFAULT_AGENT_ID],
+        expected_revision: 1,
+      }),
+    );
+    expect(
+      h.journal.setMemoryReadMode(h.conversationId, DEFAULT_USER_ID, "agent_shared", 1)?.kind,
+    ).toBe("saved");
+    let readReached = false;
+    let changed = false;
+    driveToolFirst(h, (observation) => {
+      if (observation?.name === "memory.query") {
+        const item = observation.value?.items?.[0];
+        if (item?.bodyRef)
+          return [decideInvoke("memory.read", { bodyRef: item.bodyRef, offset: 0, limit: 4096 })];
+      }
+      if (observation?.name === "memory.read") {
+        expect(JSON.stringify(observation)).toContain(secret);
+        readReached = true;
+        immediate(h.db, () => {
+          setMemoryVisibility(h.orm, DEFAULT_AGENT_ID, id, {
+            visibility: "session_private",
+            recipient_agent_ids: [],
+            expected_revision: 2,
+          });
+          setMemoryVisibility(h.orm, DEFAULT_AGENT_ID, id, {
+            visibility: "public",
+            recipient_agent_ids: [DEFAULT_AGENT_ID],
+            expected_revision: 3,
+          });
+        });
+        changed = true;
+        return [decideInline("20002", "must not send")];
+      }
+      return null;
+    });
+    h.model!.push([decideInvoke("memory.query", { query: "" })]);
+    h.receive({ id: "1", speaker: "20002", addressed: true, text: "recall" });
+    let code: string | undefined;
+    try {
+      await h.activate("direct_reply");
+    } catch (error) {
+      code = (error as { code?: string }).code;
+    }
+    await h.deliver();
+    expect(readReached).toBe(true);
+    expect(changed).toBe(true);
+    expect(code).toBe("CONTEXT_SOURCE_INVALID");
+    expect(h.model!.calls).toHaveLength(3);
+    expect(h.outbox.list({})).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it("blocks a real QQ host output when mode changes after a retained memory read", async () => {
+    const h = createOneBotHarness({ model: [] });
+    const secret = "SYNTHETIC-QQ-MODE-ABA-SECRET";
+    h.memory(secret, { name: "memory", summary: "summary" });
+    let readReached = false;
+    let changed = false;
+    driveToolFirst(h, (observation) => {
+      if (observation?.name === "memory.query") {
+        const item = observation.value?.items?.[0];
+        if (item?.bodyRef)
+          return [decideInvoke("memory.read", { bodyRef: item.bodyRef, offset: 0, limit: 4096 })];
+      }
+      if (observation?.name === "memory.read") {
+        expect(JSON.stringify(observation)).toContain(secret);
+        readReached = true;
+        const conversation = h.journal.get(h.conversationId);
+        if (!conversation) throw new Error("missing canonical QQ conversation");
+        expect(
+          h.journal.setMemoryReadMode(h.conversationId, DEFAULT_USER_ID, "agent_shared", 1)?.kind,
+        ).toBe("saved");
+        expect(
+          h.journal.setMemoryReadMode(h.conversationId, DEFAULT_USER_ID, "current_conversation", 2)
+            ?.kind,
+        ).toBe("saved");
+        changed = true;
+        return [decideInline("20002", "must not send")];
+      }
+      return null;
+    });
+    h.model!.push([decideInvoke("memory.query", { query: "" })]);
+    h.receive({ id: "1", speaker: "20002", addressed: true, text: "recall" });
+    let code: string | undefined;
+    try {
+      await h.activate("direct_reply");
+    } catch (error) {
+      code = (error as { code?: string }).code;
+    }
+    await h.deliver();
+    expect(readReached).toBe(true);
+    expect(changed).toBe(true);
+    expect(code).toBe("CONTEXT_SOURCE_INVALID");
+    expect(h.model!.calls).toHaveLength(3);
+    expect(h.outbox.list({})).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+  });
+});
+
 describe("系统能力中途停用", () => {
   it("停用记忆读取后：查询在硬边界被拒，整轮失败关闭，不发送", async () => {
     const h = createOneBotHarness({ model: [] });
@@ -520,13 +655,43 @@ describe("系统能力中途停用", () => {
 
   it("停用后仍在飞的正文读取被硬拒：整轮失败关闭，不发送", async () => {
     const h = createOneBotHarness({ model: [] });
-    h.memory("金额是八十元", { name: "订单金额", summary: "订单金额" });
+    const memoryId = h.memory("金额是八十元", { name: "订单金额", summary: "订单金额" });
+    const sourceRow = h.db
+      .query(`SELECT e.speaker_kind AS eventKind,e.speaker_id AS eventSpeaker,
+      q.speaker_kind AS sourceKind,q.speaker_id AS sourceSpeaker,t.body,t.expires_at AS expiresAt,
+      m.folded_search AS folded,m.fold_version AS foldVersion,ce.conversation_id AS conversationId
+      FROM memory_entries m JOIN qq_memory_sources q ON q.memory_id=m.id
+      JOIN qq_events e ON e.event_key=q.event_key JOIN qq_observation_text t ON t.event_key=e.event_key
+      JOIN conversation_events ce ON ce.source_id=e.event_key AND ce.source_kind='qq_event'
+      WHERE m.id=?`)
+      .get(memoryId) as {
+      eventKind: string;
+      eventSpeaker: string;
+      sourceKind: string;
+      sourceSpeaker: string;
+      body: string;
+      expiresAt: string;
+      folded: string | null;
+      foldVersion: number | null;
+      conversationId: string;
+    } | null;
+    expect(sourceRow).not.toBeNull();
+    expect(sourceRow?.eventKind).toBe(sourceRow?.sourceKind);
+    expect(sourceRow?.eventSpeaker).toBe(sourceRow?.sourceSpeaker);
+    expect(sourceRow?.conversationId).toBe(h.conversationId);
+    expect(sourceRow?.body).toBe("synthetic memory source");
+    expect(sourceRow?.folded).not.toBeNull();
+    expect(sourceRow?.foldVersion).not.toBeNull();
+    expect(Date.parse(sourceRow!.expiresAt)).toBeGreaterThan(Date.parse(h.now()));
     const scripted = h.model!;
+    let candidateReached = false;
     driveToolFirst(h, (observation) => {
       if (observation?.name === "memory.query") {
         const item = observation.value?.items?.[0] as { bodyRef?: string } | undefined;
-        if (item?.bodyRef !== undefined)
+        if (item?.bodyRef !== undefined) {
+          candidateReached = true;
           return [decideInvoke("memory.read", { bodyRef: item.bodyRef, offset: 0, limit: 4096 })];
+        }
       }
       return null;
     });
@@ -554,6 +719,8 @@ describe("系统能力中途停用", () => {
     // 查询本身已返回候选（被拒的是后面的执行点）：至少两次决策——查询一次、读取一次。
     expect(h.model!.calls[0]?.tools).toContain("memory.query");
     expect(h.model!.calls.length).toBeGreaterThanOrEqual(2);
+    expect(candidateReached).toBe(true);
+    expect(flipped).toBe(true);
     expect(code).toBe("QQ_GROUP_CAPABILITY_DISABLED");
     expect(h.sent).toHaveLength(0);
   });

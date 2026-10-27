@@ -739,6 +739,7 @@ export class AgentRuntime {
             },
           };
         });
+        assertSources?.();
         this.options.assertLeaf?.(input.owner, active.spec.id);
         if (typeof checkpoint === "function") checkpoint();
         return value;
@@ -1223,7 +1224,13 @@ export class AgentRuntime {
               measure: context.tokenMeasure,
               stepInputLimit: spec.limits.inputUnits,
             },
-            () => input.context.assertSources?.(context.sources),
+            () => {
+              if (input.context.assertRenderedSources) {
+                input.context.assertRenderedSources(context.sources);
+              } else {
+                input.context.assertSources?.(context.sources);
+              }
+            },
           );
         } catch (error) {
           // 与 AGENT_DECISION_INVALID 同一宿主反馈入口；仅 finish_reason 原值匹配且
@@ -2129,7 +2136,13 @@ export class AgentRuntime {
         measure: generationContext.tokenMeasure,
         stepInputLimit: generationSpec.limits?.inputUnits,
       },
-      () => input.context.assertSources?.(generationContext.sources),
+      () => {
+        if (input.context.assertRenderedSources) {
+          input.context.assertRenderedSources(generationContext.sources);
+        } else {
+          input.context.assertSources?.(generationContext.sources);
+        }
+      },
     );
     return {
       outputId: plan.outputId,
@@ -2545,6 +2558,7 @@ export class AgentRuntime {
               }),
           );
           active.signal.throwIfAborted();
+          assertRetryCurrent?.();
           scope?.update({ details: usageSpanDetails() });
           if (phase === "next") {
             const decision = AgentDecisionSchema.parse(result);

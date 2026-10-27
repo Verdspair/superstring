@@ -301,14 +301,21 @@ describe("foreground consumption wiring", () => {
       0,
       100,
       { status: "active" },
+      expect.anything(),
     ]);
 
     // 第 2 页翻页走真实读取（offset 100）。
     const beforePage2 = fetchCalls();
     await store.getState().loadMemoryPage(2);
     expect(fetchCalls()).toBe(beforePage2 + 1);
-    // filters 原样透传（无筛选时为 undefined，由 apiClient 参数默认值兜底）。
-    expect(vi.mocked(fake.listMemoryEntries).mock.lastCall).toEqual([AGENT, 100, 100, undefined]);
+    // filters 原样透传（无筛选时默认空对象 {}，由 apiClient 参数默认值兜底）。
+    expect(vi.mocked(fake.listMemoryEntries).mock.lastCall).toEqual([
+      AGENT,
+      100,
+      100,
+      {},
+      expect.anything(),
+    ]);
   });
 
   it("纠正草稿在场时 loadMemoryPage 早退：不消费预热也不覆盖草稿", async () => {

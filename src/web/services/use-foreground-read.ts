@@ -4,7 +4,7 @@ import { startReadPolling } from "./read-task";
 export interface ForegroundReadOptions {
   paused?: boolean;
   enabled?: boolean;
-  intervalMs?: number;
+  intervalMs?: number | null;
   retainOnHide?: boolean;
   onSuspend?: () => void;
 }
@@ -43,11 +43,12 @@ export function useForegroundRead(
     };
     if (enabled && !paused && !hidden) read();
     else suspendRef.current?.();
-    const polling = enabled
-      ? startReadPolling(() => {
-          if (!paused && Date.now() - lastLoad.current >= intervalMs) read();
-        }, intervalMs)
-      : null;
+    const polling =
+      enabled && intervalMs !== null
+        ? startReadPolling(() => {
+            if (!paused && Date.now() - lastLoad.current >= intervalMs) read();
+          }, intervalMs)
+        : null;
     document.addEventListener("visibilitychange", visibility);
     return () => {
       polling?.cancel();

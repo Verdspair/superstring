@@ -42,3 +42,71 @@ it("keeps the real MemoryLibrary search, status filter, and results while visiti
   expect(screen.getByText("Memory one")).toBeTruthy();
   expect(listMemoryEntries.mock.calls.length).toBeGreaterThanOrEqual(callsBeforeVisit);
 });
+
+it("executes initial metadata and page read sequentially via loadMemoryManagement", async () => {
+  const callOrder: string[] = [];
+  const getPolicy = vi.fn<SuperstringApi["getPolicy"]>(async () => {
+    callOrder.push("getPolicy");
+    return { auto_enabled: true, every_turns: 20, target_chars: 1200, version: 1 };
+  });
+  const listMemorySessions = vi.fn<SuperstringApi["listMemorySessions"]>(async () => {
+    callOrder.push("listMemorySessions");
+    return [];
+  });
+  const listMemoryJobs = vi.fn<SuperstringApi["listMemoryJobs"]>(async () => {
+    callOrder.push("listMemoryJobs");
+    return [];
+  });
+  const listMemoryEntries = vi.fn<SuperstringApi["listMemoryEntries"]>(async () => {
+    callOrder.push("listMemoryEntries");
+    return { items: [memory], total: 1 };
+  });
+
+  setupLibrary({
+    getPolicy,
+    listMemorySessions,
+    listMemoryJobs,
+    listMemoryEntries,
+  });
+
+  store.setState({ settingsRoute: "long-memory" });
+  render(<LibraryWorkspace />);
+
+  await waitFor(() => {
+    expect(callOrder).toContain("getPolicy");
+    expect(callOrder).toContain("listMemoryEntries");
+  });
+
+  // Policy and entries both loaded cleanly under single owner
+  expect(callOrder.indexOf("getPolicy")).toBeLessThan(callOrder.indexOf("listMemoryEntries"));
+  expect(screen.getByText("Memory one")).toBeTruthy();
+});
+
+it("management read error is visible via memoryManagementError without polluting global config error", async () => {
+  const listMemoryEntries = vi.fn<SuperstringApi["listMemoryEntries"]>(async () => {
+    throw new Error("synthetic management read failure");
+  });
+
+  setupLibrary({ listMemoryEntries });
+  store.setState({ settingsRoute: "long-memory" });
+  render(<LibraryWorkspace />);
+
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("synthetic management read failure");
+
+  // Global config error is NOT corrupted
+  expect(store.getState().error).toBeNull();
+  expect(store.getState().memoryManagementError).toBe("synthetic management read failure");
+});
+
+it("cancels management read and resets loaded identity on unmount or route leave", async () => {
+  setupLibrary();
+  store.setState({ settingsRoute: "long-memory" });
+  const { unmount } = render(<LibraryWorkspace />);
+
+  await screen.findByText("Memory one");
+
+  // Unmounting invokes cancelMemoryManagementRead
+  unmount();
+  expect(store.getState().memoryManagementLoading).toBe(false);
+});

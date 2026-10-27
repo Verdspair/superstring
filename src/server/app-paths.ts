@@ -434,6 +434,24 @@ export function resolveAppPaths(options: AppPathOptions) {
       "versions",
       "0072_outbound_intent_metadata.sql",
     ),
+    memoryConversationVisibilityMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0073_memory_conversation_visibility.sql",
+    ),
+    knowledgeVisibilityMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0074_knowledge_visibility.sql",
+    ),
+    memorySearchIndexMigration: path.join(
+      resourceRoot,
+      "migrations",
+      "versions",
+      "0075_memory_search_index.sql",
+    ),
     protectedModelResultsMigration: path.join(
       resourceRoot,
       "migrations",

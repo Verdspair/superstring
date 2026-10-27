@@ -1,4 +1,4 @@
-import { Layers, Save, Undo2 } from "lucide-react";
+import { Layers, RefreshCw, Save, Search, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
@@ -20,16 +20,20 @@ import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { agentPageDirty } from "@/features/agents/page-drafts";
 import { translateNotice } from "@/i18n";
-import { startRead } from "@/services/read-task";
 import { useSuperstringStore } from "@/store";
 import { P5ConfigSchema } from "../../../shared/contracts/models";
 import {
-  executionPolicy,
+  type PermissionPolicy,
   selectEffectivePermissionGrant,
-  toolExecutionEnabled,
 } from "../../../shared/contracts/permissions";
 import { compilePersona } from "../../../shared/contracts/persona-compile";
-import type { SuperstringApi } from "../../api";
+import { type AgentOverrideDraft, applyGrantEdits } from "../../features/access/permission-draft";
+import {
+  permissionResources,
+  permissionSettingsDirty,
+} from "../../features/access/permission-state";
+import { useToolDirectoryResource } from "../../services/connection-resources";
+import { TOOL_HUMAN_LABELS } from "../../workspace/capability-catalog";
 import { AllocationModelCapacity } from "../connections/AllocationModelCapacity";
 import { ContextAllocationAuxiliary } from "../connections/ContextAllocationAuxiliary";
 import { AgentModelPurpose } from "../environment/AgentModelPurpose";
@@ -163,137 +167,611 @@ export function IdentityEditor() {
   );
 }
 
-// 此处只投影工具范围，编辑仍归系统能力与扩展授权。
-type ToolScope = {
-  agentId: string;
-  apiClient: SuperstringApi;
-  approved: string[];
-  pending: number;
-  error: string;
-};
+function getBaseOverrideForAgent(
+  savedPolicy: PermissionPolicy | undefined,
+  resource: string,
+  agentId: string,
+  defaultRevision?: string,
+): AgentOverrideDraft {
+  if (!savedPolicy) {
+    return {
+      approved: false,
+      enabled: false,
+      revision: defaultRevision ?? undefined,
+      directories: [],
+    };
+  }
 
+  const savedGrant = savedPolicy.grants.find((g) => g.resource === resource);
+  if (!savedGrant) {
+    return {
+      approved: false,
+      enabled: false,
+      revision: defaultRevision ?? undefined,
+      directories: [],
+    };
+  }
+
+  // When overrideDraft is undefined in the draft (e.g. initial inheritance or after user clicked Revert),
+  // derive the saved base grant excluding this agent's saved override, so the agent cleanly inherits
+  // the saved base grant instead of reviving the reverted/deleted override.
+  let policyForInherit = savedPolicy;
+  if (savedGrant.agentOverrides && Object.hasOwn(savedGrant.agentOverrides, agentId)) {
+    const { [agentId]: _removed, ...restOverrides } = savedGrant.agentOverrides;
+    const modifiedGrant = {
+      ...savedGrant,
+      agentOverrides: Object.keys(restOverrides).length > 0 ? restOverrides : undefined,
+    };
+    policyForInherit = {
+      ...savedPolicy,
+      grants: savedPolicy.grants.map((g) => (g.resource === resource ? modifiedGrant : g)),
+    };
+  }
+
+  const savedEffective = selectEffectivePermissionGrant(policyForInherit, resource, agentId)?.grant;
+  if (!savedEffective) {
+    return {
+      approved: false,
+      enabled: false,
+      revision: defaultRevision ?? undefined,
+      directories: [],
+    };
+  }
+
+  const approved = savedEffective.approved === true;
+
+  let enabled: boolean | undefined = savedEffective.enabled;
+  if (enabled === undefined) {
+    if ((savedGrant as { enabled?: boolean }).enabled === false) {
+      // Base grant explicitly disabled
+      enabled = false;
+    } else if (savedGrant.agentIds !== undefined && !savedGrant.agentIds.includes(agentId)) {
+      // Agent restricted by base agentIds
+      enabled = false;
+    }
+  }
+
+  const revision = savedEffective.revision ?? defaultRevision ?? undefined;
+  const directories = Array.from(new Set(savedEffective.directories ?? []));
+
+  return {
+    approved,
+    enabled,
+    revision,
+    directories,
+  };
+}
+
+// 此处只投影工具范围，编辑仍归系统能力与扩展授权。
 export function AgentToolScope({ agentId, active }: { agentId: string; active: boolean }) {
-  const t = useTranslation().t;
+  const { t } = useTranslation();
   const s = useSuperstringStore(
     useShallow((state) => ({
-      openSettingsRoute: state.openSettingsRoute,
-      editorAgentId: state.editorAgentId,
       apiClient: state.apiClient,
+      editorAgentId: state.editorAgentId,
+      permissionEditor: state.permissionEditor,
+      permissionLoading: state.permissionLoading,
+      permissionSaving: state.permissionSaving,
+      permissionError: state.permissionError,
+      loadPermissionSettings: state.loadPermissionSettings,
+      patchToolGrant: state.patchToolGrant,
+      savePermissionSettings: state.savePermissionSettings,
+      agents: state.agents,
     })),
   );
-  const open = s.openSettingsRoute;
-  const [scope, setScope] = useState<ToolScope | null>(null);
-  const current =
-    scope &&
-    s.editorAgentId === agentId &&
-    scope.agentId === agentId &&
-    scope.apiClient === s.apiClient
-      ? scope
-      : null;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: scope is the last loaded value, not a trigger; identity deps decide whether a read is needed, and reading it on activation keeps a parked tab from blanking.
+
+  const currentAgent = s.agents.find((a) => a.id === agentId);
+  const {
+    data,
+    loading: directoryLoading,
+    error: directoryError,
+    refresh,
+  } = useToolDirectoryResource(s.apiClient, active);
+  const tools = data?.tools ?? [];
+
+  const [query, setQuery] = useState("");
+
   useEffect(() => {
-    if (!active || s.editorAgentId === "__new__") return;
     if (
-      scope?.agentId === agentId &&
-      s.editorAgentId === agentId &&
-      scope.apiClient === s.apiClient &&
-      !scope.error
-    )
-      return;
-    const task = startRead((signal) => s.apiClient.getPermissions(signal), {
-      success: (value) => {
-        const execution = executionPolicy(value.policy);
-        const mine = value.resources.flatMap((resource) => {
-          const effective = selectEffectivePermissionGrant(
-            value.policy,
-            resource.resource,
-            agentId,
-          );
-          if (!effective) return [];
-          const grant = effective.grant;
-          if (grant.enabled === false) return [];
-          if (grant.agentIds && !grant.agentIds.includes(agentId)) return [];
-          if (!toolExecutionEnabled(execution, resource.name)) return [];
-          if (grant.revision !== undefined && grant.revision !== resource.revision) return [];
-          if (resource.effect === "write" && !execution.modules.tasks) return [];
-          return [
-            { resource: resource.resource, approved: !resource.approvalRequired || grant.approved },
-          ];
-        });
-        setScope({
-          agentId,
-          apiClient: s.apiClient,
-          approved: mine.filter((grant) => grant.approved).map((grant) => grant.resource),
-          pending: mine.filter((grant) => !grant.approved).length,
-          error: "",
-        });
-      },
-      failure: (error) =>
-        setScope({
-          agentId,
-          apiClient: s.apiClient,
-          approved: [],
-          pending: 0,
-          error: error instanceof Error ? error.message : String(error),
-        }),
-    });
-    return () => task.cancel();
-  }, [active, agentId, s.apiClient, s.editorAgentId]);
+      active &&
+      agentId !== "__new__" &&
+      s.editorAgentId !== "__new__" &&
+      useSuperstringStore.getState().apiClient === s.apiClient
+    ) {
+      void s.loadPermissionSettings();
+    }
+  }, [active, agentId, s.editorAgentId, s.apiClient, s.loadPermissionSettings]);
+
+  const needle = query.trim().toLowerCase();
+  const visible = tools.filter((tool) => {
+    if (!needle) return true;
+    const humanKey = TOOL_HUMAN_LABELS[tool.name];
+    const label = humanKey ? t(humanKey) : "";
+    return (
+      tool.name.toLowerCase().includes(needle) ||
+      label.toLowerCase().includes(needle) ||
+      tool.description.toLowerCase().includes(needle)
+    );
+  });
+
+  const builtinTools = visible.filter((tool) => tool.resource === null);
+  const resourceGroups = useMemo(() => {
+    const map = new Map<string, typeof tools>();
+    for (const tool of visible) {
+      if (tool.resource !== null) {
+        const list = map.get(tool.resource) ?? [];
+        list.push(tool);
+        map.set(tool.resource, list);
+      }
+    }
+    return Array.from(map.entries());
+  }, [visible]);
+
+  const savedPolicy = s.permissionEditor?.snapshot.policy;
+
+  const draftPolicy: PermissionPolicy | undefined = useMemo(() => {
+    if (!s.permissionEditor) return undefined;
+    return applyGrantEdits(
+      s.permissionEditor.snapshot.policy,
+      permissionResources(s.permissionEditor.snapshot),
+      s.permissionEditor.grants,
+    );
+  }, [s.permissionEditor]);
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("library.tools.for.agent")}</CardTitle>
-        <CardDescription>{t("library.tools.for.agent.hint")}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {current?.approved.length ? (
-          <div className="flex flex-wrap gap-2">
-            {current.approved.map((resource) => (
-              <Badge key={resource} variant="secondary" className="font-mono text-xs">
-                {resource}
-              </Badge>
-            ))}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle>{t("library.tools.for.agent")}</CardTitle>
+            <CardDescription>{t("library.tools.for.agent.hint")}</CardDescription>
           </div>
-        ) : (
-          <p
-            role={current?.error ? "alert" : "status"}
-            className={
-              current?.error ? "text-sm text-destructive" : "text-sm text-muted-foreground"
-            }
-          >
-            {current?.error ||
-              t(
-                current === null && s.editorAgentId !== "__new__"
-                  ? "library.loading"
-                  : "library.tools.none",
-              )}
-          </p>
-        )}
-        {!!current?.pending && (
-          <p className="text-xs text-muted-foreground">
-            {t("library.tools.pending", { "0": current.pending })}
-          </p>
-        )}
-        <div className="flex flex-wrap gap-2">
-          <Button
-            tooltip={t("hints.agent.goToCapabilities")}
-            onClick={() => open("system-capabilities")}
-          >
-            {t("workspace.capabilities")}
-          </Button>
           <Button
             variant="outline"
-            tooltip={t("hints.agent.goToToolGrants")}
-            onClick={() => open("tool-grants")}
+            size="sm"
+            tooltip={t("hints.extensions.tools.refresh")}
+            disabled={directoryLoading || s.permissionLoading || s.permissionSaving}
+            onClick={() => {
+              refresh();
+              void s.loadPermissionSettings(true);
+            }}
           >
-            {t("library.tools.manage")}
+            <RefreshCw className="size-3.5" />
+            {t("connections.common.refresh", { defaultValue: "刷新" })}
           </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative min-w-52 flex-1">
+            <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              aria-label={t("connections.tools.search")}
+              placeholder={t("connections.tools.search")}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {directoryError && (
+          <p role="alert" className="text-sm text-destructive">
+            {directoryError}
+          </p>
+        )}
+
+        {s.permissionError && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+            <p role="alert">{translateNotice(s.permissionError)}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={s.permissionLoading}
+              onClick={() => void s.loadPermissionSettings(true)}
+            >
+              {t("capabilities.retry")}
+            </Button>
+          </div>
+        )}
+
+        <div className="divide-y divide-border/60 rounded-lg border border-border/80 bg-card">
+          {visible.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">
+              {directoryLoading ? t("library.loading") : t("connections.tools.empty")}
+            </p>
+          ) : (
+            <>
+              {builtinTools.map((tool) => {
+                const humanKey = TOOL_HUMAN_LABELS[tool.name];
+                return (
+                  <div
+                    key={tool.name}
+                    className="flex flex-wrap items-center justify-between gap-3 p-3.5 sm:p-4"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {humanKey && <span className="text-sm font-medium">{t(humanKey)}</span>}
+                        <span className="font-mono text-sm text-muted-foreground">{tool.name}</span>
+                        <Badge variant="outline">{t("connections.grants.group.builtin")}</Badge>
+                        <span className="text-xs text-muted-foreground">
+                          {tool.effect === "read"
+                            ? t("connections.grants.effectRead")
+                            : t("connections.grants.effectWrite")}
+                        </span>
+                        {!tool.globalEnabled && (
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] h-4 border-destructive/60 text-destructive"
+                          >
+                            {t("connections.grants.modulePaused")}
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {tool.origin === "system"
+                          ? t(`connections.components.toolSummary.${tool.name}`, {
+                              defaultValue: tool.description,
+                            })
+                          : tool.description}
+                      </p>
+                    </div>
+                    {!tool.globalEnabled ? (
+                      <Badge
+                        variant="outline"
+                        className="text-xs border-destructive/60 text-destructive"
+                      >
+                        {t("connections.grants.modulePaused")}
+                      </Badge>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {t("connections.grants.baseScopeHint")}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+
+              {resourceGroups.map(([resource, groupTools]) => {
+                const isEditorReady = s.permissionEditor !== null;
+                const grantDraft = s.permissionEditor?.grants[resource];
+                const overrideDraft = grantDraft?.agentOverrides?.[agentId];
+                const hasOverride = overrideDraft !== undefined;
+
+                const savedGrant = savedPolicy?.grants.find((g) => g.resource === resource);
+                const savedOverride = savedGrant?.agentOverrides?.[agentId];
+                const isSavedDisabled = savedOverride?.enabled === false;
+                const hasSavedOverride = savedOverride !== undefined;
+
+                const effective = draftPolicy
+                  ? selectEffectivePermissionGrant(draftPolicy, resource, agentId)?.grant
+                  : undefined;
+                const isAllowedByAgentIds =
+                  effective?.agentIds === undefined || effective.agentIds.includes(agentId);
+
+                const draftEffectiveEnabled =
+                  effective !== undefined &&
+                  effective.enabled !== false &&
+                  (overrideDraft?.enabled !== undefined
+                    ? overrideDraft.enabled
+                    : grantDraft?.enabled !== false && isAllowedByAgentIds);
+
+                const anyApprovalRequired = groupTools.some((t) => t.approvalRequired);
+                const draftEffectiveApproved =
+                  effective?.approved === true && effective.revision === groupTools[0]?.revision;
+
+                const isDirty = permissionSettingsDirty(s.permissionEditor, {
+                  agentOverrides: [{ resource, agentId }],
+                });
+
+                const snapshotResource = s.permissionEditor?.snapshot.resources.find(
+                  (r) => r.resource === resource,
+                );
+                const declaredDirectories = Array.from(
+                  new Set(snapshotResource?.directories ?? []),
+                );
+
+                const baseOverride = getBaseOverrideForAgent(
+                  savedPolicy,
+                  resource,
+                  agentId,
+                  groupTools[0]?.revision ?? undefined,
+                );
+
+                const currentDirectories =
+                  overrideDraft !== undefined
+                    ? overrideDraft.directories
+                    : baseOverride.directories;
+
+                const historicalDirectories = Array.from(
+                  new Set(currentDirectories.filter((d) => !declaredDirectories.includes(d))),
+                );
+
+                return (
+                  <div
+                    key={resource}
+                    data-resource={resource}
+                    className="flex flex-wrap items-start justify-between gap-4 p-3.5 sm:p-4"
+                  >
+                    <div className="space-y-2 flex-1 min-w-[240px]">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-sm font-semibold text-foreground">
+                          {resource}
+                        </span>
+                        {hasSavedOverride ? (
+                          <Badge variant={isSavedDisabled ? "destructive" : "secondary"}>
+                            {t(
+                              isSavedDisabled
+                                ? "connections.grants.agentOverrideDisabled"
+                                : "connections.grants.agentOverrideExplicit",
+                            )}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            {t("connections.grants.agentOverrideInherited")}
+                          </span>
+                        )}
+                        {isDirty && (
+                          <Badge variant="outline" className="border-warning text-warning">
+                            {t("strict.reading.dirty", { defaultValue: "未保存" })}
+                          </Badge>
+                        )}
+                      </div>
+
+                      <div className="space-y-1 pl-2 border-l-2 border-border/60">
+                        {groupTools.map((tool) => {
+                          const humanKey = TOOL_HUMAN_LABELS[tool.name];
+                          const isDuplicateName = groupTools.length === 1 && tool.name === resource;
+                          return (
+                            <div
+                              key={tool.name}
+                              className="flex flex-wrap items-center gap-2 text-xs"
+                            >
+                              {humanKey && (
+                                <span className="font-medium text-foreground">{t(humanKey)}</span>
+                              )}
+                              {!isDuplicateName && (
+                                <span className="font-mono text-muted-foreground">{tool.name}</span>
+                              )}
+                              <Badge variant="outline" className="text-[10px] h-4">
+                                {tool.origin === "system"
+                                  ? t("connections.components.system")
+                                  : "MCP"}
+                              </Badge>
+                              <span className="text-[11px] text-muted-foreground">
+                                {tool.effect === "read"
+                                  ? t("connections.grants.effectRead")
+                                  : t("connections.grants.effectWrite")}
+                              </span>
+                              {!tool.globalEnabled ? (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] h-4 border-destructive/60 text-destructive"
+                                >
+                                  {t("connections.grants.modulePaused")}
+                                </Badge>
+                              ) : (
+                                <span className="text-[11px] text-muted-foreground">
+                                  •{" "}
+                                  {t(
+                                    "connections.theseOverridesApplyOnlyToThisConversationDetailedParameters",
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <fieldset
+                        data-testid={`agent-directories-${resource}`}
+                        className="space-y-2 pt-2 border-t border-border/40"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <legend className="text-xs font-medium text-foreground">
+                            {t("connections.grants.directories")}
+                          </legend>
+                          <span className="text-[11px] text-muted-foreground">
+                            {hasOverride
+                              ? t("connections.grants.agentOverrideExplicit")
+                              : t("connections.grants.agentOverrideInherited")}
+                          </span>
+                        </div>
+
+                        {declaredDirectories.length > 0 || historicalDirectories.length > 0 ? (
+                          <div className="space-y-1.5">
+                            {declaredDirectories.map((directory) => (
+                              <label
+                                key={directory}
+                                htmlFor={`agent-dir-${resource}-${directory}`}
+                                className="flex items-center gap-2 text-xs cursor-pointer"
+                              >
+                                <Checkbox
+                                  id={`agent-dir-${resource}-${directory}`}
+                                  data-testid={`agent-dir-${resource}-${directory}`}
+                                  checked={currentDirectories.includes(directory)}
+                                  disabled={
+                                    !isEditorReady || s.permissionSaving || s.permissionLoading
+                                  }
+                                  onCheckedChange={(checked) => {
+                                    const willCheck = checked === true;
+                                    const base = overrideDraft ?? baseOverride;
+                                    const nextDirs = willCheck
+                                      ? Array.from(new Set([...base.directories, directory]))
+                                      : base.directories.filter((d) => d !== directory);
+                                    const nextOverrides = {
+                                      ...grantDraft?.agentOverrides,
+                                      [agentId]: {
+                                        ...base,
+                                        directories: nextDirs,
+                                      },
+                                    };
+                                    s.patchToolGrant(resource, { agentOverrides: nextOverrides });
+                                  }}
+                                />
+                                <span className="font-mono text-xs break-all">{directory}</span>
+                              </label>
+                            ))}
+                            {historicalDirectories.map((directory) => (
+                              <label
+                                key={`hist-${directory}`}
+                                htmlFor={`agent-dir-hist-${resource}-${directory}`}
+                                className="flex items-center gap-2 text-xs cursor-pointer"
+                              >
+                                <Checkbox
+                                  id={`agent-dir-hist-${resource}-${directory}`}
+                                  data-testid={`agent-dir-hist-${resource}-${directory}`}
+                                  checked={currentDirectories.includes(directory)}
+                                  disabled={
+                                    !isEditorReady || s.permissionSaving || s.permissionLoading
+                                  }
+                                  onCheckedChange={(checked) => {
+                                    const willCheck = checked === true;
+                                    const base = overrideDraft ?? baseOverride;
+                                    const nextDirs = willCheck
+                                      ? Array.from(new Set([...base.directories, directory]))
+                                      : base.directories.filter((d) => d !== directory);
+                                    const nextOverrides = {
+                                      ...grantDraft?.agentOverrides,
+                                      [agentId]: {
+                                        ...base,
+                                        directories: nextDirs,
+                                      },
+                                    };
+                                    s.patchToolGrant(resource, { agentOverrides: nextOverrides });
+                                  }}
+                                />
+                                <span className="font-mono text-xs text-muted-foreground break-all">
+                                  {directory}
+                                </span>
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] h-4 text-muted-foreground"
+                                >
+                                  {t("connections.grants.historicalDirectory", {
+                                    defaultValue: t("connections.grants.offline", {
+                                      defaultValue: "已存历史授权",
+                                    }),
+                                  })}
+                                </Badge>
+                              </label>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            {t("connections.grants.noDirectories")}
+                          </p>
+                        )}
+                      </fieldset>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 pt-1">
+                      <div className="flex items-center gap-1.5">
+                        <Checkbox
+                          id={`agent-tool-enable-${resource}`}
+                          data-testid={`agent-tool-enable-${resource}`}
+                          checked={draftEffectiveEnabled}
+                          disabled={!isEditorReady || s.permissionSaving || s.permissionLoading}
+                          aria-label={t("connections.grants.agentOverrideEnabledFor", {
+                            "0": currentAgent?.name ?? agentId,
+                          })}
+                          onCheckedChange={(checked) => {
+                            const nextEnabled = checked === true;
+                            const base = overrideDraft ?? baseOverride;
+                            const nextOverrides = {
+                              ...grantDraft?.agentOverrides,
+                              [agentId]: {
+                                ...base,
+                                enabled: nextEnabled,
+                              },
+                            };
+                            s.patchToolGrant(resource, { agentOverrides: nextOverrides });
+                          }}
+                        />
+                        <label
+                          htmlFor={`agent-tool-enable-${resource}`}
+                          className="text-xs cursor-pointer"
+                        >
+                          {t("connections.grants.enabled")}
+                        </label>
+                      </div>
+
+                      {anyApprovalRequired ? (
+                        <div className="flex items-center gap-1.5">
+                          <Checkbox
+                            id={`agent-tool-approve-${resource}`}
+                            data-testid={`agent-tool-approve-${resource}`}
+                            checked={draftEffectiveApproved}
+                            disabled={!isEditorReady || s.permissionSaving || s.permissionLoading}
+                            aria-label={t("connections.grants.agentOverrideApprovedFor", {
+                              "0": currentAgent?.name ?? agentId,
+                            })}
+                            onCheckedChange={(checked) => {
+                              const nextApproved = checked === true;
+                              const base = overrideDraft ?? baseOverride;
+                              const nextOverrides = {
+                                ...grantDraft?.agentOverrides,
+                                [agentId]: {
+                                  ...base,
+                                  approved: nextApproved,
+                                },
+                              };
+                              s.patchToolGrant(resource, { agentOverrides: nextOverrides });
+                            }}
+                          />
+                          <label
+                            htmlFor={`agent-tool-approve-${resource}`}
+                            className="text-xs cursor-pointer"
+                          >
+                            {t("connections.grants.approved")}
+                          </label>
+                        </div>
+                      ) : null}
+                      {hasOverride && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          data-testid={`agent-tool-revert-${resource}`}
+                          tooltip={t("connections.grants.agentOverrideRevertHint")}
+                          disabled={!isEditorReady || s.permissionSaving || s.permissionLoading}
+                          onClick={() => {
+                            const nextOverrides = { ...grantDraft?.agentOverrides };
+                            delete nextOverrides[agentId];
+                            s.patchToolGrant(resource, {
+                              agentOverrides:
+                                Object.keys(nextOverrides).length > 0 ? nextOverrides : undefined,
+                            });
+                          }}
+                        >
+                          {t("connections.grants.agentOverrideRevert")}
+                        </Button>
+                      )}
+
+                      <Button
+                        size="sm"
+                        data-testid={`agent-tool-save-${resource}`}
+                        disabled={
+                          !isEditorReady || !isDirty || s.permissionSaving || s.permissionLoading
+                        }
+                        onClick={() => {
+                          void s.savePermissionSettings({
+                            agentOverrides: [{ resource, agentId }],
+                          });
+                        }}
+                      >
+                        {t("connections.grants.save")}
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
         </div>
       </CardContent>
     </Card>
   );
 }
-
 type AllocationNumberKey =
   | "context_window"
   | "max_output_tokens"
@@ -384,7 +862,13 @@ function AllocationAgentNumber({
   );
 }
 
-export function CapabilityEditor({ active = true }: { active?: boolean } = {}) {
+export function CapabilityEditor({
+  active = true,
+  embedded = true,
+}: {
+  active?: boolean;
+  embedded?: boolean;
+} = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       pageEditor: state.pageEditor,
@@ -460,7 +944,7 @@ export function CapabilityEditor({ active = true }: { active?: boolean } = {}) {
   return (
     <div className="space-y-[28px]">
       {/* 1. 助手模型配置 (唯一 Canonical Host，内联复用 AgentModelPurpose) */}
-      <AgentModelPurpose active={active} embedded />
+      <AgentModelPurpose active={active} embedded={embedded} />
 
       {/* 2. 助手短期上下文预算与模式 */}
       <Card data-testid="agent-context-card">
@@ -603,38 +1087,41 @@ export function CapabilityEditor({ active = true }: { active?: boolean } = {}) {
             </div>
           </div>
         </CardContent>
-        <CardFooter className="flex justify-end gap-2 border-t pt-4">
-          <Button
-            variant="outline"
-            disabled={!canDiscard}
-            tooltip={t("hints.agent.discard")}
-            disabledReason={t("hints.agent.noContextDirty")}
-            onClick={() => s.discardSettingsPages("context")}
-          >
-            <Undo2 className="mr-1.5 size-4" />
-            {t("workspace.discard")}
-          </Button>
-          <Button
-            data-testid="agent-context-save-btn"
-            disabled={
-              !isContextDirty ||
-              !agentInputsValid ||
-              s.settingsSaving ||
-              !auxiliaryValidity.agentValid
-            }
-            tooltip={t("hints.agent.contextSave")}
-            disabledReason={t("hints.agent.contextSaveDisabled")}
-            onClick={() => void s.saveSettingsPage("context")}
-          >
-            <Save className="mr-1.5 size-4" />
-            {t("workspace.save")}
-          </Button>
-        </CardFooter>
+        {!embedded && (
+          <CardFooter className="flex justify-end gap-2 border-t pt-4">
+            <Button
+              variant="outline"
+              disabled={!canDiscard}
+              tooltip={t("hints.agent.discard")}
+              disabledReason={t("hints.agent.noContextDirty")}
+              onClick={() => s.discardSettingsPages("context")}
+            >
+              <Undo2 className="mr-1.5 size-4" />
+              {t("workspace.discard")}
+            </Button>
+            <Button
+              data-testid="agent-context-save-btn"
+              disabled={
+                !isContextDirty ||
+                !agentInputsValid ||
+                s.settingsSaving ||
+                !auxiliaryValidity.agentValid
+              }
+              tooltip={t("hints.agent.contextSave")}
+              disabledReason={t("hints.agent.contextSaveDisabled")}
+              onClick={() => void s.saveSettingsPage("context")}
+            >
+              <Save className="mr-1.5 size-4" />
+              {t("workspace.save")}
+            </Button>
+          </CardFooter>
+        )}
       </Card>
 
       {/* 3. 助手专有辅助任务分配 (AGENT_ROLES) */}
       <ContextAllocationAuxiliary
         scope="agent"
+        embedded={embedded}
         agentName={editor.agent.name}
         agentProfiles={p5.auxiliary_allocation}
         invalidInputs={invalidInputsFor(`${agentInputPrefix}aux:`)}

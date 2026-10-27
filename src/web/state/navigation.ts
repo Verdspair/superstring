@@ -6,6 +6,7 @@ import {
   resetContextAllocationTarget,
   setContextAllocationTarget,
 } from "../features/context-allocation";
+import { conversationModeDirty } from "../features/conversations/directory-state";
 import {
   knowledgeModelDirty,
   knowledgeReadDirty,
@@ -86,6 +87,8 @@ async function performNavigation(
       get().discardOrganization();
       get().discardQqDrafts();
       get().discardMemoryCorrection();
+      get().discardMemoryVisibilityDraft();
+      get().discardConversationMemoryReadMode();
     }
     if (
       !pending.returning &&
@@ -341,8 +344,10 @@ async function performNavigation(
     }
   }
   get().discardMemoryCorrection();
+  if (discard) get().discardMemoryVisibilityDraft();
   if (discard) get().discardKnowledgeRead();
   if (discard) get().discardQqDrafts();
+  if (discard) get().discardConversationMemoryReadMode();
   set({ activeSection: pending.section, feedback: "", dirty: false });
   markLanded();
 }
@@ -409,6 +414,21 @@ export function createNavigationActions(
     },
     requestConversationNavigation: async (id) => {
       if (navigationBusy(get())) return;
+      if (get().currentConversationId !== id && conversationModeDirty(get())) {
+        set({
+          pendingNavigation: {
+            kind: "page",
+            page: "chat",
+            settingsView: "hub",
+            conversationId: id,
+            conversationView: "messages",
+            conversationScope: "current",
+          },
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
+        });
+        return;
+      }
       if (
         (get().currentConversationId !== id ||
           get().conversationView !== "messages" ||
@@ -616,11 +636,16 @@ export function createNavigationActions(
         guardQqDrafts({ kind: "page", page, settingsView })
       )
         return;
-      if (get().memoryCorrectionDirty || Object.keys(get().qqMemoryBatchDrafts).length > 0) {
+      if (
+        get().memoryCorrectionDirty ||
+        get().memoryVisibilityDirty ||
+        Object.keys(get().qqMemoryBatchDrafts).length > 0 ||
+        conversationModeDirty(get())
+      ) {
         set({
           pendingNavigation: { kind: "page", page, settingsView },
           navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("记忆设置或纠正有未保存修改，是否保存后再继续？"),
+          navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
         });
         return;
       }
@@ -699,6 +724,7 @@ export function createNavigationActions(
       if (
         get().dirty ||
         get().memoryCorrectionDirty ||
+        get().memoryVisibilityDirty ||
         Object.keys(get().qqMemoryBatchDrafts).length > 0 ||
         dirtyPages(get().pageEditor).length ||
         knowledgeReadDirty(get().knowledgeReadEditor)
@@ -971,12 +997,31 @@ export function createNavigationActions(
         });
         return;
       }
+      if (get().memoryVisibilityDirty) {
+        set({
+          navigationConfirmOpen: true,
+          navigationConfirmMessage: msg(
+            "记忆共享设置需要单独确认发布，请在记忆详情中完成或放弃后再继续。",
+          ),
+        });
+        return;
+      }
       if (get().memoryCorrectionDirty && !(await get().saveMemoryCorrection())) {
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
         });
         return;
+      }
+      if (conversationModeDirty(get())) {
+        const convId = get().currentConversationId;
+        if (convId && !(await get().saveConversationMemoryReadMode(convId))) {
+          set({
+            navigationConfirmOpen: true,
+            navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
+          });
+          return;
+        }
       }
       const saved = !get().dirty
         ? true
@@ -1009,6 +1054,13 @@ export function createNavigationActions(
           set({ knowledgeModelEditor: { ...editor, modelName: editor.source.model_name } });
         await performNavigation(get, set, pending, true, markLanded);
         return;
+      }
+      if (conversationModeDirty(get())) {
+        get().discardConversationMemoryReadMode();
+      }
+      if (get().memoryVisibilityDirty) {
+        get().discardMemoryVisibilityDraft();
+        get().clearMemoryMetadata();
       }
       await performNavigation(get, set, pending, true, markLanded);
       // 切换方案不能顺带丢弃其他资料草稿。

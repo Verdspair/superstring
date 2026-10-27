@@ -20,7 +20,6 @@ import {
   type PersonaContent,
 } from "../../shared/contracts";
 import type { PermissionRequirement } from "../../shared/contracts/permissions";
-import type { KnowledgeRepository } from "../db/knowledge-repository";
 import {
   asDatabaseError,
   DEFAULT_AGENT_ID,
@@ -41,7 +40,6 @@ export type PersonaRow = typeof schema.agentPersonas.$inferSelect;
 export interface CreateAgentOptions {
   permissions?: PermissionService;
   requirements?: readonly PermissionRequirement[];
-  knowledge?: KnowledgeRepository;
 }
 
 export const AGENT_CREATION_PERMISSION_ERRORS = {
@@ -189,9 +187,6 @@ function createAgentWithId(
           })
           .run();
 
-        if (options?.knowledge) {
-          options.knowledge.grantAllDocuments(agentId);
-        }
         return getAgentRowById(orm, agentId);
       },
       { behavior: "immediate" },

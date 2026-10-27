@@ -13,6 +13,8 @@ import {
   ErrorEnvelopeSchema,
   LocalModelCatalogResponseSchema,
   LocalModelEncodingsResponseSchema,
+  type MemoryAccessMetadata,
+  MemoryAccessMetadataSchema,
   type MemoryContentResponse,
   MemoryContentResponseSchema,
   type MemoryCorrection,
@@ -23,6 +25,9 @@ import {
   MemoryScopeViewSchema,
   type MemorySessionOption,
   MemorySessionOptionSchema,
+  type MemoryVisibilityResponse,
+  MemoryVisibilityResponseSchema,
+  type MemoryVisibilityUpdate,
   type MessagePageQuery,
   type MessagePageResponse,
   MessagePageResponseSchema,
@@ -63,6 +68,8 @@ import {
   ConversationChangeEventSchema,
   ConversationEventsSchema,
   ConversationListSchema,
+  ConversationMemoryReadModeResponseSchema,
+  type ConversationMemoryReadModeUpdate,
   ConversationSummarySchema,
   DeliverySchema,
 } from "../shared/contracts/conversation";
@@ -235,6 +242,12 @@ export const WebAccessTestResultSchema = z.strictObject({
 });
 export type WebAccessTestResult = z.infer<typeof WebAccessTestResultSchema>;
 
+export const MemorySearchRebuildResponseSchema = z.strictObject({
+  rebuilt: z.number().int().nonnegative(),
+  next_after_id: z.string().nullable(),
+});
+export type MemorySearchRebuildResponse = z.infer<typeof MemorySearchRebuildResponseSchema>;
+
 export const api = {
   saveConversationAvatar: (id: string, value: GeneratedAvatar | File | null) => {
     let init: RequestInit;
@@ -307,6 +320,22 @@ export const api = {
       `/v2/conversations/${encodeURIComponent(id)}/status`,
       ConversationRuntimeStatusSchema,
       { signal, cache: "no-store" },
+    ),
+  getConversationMemoryReadMode: (id: string, signal?: AbortSignal) =>
+    requestJson(
+      `/v2/conversations/${encodeURIComponent(id)}/memory-read-mode`,
+      ConversationMemoryReadModeResponseSchema,
+      signal ? { signal } : undefined,
+    ),
+  saveConversationMemoryReadMode: (
+    id: string,
+    body: ConversationMemoryReadModeUpdate,
+    signal?: AbortSignal,
+  ) =>
+    requestJson(
+      `/v2/conversations/${encodeURIComponent(id)}/memory-read-mode`,
+      ConversationMemoryReadModeResponseSchema,
+      { ...json("PUT", body), ...(signal ? { signal } : {}) },
     ),
   listRuntimeSpans: (filters: RuntimeSpanFilters = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams();
@@ -472,12 +501,24 @@ export const api = {
   },
   updateKnowledgeDocument: (id: string, body: KnowledgeDocumentUpdate) =>
     requestJson(`/knowledge/documents/${id}`, KnowledgeDocumentDetailSchema, json("PATCH", body)),
-  saveKnowledgeGrants: (id: string, expected_revision: number, agent_ids: string[]) =>
-    requestJson(
+  saveKnowledgeGrants: (
+    id: string,
+    expected_revision: number,
+    agent_ids: string[],
+    visibility?: "private" | "public",
+  ) => {
+    const payload: {
+      expected_revision: number;
+      agent_ids: string[];
+      visibility?: "private" | "public";
+    } = { expected_revision, agent_ids };
+    if (visibility !== undefined) payload.visibility = visibility;
+    return requestJson(
       `/knowledge/documents/${id}/grants`,
       KnowledgeDocumentDetailSchema,
-      json("PUT", { expected_revision, agent_ids }),
-    ),
+      json("PUT", payload),
+    );
+  },
   batchKnowledgeGrants: (body: KnowledgeBatchGrant) =>
     requestJson("/knowledge/grants/batch", KnowledgeDocumentSchema.array(), json("POST", body)),
   async deleteKnowledgeDocument(id: string, expected_revision: number): Promise<void> {
@@ -686,14 +727,22 @@ export const api = {
       method: "POST",
     });
   },
-  getPolicy(agentId: string): Promise<PolicyView> {
-    return requestJson(`/agents/${agentId}/memory/policy`, PolicyViewSchema);
+  getPolicy(agentId: string, signal?: AbortSignal): Promise<PolicyView> {
+    return requestJson(
+      `/agents/${agentId}/memory/policy`,
+      PolicyViewSchema,
+      signal ? { signal } : undefined,
+    );
   },
   updatePolicy(agentId: string, body: unknown): Promise<PolicyView> {
     return requestJson(`/agents/${agentId}/memory/policy`, PolicyViewSchema, json("PATCH", body));
   },
-  listMemorySessions(agentId: string): Promise<MemorySessionOption[]> {
-    return requestJson(`/agents/${agentId}/memory/sessions`, MemorySessionOptionSchema.array());
+  listMemorySessions(agentId: string, signal?: AbortSignal): Promise<MemorySessionOption[]> {
+    return requestJson(
+      `/agents/${agentId}/memory/sessions`,
+      MemorySessionOptionSchema.array(),
+      signal ? { signal } : undefined,
+    );
   },
   listMemoryTurns(agentId: string, sessionId: string, limit: number): Promise<TurnsList> {
     return requestJson(
@@ -708,11 +757,16 @@ export const api = {
     offset = 0,
     limit = 100,
     filters: { scope_key?: string; search?: string; status?: string } = {},
+    signal?: AbortSignal,
   ): Promise<EntriesList> {
     const query = new URLSearchParams({ offset: String(offset), limit: String(limit) });
     for (const [key, value] of Object.entries(filters))
       if (value !== undefined) query.set(key, value);
-    return requestJson(`/agents/${agentId}/memory/entries?${query}`, EntriesListSchema);
+    return requestJson(
+      `/agents/${agentId}/memory/entries?${query}`,
+      EntriesListSchema,
+      signal ? { signal } : undefined,
+    );
   },
   getMemoryEntry(agentId: string, memoryId: string): Promise<MemoryEntryResponse> {
     return requestJson(`/agents/${agentId}/memory/entries/${memoryId}`, MemoryEntryResponseSchema);
@@ -734,8 +788,35 @@ export const api = {
       json("POST", body),
     );
   },
-  listMemoryJobs(agentId: string): Promise<MemoryJobView[]> {
-    return requestJson(`/agents/${agentId}/memory/jobs`, MemoryJobViewSchema.array());
+  getMemoryAccessMetadata(
+    agentId: string,
+    memoryId: string,
+    signal?: AbortSignal,
+  ): Promise<MemoryAccessMetadata> {
+    return requestJson(
+      `/agents/${encodeURIComponent(agentId)}/memory/entries/${encodeURIComponent(memoryId)}/access-metadata`,
+      MemoryAccessMetadataSchema,
+      signal ? { signal } : undefined,
+    );
+  },
+  saveMemoryVisibility(
+    agentId: string,
+    memoryId: string,
+    body: MemoryVisibilityUpdate,
+    signal?: AbortSignal,
+  ): Promise<MemoryVisibilityResponse> {
+    return requestJson(
+      `/agents/${encodeURIComponent(agentId)}/memory/entries/${encodeURIComponent(memoryId)}/visibility`,
+      MemoryVisibilityResponseSchema,
+      { ...json("PUT", body), ...(signal ? { signal } : {}) },
+    );
+  },
+  listMemoryJobs(agentId: string, signal?: AbortSignal): Promise<MemoryJobView[]> {
+    return requestJson(
+      `/agents/${agentId}/memory/jobs`,
+      MemoryJobViewSchema.array(),
+      signal ? { signal } : undefined,
+    );
   },
   getMemoryJob(agentId: string, jobId: string): Promise<MemoryJobView> {
     return requestJson(`/agents/${agentId}/memory/jobs/${jobId}`, MemoryJobViewSchema);
@@ -760,6 +841,19 @@ export const api = {
   async govern(agentId: string, body: unknown): Promise<void> {
     const response = await fetch(`/agents/${agentId}/memory/govern`, json("POST", body));
     if (!response.ok) throw await responseError(response);
+  },
+  rebuildMemorySearchProjection(
+    agentId: string,
+    body: { after_id?: string; limit: number },
+    signal?: AbortSignal,
+  ): Promise<MemorySearchRebuildResponse> {
+    const payload: { after_id?: string; limit: number } = { limit: body.limit };
+    if (body.after_id) payload.after_id = body.after_id;
+    return requestJson(
+      `/agents/${encodeURIComponent(agentId)}/memory/search-projection/rebuild`,
+      MemorySearchRebuildResponseSchema,
+      { ...json("POST", payload), ...(signal ? { signal } : {}) },
+    );
   },
   listQqStickerCollections: () =>
     requestJson("/qq/sticker-collections", QqStickerCollectionResponseSchema.array()),

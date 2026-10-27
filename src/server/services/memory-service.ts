@@ -11,7 +11,7 @@
 // moved can never publish, no matter how long the model took.
 
 import type { Database } from "bun:sqlite";
-import { and, asc, eq, inArray, lte } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { createAgentRuntime, type LeafAgentRuntime } from "../agent/agent-runtime";
 import type { RetryOrigin } from "../agent/built-in-actions";
@@ -19,6 +19,7 @@ import type { ModelContextBudget } from "../agent/model-port";
 import { AgentRunRepository } from "../db/agent-run-repository";
 import {
   assertQqConsolidationPublishable,
+  assertQqRouteCurrent,
   claim,
   enqueue,
   entries,
@@ -33,7 +34,13 @@ import {
   updateJobRow,
   validateEntrySources,
 } from "../db/memory-repository";
-import { ownedObservations, type QqEventRow } from "../db/memory-source-repository";
+import {
+  blockedMemorySourceRefs,
+  blockedMemorySourceStates,
+  mergeJobSourceSet,
+  ownedObservations,
+  type QqEventRow,
+} from "../db/memory-source-repository";
 import { readBindingByConversation } from "../db/qq-binding-repository";
 import { DEFAULT_USER_ID, immediate, nowIso, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
@@ -56,6 +63,7 @@ import {
   codePointLength,
   DRAFT_RESULT_JSON_SCHEMA,
   MAX_SOURCE_CHARS,
+  memoryJobScopes,
   type PromptMessage,
   parseResult,
   resolveAuxAllocation,
@@ -70,6 +78,8 @@ import {
   freezeQqFactScope,
   loadQqFactInputs,
   type QqPublication,
+  qqSuppressionContextStates,
+  qqSuppressionContexts,
   verifyQqFactInputs,
 } from "./qq-memory-fact-input";
 
@@ -110,6 +120,13 @@ export interface MemoryInputs {
   blocked: Array<Record<string, unknown>>;
   sourceRefs: SourceRef[];
   blockedRefs: SourceRef[][];
+  blockedRejected?: boolean[];
+  candidateSpeaker?: string;
+  blockedContexts?: Array<{
+    speaker: string;
+    sourceIds: readonly string[];
+    records: readonly Record<string, unknown>[];
+  } | null>;
   /**
    * QQ 事实输入的冻结快照（load↔publish 内存传递 + 写进 job.configSnapshot.qq_fact_scope）。
    * merge/Web 任务无此字段，publication 复验按无操作处理。
@@ -382,17 +399,18 @@ export class MemoryService {
   loadInputs(agentId: string, jobId: string, token: string): MemoryInputs {
     const loaded = immediate(this.db, () => {
       const job = ownedRunning(this.orm, agentId, jobId, token);
+      assertQqRouteCurrent(this.orm, agentId, job.configSnapshot);
       const config = JSON.parse(job.configSnapshot) as ConsolidationConfig;
-      const snapshot = JSON.parse(job.configSnapshot) as {
-        scope_key?: string;
+      const snapshot = JSON.parse(job.configSnapshot) as ConsolidationConfig & {
         source_event_ids?: string[];
       };
+      const scopes = memoryJobScopes(snapshot);
       // 来源按任务快照里 scope_key 的真实形态判定（网页键＝纯 agentId；QQ 键＝
       // qqMemoryScopeKey 的 ["qq",accountId,kind,peerId,agentId] JSON，QQ 事实任务与
       // 网页手动整理 QQ 分区的任务都带这种键）：QQ 形态 → qq，网页会话/普通任务 → system。
       const retryOrigin: RetryOrigin = (() => {
         try {
-          const parsed: unknown = JSON.parse(snapshot.scope_key ?? "");
+          const parsed: unknown = JSON.parse(scopes.source ?? "");
           return Array.isArray(parsed) && parsed[0] === "qq" ? "qq" : "system";
         } catch {
           return "system";
@@ -400,14 +418,15 @@ export class MemoryService {
       })();
       // QQ 观察任务的输入加载复验本群能力：停用后不得再把来源正文交给模型
       // （不花这次调用；重试入队的任务同样在这里被拒）。
-      assertQqConsolidationPublishable(this.orm, jobId, agentId, snapshot.scope_key);
+      assertQqConsolidationPublishable(this.orm, jobId, agentId, scopes.source);
       // A job only ever sees the scope it writes into. Without this, a suppressed
       // memory's body from one group would be handed to the model while organising
       // another group — a cross-scope content leak, not just a governance detail.
-      const scopeKeys = snapshot.scope_key === undefined ? undefined : [snapshot.scope_key];
+      const scopeKeys = scopes.source === undefined ? undefined : [scopes.source];
       let sources: Array<Record<string, unknown>>;
       let sourceRefs: SourceRef[];
       let publication: QqPublication | undefined;
+      let candidateSpeaker: string | undefined;
       if (job.kind === "merge") {
         const selected = entries(this.orm, agentId, JSON.parse(job.memoryIds) as string[], {
           scopeKeys,
@@ -431,12 +450,22 @@ export class MemoryService {
         // memory_jobs 行 + 当下合法绑定在 load 内冻结进 configSnapshot.qq_fact_scope；重复
         // load 不覆盖旧 freeze，现值随后每次与冻结 8 字段逐项比对。off→on 仍走既有 cap checkpoint。
         const eventIds = snapshot.source_event_ids ?? [];
-        const scopeKey = snapshot.scope_key;
+        const scopeKey = scopes.source;
         if (scopeKey === undefined) {
           fail("MEMORY_SOURCE_INVALID", "观察任务缺少记忆范围，不能整理");
         }
         // ownedObservations 先验：每个 selected event 必须属于本 job 的 scope（agent+键）。
         const events = ownedObservations(this.orm, agentId, eventIds, scopeKey);
+        if (
+          events.length &&
+          events.every(
+            (event) =>
+              event.speakerKind === "member" &&
+              event.speakerId !== null &&
+              event.speakerId === events[0]!.speakerId,
+          )
+        )
+          candidateSpeaker = events[0]!.speakerId ?? undefined;
         const frozen = freezeQqFactScope(this.db, agentId, jobId, scopeKey);
         const loaded = loadQqFactInputs({
           store: { db: this.db, orm: this.orm },
@@ -459,15 +488,114 @@ export class MemoryService {
           }),
         );
       }
-      const existing = entries(this.orm, agentId, undefined, { scopeKeys });
-      const blockedWithRefs = existing.flatMap((entry) => {
-        const values = [
+      const mergeSources =
+        job.kind === "merge" ? mergeJobSourceSet(this.orm, jobId, agentId, nowIso()) : null;
+      if (job.kind === "merge" && !mergeSources) fail("MEMORY_SOURCE_INVALID", "整合来源不可验证");
+      const existing =
+        scopes.route && scopes.source !== undefined
+          ? this.orm
+              .select()
+              .from(schema.memoryEntries)
+              .where(
+                and(
+                  eq(schema.memoryEntries.agentId, agentId),
+                  eq(schema.memoryEntries.userId, DEFAULT_USER_ID),
+                  sql`(${schema.memoryEntries.status} IN ('suppressed','replaced') OR CASE WHEN json_valid(${schema.memoryEntries.configSnapshot}) THEN json_type(${schema.memoryEntries.configSnapshot}, '$.content_correction.rejected')='array' AND json_array_length(${schema.memoryEntries.configSnapshot}, '$.content_correction.rejected')>0 ELSE 0 END)`,
+                  sql`EXISTS (SELECT 1 FROM qq_memory_sources q WHERE q.memory_id=${schema.memoryEntries.id} AND q.scope_key=${scopes.source})`,
+                  sql`NOT EXISTS (SELECT 1 FROM qq_memory_sources q WHERE q.memory_id=${schema.memoryEntries.id} AND q.scope_key<>${scopes.source})`,
+                  sql`NOT EXISTS (SELECT 1 FROM memory_sources w WHERE w.memory_id=${schema.memoryEntries.id})`,
+                ),
+              )
+              .orderBy(desc(schema.memoryEntries.createdAt), asc(schema.memoryEntries.id))
+              .all()
+          : job.kind !== "merge" && job.sessionId !== null
+            ? this.orm
+                .select()
+                .from(schema.memoryEntries)
+                .where(
+                  and(
+                    eq(schema.memoryEntries.agentId, agentId),
+                    eq(schema.memoryEntries.userId, DEFAULT_USER_ID),
+                    sql`EXISTS (SELECT 1 FROM memory_sources ms JOIN turns t ON t.id=ms.turn_id WHERE ms.memory_id=${schema.memoryEntries.id} AND t.session_id=${job.sessionId})`,
+                    sql`NOT EXISTS (SELECT 1 FROM memory_sources ms LEFT JOIN turns t ON t.id=ms.turn_id WHERE ms.memory_id=${schema.memoryEntries.id} AND (t.id IS NULL OR t.session_id<>${job.sessionId}))`,
+                    sql`NOT EXISTS (SELECT 1 FROM qq_memory_sources q WHERE q.memory_id=${schema.memoryEntries.id})`,
+                  ),
+                )
+                .orderBy(desc(schema.memoryEntries.createdAt), asc(schema.memoryEntries.id))
+                .all()
+            : mergeSources
+              ? this.orm
+                  .select()
+                  .from(schema.memoryEntries)
+                  .where(
+                    and(
+                      eq(schema.memoryEntries.agentId, agentId),
+                      eq(schema.memoryEntries.userId, DEFAULT_USER_ID),
+                      sql`(EXISTS (SELECT 1 FROM memory_sources m WHERE m.memory_id=${schema.memoryEntries.id}) OR EXISTS (SELECT 1 FROM qq_memory_sources q WHERE q.memory_id=${schema.memoryEntries.id}))`,
+                      sql`NOT EXISTS (SELECT 1 FROM memory_sources m WHERE m.memory_id=${schema.memoryEntries.id} AND m.turn_id NOT IN (SELECT value FROM json_each(${JSON.stringify(mergeSources.turnIds)})))`,
+                      sql`NOT EXISTS (SELECT 1 FROM qq_memory_sources q WHERE q.memory_id=${schema.memoryEntries.id} AND q.event_key NOT IN (SELECT value FROM json_each(${JSON.stringify(mergeSources.eventKeys)})))`,
+                    ),
+                  )
+                  .orderBy(desc(schema.memoryEntries.createdAt), asc(schema.memoryEntries.id))
+                  .all()
+              : entries(this.orm, agentId, undefined, { scopeKeys });
+      const relevant = existing.filter(
+        (entry) =>
+          entry.status === "suppressed" ||
+          entry.status === "replaced" ||
+          correctionMetadata(entry.configSnapshot)?.rejected.length,
+      );
+      const safeRelevant = relevant;
+      const contexts =
+        scopes.route && candidateSpeaker
+          ? qqSuppressionContexts(
+              { db: this.db, orm: this.orm },
+              jobId,
+              agentId,
+              safeRelevant.map((entry) => entry.id),
+              nowIso(),
+            )
+          : new Map();
+      const unknownIds = safeRelevant
+        .filter((entry) => !contexts.has(entry.id))
+        .map((entry) => entry.id);
+      const sourceRefsByEntry = blockedMemorySourceRefs(
+        this.orm,
+        jobId,
+        agentId,
+        unknownIds,
+        nowIso(),
+      );
+      if (unknownIds.some((id) => !sourceRefsByEntry.has(id)))
+        fail("MEMORY_SOURCE_INVALID", "屏蔽记忆来源已变化或不可验证");
+      const blockedWithRefs = safeRelevant.flatMap((entry) => {
+        const context = contexts.get(entry.id);
+        const proofRef = context?.ref ?? sourceRefsByEntry.get(entry.id)!;
+        const memoryRefs = [...memoryEntrySources(this.orm, [entry]), proofRef];
+        return [
           ...(entry.status === "suppressed" || entry.status === "replaced"
-            ? [{ name: entry.name, summary: entry.summary, body: entry.body }]
+            ? [
+                {
+                  value: { name: entry.name, summary: entry.summary, body: entry.body },
+                  refs: memoryRefs,
+                  context: context?.speaker
+                    ? {
+                        speaker: context.speaker,
+                        sourceIds: context.sourceIds,
+                        records: context.records,
+                      }
+                    : null,
+                  rejected: false,
+                },
+              ]
             : []),
-          ...(correctionMetadata(entry.configSnapshot)?.rejected ?? []),
+          ...(correctionMetadata(entry.configSnapshot)?.rejected ?? []).map((value) => ({
+            value,
+            refs: memoryRefs,
+            context: null,
+            rejected: true,
+          })),
         ];
-        return values.map((value) => ({ value, refs: memoryEntrySources(this.orm, [entry]) }));
       });
       return {
         kind: job.kind,
@@ -477,6 +605,9 @@ export class MemoryService {
         blocked: blockedWithRefs.map((entry) => entry.value),
         sourceRefs,
         blockedRefs: blockedWithRefs.map((entry) => entry.refs),
+        blockedRejected: blockedWithRefs.map((entry) => entry.rejected),
+        blockedContexts: blockedWithRefs.map((entry) => entry.context),
+        ...(candidateSpeaker ? { candidateSpeaker } : {}),
         ...(publication ? { publication } : {}),
       };
     });
@@ -508,6 +639,13 @@ export class MemoryService {
       owner: { kind: string; id: string; userId?: string; agentId?: string };
       sources: SourceRef[];
       blockedSources: SourceRef[][];
+      blockedRejected?: boolean[];
+      candidateSpeaker?: string;
+      blockedContexts?: Array<{
+        speaker: string;
+        sourceIds: readonly string[];
+        records: readonly Record<string, unknown>[];
+      } | null>;
       /** loadInputs 按任务快照冻结的叶子来源。 */
       retryOrigin: RetryOrigin;
     },
@@ -522,6 +660,8 @@ export class MemoryService {
     // fact/body 复验失败即中止后续模型调用。
     const verifyPublication = (): void => {
       if (!publication) return;
+      const job = jobOwned(this.orm, context.owner.agentId ?? "", context.owner.id);
+      assertQqRouteCurrent(this.orm, context.owner.agentId ?? "", job.configSnapshot);
       verifyQqFactInputs({
         db: this.db,
         agentId: context.owner.agentId ?? "",
@@ -539,7 +679,30 @@ export class MemoryService {
       guard.assert(context.owner, "memory_organize");
       if (typeof capCheckpoint === "function") capCheckpoint();
     };
-    // 每次额外物理发送前的叶子复验：既有纪元检查 + publication 冻结复核组合，不重造。
+    const allBlockedRefs = context.blockedSources.flat();
+    const verifyBlockedSources = () => {
+      const now = nowIso();
+      const bodyRefs = allBlockedRefs.filter((ref) => ref.kind === "memory_blocked_source");
+      const qqRefs = allBlockedRefs.filter((ref) => ref.kind === "memory_suppression_context");
+      if (
+        blockedMemorySourceStates(
+          this.orm,
+          bodyRefs,
+          context.owner,
+          { userId: DEFAULT_USER_ID },
+          now,
+        ).some((state) => state !== "available") ||
+        qqSuppressionContextStates(
+          { db: this.db, orm: this.orm },
+          qqRefs,
+          context.owner,
+          { userId: DEFAULT_USER_ID },
+          now,
+        ).some((state) => state !== "available")
+      )
+        fail("MEMORY_SOURCE_INVALID", "屏蔽记忆来源已变化");
+    };
+    // Every leaf boundary includes the facts that may be compared later.
     const recheckLeaf = (): void => {
       checkCapture();
       verifyPublication();
@@ -660,6 +823,7 @@ export class MemoryService {
         ? { contextInputLimit: capacityCeiling }
         : {}),
     };
+    verifyBlockedSources();
     const text = await this.agentRuntime.completeLeaf(
       {
         id: "memory.consolidate",
@@ -682,30 +846,67 @@ export class MemoryService {
       },
     );
     // 飞行后、解析前复验：停用后不再产生后续调用，off→on 的旧纪元结果同样被拒。
-    checkCapture();
-    verifyPublication();
+    recheckLeaf();
+    verifyBlockedSources();
     const draft = parseResult(text);
     if (draft === null) return null;
 
-    for (const entry of blocked) {
+    const candidateEventIds = new Set(publication?.records.map((record) => record.eventKey) ?? []);
+    for (const [index, entry] of blocked.entries()) {
       const original = canonical(String(entry.body ?? ""));
       const candidate = canonical(draft.body);
       if (original && (candidate.includes(original) || original.includes(candidate))) {
-        return null;
+        const evidence = context.blockedContexts?.[index];
+        const independentlyDifferent =
+          context.candidateSpeaker &&
+          evidence &&
+          context.candidateSpeaker !== evidence.speaker &&
+          evidence.sourceIds.every((id) => !candidateEventIds.has(id));
+        if (!independentlyDifferent) return null;
       }
     }
+    const compared = blocked.map((value, index) => ({
+      ...value,
+      source_context: context.blockedContexts?.[index]
+        ? {
+            speaker: {
+              channel: "onebot11",
+              kind: "member",
+              id: context.blockedContexts[index]!.speaker,
+            },
+            source_ids: context.blockedContexts[index]!.sourceIds,
+            records: context.blockedContexts[index]!.records,
+          }
+        : null,
+      subject: "unknown",
+    }));
+    const candidateContext = publication
+      ? {
+          speaker: context.candidateSpeaker
+            ? { channel: "onebot11", kind: "member", id: context.candidateSpeaker }
+            : null,
+          records: publication.records.map((record) => record.record),
+          subject: "unknown",
+        }
+      : null;
+    if (codePointLength(stringifyJsonSpaced({ candidateContext, compared })) > MAX_SOURCE_CHARS)
+      fail("MEMORY_INPUT_TOO_LARGE", "抑制来源内容过长，请减少所选来源");
 
-    for (let start = 0; start < blocked.length; ) {
+    for (let start = 0; start < compared.length; ) {
       checkCapture();
       verifyPublication();
       let count = 1;
       if (allocation.mode === "auto") {
-        const firstMessages = suppressionPrompt(draft, blocked.slice(start, start + 1));
+        const firstMessages = suppressionPrompt(
+          draft,
+          compared.slice(start, start + 1),
+          candidateContext,
+        );
         gate(firstMessages, SUPPRESSION_RESULT_JSON_SCHEMA, "抑制比对", suppressionFormat);
         while (
-          start + count < blocked.length &&
+          start + count < compared.length &&
           fits(
-            suppressionPrompt(draft, blocked.slice(start, start + count + 1)),
+            suppressionPrompt(draft, compared.slice(start, start + count + 1), candidateContext),
             SUPPRESSION_RESULT_JSON_SCHEMA,
             suppressionFormat,
           )
@@ -713,10 +914,36 @@ export class MemoryService {
           count++;
         }
       } else {
-        count = Math.min(8, blocked.length - start);
+        count = Math.min(8, compared.length - start);
       }
-      const chunk = blocked.slice(start, start + count);
-      const suppressionMessages = suppressionPrompt(draft, chunk);
+      const chunk = compared.slice(start, start + count);
+      const chunkRefs = context.blockedSources.slice(start, start + count).flat();
+      const verifyBlocked = () => {
+        const bodyRefs = chunkRefs.filter((ref) => ref.kind === "memory_blocked_source");
+        if (
+          blockedMemorySourceStates(
+            this.orm,
+            bodyRefs,
+            context.owner,
+            { userId: DEFAULT_USER_ID },
+            nowIso(),
+          ).some((state) => state !== "available")
+        )
+          fail("MEMORY_SOURCE_INVALID", "屏蔽记忆来源已变化");
+        const refs = chunkRefs.filter((ref) => ref.kind === "memory_suppression_context");
+        if (
+          qqSuppressionContextStates(
+            { db: this.db, orm: this.orm },
+            refs,
+            context.owner,
+            { userId: DEFAULT_USER_ID },
+            nowIso(),
+          ).some((state) => state !== "available")
+        )
+          fail("MEMORY_SOURCE_INVALID", "抑制来源已变化");
+      };
+      verifyBlocked();
+      const suppressionMessages = suppressionPrompt(draft, chunk, candidateContext);
       gate(suppressionMessages, SUPPRESSION_RESULT_JSON_SCHEMA, "抑制比对", suppressionFormat);
       const response = await this.agentRuntime.completeLeaf(
         {
@@ -732,8 +959,11 @@ export class MemoryService {
           signal,
           owner: context.owner,
           retryOrigin: context.retryOrigin,
-          assertSources: recheckLeaf,
-          sources: [...liveSources(), ...context.blockedSources.slice(start, start + count).flat()],
+          assertSources: () => {
+            recheckLeaf();
+            verifyBlocked();
+          },
+          sources: [...liveSources(), ...chunkRefs],
           validate: (text) => SuppressionResultSchema.parse(JSON.parse(text)),
           ...(suppressionFormat === undefined ? {} : { requestFormat: suppressionFormat }),
           ...leafBudget,
@@ -741,6 +971,7 @@ export class MemoryService {
       );
       checkCapture();
       verifyPublication();
+      verifyBlocked();
       if (SuppressionResultSchema.parse(JSON.parse(response)).blocked) return null;
       start += count;
     }
@@ -891,6 +1122,9 @@ export class MemoryService {
           owner: { kind: "memory_job", id: jobId, userId: DEFAULT_USER_ID, agentId },
           sources: inputs.sourceRefs,
           blockedSources: inputs.blockedRefs,
+          blockedRejected: inputs.blockedRejected,
+          candidateSpeaker: inputs.candidateSpeaker,
+          blockedContexts: inputs.blockedContexts,
           retryOrigin: inputs.retryOrigin,
         },
         inputs.publication,
@@ -918,6 +1152,32 @@ export class MemoryService {
       try {
         immediate(this.db, () => {
           if (typeof publishCheckpoint === "function") publishCheckpoint();
+          const blockedRefs = inputs.blockedRefs
+            .flat()
+            .filter((ref) => ref.kind === "memory_blocked_source");
+          if (
+            blockedMemorySourceStates(
+              this.orm,
+              blockedRefs,
+              { kind: "memory_job", id: jobId, userId: DEFAULT_USER_ID, agentId },
+              { userId: DEFAULT_USER_ID },
+              nowIso(),
+            ).some((state) => state !== "available")
+          )
+            fail("MEMORY_SOURCE_INVALID", "屏蔽记忆来源已变化");
+          const suppressionRefs = inputs.blockedRefs
+            .flat()
+            .filter((ref) => ref.kind === "memory_suppression_context");
+          if (
+            qqSuppressionContextStates(
+              { db: this.db, orm: this.orm },
+              suppressionRefs,
+              { kind: "memory_job", id: jobId, userId: DEFAULT_USER_ID, agentId },
+              { userId: DEFAULT_USER_ID },
+              nowIso(),
+            ).some((state) => state !== "available")
+          )
+            fail("MEMORY_SOURCE_INVALID", "抑制来源已变化");
           // publication 同 tx 复验（publishCheckpoint 之后、publish 之前）：现值须与冻结
           // 8 字段 scope/fact refs 逐项比对；name refs 不参与本门（可选资料，不取消仍合法
           // body 的 publication）。merge/Web 任务无 publication，按无操作处理。

@@ -71,10 +71,11 @@ function factRows(
       f.reply_to_message_id AS replyToMessageId,f.revision AS revision,f.expires_at AS expiresAt,
       f.recorded_at AS recordedAt,
       t.body AS body,t.expires_at AS bodyExpiresAt
-      FROM qq_message_facts f JOIN qq_events e ON e.event_key=f.event_key
+      FROM json_each(?) requested
+      CROSS JOIN qq_message_facts f ON f.event_key=requested.value
+      CROSS JOIN qq_events e ON e.event_key=f.event_key
       LEFT JOIN qq_observation_text t ON t.event_key=f.event_key
-      WHERE f.event_key IN (SELECT value FROM json_each(?))
-        AND e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?`,
+      WHERE e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?`,
     )
     .all(
       JSON.stringify([...new Set(eventKeys)]),

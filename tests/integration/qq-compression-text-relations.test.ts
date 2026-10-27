@@ -1145,6 +1145,42 @@ describe("压缩输入的文字关系（T06 接力2）", () => {
     expect(all).not.toContain("expression");
     expect(all).not.toContain("mediaNotes");
   });
+  it("carries source utterance time for distinct legacy speakers into compression wire", async () => {
+    const h = setup({ watermarkTrigger: 3 });
+    h.seed("同一句话", 30002, { speakerId: "20002", noFact: true });
+    h.seed("同一句话", 30001, { speakerId: "30003", noFact: true });
+    h.seed("完整事实", 30000, { speakerId: "40004" });
+    h.seed("当前问题");
+    const source = h.newSource();
+    await source.read(readInput());
+    const job = source.takeCompressionJob();
+    if (!job) throw new Error("fixture: compression job missing");
+    await job.run(readInput().signal);
+
+    const events = h.capturedEvents.flat() as Array<
+      CapturedEvent & {
+        source_time?: { kind: string; unix_seconds: number };
+      }
+    >;
+    const first = events.find((event) => event.speaker === "20002");
+    const second = events.find((event) => event.speaker === "30003");
+    const full = events.find((event) => event.speaker === "40004");
+    if (!first || !second || !full) throw new Error("fixture: expected source events missing");
+    expect(new Set([first.id, second.id, full.id]).size).toBe(3);
+    expect([first.seq, second.seq, full.seq].every((seq) => seq !== null)).toBe(true);
+    expect(JSON.parse(first.text)).toMatchObject({
+      completeness: "legacy_partial",
+      text: "同一句话",
+    });
+    expect(JSON.parse(second.text)).toMatchObject({
+      completeness: "legacy_partial",
+      text: "同一句话",
+    });
+    expect(JSON.parse(full.text)).toMatchObject({ occurredAtSeconds: h.seconds - 30000 });
+    expect(first.source_time).toEqual({ kind: "utterance", unix_seconds: h.seconds - 30002 });
+    expect(second.source_time).toEqual({ kind: "utterance", unix_seconds: h.seconds - 30001 });
+  });
+
   /**
    * QQ 长期语义「摘要只压正文」（body-only）：模型输入的用户消息里不该有当前问题；
    * 包是中性可复用历史事件段，与本次提问无关；网页共享问题引导契约不在本文件。

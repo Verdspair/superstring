@@ -73,6 +73,7 @@ export function SystemComponents({
               {TOOL_HUMAN_LABELS["reply.text"] && (
                 <span className="font-medium">{t(TOOL_HUMAN_LABELS["reply.text"])}</span>
               )}
+              {/* i18next-instrument-ignore-next-line */}
               <span className="font-mono text-[11px] text-muted-foreground">reply.text</span>
             </div>
             <div
@@ -89,6 +90,7 @@ export function SystemComponents({
               {TOOL_HUMAN_LABELS["reply.sticker"] && (
                 <span className="font-medium">{t(TOOL_HUMAN_LABELS["reply.sticker"])}</span>
               )}
+              {/* i18next-instrument-ignore-next-line */}
               <span className="font-mono text-[11px] text-muted-foreground">reply.sticker</span>
               {isStickerOff && (
                 <span className="text-[10px] text-destructive shrink-0">

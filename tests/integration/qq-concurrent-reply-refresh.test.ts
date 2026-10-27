@@ -1,9 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
-import { ensureDefaults } from "../../src/server/db/repositories";
+import { readQqBinding } from "../../src/server/db/qq-binding-repository";
+import { readQqScheme } from "../../src/server/db/qq-scheme-repository";
+import { getAgentRow } from "../../src/server/db/repositories";
+import { captureQqTask } from "../../src/server/services/qq-binding-contract";
+import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import type { ModelMessage } from "../../src/shared/contracts/agent-run";
-import { cloneBusinessDb } from "../harness/business-db";
+import { createOneBotHarness } from "../harness/onebot";
 
 const message = (value: string): ModelMessage => ({
   role: "user",
@@ -81,9 +86,8 @@ describe("concurrent reply material projection preparation", () => {
 
 describe("shared intent send-boundary currentness", () => {
   it("rejects a redacted protected intent before the next model boundary", () => {
-    const h = cloneBusinessDb();
+    const h = createOneBotHarness();
     try {
-      ensureDefaults(h.orm, "guard-model");
       const at = new Date().toISOString();
       const runs = new AgentRunRepository(h.db);
       runs.createRun({
@@ -106,12 +110,47 @@ describe("shared intent send-boundary currentness", () => {
       runs.finishStep("shared-step", "completed", at, {
         output: { text: "declared", format: "text", complete: true },
       });
-      const source = Object.create(BotContextSource.prototype);
+      const binding = readQqBinding(h.orm, h.bindingId);
+      const scheme = readQqScheme(h.orm, h.scheme.id);
+      if (!binding || !scheme) throw new Error("missing binding or scheme");
+      const capture = captureQqTask(binding, "reply");
+      if (capture.kind !== "captured") throw new Error("binding not captured");
+      const agent = getAgentRow(h.orm, binding.agentId);
+      if (!agent) throw new Error("missing agent");
+      const source = new BotContextSource({
+        db: h.db,
+        orm: h.orm,
+        gateway: { loadedContextCapacity: async () => 65536 },
+        agentRuntime: new AgentRuntime({
+          repository: runs,
+          model: {
+            complete: async () => "",
+            async *streamText() {},
+            completeMultimodal: async () => "",
+          },
+        }),
+        journal: h.journal,
+        outbox: h.outbox,
+        conversationId: h.conversationId,
+        binding,
+        snapshot: capture.snapshot,
+        scheme,
+        runtime: runtimeFromAgent(agent),
+        spec: {
+          id: "test",
+          model: "guard-model",
+          context: "conversation",
+          instructions: "",
+          availableActions: [],
+          limits: { steps: 1 },
+        },
+        path: "direct_reply",
+        decisionTier: "reply",
+        targets: () => [],
+        assertCurrent: () => {},
+        now: () => at,
+      });
       Object.assign(source, {
-        options: { db: h.db, orm: h.orm, assertCurrent: () => {}, now: () => at },
-        modelBudgets: new Map(),
-        observations: [],
-        guard: { assertSources: () => {} },
         views: new Map([
           [
             "reply",
@@ -124,7 +163,6 @@ describe("shared intent send-boundary currentness", () => {
         ]),
       });
       // The real protected snapshot exists, so the first HTTP guard passes.
-      source.options.guard = source.guard;
       expect(() => source.assertCurrent()).not.toThrow();
       runs.redactContext({ runId: "shared-run", stepId: "shared-step" }, "revoked");
       expect(() => source.assertCurrent()).toThrow("已共享回复意图的受保护来源已失效");

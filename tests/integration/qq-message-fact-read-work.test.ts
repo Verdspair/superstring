@@ -11,6 +11,7 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import {
   qqMessageFactSourceAccess,
+  qqMessageFactSourceAccessMany,
   qqMessageFactSourceRevision,
   visibleFactState,
 } from "../../src/server/services/qq-message-fact-sources";
@@ -131,27 +132,118 @@ function factRefOf(fact: NonNullable<ReturnType<typeof loadQqMessageFact>>): Sou
   return ref;
 }
 
-// 只数事实行读取（factRow 的 SELECT），不改动其他查询。
+// 只数事实行读取，不改动其他查询；同时保留实际执行的 SQL 与绑定供查询计划核验。
 function factRowReads(h: ReturnType<typeof setup>) {
-  const db = h.db as unknown as { query: (sql: unknown) => unknown };
-  const original = db.query;
+  const original = h.db.query;
+  const calls: { sql: string; args: string[] }[] = [];
   let count = 0;
-  db.query = (sql: unknown) => {
-    if (typeof sql === "string" && /from\s+qq_message_facts/i.test(sql)) count += 1;
-    return original.call(h.db, sql);
-  };
+  h.db.query = ((sql: string) => {
+    const statement = original.call(h.db, sql);
+    if (
+      !/^\s*SELECT\b/i.test(sql) ||
+      !/\b(?:from|join)\s+qq_message_facts\b/i.test(sql) ||
+      !/\bevent_key\b/i.test(sql) ||
+      !/\bbody\b/i.test(sql)
+    )
+      return statement;
+    count += 1;
+    return new Proxy(statement, {
+      get(target, key) {
+        const value = Reflect.get(target, key);
+        if (key === "all")
+          return (...args: string[]) => {
+            calls.push({ sql, args });
+            return value.apply(target, args);
+          };
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }) as typeof h.db.query;
   return {
     count: () => count,
+    calls: () => calls,
     reset: () => {
       count = 0;
+      calls.length = 0;
     },
     restore: () => {
-      db.query = original;
+      h.db.query = original;
     },
   };
 }
 
 describe("qq_message_fact read work: one row read per access, unchanged visible state", () => {
+  it("looks up requested event keys instead of scanning same-account history for each source proof", () => {
+    const h = setup();
+    try {
+      const { conversation, journal } = bind(h);
+      const live = liveScope(h, conversation);
+      const refs: SourceRef[] = [];
+      for (let i = 0; i < 32; i += 1) {
+        const observation = alinObservation(-1000 - i);
+        recordWithJournal(h, journal, "binding", observation);
+        const fact = loadQqMessageFact(h, live, String(-1000 - i), now);
+        if (!fact) throw new Error("fact missing");
+        refs.push(factRefOf(fact));
+      }
+      // These peers share the event index's account/kind/agent prefix, but no requested key.
+      for (let peer = 0; peer < 4; peer += 1) {
+        const bindingId = `unrelated-${peer}`;
+        const peerId = 40000 + peer;
+        bind(h, bindingId, String(peerId));
+        for (let i = 0; i < 64; i += 1)
+          recordWithJournal(
+            h,
+            journal,
+            bindingId,
+            alinObservation(-2000 - peer * 64 - i, "unrelated history", peerId),
+          );
+      }
+      const reads = factRowReads(h);
+      try {
+        const first = refs[0];
+        if (!first) throw new Error("fact reference missing");
+        for (const requested of [[first], refs]) {
+          reads.reset();
+          expect(
+            qqMessageFactSourceAccessMany(
+              h.db,
+              requested,
+              ownerFor(live, "conversation"),
+              { userId: DEFAULT_USER_ID },
+              now,
+            ),
+          ).toEqual(requested.map(() => "available"));
+          expect(reads.count()).toBe(1);
+          expect(reads.calls()).toHaveLength(1);
+          const call = reads.calls()[0];
+          if (!call) throw new Error("fact query missing");
+          const plan = h.db.query(`EXPLAIN QUERY PLAN ${call.sql}`).all(...call.args) as {
+            detail: string;
+          }[];
+          // A batched query count alone cannot detect a broad event-index scan.
+          const eventReads = plan.filter((row) => /\b(?:SCAN|SEARCH) e\b/.test(row.detail));
+          expect(eventReads).toHaveLength(1);
+          expect(eventReads.every((row) => /\bSEARCH e\b.*\(event_key=\?\)/.test(row.detail))).toBe(
+            true,
+          );
+          const factLookup = plan.findIndex((row) =>
+            /\bSEARCH f\b.*\(event_key=\?\)/.test(row.detail),
+          );
+          const eventLookup = plan.indexOf(eventReads[0]);
+          const requestedScan = plan.findIndex((row) => /VIRTUAL TABLE/.test(row.detail));
+          expect(requestedScan).toBeGreaterThanOrEqual(0);
+          expect(factLookup).toBeGreaterThan(requestedScan);
+          expect(eventLookup).toBeGreaterThan(factLookup);
+        }
+      } finally {
+        reads.restore();
+      }
+    } finally {
+      h.close();
+    }
+  });
+
   it("reads the fact row exactly once per access and reuses it for the visible-state derivation", () => {
     const h = setup();
     try {

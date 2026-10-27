@@ -404,13 +404,28 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
                   </div>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="secondary">
-                    {t(
-                      doc.content_mode === "original"
-                        ? "library.original"
-                        : "library.organized.draft",
+                  <div className="flex flex-col gap-1">
+                    <Badge variant="secondary">
+                      {t(
+                        doc.content_mode === "original"
+                          ? "library.original"
+                          : "library.organized.draft",
+                      )}
+                    </Badge>
+                    {doc.visibility === "public" ? (
+                      <Badge variant="default" className="text-[11px]">
+                        {t("library.knowledge.visibility.public")}
+                      </Badge>
+                    ) : doc.visibility === "private" ? (
+                      <Badge variant="outline" className="text-[11px]">
+                        {t("library.knowledge.visibility.private")}
+                      </Badge>
+                    ) : (
+                      <Badge variant="secondary" className="text-[11px] text-muted-foreground">
+                        {t("library.knowledge.visibility.unclassified")}
+                      </Badge>
                     )}
-                  </Badge>
+                  </div>
                 </TableCell>
                 <TableCell>
                   <span className={doc.error_code ? "text-destructive" : "text-muted-foreground"}>
@@ -803,8 +818,35 @@ function KnowledgeEditorPanel() {
               {editor.kind === "grants" && (
                 <>
                   <p className="font-medium">{editor.source.name}</p>
-                  <p className="text-sm text-muted-foreground">
-                    {t("library.only.selected.agents.may.access.this.document")}
+                  <Field
+                    label="library.knowledge.classification"
+                    tooltip={t("hints.library.knowledge.classification")}
+                  >
+                    <NativeSelect
+                      aria-label={t("library.knowledge.classification")}
+                      value={editor.visibility ?? "unclassified"}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        s.updateKnowledgeEditor({
+                          ...editor,
+                          visibility:
+                            val === "private" ? "private" : val === "public" ? "public" : null,
+                        });
+                      }}
+                    >
+                      {editor.visibility === null && (
+                        <option value="unclassified">
+                          {t("library.knowledge.visibility.unclassified")}
+                        </option>
+                      )}
+                      <option value="private">{t("library.knowledge.visibility.private")}</option>
+                      <option value="public">{t("library.knowledge.visibility.public")}</option>
+                    </NativeSelect>
+                  </Field>
+                  <p className="text-xs text-muted-foreground">
+                    {editor.visibility === "public"
+                      ? t("library.knowledge.publicLimitationNotice")
+                      : t("library.only.selected.agents.may.access.this.document")}
                   </p>
                   <div className="divide-y divide-border/60 overflow-hidden rounded-xl border bg-card">
                     {s.agents.map((agent) => (

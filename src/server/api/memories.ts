@@ -13,11 +13,13 @@ import {
   ConsolidateRequestSchema,
   GovernRequestSchema,
   MemoryCorrectionSchema,
+  MemorySearchRebuildSchema,
+  MemoryVisibilityUpdateSchema,
   MergeRequestSchema,
   PolicyUpdateSchema,
   SessionScopeUpdateSchema,
 } from "../../shared/contracts";
-import { correctMemory, memoryContent } from "../db/memory-content-repository";
+import { correctMemory, memoryContent, setMemoryVisibility } from "../db/memory-content-repository";
 import {
   enqueue,
   entries,
@@ -26,10 +28,12 @@ import {
   type MemoryEntryRow,
   type MemoryJobRow,
   policy,
+  rebuildMemorySearchProjection,
   sessionScope,
   setScope,
   turns,
 } from "../db/memory-repository";
+import { memoryAccessMetadataBatch } from "../db/memory-source-repository";
 import { readQqBindings } from "../db/qq-binding-repository";
 import { pendingObservationCount } from "../db/qq-observation-repository";
 import { readQqOwnerIdentity } from "../db/qq-owner-repository";
@@ -169,6 +173,19 @@ export function memoryRoutes(orm: Orm): Hono {
         });
       }),
     );
+  });
+
+  router.post(`${base}/search-projection/rebuild`, async (c) => {
+    const agentId = agentOf(c);
+    const body = parseBody(MemorySearchRebuildSchema, await readJsonBody(c.req.raw));
+    const result = immediate(db, () =>
+      rebuildMemorySearchProjection(orm, agentId, {
+        ...(body.after_id === undefined ? {} : { afterId: body.after_id }),
+        limit: body.limit,
+        signal: c.req.raw.signal,
+      }),
+    );
+    return c.json({ rebuilt: result.rebuilt, next_after_id: result.nextAfterId });
   });
 
   // Sessions / turns / scope
@@ -347,10 +364,28 @@ export function memoryRoutes(orm: Orm): Hono {
     return c.json(immediate(db, () => entryDetail(entries(orm, agentId, [memoryId])[0])));
   });
 
+  router.get(`${base}/entries/:memoryId/access-metadata`, (c) => {
+    const agentId = agentOf(c);
+    const memoryId = parseUuidParam(c.req.param("memoryId"));
+    return c.json(
+      immediate(db, () => {
+        const entry = entries(orm, agentId, [memoryId])[0]!;
+        return memoryAccessMetadataBatch(orm, [entry]).get(entry.id)!;
+      }),
+    );
+  });
+
   router.get(`${base}/entries/:memoryId/content`, (c) => {
     const agentId = agentOf(c);
     const memoryId = parseUuidParam(c.req.param("memoryId"));
     return c.json(immediate(db, () => memoryContent(orm, agentId, memoryId)));
+  });
+
+  router.put(`${base}/entries/:memoryId/visibility`, async (c) => {
+    const agentId = agentOf(c);
+    const memoryId = parseUuidParam(c.req.param("memoryId"));
+    const body = parseBody(MemoryVisibilityUpdateSchema, await readJsonBody(c.req.raw));
+    return c.json(immediate(db, () => setMemoryVisibility(orm, agentId, memoryId, body)));
   });
 
   router.post(`${base}/entries/:memoryId/correct`, async (c) => {

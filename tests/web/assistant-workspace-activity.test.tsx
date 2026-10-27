@@ -430,7 +430,7 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     });
   });
 
-  it("edits rules and Bytes in the rendered tier and saves each original owner without losing the other draft", async () => {
+  it("edits rules and Bytes in the single memory owner and saves via materials task without losing drafts", async () => {
     let saved = agent;
     const updateAgent = vi.fn(async (_id: string, body: Record<string, unknown>) => {
       const { expected_version, ...patch } = body;
@@ -453,44 +453,22 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     });
     render(<AssistantWorkspace active />);
     await act(async () => {});
-    const candidates = screen.getAllByLabelText("每次查询扫描候选上限");
+    const candidateInput = screen.getByLabelText("每次查询候选条数上限");
     const originalCandidate = agent.p5_config.retrieval_presets.standard.candidate_limit;
-    fireEvent.change(candidates[1], { target: { value: String(originalCandidate + 1) } });
+    fireEvent.change(candidateInput, { target: { value: String(originalCandidate + 1) } });
     const bytes = screen.getByTestId("reading-preset-max-tokens-standard");
     const originalBytes = agent.p5_config.retrieval_presets.standard.max_tokens;
     fireEvent.change(bytes, { target: { value: String(originalBytes + 512) } });
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "保存记忆规则" }));
+      fireEvent.click(screen.getByRole("button", { name: "保存 Agent" }));
     });
     expect(updateAgent).toHaveBeenCalledTimes(1);
     const rulesPayload = updateAgent.mock.calls[0][1];
     const rulesP5 = rulesPayload.p5_config as typeof agent.p5_config;
     expect(rulesP5.retrieval_presets.standard.candidate_limit).toBe(originalCandidate + 1);
-    expect(rulesP5.retrieval_presets.standard.max_tokens).toBe(originalBytes);
-    expect((bytes as HTMLInputElement).value).toBe(String(originalBytes + 512));
-    fireEvent.change(candidates[1], { target: { value: String(originalCandidate + 2) } });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "保存上下文预算" }));
-    });
-    expect(updateAgent).toHaveBeenCalledTimes(2);
-    const contextP5 = updateAgent.mock.calls[1][1].p5_config as typeof agent.p5_config;
-    expect(contextP5.retrieval_presets.standard.max_tokens).toBe(originalBytes + 512);
-    expect(contextP5.retrieval_presets.standard.candidate_limit).toBe(originalCandidate + 1);
-    expect(
-      store.getState().pageEditor?.draft.p5_config.retrieval_presets.standard.candidate_limit,
-    ).toBe(originalCandidate + 2);
-    fireEvent.change(bytes, { target: { value: "-1" } });
-    expect((bytes as HTMLInputElement).value).toBe("-1");
-    const saveBytes = screen.getByRole("button", { name: "保存上下文预算" });
-    expect(saveBytes.hasAttribute("disabled")).toBe(true);
-    fireEvent.click(saveBytes);
-    expect(updateAgent).toHaveBeenCalledTimes(2);
-    fireEvent.click(screen.getByTestId("reading-discard-memory-btn"));
-    expect((bytes as HTMLInputElement).value).toBe(String(originalBytes + 512));
-    expect(
-      store.getState().pageEditor?.draft.p5_config.retrieval_presets.standard.candidate_limit,
-    ).toBe(originalCandidate + 2);
+    expect(rulesP5.retrieval_presets.standard.max_tokens).toBe(originalBytes + 512);
   });
+
   it("edits the rendered knowledge budget and commits all four fields without saving other drafts", async () => {
     const saveAgentKnowledgeRead = vi.fn().mockResolvedValue({
       revision: 2,
@@ -511,14 +489,21 @@ describe("assistant workspace canonical host & resource rules regressions", () =
       modelNames: [agent.model_name],
     });
     render(<AssistantWorkspace active />);
-    await act(async () => {});
+    await waitFor(() => {
+      expect(screen.getByTestId("reading-knowledge-agent-budget-input")).toHaveProperty(
+        "value",
+        "2048",
+      );
+    });
     fireEvent.change(screen.getByTestId("reading-knowledge-agent-budget-input"), {
       target: { value: "6144" },
     });
     const enabled = screen.getByLabelText("启用知识读取");
     fireEvent.click(enabled);
+    const saveBtn = screen.getByRole("button", { name: "保存 Agent" });
+    expect(saveBtn).toHaveProperty("disabled", false);
     await act(async () => {
-      fireEvent.click(screen.getByTestId("reading-save-knowledge-agent-btn"));
+      fireEvent.click(saveBtn);
     });
     expect(saveAgentKnowledgeRead).toHaveBeenCalledExactlyOnceWith(agent.id, {
       expected_revision: 1,
@@ -616,7 +601,7 @@ it("keeps one Agent header and tab strip while reading actions retain their own 
     expect(heading.closest("header")).toBe(header);
     expect(screen.getByRole("tablist")).toBe(tabs);
     expect(screen.queryByTestId("reading-task-header")).toBeNull();
-    expect(screen.queryByRole("button", { name: "保存 Agent" }) !== null).toBe(name !== "资料读取");
+    expect(screen.queryByRole("button", { name: "保存 Agent" }) !== null).toBe(name !== "工具权限");
   }
   if (!(header instanceof HTMLElement)) throw new Error("missing Agent page header");
   expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
@@ -635,7 +620,8 @@ it("keeps one Agent header and tab strip while reading actions retain their own 
   const back = screen.getByRole("button", { name: "所有 Agent" });
   expect(header.contains(back)).toBe(true);
   expect(back.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(screen.getByRole("button", { name: "保存记忆规则" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "保存记忆规则" })).toBeNull();
+  expect(screen.getByRole("button", { name: "保存 Agent" })).toBeTruthy();
   expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("retain reading draft");
   expect(updateAgent).not.toHaveBeenCalled();
 });

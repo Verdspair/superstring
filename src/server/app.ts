@@ -30,7 +30,6 @@ import { webAccessRoutes } from "./api/web-access";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import type { BusinessDbHandle } from "./db/connection";
 import { ConversationEventRepository } from "./db/conversation-event-repository";
-import { KnowledgeRepository } from "./db/knowledge-repository";
 import { DEFAULT_AGENT_ID } from "./db/repositories";
 import * as schema from "./db/schema";
 import type { LocalModelEncodingStore } from "./llm/local-model-encodings";
@@ -160,7 +159,6 @@ export function createApp(opts: CreateAppOptions): Hono {
 
   if (business) {
     const gateway = opts.gateway ?? createLmStudioClient();
-    const knowledge = new KnowledgeRepository(business.db);
     const defaultAgent = business.orm
       .select({ id: schema.agents.id })
       .from(schema.agents)
@@ -171,7 +169,6 @@ export function createApp(opts: CreateAppOptions): Hono {
       initializeDefaultAgent(business.orm, gateway.config.model, {
         permissions,
         requirements,
-        knowledge,
       });
     }
     app.route(
@@ -180,7 +177,6 @@ export function createApp(opts: CreateAppOptions): Hono {
         permissions,
         // Creation grants the installed catalog, including globally paused actions.
         externalActions,
-        knowledge,
         mcpManagement: opts.mcpManagement,
       }),
     );

@@ -24,6 +24,8 @@ type ConversationRow = {
   created_at: string;
   updated_at: string;
   closed_at: string | null;
+  memory_read_mode: "current_conversation" | "agent_shared";
+  memory_config_revision: number;
 };
 export type ConversationActivation = Pick<
   ConversationRow,
@@ -173,6 +175,48 @@ export class ConversationEventRepository {
     return this.db
       .query("SELECT * FROM conversations WHERE id=?")
       .get(id) as ConversationRow | null;
+  }
+  memoryReadMode(
+    id: string,
+    userId: string,
+  ): { mode: "current_conversation" | "agent_shared"; revision: number } | null {
+    const row = this.row(id);
+    if (!row || row.user_id !== userId || row.closed_at !== null) return null;
+    return { mode: row.memory_read_mode, revision: row.memory_config_revision };
+  }
+  setMemoryReadMode(
+    id: string,
+    userId: string,
+    mode: "current_conversation" | "agent_shared",
+    expectedRevision: number,
+  ):
+    | { kind: "saved"; mode: "current_conversation" | "agent_shared"; revision: number }
+    | { kind: "conflict" }
+    | null {
+    return this.db
+      .transaction(() => {
+        const row = this.row(id);
+        if (!row || row.user_id !== userId || row.closed_at !== null) return null;
+        if (row.memory_config_revision !== expectedRevision) return { kind: "conflict" } as const;
+        if (row.memory_read_mode === mode)
+          return { kind: "saved", mode, revision: row.memory_config_revision } as const;
+        const saved = this.db
+          .query(
+            "UPDATE conversations SET memory_read_mode=?, memory_config_revision=memory_config_revision+1, updated_at=? WHERE id=? AND user_id=? AND closed_at IS NULL AND memory_config_revision=? RETURNING memory_read_mode, memory_config_revision",
+          )
+          .get(mode, new Date().toISOString(), id, userId, expectedRevision) as {
+          memory_read_mode: "current_conversation" | "agent_shared";
+          memory_config_revision: number;
+        } | null;
+        if (!saved) return { kind: "conflict" } as const;
+        publishConversationChange(this.db, id);
+        return {
+          kind: "saved",
+          mode: saved.memory_read_mode,
+          revision: saved.memory_config_revision,
+        } as const;
+      })
+      .immediate();
   }
   ensureWeb(sessionId: string, userId?: string): ConversationSummary | null {
     const s = this.db

@@ -14,20 +14,21 @@ afterEach(() => {
 });
 
 it("updates memory and job dates when the interface locale changes", async () => {
-  setupLibrary();
+  const job = {
+    id: M,
+    kind: "manual" as const,
+    session_id: null,
+    status: "succeeded" as const,
+    result_id: M,
+    error_code: null,
+    created_at: memory.created_at,
+    finished_at: memory.created_at,
+  };
+  setupLibrary({
+    listMemoryJobs: vi.fn().mockResolvedValue([job]),
+  });
   store.setState({
-    memoryJobs: [
-      {
-        id: M,
-        kind: "manual",
-        session_id: null,
-        status: "succeeded",
-        result_id: M,
-        error_code: null,
-        created_at: memory.created_at,
-        finished_at: memory.created_at,
-      },
-    ],
+    memoryJobs: [job],
   });
   await act(async () => render(<MemoryLibrary />));
   const date = new Date(memory.created_at);

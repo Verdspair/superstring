@@ -52,13 +52,35 @@ const base: QqPromptInput = {
 };
 
 describe("editable QQ prompt storage and HTTP", () => {
-  it("keeps Drizzle and schema-gate table sets identical", () => {
+  it("keeps Drizzle domain tables and derived search tables aligned with schema-gate", () => {
     const actual = Object.values(businessTables)
       .map((t) => getTableConfig(t).name)
       .sort();
-    expect(actual).toEqual([...BUSINESS_TABLE_NAMES].sort());
-    // 0072 adds compact outbound metadata to the existing business tables.
-    expect(actual).toHaveLength(78);
+    const derived = [
+      "memory_search_fts",
+      "memory_search_fts_config",
+      "memory_search_fts_data",
+      "memory_search_fts_docsize",
+      "memory_search_fts_idx",
+      "memory_search_index_ids",
+    ];
+    expect(actual).toEqual(BUSINESS_TABLE_NAMES.filter((name) => !derived.includes(name)).sort());
+    expect(actual).toContain("memory_read_grants");
+    expect(actual).toHaveLength(79);
+    expect([...actual, ...derived].sort()).toEqual([...BUSINESS_TABLE_NAMES].sort());
+    const h = openBusinessDb();
+    try {
+      const tables = h.db
+        .query(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
+        )
+        .all()
+        .map((row) => (row as { name: string }).name);
+      expect(tables).toEqual([...actual, ...derived].sort());
+      expect(tables.filter((name) => derived.includes(name))).toEqual([...derived].sort());
+    } finally {
+      h.close();
+    }
   });
   it("upgrades an existing v18 scheme with editable output defaults and preserved revision", () => {
     const db = new Database(":memory:");

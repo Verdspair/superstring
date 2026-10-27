@@ -395,7 +395,10 @@ export function InspectedEvidence({
                     <span>{attempt.transport}</span>
                     <span>·</span>
                     {attempt.httpStatus !== undefined ? (
-                      <span>HTTP {attempt.httpStatus}</span>
+                      <>
+                        {/* i18next-instrument-ignore-next-line */}
+                        <span>HTTP {attempt.httpStatus}</span>
+                      </>
                     ) : (
                       <span>{t("observability.noHttpResponse")}</span>
                     )}
@@ -426,6 +429,7 @@ export function InspectedEvidence({
                     {attempt.doneMarker && (
                       <>
                         <span>·</span>
+                        {/* i18next-instrument-ignore-next-line */}
                         <span className="font-semibold text-foreground">[DONE]</span>
                       </>
                     )}

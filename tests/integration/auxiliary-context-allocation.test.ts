@@ -173,13 +173,22 @@ describe("auxiliary allocation: memory_consolidate role", () => {
       setAgentAuxProfile(ctx.orm, { mode: "fixed", output_reserved: 777 });
       const sessionId = createSession(ctx.orm, "辅助抑制", { modelName: MODEL }).id;
       const turnId = completedTurn(ctx.orm, sessionId, "seed");
-      // Suppression compares only governed rows (suppressed/replaced) — seed a
-      // suppressed entry so the blocked list is non-empty and the verdict call runs.
+      // Use an actual historical turn in the same session as the job.
+      const blockedTurnId = completedTurn(ctx.orm, sessionId, "blocked-source");
+      const messages = ctx.orm
+        .select()
+        .from(schema.messages)
+        .where(eq(schema.messages.turnId, blockedTurnId))
+        .all();
+      const user = messages.find((message) => message.role === "user");
+      const assistant = messages.find((message) => message.role === "assistant");
+      if (!user || !assistant) throw new Error("completed blocked source messages missing");
+      const blockedId = crypto.randomUUID();
       immediate(ctx.db, () => {
         ctx.orm
           .insert(schema.memoryEntries)
           .values({
-            id: crypto.randomUUID(),
+            id: blockedId,
             agentId: AGENT_ID,
             userId: DEFAULT_USER_ID,
             name: "旧记忆",
@@ -193,6 +202,16 @@ describe("auxiliary allocation: memory_consolidate role", () => {
             configSnapshot: "{}",
             createdAt: "now",
           } satisfies typeof schema.memoryEntries.$inferInsert)
+          .run();
+        ctx.orm
+          .insert(schema.memorySources)
+          .values({
+            memoryId: blockedId,
+            turnId: blockedTurnId,
+            userMessageId: user.id,
+            assistantMessageId: assistant.id,
+            sequenceNo: user.sequenceNo,
+          })
           .run();
       });
       const job = immediate(ctx.db, () =>

@@ -131,14 +131,14 @@ describe("fresh assistant studio", () => {
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad,
     );
     // 三档预设默认展开：预设的候选/条目输入初始都可见，标题只剩档名。
-    for (const label of ["每次查询扫描候选上限", "每页最大返回项"]) {
-      expect(screen.getAllByLabelText(label)).toHaveLength(3);
+    for (const label of ["每次查询候选条数上限", "每页最大返回项"]) {
+      expect(screen.getAllByLabelText(label)).toHaveLength(1);
     }
-    const conservative = screen.getByRole("button", { name: /^保守/ });
-    const panel = document.getElementById(conservative.getAttribute("aria-controls") ?? "");
-    if (!panel) throw new Error("Missing conservative preset panel");
-    const candidates = within(panel).getByLabelText("每次查询扫描候选上限") as HTMLInputElement;
-    const entries = within(panel).getByLabelText("每页最大返回项") as HTMLInputElement;
+    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), {
+      target: { value: "conservative" },
+    });
+    const candidates = screen.getByLabelText("每次查询候选条数上限") as HTMLInputElement;
+    const entries = screen.getByLabelText("每页最大返回项") as HTMLInputElement;
     expect([candidates.min, candidates.max]).toEqual(["1", "10000"]);
     fireEvent.change(candidates, { target: { value: "200" } });
     expect(entries.max).toBe("200");
@@ -148,38 +148,42 @@ describe("fresh assistant studio", () => {
     expect(
       store.getState().pageEditor?.draft.p5_config.retrieval_presets.conservative.candidate_limit,
     ).toBe(30);
-    expect(screen.getAllByLabelText("相关性要求")).toHaveLength(3);
-    expect(screen.getByLabelText("记忆检索提示词")).toBeTruthy();
+    expect(screen.queryByLabelText("相关性要求")).toBeNull();
+    expect(screen.queryByLabelText("记忆检索提示词")).toBeNull();
     expect(screen.queryByLabelText("最多目录批次")).toBeNull();
     expect(screen.queryByLabelText("每批目录条数")).toBeNull();
-    // 技术hint已从每档面板集中为单处 <details>（strict.reading.technical）：
-    // 真实点击 summary 展开后在全页断言 hint；candidate.max 联动断言保持不变。
     fireEvent.click(screen.getByText("读取规则与生效说明"));
     expect(screen.getByText(/最终返回条数不能超过候选上限/)).toBeTruthy();
-    // 每档 Bytes 额度输入（批准的 Bytes 同组功能）为 3 个 text 类型 Input（data-testid
-    // reading-preset-max-tokens-*），加上 3 个相关性要求 + 1 个检索提示词共 7 个 textbox。
-    const presetBytes = ["conservative", "standard", "broad"].map(
-      (mode) => screen.getByTestId(`reading-preset-max-tokens-${mode}`) as HTMLInputElement,
-    );
-    expect(presetBytes).toHaveLength(3);
-    for (const input of presetBytes) {
-      expect(input.isConnected).toBe(true);
-      expect(input.getAttribute("type")).toBe("text");
-      expect(input.getAttribute("inputmode")).toBe("numeric");
-    }
-    expect(screen.getAllByRole("textbox")).toHaveLength(7);
-    // 三个 Bytes 输入确实在 textbox 集合内（明确归属，不弱化未知裸输入防线）。
-    for (const input of presetBytes) {
-      expect(screen.getAllByRole("textbox")).toContain(input);
-    }
+    // 单生效策略表单：每档可选且 Bytes 额度与规则同组显示，值完整保真，不旧3档并列
+    const consBytes = screen.getByTestId(
+      "reading-preset-max-tokens-conservative",
+    ) as HTMLInputElement;
+    expect(consBytes.isConnected).toBe(true);
+    expect(consBytes.getAttribute("type")).toBe("text");
+    expect(consBytes.getAttribute("inputmode")).toBe("numeric");
+    expect(consBytes.value).toBe("2048");
+
+    // 切换到标准档：展示标准档 Bytes 额度
+    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "standard" } });
+    const stdBytes = screen.getByTestId("reading-preset-max-tokens-standard") as HTMLInputElement;
+    expect(stdBytes.value).toBe("4096");
+
+    // 切换到广泛档：展示广泛档 Bytes 额度
+    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
+    const broadBytes = screen.getByTestId("reading-preset-max-tokens-broad") as HTMLInputElement;
+    expect(broadBytes.value).toBe("8192");
+
     // 技能文本不能授予资料访问权限——on.demand 说明随完整规则迁入读取规则视图。
     expect(screen.getByText(/技能文本不能授予资料访问权限/)).toBeTruthy();
-    // Restoring the saved candidate limit leaves the editor clean; a real rule edit owns only memory-tools.
-    expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
-    fireEvent.change(screen.getByLabelText("记忆检索提示词"), {
-      target: { value: "Focused retrieval" },
-    });
+    expect(screen.queryByLabelText("记忆检索提示词")).toBeNull();
+    expect(screen.queryByLabelText("相关性要求")).toBeNull();
+
+    // 额度编辑归 memory-tools 单主所有
+    fireEvent.change(broadBytes, { target: { value: "9999" } });
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
+    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
+      9999,
+    );
   });
   it("hosts the full memory reading rules with the global knowledge budget read-only", async () => {
     await act(async () =>
@@ -192,11 +196,10 @@ describe("fresh assistant studio", () => {
     );
     // 记忆工具路由现内联完整读取规则（与每档 Bytes 同组，不再先跳统一页）：
     // 三档已存预算随档名就近显示（presetSummary 用 toLocaleString 千分位：4,096/8,192 Bytes），编辑输入真实可操作。
-    expect(screen.getByText(/4,096 Bytes/)).toBeTruthy();
-    expect(screen.getByText(/8,192 Bytes/)).toBeTruthy();
+    expect(screen.getByText(/4,096/)).toBeTruthy();
     expect(screen.getByLabelText("记忆工具额度模式")).toBeTruthy();
-    expect(screen.getAllByLabelText("每次查询扫描候选上限")).toHaveLength(3);
-    expect(screen.getByLabelText("记忆检索提示词")).toBeTruthy();
+    expect(screen.getAllByLabelText("每次查询候选条数上限")).toHaveLength(1);
+    expect(screen.queryByLabelText("记忆检索提示词")).toBeNull();
     // 全局知识预算卡保持只读：远端 Save/Discard 已移除，真 scope 只在 reading。
     expect(screen.getByText(/全局每轮知识工具结果预算/).parentElement?.textContent).toContain(
       "2048 Bytes",
@@ -218,20 +221,14 @@ describe("fresh assistant studio", () => {
   it("edits the per-turn memory budget in the same-group reading rules through the context whitelist", async () => {
     const client = setupLibrary({ updateAgent: vi.fn() });
     await act(async () => render(<MemoryReadingRules />));
-    // 三档 Bytes 额度与规则同组可见可编辑（Bytescontext allscope：改动归 context 页）。
-    const inputs = ["conservative", "standard", "broad"].map(
-      (mode) => screen.getByTestId(`reading-preset-max-tokens-${mode}`) as HTMLInputElement,
+    // 单生效策略表单下当前 standard 档 Bytes 额度直接可见可编辑（归 memory-tools 单主所有）。
+    const bytes = screen.getByTestId("reading-preset-max-tokens-standard") as HTMLInputElement;
+    expect(bytes.value).toBe("4096");
+    fireEvent.change(bytes, { target: { value: "5000" } });
+    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.standard.max_tokens).toBe(
+      5000,
     );
-    expect(inputs.map((el) => el.value)).toEqual(["2048", "4096", "8192"]);
-    // 预算草稿写入 pageEditor 的 context 页：memory-tools 规则页保持干净。
-    fireEvent.change(inputs[2], { target: { value: "10000" } });
-    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
-      10000,
-    );
-    expect(
-      store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.candidate_limit,
-    ).toBe(120);
-    expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
     // 未保存不隐式写库。
     expect(client.updateAgent).not.toHaveBeenCalled();
   });
@@ -325,8 +322,11 @@ describe("fresh assistant studio", () => {
       selectLocale(locale);
       await act(async () => render(<AgentModelPurpose />));
       expect(
-        screen.getByRole("combobox", { name: /^(记忆读取模型|Memory reading model)$/ }),
-      ).toHaveProperty("value", "legacy-retrieval");
+        screen.queryByRole("combobox", { name: /^(记忆读取模型|Memory reading model)$/ }),
+      ).toBeNull();
+      expect(store.getState().pageEditor?.draft.memory_retrieval_model_name).toBe(
+        "legacy-retrieval",
+      );
       // 新模型分工宿主不做容量预览：零容量请求（真实动作未被调用）。
       // 既有探测覆盖仍归 allocation-performance-isolation 与 ModelPurposes 既有断言，不假改为 none。
       expect(store.getState().refreshCapacityPreview).not.toHaveBeenCalled();
@@ -375,7 +375,7 @@ describe("fresh library tasks", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "1 Agent" })));
     fireEvent.click(screen.getByRole("checkbox", { name: "Agent B" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存" })));
-    expect(client.saveKnowledgeGrants).toHaveBeenCalledWith(D, 3, [A, B]);
+    expect(client.saveKnowledgeGrants).toHaveBeenCalledWith(D, 3, [A, B], undefined);
     expect(client.updateKnowledgeDocument).not.toHaveBeenCalled();
   });
   it("shows memory management failures with a visible retry entry", async () => {
@@ -390,7 +390,13 @@ describe("fresh library tasks", () => {
     const client = setupLibrary();
     await act(async () => render(<MemoryLibrary />));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /QQ · 私聊 20002/ })));
-    expect(client.listMemoryEntries).toHaveBeenLastCalledWith(A, 0, 100, { scope_key: scopeKey });
+    expect(client.listMemoryEntries).toHaveBeenLastCalledWith(
+      A,
+      0,
+      100,
+      { scope_key: scopeKey },
+      expect.anything(),
+    );
     await act(async () =>
       fireEvent.click(screen.getByRole("checkbox", { name: "与网页对话记忆共享" })),
     );
@@ -616,5 +622,11 @@ it("refreshes jobs and source conversations before reloading the filtered memory
     { id: D, title: "Newly completed conversation" },
   ]);
   expect(store.getState().memoryJobs[0]?.status).toBe("succeeded");
-  expect(client.listMemoryEntries).toHaveBeenLastCalledWith(A, 0, 100, { scope_key: scopeKey });
+  expect(client.listMemoryEntries).toHaveBeenLastCalledWith(
+    A,
+    0,
+    100,
+    { scope_key: scopeKey },
+    expect.anything(),
+  );
 });

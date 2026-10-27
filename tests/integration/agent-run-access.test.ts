@@ -13,7 +13,6 @@ import { createApp } from "../../src/server/app";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
-import { memoryRevision } from "../../src/server/db/memory-content-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import {
   createSession,
@@ -27,6 +26,7 @@ import {
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { unconfiguredPermissions } from "../../src/server/permissions/service";
+import { memoryRevision } from "../../src/server/services/memory-revision";
 import type { RunOwner } from "../../src/shared/contracts/agent-run";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
 

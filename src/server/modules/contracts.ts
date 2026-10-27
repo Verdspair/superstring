@@ -28,6 +28,7 @@ export interface MemoryQuery {
   agentId: string;
   mode: MemoryReadMode;
   sessionId?: string;
+  conversationId?: string;
   scopes: MemoryScopeKeys;
   query: string;
   budget: number;
@@ -60,6 +61,7 @@ export interface EvidenceReadInput {
 }
 export interface MemoryReadInput extends EvidenceReadInput {
   sessionId?: string;
+  conversationId?: string;
   scopes: MemoryScopeKeys;
 }
 

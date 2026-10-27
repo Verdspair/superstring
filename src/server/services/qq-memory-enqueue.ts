@@ -18,11 +18,17 @@ import {
   pendingObservations,
   type QqConversationScope,
 } from "../db/qq-observation-repository";
+import { readQqOwnerIdentity } from "../db/qq-owner-repository";
 import { readQqSettings } from "../db/qq-settings-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import { AppError, fail } from "../errors";
 import { QqGroupCapabilityGuard } from "../permissions/qq-group-capabilities";
-import { type QqBinding, qqConversationScope, qqMemoryScopeKey } from "./qq-binding-contract";
+import {
+  type QqBinding,
+  qqConversationScope,
+  qqMemoryScopeKey,
+  resolveQqMemoryAccess,
+} from "./qq-binding-contract";
 
 export interface QqMemoryCandidate {
   readonly eventKey: string;
@@ -85,11 +91,33 @@ export function enqueueQqMemory(orm: Orm, args: EnqueueQqMemoryArgs): MemoryJobR
   }
   // 自动与手动两条入口共用这里：能力停用必须在这里被拒，观察批次因此保持未消费、可重试。
   assertQqMemoryOrganizeAllowed(orm, args.scope);
+  const binding = readBindingByConversation(orm, {
+    accountId: args.scope.accountId,
+    kind: args.scope.conversationKind,
+    peerId: args.scope.peerId,
+  });
+  if (!binding || binding.agentId !== args.scope.agentId)
+    fail("MEMORY_SOURCE_INVALID", "观察来源没有当前绑定");
+  const access = resolveQqMemoryAccess(binding, readQqOwnerIdentity(orm));
+  if (access.kind !== "resolved") fail("MEMORY_SOURCE_INVALID", "本人共享授权不可用");
+  const sourceKey = qqMemoryScopeKey(args.scope);
+  const destinationKey =
+    access.access.writeScope.kind === "web"
+      ? binding.agentId
+      : qqMemoryScopeKey(access.access.writeScope);
   const eventIds = candidates.map((candidate) => candidate.eventKey);
   const job = enqueue(orm, args.scope.agentId, args.requestKey, {
     kind: "manual",
     eventIds,
-    scope: { scope: "reality_user", scopeKey: qqMemoryScopeKey(args.scope) },
+    scope: { scope: "reality_user", scopeKey: sourceKey },
+    qqRoute: {
+      version: 1,
+      source_scope_key: sourceKey,
+      destination_scope_key: destinationKey,
+      binding_id: binding.id,
+      authority_revision: binding.authorityRevision,
+      owner_identity_revision: binding.ownerIdentityRevision,
+    },
   });
   markObservationsProcessed(orm, eventIds);
   return job;

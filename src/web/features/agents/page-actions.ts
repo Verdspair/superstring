@@ -1,6 +1,9 @@
+import { SavePersonaRequestSchema, UpdateAgentRequestSchema } from "../../../shared/contracts";
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { AgentDraft, StoreGet, StoreSet, SuperstringState } from "../../state/types";
+import type { createKnowledgeReadActions } from "../knowledge/read-actions";
+import { knowledgeReadDirty } from "../knowledge/types";
 import { toDraft } from "./draft";
 import {
   acceptPageAgent,
@@ -9,8 +12,6 @@ import {
   dirtyPages,
   EDITABLE_PAGES,
   type EditablePage,
-  mergeContextRetrievalPresets,
-  mergeMemoryRetrievalPresets,
   PAGE_AGENT_FIELDS,
   PAGE_PERSONA_FIELDS,
   type PageEditor,
@@ -27,8 +28,7 @@ type Preset = Presets["conservative"];
 
 /**
  * 逐档合并判据（写回通用，不依赖预设里「每个键都存在」的假设）：既有档保留缺席键，
- * 新增档整份带入。嵌套字段级所有权（memory 档保基线 max_tokens、context 档保基线
- * 非 max_tokens）仍由 page-drafts 的 mergeMemory/mergeContext 在载荷阶段执行。
+ * 新增档整份带入；相对已保存基线被修改的键在刷新后继续保留。
  */
 function mergePresetModes(
   baseline: Presets,
@@ -43,6 +43,7 @@ const PRESET_MODE_KEYS = ["conservative", "standard", "broad"] as const;
 export function createPageActions(
   set: StoreSet,
   get: StoreGet,
+  knowledgeStep: ReturnType<typeof createKnowledgeReadActions>["taskStep"],
 ): Pick<
   SuperstringState,
   | "patchPageAgent"
@@ -50,6 +51,9 @@ export function createPageActions(
   | "patchPagePolicy"
   | "saveSettingsPage"
   | "saveAllSettingsPages"
+  | "saveSettingsTask"
+  | "settingsTaskDirty"
+  | "discardSettingsTask"
   | "applyDefaultModelToAgent"
   | "discardSettingsPages"
   | "refreshSettingsAgent"
@@ -64,22 +68,38 @@ export function createPageActions(
       policy: editor.policy,
     }));
   };
-  const savePage = async (page: EditablePage, token: object): Promise<boolean> => {
+  const savePage = async (
+    page: EditablePage,
+    token: object,
+    api: SuperstringState["apiClient"],
+    capacityChecked = false,
+    extraMatches: () => boolean = () => true,
+  ): Promise<boolean> => {
     let editor = get().pageEditor;
     if (!editor || editor.token !== token) return false;
     const id = editor.agent.id;
+    if (get().editorAgentId !== id || get().apiClient !== api || !extraMatches()) return false;
     if (
       page === "context" &&
       Object.keys(get().allocationInvalidInputs).some(
-        (key) =>
-          key.startsWith(`agent:${id}:context:`) ||
-          key.startsWith(`agent:${id}:aux:`) ||
-          key.startsWith(`agent:${id}:reading:memory:`),
+        (key) => key.startsWith(`agent:${id}:context:`) || key.startsWith(`agent:${id}:aux:`),
       )
     ) {
       throw new Error(msg("请先修正方案中的无效数字，再保存。"));
     }
-    const matches = () => get().pageEditor?.token === token && get().editorAgentId === id;
+    if (
+      page === "memory-tools" &&
+      Object.keys(get().allocationInvalidInputs).some((key) =>
+        key.startsWith(`agent:${id}:reading:memory:`),
+      )
+    ) {
+      throw new Error(msg("请先修正方案中的无效数字，再保存。"));
+    }
+    const matches = () =>
+      get().pageEditor?.token === token &&
+      get().editorAgentId === id &&
+      get().apiClient === api &&
+      extraMatches();
     // 只有用户本会话主动把存量 full 档改走时才由归一化触发保存；未改动的 full 档
     // 不再「进页即保存」，批量字段改动照常经 agentPageDirty 保存且 mode 保持 full。
     const normalizeMemoryMode =
@@ -88,16 +108,20 @@ export function createPageActions(
       (editor.draft.p5_config.retrieval_mode === "full_catalog" ||
         editor.draft.p5_config.retrieval_mode === "full_body");
     if (page !== "expression" && (agentPageDirty(editor, page) || normalizeMemoryMode)) {
-      if (page === "context" && editor.draft.p5_config.context_window !== null) {
+      if (
+        page === "context" &&
+        !capacityChecked &&
+        editor.draft.p5_config.context_window !== null
+      ) {
         // Validate against the SAVED model, not another page's unsaved model choice.
-        const capacity = await get().apiClient.getModelCapacity(editor.agent.model_name);
+        const capacity = await api.getModelCapacity(editor.agent.model_name);
         if (!matches()) return false;
         if (capacity.context_length === null)
           throw new Error(msg("模型未加载或容量未知，无法校验自定义预算；可改为null跟随"));
         if (editor.draft.p5_config.context_window > capacity.context_length)
           throw new Error(msg("自定义上下文超过模型实际容量{0}", capacity.context_length));
       }
-      const saved = await get().apiClient.updateAgent(id, pageAgentPayload(editor, page));
+      const saved = await api.updateAgent(id, pageAgentPayload(editor, page));
       if (!matches()) return false;
       editor = acceptPageAgent(editor, page, saved);
       publish(editor);
@@ -106,13 +130,13 @@ export function createPageActions(
       (page === "identity" || page === "expression") &&
       (personaPageDirty(editor, page) || (page === "expression" && agentPageDirty(editor, page)))
     ) {
-      const saved = await get().apiClient.savePersona(id, pagePersonaPayload(editor, page));
+      const saved = await api.savePersona(id, pagePersonaPayload(editor, page));
       if (!matches()) return false;
       editor = acceptPagePersona(editor, page, saved);
       publish(editor);
     }
     if (page === "long-memory" && editor.policy && editor.policyDraft && policyDirty(editor)) {
-      const saved = await get().apiClient.updatePolicy(id, {
+      const saved = await api.updatePolicy(id, {
         auto_enabled: editor.policyDraft.auto_enabled,
         every_turns: editor.policyDraft.every_turns,
         target_chars: editor.policyDraft.target_chars,
@@ -124,24 +148,109 @@ export function createPageActions(
     }
     return true;
   };
-  const save = async (pages: EditablePage[]) => {
+  const taskPages = {
+    identity: ["basic", "identity", "expression"],
+    conversation: ["models", "context"],
+    materials: ["memory-tools"],
+  } as const satisfies Record<
+    import("../../state/types").AgentWorkspaceTask,
+    readonly EditablePage[]
+  >;
+  const save = async (
+    pages: readonly EditablePage[],
+    task?: import("../../state/types").AgentWorkspaceTask,
+  ) => {
     const editor = get().pageEditor;
     if (!editor || get().settingsSaving || get().editorLoading) return false;
-    const token = editor.token;
+    const token = editor.token,
+      id = editor.agent.id,
+      api = get().apiClient,
+      operation = {};
+    const matches = () =>
+      get().pageEditor?.token === token && get().editorAgentId === id && get().apiClient === api;
+    knowledgeStep.acquire(operation);
     set({ settingsSaving: true, error: null, feedback: "" });
+    let knowledge: ReturnType<typeof knowledgeStep.capture> = null;
     try {
-      for (const page of pages) if (!(await savePage(page, token))) return false;
+      knowledge = task === "materials" ? knowledgeStep.capture() : null;
+      if (knowledge && (knowledge.agentId !== id || !knowledgeStep.matches(knowledge)))
+        return false;
+      if (task) {
+        for (const page of pages) {
+          const current = get().pageEditor;
+          if (!current || !matches()) return false;
+          if (
+            page === "context" &&
+            Object.keys(get().allocationInvalidInputs).some(
+              (key) => key.startsWith(`agent:${id}:context:`) || key.startsWith(`agent:${id}:aux:`),
+            )
+          )
+            throw new Error(msg("请先修正方案中的无效数字，再保存。"));
+          if (
+            page === "memory-tools" &&
+            Object.keys(get().allocationInvalidInputs).some((key) =>
+              key.startsWith(`agent:${id}:reading:memory:`),
+            )
+          )
+            throw new Error(msg("请先修正方案中的无效数字，再保存。"));
+          if (
+            page !== "expression" &&
+            agentPageDirty(current, page) &&
+            !UpdateAgentRequestSchema.safeParse(pageAgentPayload(current, page)).success
+          )
+            throw new Error(msg("保存失败，请修正后重试或取消。"));
+          if (
+            (page === "identity" || page === "expression") &&
+            (personaPageDirty(current, page) ||
+              (page === "expression" && agentPageDirty(current, page))) &&
+            !SavePersonaRequestSchema.safeParse(pagePersonaPayload(current, page)).success
+          )
+            throw new Error(msg("保存失败，请修正后重试或取消。"));
+        }
+        if (
+          task === "conversation" &&
+          (agentPageDirty(editor, "context") || agentPageDirty(editor, "models")) &&
+          editor.draft.p5_config.context_window !== null
+        ) {
+          const capacity = await api.getModelCapacity(editor.draft.model_name);
+          if (!matches() || (knowledge && !knowledgeStep.matches(knowledge))) return false;
+          if (capacity.context_length === null)
+            throw new Error(msg("模型未加载或容量未知，无法校验自定义预算；可改为null跟随"));
+          if (editor.draft.p5_config.context_window > capacity.context_length)
+            throw new Error(msg("自定义上下文超过模型实际容量{0}", capacity.context_length));
+        }
+      }
+      for (const page of pages) {
+        if (!matches() || (knowledge && !knowledgeStep.matches(knowledge))) return false;
+        if (
+          !(await savePage(
+            page,
+            token,
+            api,
+            task === "conversation",
+            () => !knowledge || knowledgeStep.matches(knowledge),
+          ))
+        )
+          return false;
+        if (!matches() || (knowledge && !knowledgeStep.matches(knowledge))) return false;
+      }
+      if (knowledge && !(await knowledgeStep.commit(knowledge))) {
+        if (matches() && knowledgeStep.matches(knowledge))
+          set({ feedback: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。") });
+        return false;
+      }
+      if (!matches() || (knowledge && !knowledgeStep.matches(knowledge))) return false;
       set({ feedback: msg("页面配置已保存；其他页面的草稿保持不变。") });
       return true;
     } catch (error) {
-      if (get().pageEditor?.token === token)
+      if (matches() && (!knowledge || knowledgeStep.matches(knowledge)))
         set({
           error: errorText(error),
           feedback: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
         });
       return false;
     } finally {
-      set({ settingsSaving: false });
+      knowledgeStep.release(operation);
     }
   };
   return {
@@ -153,7 +262,6 @@ export function createPageActions(
           .filter((key) => Object.hasOwn(patch, key))
           .map((key) => [key, patch[key]]),
       );
-      const presets = patch.p5_config?.retrieval_presets;
       set({
         pageEditor: {
           ...editor,
@@ -167,26 +275,6 @@ export function createPageActions(
                   .filter((key) => patch.p5_config && Object.hasOwn(patch.p5_config, key))
                   .map((key) => [key, patch.p5_config?.[key]]),
               ),
-              ...(page === "memory-tools" && presets
-                ? {
-                    // 记忆页只改非预算键：补丁字段生效，当前草稿的 max_tokens 保留
-                    //（上下文页未保存的预算改动不被回退）。
-                    retrieval_presets: mergeMemoryRetrievalPresets(
-                      editor.draft.p5_config.retrieval_presets,
-                      presets,
-                    ),
-                  }
-                : page === "context" && presets
-                  ? {
-                      // context 页此前缺失显式分支：带 retrieval_presets 的补丁被整组丢弃，
-                      // 统一分配面板的读取预算改档因此静默失效。恢复为「只改 max_tokens，
-                      // 保留当前草稿的非预算键」。
-                      retrieval_presets: mergeContextRetrievalPresets(
-                        editor.draft.p5_config.retrieval_presets,
-                        presets,
-                      ),
-                    }
-                  : {}),
             },
           },
         },
@@ -225,6 +313,26 @@ export function createPageActions(
     },
     saveSettingsPage: (page) => save([page]),
     saveAllSettingsPages: () => save(dirtyPages(get().pageEditor)),
+    saveSettingsTask: (task) => save(taskPages[task], task),
+    settingsTaskDirty: (task) => {
+      const editor = get().pageEditor;
+      return (
+        Boolean(
+          editor &&
+            taskPages[task].some(
+              (page) => agentPageDirty(editor, page) || personaPageDirty(editor, page),
+            ),
+        ) ||
+        (task === "materials" &&
+          get().knowledgeReadEditor?.agentId === get().editorAgentId &&
+          knowledgeReadDirty(get().knowledgeReadEditor))
+      );
+    },
+    discardSettingsTask: (task) => {
+      if (get().settingsSaving) return;
+      for (const page of taskPages[task]) get().discardSettingsPages(page);
+      if (task === "materials") get().discardKnowledgeRead();
+    },
     // 三个文本用途共用模型页的白名单与版本校验；旧独立检索模型值保持原样。
     applyDefaultModelToAgent: async (modelName) => {
       const editor = get().pageEditor;
@@ -255,15 +363,15 @@ export function createPageActions(
       if (page) {
         const prefix = `agent:${editor.agent.id}:`;
         const keptInvalid = Object.fromEntries(
-          Object.entries(get().allocationInvalidInputs).filter(
-            ([key]) =>
-              page !== "context" ||
-              !(
-                key.startsWith(`${prefix}context:`) ||
-                key.startsWith(`${prefix}aux:`) ||
-                key.startsWith(`${prefix}reading:memory:`)
-              ),
-          ),
+          Object.entries(get().allocationInvalidInputs).filter(([key]) => {
+            if (page === "context") {
+              return !(key.startsWith(`${prefix}context:`) || key.startsWith(`${prefix}aux:`));
+            }
+            if (page === "memory-tools") {
+              return !key.startsWith(`${prefix}reading:memory:`);
+            }
+            return true;
+          }),
         );
         set({
           allocationInvalidInputs: keptInvalid,
@@ -275,27 +383,8 @@ export function createPageActions(
               p5_config: {
                 ...editor.draft.p5_config,
                 ...Object.fromEntries(
-                  p5Fields(page)
-                    .filter((key) => key !== "retrieval_presets")
-                    .map((key) => [key, editor.agent.p5_config[key]]),
+                  p5Fields(page).map((key) => [key, editor.agent.p5_config[key]]),
                 ),
-                ...(page === "context" || page === "memory-tools"
-                  ? {
-                      // 嵌套所有权按档恢复：本页只恢复自己拥有的键，另一页的草稿改动保留。
-                      // memory-tools 拥有非 max_tokens 键（基线取回、草稿预算保留）；
-                      // context 只拥有 max_tokens（预算回基线、草稿非预算键保留）。
-                      retrieval_presets:
-                        page === "memory-tools"
-                          ? mergeContextRetrievalPresets(
-                              editor.agent.p5_config.retrieval_presets,
-                              editor.draft.p5_config.retrieval_presets,
-                            )
-                          : mergeMemoryRetrievalPresets(
-                              editor.agent.p5_config.retrieval_presets,
-                              editor.draft.p5_config.retrieval_presets,
-                            ),
-                    }
-                  : {}),
               },
             },
             ...(PAGE_PERSONA_FIELDS[page].length
@@ -355,7 +444,7 @@ export function createPageActions(
           for (const key of PAGE_AGENT_FIELDS[page]) {
             if (current.draft[key] !== current.agent[key]) draftRecord[key] = current.draft[key];
           }
-          if (page === "memory-tools" || page === "context") {
+          if (page === "memory-tools") {
             // 三方逐档合并：fresh=新基线、saved=刷新前基线、draft=当前草稿。
             // 只把「相对 saved 真被改过」的嵌套键保留为草稿值，其余跟随 fresh；
             // 未改档不再整组被旧对象覆盖，其他页/他端的预设更新得以并入基线。

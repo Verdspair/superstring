@@ -8,7 +8,6 @@ import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import { projectConversationEvent } from "../../src/server/conversation/conversation-view";
 import { toOrmHandle } from "../../src/server/db/connection";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
-import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { recordQqSend } from "../../src/server/db/qq-send-repository";
 import {
   createSession,
@@ -76,13 +75,24 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
       "stable-request",
       prepared.generationToken,
     );
-    const knowledge = new KnowledgeRepository(oldDb);
-    const document = knowledge.importDocument({
-      category_id: "default",
-      name: "原文与授权",
-      original_text: "第一行\n第二行：不能截断。",
-    });
-    knowledge.replaceGrants(document.id, document.revision, [DEFAULT_AGENT_ID]);
+    // Seed the v38 shape directly; today's repository writes columns added after v38.
+    const documentId = crypto.randomUUID();
+    const documentAt = nowIso();
+    oldDb
+      .query(
+        "INSERT INTO knowledge_documents (id, category_id, name, original_text, import_type, revision, created_at, updated_at) VALUES (?, 'default', ?, ?, 'text', 2, ?, ?)",
+      )
+      .run(documentId, "原文与授权", "第一行\n第二行：不能截断。", documentAt, documentAt);
+    oldDb
+      .query(
+        "INSERT INTO knowledge_grants (document_id, agent_id, token, created_at) VALUES (?, ?, ?, ?)",
+      )
+      .run(documentId, DEFAULT_AGENT_ID, crypto.randomUUID(), documentAt);
+    oldDb
+      .query(
+        "INSERT INTO knowledge_jobs (id, document_id, content_version, settings_revision, created_at) VALUES (?, ?, 1, 1, ?)",
+      )
+      .run(crypto.randomUUID(), documentId, documentAt);
     // Seed v38 settings directly; the current account guard requires later schema tables.
     oldDb
       .query(
@@ -206,6 +216,9 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
       user_version: BUSINESS_SCHEMA_VERSION,
     });
     expect(next.db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      next.db.query("SELECT visibility FROM knowledge_documents WHERE id=?").get(documentId),
+    ).toEqual({ visibility: null });
     for (const table of baseline)
       expect({
         table: table.name,

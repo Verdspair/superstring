@@ -952,8 +952,8 @@ describe("job execution", () => {
     const { orm, gateway, service } = setup();
     const sessionId = newSession(orm);
     configureAuto(orm, AGENT_ID, 1);
-    completedTurn(orm, sessionId, "t1");
-    seedEntry(orm, { name: "旧偏好", body: "我喜欢精炼的汉语回复", status: "suppressed" });
+    const turnId = completedTurn(orm, sessionId, "t1");
+    seedEntry(orm, { name: "旧偏好", body: "我喜欢精炼的汉语回复", status: "suppressed", turnId });
     gateway.replies = [
       JSON.stringify({
         memory: { ...VALID_DRAFT.memory, body: "我喜欢精炼的汉语回复。" },
@@ -973,8 +973,8 @@ describe("job execution", () => {
     const { orm, gateway, service } = setup();
     const sessionId = newSession(orm);
     configureAuto(orm, AGENT_ID, 1);
-    completedTurn(orm, sessionId, "t1");
-    seedEntry(orm, { name: "旧偏好", body: "完全不同的字面", status: "suppressed" });
+    const turnId = completedTurn(orm, sessionId, "t1");
+    seedEntry(orm, { name: "旧偏好", body: "完全不同的字面", status: "suppressed", turnId });
     gateway.replies = [VALID_DRAFT_JSON, '{"blocked": true}'];
 
     service.scheduleAuto();
@@ -982,18 +982,57 @@ describe("job execution", () => {
 
     expect(gateway.calls).toHaveLength(2);
     expect(gateway.calls[1].responseSchema).toEqual(SUPPRESSION_RESULT_JSON_SCHEMA);
-    expect(gateway.calls[1].messages[0].content).toContain("按含义比较每一个事实");
+    const comparison = gateway.calls[1].messages;
+    const instruction = comparison[0].content;
+    const payload = JSON.parse(comparison[1].content) as {
+      candidate: { body: string };
+      blocked: Array<{ body: string }>;
+    };
+    expect(instruction).toContain("发言者不一定是叙事主体");
+    expect(instruction).toContain("主体或时间未知时不得猜测");
+    expect(instruction).not.toContain("第一人称'我'指用户");
+    expect(payload.candidate.body).toBe(VALID_DRAFT.memory.body);
+    expect(payload.blocked.map((entry) => entry.body)).toEqual(["完全不同的字面"]);
     expect(jobs(orm)[0].status).toBe("succeeded");
     expect(entries(orm, AGENT_ID).filter((e) => e.status === "active")).toHaveLength(0);
+  });
+
+  it("rejects changed source after a suppression call instead of publishing the candidate", async () => {
+    const { orm, gateway, service, business } = setup();
+    try {
+      const sessionId = newSession(orm);
+      configureAuto(orm, AGENT_ID, 1);
+      const turnId = completedTurn(orm, sessionId, "source-before-suppression");
+      seedEntry(orm, {
+        name: "old",
+        body: "different blocked content",
+        status: "suppressed",
+        turnId,
+      });
+      gateway.replies = [VALID_DRAFT_JSON, "block"];
+      service.scheduleAuto();
+      const running = service.runCycle();
+      for (let i = 0; i < 100 && !gateway.blocked; i++) await delay(1);
+      expect(gateway.blocked).toBe(true);
+      orm.update(schema.turns).set({ sourceValid: 0 }).where(eq(schema.turns.id, turnId)).run();
+      gateway.release('{"blocked":false}');
+      await running;
+      expect(gateway.calls).toHaveLength(2);
+      expect(jobs(orm)[0].status).toBe("failed");
+      expect(entries(orm, AGENT_ID).filter((entry) => entry.status === "active")).toHaveLength(0);
+    } finally {
+      gateway.release();
+      business.close();
+    }
   });
 
   it("checks suppression in bounded chunks of 8, never truncating", async () => {
     const { business, orm, gateway, service } = setup();
     const sessionId = newSession(orm);
     configureAuto(orm, AGENT_ID, 1);
-    completedTurn(orm, sessionId, "t1");
+    const turnId = completedTurn(orm, sessionId, "t1");
     for (let i = 0; i < 9; i += 1) {
-      seedEntry(orm, { name: `旧${i}`, body: `不同字面${i}`, status: "suppressed" });
+      seedEntry(orm, { name: `旧${i}`, body: `不同字面${i}`, status: "suppressed", turnId });
     }
     gateway.replies = [VALID_DRAFT_JSON, '{"blocked": false}', '{"blocked": false}'];
 

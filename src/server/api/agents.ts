@@ -16,7 +16,6 @@ import {
 } from "../../shared/contracts";
 import type { PermissionRequirement } from "../../shared/contracts/permissions";
 import type { BuiltInAction } from "../agent/built-in-actions";
-import type { KnowledgeRepository } from "../db/knowledge-repository";
 import { ensureDefaults, type Orm } from "../db/repositories";
 import { isAppError } from "../errors";
 import type { McpManagement } from "../mcp/management";
@@ -75,7 +74,6 @@ function toPersonaResponse(row: {
 export interface AgentRoutesOptions {
   permissions?: PermissionService;
   externalActions?: () => readonly BuiltInAction[];
-  knowledge?: KnowledgeRepository;
   mcpManagement?: McpManagement;
 }
 
@@ -157,7 +155,6 @@ export function agentRoutes(
     const row = createAgent(orm, config as Record<string, unknown>, persona, personaIntensity, {
       permissions: options?.permissions,
       requirements,
-      knowledge: options?.knowledge,
     });
     return c.json(toAgentResponse(row), 201);
   });

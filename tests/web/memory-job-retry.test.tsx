@@ -58,8 +58,8 @@ function deferredRetry() {
 async function openConfirm() {
   fireEvent.click(screen.getByRole("button", { name: "重试" }));
   const dialog = await screen.findByRole("alertdialog");
+  expect(within(dialog).getByRole("button", { name: "重试" })).toBeTruthy();
   fireEvent.click(within(dialog).getByRole("button", { name: "重试" }));
-  return dialog;
 }
 
 beforeEach(() => {
@@ -77,10 +77,12 @@ afterEach(() => {
 
 describe("failed memory job retry", () => {
   it("offers retry only on failed rows and disables it while an active job exists", async () => {
-    setupLibrary();
+    let currentJobs = [failedJob, succeededJob, queuedJob];
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
+    setupLibrary({ listMemoryJobs });
     store.setState({
       settingsRoute: "long-memory",
-      memoryJobs: [failedJob, succeededJob, queuedJob],
+      memoryJobs: currentJobs,
     });
     await act(async () => render(<MemoryLibrary />));
     expect(screen.getAllByRole("button", { name: "重试" })).toHaveLength(1);
@@ -88,33 +90,38 @@ describe("failed memory job retry", () => {
     const retry = screen.getByRole("button", { name: "重试" });
     expect(retry.getAttribute("data-variant")).toBe("outline");
     expect(retry.hasAttribute("disabled")).toBe(true);
+
+    currentJobs = [failedJob, succeededJob];
     await act(async () => {
-      store.setState({ memoryJobs: [failedJob, succeededJob] });
+      store.setState({ memoryJobs: currentJobs });
     });
     expect(screen.getByRole("button", { name: "重试" }).hasAttribute("disabled")).toBe(false);
+
     // running 中的任务同样阻止重试。
+    currentJobs = [
+      failedJob,
+      {
+        ...failedJob,
+        id: "66666666-6666-4666-8666-666666666666",
+        status: "running",
+        error_code: null,
+        finished_at: null,
+      },
+    ];
     await act(async () => {
-      store.setState({
-        memoryJobs: [
-          failedJob,
-          {
-            ...failedJob,
-            id: "66666666-6666-4666-8666-666666666666",
-            status: "running",
-            error_code: null,
-            finished_at: null,
-          },
-        ],
-      });
+      store.setState({ memoryJobs: currentJobs });
     });
     expect(screen.getByRole("button", { name: "重试" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("states the job id, model cost and original snapshot before writing anything", async () => {
+    const currentJobs = [failedJob];
     const retryMemoryJob = vi.fn().mockResolvedValue(queuedJob);
-    const client = setupLibrary({ retryMemoryJob });
-    store.setState({ settingsRoute: "long-memory", memoryJobs: [failedJob] });
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
+    setupLibrary({ retryMemoryJob, listMemoryJobs });
+    store.setState({ settingsRoute: "long-memory", memoryJobs: currentJobs });
     await act(async () => render(<MemoryLibrary />));
+    const baselineCalls = listMemoryJobs.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     const dialog = screen.getByRole("alertdialog");
     expect(dialog.textContent).toContain(M);
@@ -123,36 +130,42 @@ describe("failed memory job retry", () => {
     expect(dialog.textContent).toContain("复验来源");
     expect(within(dialog).getByRole("button", { name: "取消" })).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: "重试" })).toBeTruthy();
-    // 打开确认框本身零写：既不调用重试，也不刷新列表。
+    // 打开确认框本身零写：既不调用重试，也不额外读取列表。
     expect(retryMemoryJob).not.toHaveBeenCalled();
-    expect(client.listMemoryJobs).not.toHaveBeenCalled();
+    expect(listMemoryJobs).toHaveBeenCalledTimes(baselineCalls);
     expect(store.getState().error).toBeNull();
   });
 
   it("cancel closes the dialog with zero writes", async () => {
+    const currentJobs = [failedJob];
     const retryMemoryJob = vi.fn().mockResolvedValue(queuedJob);
-    const client = setupLibrary({ retryMemoryJob });
-    store.setState({ settingsRoute: "long-memory", memoryJobs: [failedJob] });
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
+    setupLibrary({ retryMemoryJob, listMemoryJobs });
+    store.setState({ settingsRoute: "long-memory", memoryJobs: currentJobs });
     await act(async () => render(<MemoryLibrary />));
+    const baselineCalls = listMemoryJobs.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     const feedback = store.getState().feedback;
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "取消" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(retryMemoryJob).not.toHaveBeenCalled();
-    expect(client.listMemoryJobs).not.toHaveBeenCalled();
+    expect(listMemoryJobs).toHaveBeenCalledTimes(baselineCalls);
     expect(store.getState().memoryJobs).toEqual([failedJob]);
     expect(store.getState().error).toBeNull();
     expect(store.getState().feedback).toBe(feedback);
   });
 
   it("confirm writes once under a double click and refreshes the job list after success", async () => {
+    let currentJobs = [failedJob];
     const { retryMemoryJob, resolve } = deferredRetry();
-    const client = setupLibrary({
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
+    setupLibrary({
       retryMemoryJob,
-      listMemoryJobs: vi.fn().mockResolvedValue([{ ...queuedJob }]),
+      listMemoryJobs,
     });
-    store.setState({ settingsRoute: "long-memory", memoryJobs: [failedJob] });
+    store.setState({ settingsRoute: "long-memory", memoryJobs: currentJobs });
     await act(async () => render(<MemoryLibrary />));
+    const baselineCalls = listMemoryJobs.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     const dialog = await screen.findByRole("alertdialog");
     const confirm = within(dialog).getByRole("button", { name: "重试" });
@@ -160,27 +173,31 @@ describe("failed memory job retry", () => {
     fireEvent.click(confirm);
     expect(retryMemoryJob).toHaveBeenCalledTimes(1);
     expect(retryMemoryJob).toHaveBeenCalledWith(A, M);
+
+    currentJobs = [{ ...queuedJob }];
     await act(async () => {
       resolve({ ...queuedJob });
     });
     await waitFor(() =>
       expect(store.getState().memoryJobs.map((job) => job.status)).toEqual(["queued"]),
     );
-    expect(client.listMemoryJobs).toHaveBeenCalledTimes(1);
+    expect(listMemoryJobs.mock.calls.length).toBeGreaterThanOrEqual(baselineCalls + 1);
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
     expect(screen.getByText("排队中")).toBeTruthy();
   });
 
   it("keeps an unsaved content draft across a successful retry", async () => {
+    let currentJobs = [failedJob];
     const retryMemoryJob = vi.fn().mockResolvedValue({ ...queuedJob });
-    const client = setupLibrary({
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
+    setupLibrary({
       retryMemoryJob,
-      listMemoryJobs: vi.fn().mockResolvedValue([{ ...queuedJob }]),
+      listMemoryJobs,
     });
     store.setState({
       settingsRoute: "long-memory",
-      memoryJobs: [failedJob],
+      memoryJobs: currentJobs,
       memoryCorrectionDirty: true,
       memoryCorrectionDraft: {
         expected_revision: "a".repeat(64),
@@ -191,14 +208,14 @@ describe("failed memory job retry", () => {
       },
     });
     await act(async () => render(<MemoryLibrary />));
+    currentJobs = [{ ...queuedJob }];
     await openConfirm();
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(retryMemoryJob).toHaveBeenCalledWith(A, M);
-    // 草稿在场时 reloadMemory 整体早退；任务列表仍要换成新数据，草稿与详情不动。
     await waitFor(() =>
       expect(store.getState().memoryJobs.map((job) => job.status)).toEqual(["queued"]),
     );
-    expect(client.listMemoryJobs).toHaveBeenCalledWith(A);
+    expect(listMemoryJobs).toHaveBeenCalledWith(A);
     expect(store.getState().memoryCorrectionDirty).toBe(true);
     expect(store.getState().memoryCorrectionDraft?.body).toBe("Draft body");
     expect(store.getState().memoryContent).toBeNull();
@@ -210,13 +227,17 @@ describe("failed memory job retry", () => {
       .mockRejectedValue(
         new ApiError(409, "MEMORY_SOURCE_CHANGED", "来源或治理已变化，请重新选择并创建新任务"),
       );
+    const currentJobs = [failedJob];
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
     const client = setupLibrary({
       retryMemoryJob,
+      listMemoryJobs,
       consolidate: vi.fn(),
       merge: vi.fn(),
     });
-    store.setState({ settingsRoute: "long-memory", memoryJobs: [failedJob] });
+    store.setState({ settingsRoute: "long-memory", memoryJobs: currentJobs });
     await act(async () => render(<MemoryLibrary />));
+    const baselineCalls = listMemoryJobs.mock.calls.length;
     await openConfirm();
     await waitFor(() =>
       expect(store.getState().error).toContain("[MEMORY_SOURCE_CHANGED] 来源或治理已变化"),
@@ -226,7 +247,7 @@ describe("failed memory job retry", () => {
     expect(dialog.textContent).toContain(M);
     expect(dialog.textContent).toContain("[MEMORY_SOURCE_CHANGED] 来源或治理已变化");
     expect(store.getState().memoryJobs).toEqual([failedJob]);
-    expect(client.listMemoryJobs).not.toHaveBeenCalled();
+    expect(listMemoryJobs).toHaveBeenCalledTimes(baselineCalls);
     // 过期来源被拒绝后没有自动新任务兜底。
     expect(client.consolidate).not.toHaveBeenCalled();
     expect(client.merge).not.toHaveBeenCalled();
@@ -238,10 +259,13 @@ describe("failed memory job retry", () => {
   });
 
   it("does not write anything when the response arrives after switching agents", async () => {
+    const currentJobs = [failedJob];
     const { retryMemoryJob, resolve } = deferredRetry();
-    const client = setupLibrary({ retryMemoryJob });
-    store.setState({ settingsRoute: "long-memory", memoryJobs: [failedJob] });
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
+    setupLibrary({ retryMemoryJob, listMemoryJobs });
+    store.setState({ settingsRoute: "long-memory", memoryJobs: currentJobs });
     await act(async () => render(<MemoryLibrary />));
+    const baselineCalls = listMemoryJobs.mock.calls.length;
     await openConfirm();
     await act(async () => {
       store.setState({ editorAgentId: B });
@@ -256,14 +280,17 @@ describe("failed memory job retry", () => {
     expect(store.getState().memoryJobs).toEqual([failedJob]);
     expect(store.getState().feedback).toBe(feedback);
     expect(store.getState().error).toBeNull();
-    expect(client.listMemoryJobs).not.toHaveBeenCalled();
+    expect(listMemoryJobs).toHaveBeenCalledTimes(baselineCalls);
   });
 
   it("does not write anything when the response arrives after leaving the page", async () => {
+    const currentJobs = [failedJob];
     const { retryMemoryJob, resolve } = deferredRetry();
-    const client = setupLibrary({ retryMemoryJob });
-    store.setState({ settingsRoute: "long-memory", memoryJobs: [failedJob] });
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
+    setupLibrary({ retryMemoryJob, listMemoryJobs });
+    store.setState({ settingsRoute: "long-memory", memoryJobs: currentJobs });
     await act(async () => render(<MemoryLibrary />));
+    const baselineCalls = listMemoryJobs.mock.calls.length;
     await openConfirm();
     cleanup();
     const feedback = store.getState().feedback;
@@ -274,11 +301,14 @@ describe("failed memory job retry", () => {
     expect(store.getState().memoryJobs).toEqual([failedJob]);
     expect(store.getState().feedback).toBe(feedback);
     expect(store.getState().error).toBeNull();
-    expect(client.listMemoryJobs).not.toHaveBeenCalled();
+    expect(listMemoryJobs).toHaveBeenCalledTimes(baselineCalls);
   });
 
   it("states cost and snapshot in English too", async () => {
-    setupLibrary({ retryMemoryJob: vi.fn().mockResolvedValue(queuedJob) });
+    setupLibrary({
+      retryMemoryJob: vi.fn().mockResolvedValue(queuedJob),
+      listMemoryJobs: vi.fn().mockResolvedValue([failedJob]),
+    });
     selectLocale("en");
     store.setState({ settingsRoute: "long-memory", memoryJobs: [failedJob] });
     await act(async () => render(<MemoryLibrary />));
@@ -288,5 +318,70 @@ describe("failed memory job retry", () => {
     expect(dialog.textContent).toContain("usage costs");
     expect(dialog.textContent).toContain("original snapshot");
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  it("filtered retry preserves page 2 and current query filters on refresh", async () => {
+    let currentJobs = [failedJob];
+    const listMemoryEntries = vi.fn().mockResolvedValue({ items: [], total: 150 });
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
+    const retryMemoryJob = vi.fn().mockImplementation(async () => {
+      currentJobs = [{ ...queuedJob }];
+      return queuedJob;
+    });
+    setupLibrary({ listMemoryJobs, listMemoryEntries, retryMemoryJob });
+    store.setState({ settingsRoute: "long-memory" });
+    render(<MemoryLibrary />);
+    await screen.findByRole("button", { name: "重试" });
+    const search = screen.getByRole("textbox", { name: "搜索记忆" });
+    fireEvent.change(search, { target: { value: "query" } });
+    const form = search.closest("form");
+    if (!form) throw new Error("missing search form");
+    fireEvent.submit(form);
+    await waitFor(() =>
+      expect(listMemoryEntries.mock.calls.at(-1)?.[3]).toEqual({ search: "query" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await waitFor(() => expect(listMemoryEntries.mock.calls.at(-1)?.[1]).toBe(100));
+    listMemoryEntries.mockClear();
+    await openConfirm();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(retryMemoryJob).toHaveBeenCalledTimes(1);
+    expect(listMemoryEntries).toHaveBeenCalledExactlyOnceWith(
+      A,
+      100,
+      100,
+      { search: "query" },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("job retry keeps an unsaved visibility draft intact without dropping draft", async () => {
+    let currentJobs = [failedJob];
+    const retryMemoryJob = vi.fn().mockResolvedValue({ ...queuedJob });
+    const listMemoryJobs = vi.fn().mockImplementation(async () => currentJobs);
+    setupLibrary({
+      retryMemoryJob,
+      listMemoryJobs,
+    });
+    store.setState({
+      settingsRoute: "long-memory",
+      memoryJobs: currentJobs,
+      memoryVisibilityDirty: true,
+      memoryVisibilityDraft: {
+        visibility: "session_private",
+        recipient_agent_ids: [],
+      },
+    });
+    await act(async () => render(<MemoryLibrary />));
+    currentJobs = [{ ...queuedJob }];
+    await openConfirm();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+
+    // Job was retried
+    expect(retryMemoryJob).toHaveBeenCalledWith(A, M);
+
+    // Visibility draft is completely preserved!
+    expect(store.getState().memoryVisibilityDirty).toBe(true);
+    expect(store.getState().memoryVisibilityDraft?.visibility).toBe("session_private");
   });
 });

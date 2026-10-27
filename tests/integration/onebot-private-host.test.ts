@@ -38,6 +38,10 @@ import { ModelUnavailableError } from "../../src/server/errors";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createSqliteQueryFactory } from "../../src/server/modules/composition";
 import { PermissionService } from "../../src/server/permissions/service";
+import {
+  MEMORY_SEARCH_FOLD_VERSION,
+  memorySearchProjection,
+} from "../../src/server/services/memory-contract";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
 import {
@@ -778,6 +782,14 @@ function addMemory(h: ReturnType<typeof setup>, body = "apples are green") {
       name: "apples",
       summary: "apples",
       tags: '["apples"]',
+      foldedSearch: memorySearchProjection({
+        id,
+        name: "apples",
+        summary: "apples",
+        tags: '["apples"]',
+        body,
+      }),
+      foldVersion: MEMORY_SEARCH_FOLD_VERSION,
       kinds: '["semantic"]',
       body,
       scope: "reality_user",
@@ -786,10 +798,34 @@ function addMemory(h: ReturnType<typeof setup>, body = "apples are green") {
       createdAt: stamp(),
     })
     .run();
-  h.receive("900", "apples");
-  const event = h.db.query("SELECT event_key FROM qq_events WHERE message_id=?").get("900") as {
-    event_key: string;
-  };
+  const event = { event_key: crypto.randomUUID() };
+  h.orm
+    .insert(schema.qqEvents)
+    .values({
+      eventKey: event.event_key,
+      accountId: "10001",
+      conversationKind: "private",
+      peerId: "20002",
+      agentId: DEFAULT_AGENT_ID,
+      messageId: "900",
+      occurredAtSeconds: nowSeconds,
+      speakerKind: "member",
+      speakerId: "20002",
+      recordedAt: stamp(),
+    })
+    .run();
+  h.orm
+    .insert(schema.qqObservationText)
+    .values({
+      eventKey: event.event_key,
+      body: "synthetic memory source",
+      occurredAtSeconds: nowSeconds,
+      expiresAt: new Date((nowSeconds + 3600) * 1000).toISOString(),
+      recordedAt: stamp(),
+    })
+    .run();
+  h.journal.ensureOneBot(bindingId);
+  h.journal.ingestOneBotEvent(event.event_key, bindingId);
   h.orm
     .insert(schema.qqMemorySources)
     .values({
@@ -880,7 +916,18 @@ describe("private feature preservation", () => {
       (snapshot) => JSON.parse(snapshot.refs) as { kind: string; id: string }[],
     );
     expect(refs.map((ref) => ref.kind)).toContain("qq_observation");
-    expect(refs).toContainEqual(expect.objectContaining({ kind: "memory", id: memoryId }));
+    const memoryAccessId = JSON.stringify([
+      DEFAULT_AGENT_ID,
+      h.journal.ensureOneBot(bindingId)!.id,
+      memoryId,
+    ]);
+    expect(refs).toContainEqual(
+      expect.objectContaining({
+        kind: "memory_access",
+        id: memoryAccessId,
+        revision: expect.any(String),
+      }),
+    );
     // Search observations remain ordinary model context, but only the selected asset is carried
     // on the outbox sticker part; it is never copied into target/common source authorization.
     expect(refs).toContainEqual(expect.objectContaining({ kind: "qq_sticker", id }));
@@ -899,7 +946,7 @@ describe("private feature preservation", () => {
     // 撤权后必须经检查接口复验为 revoked，原文才不再保留（惰性脱敏）。
     const withMemory = snapshots.filter((snapshot) =>
       (JSON.parse(snapshot.refs) as { kind: string; id: string }[]).some(
-        (ref) => ref.kind === "memory" && ref.id === memoryId,
+        (ref) => ref.kind === "memory_access" && ref.id === memoryAccessId,
       ),
     );
     expect(withMemory.length).toBeGreaterThan(0);
@@ -1384,6 +1431,7 @@ describe("private initiative and cancellation", () => {
       expect(scoreKinds).toContain("qq_observation");
       expect(scoreKinds).not.toContain("knowledge_document");
       expect(scoreKinds).not.toContain("memory");
+      expect(scoreKinds).not.toContain("memory_access");
       // 评分达标 → tool-capable 回复任务：显式 query/read 把知识/记忆带入回复上下文；off/full_body 决定是否读记忆。
       expect(main).toHaveLength(mode === "off" ? 3 : 5);
       for (const request of main) {
@@ -1396,7 +1444,7 @@ describe("private initiative and cancellation", () => {
       const replyKinds = kindsOf(replyRow)!;
       expect(replyKinds).toEqual(
         expect.arrayContaining([
-          ...(mode === "off" ? [] : ["memory"]),
+          ...(mode === "off" ? [] : ["memory_access"]),
           "knowledge_document",
           "knowledge_grant",
           "qq_observation",
@@ -1406,8 +1454,19 @@ describe("private initiative and cancellation", () => {
       expect(replyRefs).toContainEqual(
         expect.objectContaining({ kind: "knowledge_document", id: doc.id }),
       );
-      if (mode !== "off")
-        expect(replyRefs).toContainEqual(expect.objectContaining({ kind: "memory", id: memoryId }));
+      if (mode !== "off") {
+        const memoryAccessId = JSON.stringify([DEFAULT_AGENT_ID, c.id, memoryId]);
+        expect(replyRefs).toContainEqual(
+          expect.objectContaining({
+            kind: "memory_access",
+            id: memoryAccessId,
+            revision: expect.any(String),
+          }),
+        );
+      } else {
+        expect(replyKinds).not.toContain("memory");
+        expect(replyKinds).not.toContain("memory_access");
+      }
     },
   );
   it("cancellation during generation records a cancelled run without advancing source cursor", async () => {

@@ -1,16 +1,24 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
-import type { ActionContext } from "../../src/server/agent/built-in-actions";
+import type { ActionContext, BuiltInAction } from "../../src/server/agent/built-in-actions";
 import { createApp } from "../../src/server/app";
 import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
+import { setMemoryVisibility } from "../../src/server/db/memory-content-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
+import {
+  createQqStickerCollection,
+  importQqSticker,
+  readQqStickerAssetRow,
+  setQqStickerEnabled,
+} from "../../src/server/db/qq-sticker-repository";
 import {
   resolveQqSummaryProvenance,
   saveQqConversationSummary,
@@ -22,11 +30,19 @@ import {
   ensureDefaults,
   getAgentRow,
   listMessages,
+  nowIso,
+  prepareTurn,
+  saveCompletedAssistantMessage,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
-import { captureQqTask, createQqBinding } from "../../src/server/services/qq-binding-contract";
+import {
+  captureQqTask,
+  createQqBinding,
+  qqConversationKey,
+  qqMemoryScopeKey,
+} from "../../src/server/services/qq-binding-contract";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import type { RuntimeConfig } from "../../src/shared/contracts";
 import type { RunOwner } from "../../src/shared/contracts/agent-run";
@@ -167,6 +183,57 @@ async function runOldTurn(
   expect(events.at(-1)?.type).toBe("completed");
 }
 
+function seedMemoryFromOldTurn(
+  business: ReturnType<typeof openBusinessDb>,
+  sessionId: string,
+  id: string,
+  body: string,
+) {
+  const rows = listMessages(business.orm, sessionId);
+  const user = rows.find((message) => message.role === "user");
+  const assistant = rows.find(
+    (message) => message.role === "assistant" && message.turnId === user?.turnId,
+  );
+  if (!user || !assistant) throw new Error("missing completed Web source");
+  business.orm
+    .insert(schema.memoryEntries)
+    .values({
+      id,
+      agentId: DEFAULT_AGENT_ID,
+      userId: DEFAULT_USER_ID,
+      name: "memory",
+      summary: "safe preview",
+      tags: "[]",
+      kinds: "[]",
+      body,
+      scope: "reality_user",
+      scopeKey: DEFAULT_AGENT_ID,
+      status: "active",
+      configSnapshot: "{}",
+      createdAt: nowIso(),
+      visibility: "session_private",
+    })
+    .run();
+  business.orm
+    .insert(schema.memorySources)
+    .values({
+      memoryId: id,
+      turnId: user.turnId,
+      userMessageId: user.id,
+      assistantMessageId: assistant.id,
+      sequenceNo: user.sequenceNo,
+    })
+    .run();
+}
+
+function memoryBodyRef(input: CompleteInput): string {
+  const item = lastObservation(input.messages, "memory.query")?.value?.items?.[0] as
+    | { bodyRef?: unknown }
+    | undefined;
+  if (typeof item?.bodyRef !== "string") throw new Error("memory.query observation lacks bodyRef");
+  return item.bodyRef;
+}
+
 /** 第二个完成轮：脚本 history.query → history.read → final(generate)。 */
 async function runEvidenceTurn(
   app: WebApp,
@@ -196,7 +263,9 @@ async function runEvidenceTurn(
 }
 
 /** QQ 宿主夹具（思路与 bot-context-source.test.ts 相同，不导入该测试文件）。 */
-function qqSetup(input: { mode?: RuntimeConfig["p5_config"]["retrieval_mode"] } = {}) {
+function qqSetup(
+  input: { mode?: RuntimeConfig["p5_config"]["retrieval_mode"]; gateway?: ModelGateway } = {},
+) {
   const h = runtimeFixtureBusiness(openBusinessDb(), "reply-model");
   handles.push(h);
   ensureDefaults(h.orm, "reply-model");
@@ -226,7 +295,7 @@ function qqSetup(input: { mode?: RuntimeConfig["p5_config"]["retrieval_mode"] } 
   const outbox = new OutboundIntentRepository(h.db);
   const conversation = journal.ensureOneBot(binding.id);
   if (!conversation) throw new Error("missing conversation");
-  const gateway: ModelGateway = {
+  const gateway: ModelGateway = input.gateway ?? {
     config: { baseUrl: "http://unused.invalid", model: "reply-model", timeoutSeconds: 1 },
     listModels: async () => [],
     probeModelLoaded: async () => true,
@@ -303,7 +372,93 @@ function qqSetup(input: { mode?: RuntimeConfig["p5_config"]["retrieval_mode"] } 
     journal.ingestOneBotEvent(id, binding.id);
     return id;
   };
-  return { h, binding, conversation, buildSource, seed, now, runtime };
+  return { h, binding, conversation, buildSource, seed, now, runtime, agentRuntime, journal };
+}
+
+function seedQqMemory(f: ReturnType<typeof qqSetup>, body: string) {
+  const eventKey = f.seed("synthetic QQ memory source");
+  const event = f.h.orm
+    .select()
+    .from(schema.qqEvents)
+    .where(eq(schema.qqEvents.eventKey, eventKey))
+    .get()!;
+  const id = crypto.randomUUID();
+  const scopeKey = qqMemoryScopeKey({
+    kind: "qq",
+    accountId: f.binding.accountId,
+    conversationKind: f.binding.kind,
+    peerId: f.binding.peerId,
+    agentId: f.binding.agentId,
+  });
+  f.h.orm
+    .insert(schema.memoryEntries)
+    .values({
+      id,
+      agentId: DEFAULT_AGENT_ID,
+      userId: DEFAULT_USER_ID,
+      name: "QQ memory",
+      summary: "summary",
+      tags: "[]",
+      kinds: "[]",
+      body,
+      scope: "reality_user",
+      scopeKey,
+      status: "active",
+      configSnapshot: "{}",
+      createdAt: f.now,
+      visibility: "session_private",
+    })
+    .run();
+  f.h.orm
+    .insert(schema.qqMemorySources)
+    .values({
+      memoryId: id,
+      eventKey,
+      scopeKey,
+      conversationKey: qqConversationKey({
+        accountId: f.binding.accountId,
+        kind: f.binding.kind,
+        peerId: f.binding.peerId,
+      }),
+      messageId: event.messageId,
+      occurredAtSeconds: event.occurredAtSeconds,
+      speakerKind: event.speakerKind,
+      speakerId: event.speakerId,
+    })
+    .run();
+  return id;
+}
+
+async function runQqMemory(
+  f: ReturnType<typeof qqSetup>,
+  gateway: ScriptedGateway,
+  extraActions: readonly BuiltInAction[] = [],
+) {
+  const source = f.buildSource("reply");
+  const actions = [...source.actions, ...extraActions];
+  const spec: AgentSpec = {
+    id: "test.qq-memory",
+    model: "reply-model",
+    context: "conversation",
+    instructions: "",
+    availableActions: actions.map((action) => action.description),
+    limits: { steps: 16 },
+  };
+  const result = await f.agentRuntime.run(spec, {
+    owner: {
+      kind: "qq_binding",
+      id: f.binding.id,
+      userId: DEFAULT_USER_ID,
+      agentId: DEFAULT_AGENT_ID,
+    },
+    context: source,
+    actions,
+    authorizedTargets: ["alice"],
+    outputMode: "buffered",
+    signal: new AbortController().signal,
+    requestId: crypto.randomUUID(),
+  });
+  return { result, calls: gateway.completeCalls };
 }
 
 describe("conversation evidence hosts", () => {
@@ -397,6 +552,390 @@ describe("conversation evidence hosts", () => {
     await expect(
       read.execute({ bodyRef: items[0]!.bodyRef, limit: 4096 }, context),
     ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+  });
+
+  it("QQ host reads current private memory and blocks retained evidence after mode ABA", async () => {
+    const gateway = new ScriptedGateway();
+    gateway.loadedContextCapacity = async () => 65536;
+    const f = qqSetup({ mode: "standard", gateway });
+    const secret = "QQ-PRIVATE-MEMORY-SECRET";
+    let positiveReadReached = false;
+    let modeAbaCompleted = false;
+    seedQqMemory(f, secret);
+    gateway.decisions = [
+      { kind: "invoke", name: "memory.query", arguments: { query: "" } },
+      (input: CompleteInput) => ({
+        kind: "invoke",
+        name: "memory.read",
+        arguments: { bodyRef: memoryBodyRef(input), offset: 0, limit: 4096 },
+      }),
+      (input: CompleteInput) => {
+        expect(JSON.stringify(lastObservation(input.messages, "memory.read"))).toContain(secret);
+        positiveReadReached = true;
+        expect(
+          f.journal.setMemoryReadMode(f.conversation.id, DEFAULT_USER_ID, "agent_shared", 1)?.kind,
+        ).toBe("saved");
+        expect(
+          f.journal.setMemoryReadMode(f.conversation.id, DEFAULT_USER_ID, "current_conversation", 2)
+            ?.kind,
+        ).toBe("saved");
+        modeAbaCompleted = true;
+        return {
+          kind: "final",
+          outputs: [{ kind: "inline", targetId: "alice", text: "not sent" }],
+        };
+      },
+    ];
+    await expect(runQqMemory(f, gateway)).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+    expect(positiveReadReached).toBe(true);
+    expect(modeAbaCompleted).toBe(true);
+    expect(
+      gateway.completeCalls.some((call) => JSON.stringify(call.messages).includes(secret)),
+    ).toBe(true);
+    expect(gateway.streamCalls).toHaveLength(0);
+  });
+
+  it("QQ rendered carrier exclusion never masks the same source in common material", async () => {
+    const f = qqSetup();
+    const eventKey = f.seed("shared source");
+    const ref = {
+      kind: "qq_observation",
+      id: eventKey,
+      revision: createHash("sha256").update("shared source").digest("hex"),
+      expiresAt: new Date(Date.parse(f.now) + 3600_000).toISOString(),
+    };
+    const source = f.buildSource("reply");
+    await source.read({
+      signal: new AbortController().signal,
+      observations: [
+        { id: crypto.randomUUID(), name: "sticker.search", value: {}, sources: [ref] },
+        { id: crypto.randomUUID(), name: "history.read", value: {}, sources: [ref] },
+      ],
+    });
+    f.h.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(eventKey);
+    expect(() => source.assertRenderedSources([ref])).toThrow();
+  });
+
+  for (const revokeMemory of [false, true]) {
+    it(`QQ rendered sticker carrier keeps retained memory currentness when mode ABA=${revokeMemory}`, async () => {
+      const gateway = new ScriptedGateway();
+      gateway.loadedContextCapacity = async () => 65536;
+      const f = qqSetup({ mode: "standard", gateway });
+      const secret = "QQ-MIXED-CARRIER-MEMORY";
+      seedQqMemory(f, secret);
+      const collection = createQqStickerCollection(f.h.orm, { name: "synthetic" });
+      const stickerId = crypto.randomUUID();
+      importQqSticker(f.h.orm, {
+        id: stickerId,
+        copy: { fileName: `${stickerId}.png`, byteSize: 64, mediaType: "image" },
+        name: "synthetic",
+        width: 64,
+        height: 64,
+        collectionIds: [collection.id],
+      });
+      setQqStickerEnabled(f.h.orm, stickerId, true);
+      const revision = readQqStickerAssetRow(f.h.orm, stickerId)!.updatedAt;
+      const sticker: BuiltInAction = {
+        description: {
+          name: "sticker.search",
+          capability: "test",
+          description: "synthetic carrier for source-boundary test",
+          effect: "read",
+          parameters: { type: "object", properties: {} },
+        },
+        async execute() {
+          return {
+            value: { items: [{ id: stickerId }] },
+            sources: [{ kind: "qq_sticker", id: stickerId, revision }],
+          };
+        },
+      };
+      let readReached = false;
+      let mutationReached = false;
+      gateway.decisions = [
+        { kind: "invoke", name: "memory.query", arguments: { query: "" } },
+        (input: CompleteInput) => ({
+          kind: "invoke",
+          name: "memory.read",
+          arguments: { bodyRef: memoryBodyRef(input), offset: 0, limit: 4096 },
+        }),
+        (input: CompleteInput) => {
+          expect(JSON.stringify(lastObservation(input.messages, "memory.read"))).toContain(secret);
+          readReached = true;
+          return { kind: "invoke", name: "sticker.search", arguments: {} };
+        },
+        (input: CompleteInput) => {
+          expect(JSON.stringify(lastObservation(input.messages, "sticker.search"))).toContain(
+            stickerId,
+          );
+          setQqStickerEnabled(f.h.orm, stickerId, false);
+          if (revokeMemory) {
+            expect(
+              f.journal.setMemoryReadMode(f.conversation.id, DEFAULT_USER_ID, "agent_shared", 1)
+                ?.kind,
+            ).toBe("saved");
+            expect(
+              f.journal.setMemoryReadMode(
+                f.conversation.id,
+                DEFAULT_USER_ID,
+                "current_conversation",
+                2,
+              )?.kind,
+            ).toBe("saved");
+          }
+          mutationReached = true;
+          return { kind: "none" };
+        },
+      ];
+      if (revokeMemory) {
+        await expect(runQqMemory(f, gateway, [sticker])).rejects.toMatchObject({
+          code: "CONTEXT_SOURCE_INVALID",
+        });
+      } else {
+        expect((await runQqMemory(f, gateway, [sticker])).result.status).toBe("no_output");
+      }
+      expect(readReached).toBe(true);
+      expect(mutationReached).toBe(true);
+      expect(gateway.completeCalls).toHaveLength(4);
+    });
+  }
+
+  it("QQ host reads explicit public derived memory but blocks stale grant after ABA", async () => {
+    const gateway = new ScriptedGateway();
+    gateway.loadedContextCapacity = async () => 65536;
+    const f = qqSetup({ mode: "standard", gateway });
+    const session = createSession(f.h.orm, "private Web source", { modelName: "reply-model" });
+    const old = prepareTurn(f.h.orm, session.id, "PRIVATE WEB RAW SOURCE BODY ONLY", "web-source");
+    saveCompletedAssistantMessage(
+      f.h.orm,
+      session.id,
+      "PRIVATE WEB ANSWER",
+      "web-source",
+      old.generationToken!,
+    );
+    const id = crypto.randomUUID(),
+      secret = "QQ-PUBLIC-DERIVED";
+    let positiveReadReached = false;
+    let rawDeniedReached = false;
+    let grantAbaCompleted = false;
+    seedMemoryFromOldTurn(f.h, session.id, id, secret);
+    f.h.orm.transaction(
+      (tx) =>
+        setMemoryVisibility(tx, DEFAULT_AGENT_ID, id, {
+          visibility: "public",
+          recipient_agent_ids: [DEFAULT_AGENT_ID],
+          expected_revision: 1,
+        }),
+      { behavior: "immediate" },
+    );
+    expect(
+      f.journal.setMemoryReadMode(f.conversation.id, DEFAULT_USER_ID, "agent_shared", 1)?.kind,
+    ).toBe("saved");
+    gateway.decisions = [
+      { kind: "invoke", name: "history.query", arguments: { query: "PRIVATE WEB RAW" } },
+      (input: CompleteInput) => {
+        expect(lastObservation(input.messages, "history.query")?.value?.items ?? []).toEqual([]);
+        rawDeniedReached = true;
+        return { kind: "invoke", name: "memory.query", arguments: { query: "" } };
+      },
+      (input: CompleteInput) => ({
+        kind: "invoke",
+        name: "memory.read",
+        arguments: { bodyRef: memoryBodyRef(input), offset: 0, limit: 4096 },
+      }),
+      (input: CompleteInput) => {
+        expect(JSON.stringify(lastObservation(input.messages, "memory.read"))).toContain(secret);
+        positiveReadReached = true;
+        f.h.orm.transaction(
+          (tx) => {
+            setMemoryVisibility(tx, DEFAULT_AGENT_ID, id, {
+              visibility: "session_private",
+              recipient_agent_ids: [],
+              expected_revision: 2,
+            });
+            setMemoryVisibility(tx, DEFAULT_AGENT_ID, id, {
+              visibility: "public",
+              recipient_agent_ids: [DEFAULT_AGENT_ID],
+              expected_revision: 3,
+            });
+          },
+          { behavior: "immediate" },
+        );
+        grantAbaCompleted = true;
+        return {
+          kind: "final",
+          outputs: [{ kind: "inline", targetId: "alice", text: "not sent" }],
+        };
+      },
+    ];
+    await expect(runQqMemory(f, gateway)).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+    expect(positiveReadReached).toBe(true);
+    expect(rawDeniedReached).toBe(true);
+    expect(grantAbaCompleted).toBe(true);
+    expect(
+      gateway.completeCalls.some((call) => JSON.stringify(call.messages).includes(secret)),
+    ).toBe(true);
+    expect(
+      gateway.completeCalls.some((call) =>
+        JSON.stringify(call.messages).includes("PRIVATE WEB RAW SOURCE BODY ONLY"),
+      ),
+    ).toBe(false);
+    expect(gateway.streamCalls).toHaveLength(0);
+  });
+
+  it("web host reads same-conversation memory and retains only authorized material", async () => {
+    const { business, session, gateway } = webSetup();
+    const app = createApp({ business, gateway });
+    await runOldTurn(app, session, gateway, "memory source");
+    const secret = "SYNTHETIC-MEMORY-HOST-BODY";
+    seedMemoryFromOldTurn(business, session.id, crypto.randomUUID(), secret);
+    gateway.completeCalls.length = 0;
+    gateway.streamCalls.length = 0;
+    gateway.decisions = [
+      { kind: "invoke", name: "memory.query", arguments: { query: "" } },
+      (input: CompleteInput) => ({
+        kind: "invoke",
+        name: "memory.read",
+        arguments: { bodyRef: memoryBodyRef(input), offset: 0, limit: 4096 },
+      }),
+      finalDecision(),
+    ];
+    const events = await postChat(app, {
+      session_id: session.id,
+      message: "ask",
+      client_request_id: "memory-host",
+    });
+    expect(events.at(-1)?.type).toBe("completed");
+    expect(
+      gateway.completeCalls.some((call) => JSON.stringify(call.messages).includes(secret)),
+    ).toBe(true);
+    expect(gateway.streamCalls.some((call) => JSON.stringify(call.messages).includes(secret))).toBe(
+      true,
+    );
+  });
+
+  it("web host rejects retained memory after mode ABA before streaming or publishing", async () => {
+    const { business, session, gateway } = webSetup();
+    const app = createApp({ business, gateway, resolveSource: () => "available" as const });
+    await runOldTurn(app, session, gateway, "memory source");
+    const secret = "SYNTHETIC-MEMORY-REVOKED-BODY";
+    seedMemoryFromOldTurn(business, session.id, crypto.randomUUID(), secret);
+    const journal = new ConversationEventRepository(business.db);
+    const canonical = journal.ensureWeb(session.id, DEFAULT_USER_ID)!;
+    gateway.completeCalls.length = 0;
+    gateway.streamCalls.length = 0;
+    gateway.decisions = [
+      { kind: "invoke", name: "memory.query", arguments: { query: "" } },
+      (input: CompleteInput) => ({
+        kind: "invoke",
+        name: "memory.read",
+        arguments: { bodyRef: memoryBodyRef(input), offset: 0, limit: 4096 },
+      }),
+      () => {
+        expect(
+          journal.setMemoryReadMode(canonical.id, DEFAULT_USER_ID, "agent_shared", 1)?.kind,
+        ).toBe("saved");
+        expect(
+          journal.setMemoryReadMode(canonical.id, DEFAULT_USER_ID, "current_conversation", 2)?.kind,
+        ).toBe("saved");
+        return finalDecision();
+      },
+    ];
+    const events = await postChat(app, {
+      session_id: session.id,
+      message: "ask",
+      client_request_id: "memory-aba",
+    });
+    expect(events.at(-1)?.type).not.toBe("completed");
+    expect(gateway.streamCalls.some((call) => JSON.stringify(call.messages).includes(secret))).toBe(
+      false,
+    );
+  });
+
+  it("web host reads an explicitly granted same-Agent public memory and rejects grant ABA before final send", async () => {
+    const { business, session, gateway } = webSetup();
+    const app = createApp({ business, gateway, resolveSource: () => "available" as const });
+    const sourceSession = createSession(business.orm, "private source", { modelName: "model" });
+    await runOldTurn(app, sourceSession, gateway, "private source text");
+    const memoryId = crypto.randomUUID();
+    const secret = "SYNTHETIC-PUBLIC-DERIVED-BODY";
+    seedMemoryFromOldTurn(business, sourceSession.id, memoryId, secret);
+    const publish = (visibility: string, recipients: string[], expected_revision: number) =>
+      app.request(`/agents/${DEFAULT_AGENT_ID}/memory/entries/${memoryId}/visibility`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ visibility, recipient_agent_ids: recipients, expected_revision }),
+      });
+    expect((await publish("public", [DEFAULT_AGENT_ID], 1)).status).toBe(200);
+    const journal = new ConversationEventRepository(business.db);
+    const canonical = journal.ensureWeb(session.id, DEFAULT_USER_ID)!;
+    expect(journal.setMemoryReadMode(canonical.id, DEFAULT_USER_ID, "agent_shared", 1)?.kind).toBe(
+      "saved",
+    );
+    gateway.completeCalls.length = 0;
+    gateway.streamCalls.length = 0;
+    gateway.decisions = [
+      { kind: "invoke", name: "history.query", arguments: { query: "private source text" } },
+      (input: CompleteInput) => {
+        expect(lastObservation(input.messages, "history.query")?.value?.items ?? []).toEqual([]);
+        return { kind: "invoke", name: "memory.query", arguments: { query: "" } };
+      },
+      (input: CompleteInput) => ({
+        kind: "invoke",
+        name: "memory.read",
+        arguments: { bodyRef: memoryBodyRef(input), offset: 0, limit: 4096 },
+      }),
+      () => {
+        business.orm.transaction(
+          (tx) => {
+            setMemoryVisibility(tx, DEFAULT_AGENT_ID, memoryId, {
+              visibility: "session_private",
+              recipient_agent_ids: [],
+              expected_revision: 2,
+            });
+            setMemoryVisibility(tx, DEFAULT_AGENT_ID, memoryId, {
+              visibility: "public",
+              recipient_agent_ids: [DEFAULT_AGENT_ID],
+              expected_revision: 3,
+            });
+          },
+          { behavior: "immediate" },
+        );
+        return finalDecision();
+      },
+    ];
+    const events = await postChat(app, {
+      session_id: session.id,
+      message: "ask",
+      client_request_id: "public-aba",
+    });
+    expect(
+      gateway.completeCalls.some((call) => JSON.stringify(call.messages).includes(secret)),
+    ).toBe(true);
+    expect(events.at(-1)?.type).not.toBe("completed");
+    expect(gateway.streamCalls.some((call) => JSON.stringify(call.messages).includes(secret))).toBe(
+      false,
+    );
+    gateway.completeCalls.length = 0;
+    gateway.streamCalls.length = 0;
+    gateway.decisions = [
+      { kind: "invoke", name: "memory.query", arguments: { query: "" } },
+      (input: CompleteInput) => ({
+        kind: "invoke",
+        name: "memory.read",
+        arguments: { bodyRef: memoryBodyRef(input), offset: 0, limit: 4096 },
+      }),
+      finalDecision(),
+    ];
+    const fresh = await postChat(app, {
+      session_id: session.id,
+      message: "retry with fresh grant",
+      client_request_id: "public-fresh",
+    });
+    expect(fresh.at(-1)?.type).toBe("completed");
+    expect(gateway.streamCalls.some((call) => JSON.stringify(call.messages).includes(secret))).toBe(
+      true,
+    );
   });
 
   it("web host: history.read body reaches the next model request", async () => {

@@ -60,6 +60,7 @@ describe("ContextAllocationAuxiliary", () => {
   it("handles raw invalid input drafting and reports validity to block save", () => {
     const onAgentChange = vi.fn();
     const onValidityChange = vi.fn();
+    const onSaveAgent = vi.fn();
 
     render(
       <ContextAllocationAuxiliary
@@ -67,6 +68,8 @@ describe("ContextAllocationAuxiliary", () => {
         globalProfiles={initialGlobalProfiles}
         onAgentChange={onAgentChange}
         onValidityChange={onValidityChange}
+        onSaveAgent={onSaveAgent}
+        canSaveAgent={true}
       />,
     );
 

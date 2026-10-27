@@ -93,10 +93,10 @@ beforeEach(() => {
 });
 
 describe("page-actions nested preset ownership (patch → dirty → save)", () => {
-  it("context patch of retrieval_presets changes draft max_tokens, marks dirty, and the save API payload keeps foreign non-budget fields with a bumped version", async () => {
+  it("memory-tools patch of retrieval_presets changes draft max_tokens, marks dirty, and the save API payload keeps foreign non-budget fields with a bumped version", async () => {
     const { persisted, updateAgent } = setup();
     await openEditor();
-    store.getState().patchPageAgent("context", {
+    store.getState().patchPageAgent("memory-tools", {
       p5_config: {
         ...persisted.p5_config,
         retrieval_presets: {
@@ -109,13 +109,13 @@ describe("page-actions nested preset ownership (patch → dirty → save)", () =
     expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
       9999,
     );
-    expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
-    expect(await store.getState().saveSettingsPage("context")).toBe(true);
+    expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
     expect(updateAgent).toHaveBeenCalledTimes(1);
     const [calledId, body] = updateAgent.mock.calls[0] as [string, Record<string, unknown>];
     expect(calledId).toBe("A");
     const p5 = body.p5_config as Record<string, unknown>;
-    // context page owns max_tokens: new value lands
+    // memory-tools page owns max_tokens: new value lands
     expect((p5.retrieval_presets as Record<string, unknown>).broad).toMatchObject({
       max_tokens: 9999,
     });
@@ -126,13 +126,13 @@ describe("page-actions nested preset ownership (patch → dirty → save)", () =
       relevance_instruction: persisted.p5_config.retrieval_presets.broad.relevance_instruction,
     });
     expect(body.expected_version).toBe(1);
-    // memory-tools page is untouched by a context save
+    // other preset modes remain untouched
     expect((p5.retrieval_presets as Record<string, unknown>).conservative).toMatchObject(
       persisted.p5_config.retrieval_presets.conservative,
     );
   });
 
-  it("memory-tools patch keeps the current draft max_tokens and the save API preserves the context-owned budget", async () => {
+  it("memory-tools patch preserves unchanged max_tokens while updating other preset fields", async () => {
     const { persisted, updateAgent } = setup();
     await openEditor();
     store.getState().patchPageAgent("memory-tools", {
@@ -157,7 +157,7 @@ describe("page-actions nested preset ownership (patch → dirty → save)", () =
     expect((p5.retrieval_presets as Record<string, unknown>).broad).toMatchObject({
       candidate_limit: 88,
     });
-    // memory page does not own max_tokens: saved baseline value is sent
+    // Unchanged max_tokens remains the saved value.
     expect((p5.retrieval_presets as Record<string, unknown>).broad).toMatchObject({
       max_tokens: persisted.p5_config.retrieval_presets.broad.max_tokens,
     });
@@ -165,47 +165,46 @@ describe("page-actions nested preset ownership (patch → dirty → save)", () =
 });
 
 describe("discardSettingsPages restores only page-owned nested keys", () => {
-  it("context discard resets max_tokens to saved but keeps memory-tools dirty non-budget edits; the reverse direction holds too", async () => {
+  it("context discard retains memory preset draft; memory discard restores it without touching context", async () => {
     const { persisted } = setup();
     await openEditor();
-    // User edited BOTH ownership domains.
     store.getState().patchPageAgent("memory-tools", {
       p5_config: {
         ...persisted.p5_config,
         retrieval_presets: {
           ...persisted.p5_config.retrieval_presets,
-          broad: { ...persisted.p5_config.retrieval_presets.broad, candidate_limit: 123 },
+          broad: {
+            ...persisted.p5_config.retrieval_presets.broad,
+            candidate_limit: 123,
+            max_tokens: 7777,
+          },
         },
       },
     });
-    store.getState().patchPageAgent("context", {
-      p5_config: {
-        ...persisted.p5_config,
-        retrieval_presets: {
-          ...persisted.p5_config.retrieval_presets,
-          broad: { ...persisted.p5_config.retrieval_presets.broad, max_tokens: 7777 },
-        },
-      },
-    });
+    store
+      .getState()
+      .patchPageAgent("context", { p5_config: { ...persisted.p5_config, recent_turns: 12 } });
     store.getState().discardSettingsPages("context");
     let editor = store.getState().pageEditor;
-    // context-owned budget restored to saved
-    expect(editor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(
-      persisted.p5_config.retrieval_presets.broad.max_tokens,
-    );
-    // memory-tools dirty non-budget edit preserved (previously the whole preset object was reset)
-    expect(editor?.draft.p5_config.retrieval_presets.broad.candidate_limit).toBe(123);
+    expect(editor?.draft.p5_config.recent_turns).toBe(persisted.p5_config.recent_turns);
+    expect(editor?.draft.p5_config.retrieval_presets.broad).toMatchObject({
+      candidate_limit: 123,
+      max_tokens: 7777,
+    });
     expect(dirtyPages(editor)).toEqual(["memory-tools"]);
-
+    store
+      .getState()
+      .patchPageAgent("context", { p5_config: { ...persisted.p5_config, recent_turns: 12 } });
     store.getState().discardSettingsPages("memory-tools");
     editor = store.getState().pageEditor;
-    expect(editor?.draft.p5_config.retrieval_presets.broad.candidate_limit).toBe(
-      persisted.p5_config.retrieval_presets.broad.candidate_limit,
+    expect(editor?.draft.p5_config.retrieval_presets.broad).toEqual(
+      persisted.p5_config.retrieval_presets.broad,
     );
-    expect(dirtyPages(editor)).toEqual([]);
+    expect(editor?.draft.p5_config.recent_turns).toBe(12);
+    expect(dirtyPages(editor)).toEqual(["context"]);
   });
 
-  it("context discard also clears this agent's allocation invalid raw inputs while keeping other agents' entries", async () => {
+  it("memory-tools discard clears its invalid raw inputs while keeping other agents' entries", async () => {
     const { persisted } = setup();
     await openEditor();
     store.setState({
@@ -214,12 +213,12 @@ describe("discardSettingsPages restores only page-owned nested keys", () => {
         "agent:B:aux:memory_consolidate": "abc",
       },
     });
-    store.getState().discardSettingsPages("context");
+    store.getState().discardSettingsPages("memory-tools");
     expect(store.getState().allocationInvalidInputs).toEqual({
       "agent:B:aux:memory_consolidate": "abc",
     });
     // Full discard clears everything and resets the whole draft to saved.
-    store.getState().patchPageAgent("context", {
+    store.getState().patchPageAgent("memory-tools", {
       p5_config: {
         ...persisted.p5_config,
         retrieval_presets: {
@@ -243,8 +242,8 @@ describe("refreshSettingsAgent merges presets per nested ownership", () => {
     const first = setup();
     const { persisted, client } = first;
     await openEditor();
-    // Local context draft: user changed max_tokens only.
-    store.getState().patchPageAgent("context", {
+    // Local memory draft: user changed max_tokens only.
+    store.getState().patchPageAgent("memory-tools", {
       p5_config: {
         ...persisted.p5_config,
         retrieval_presets: {
@@ -271,9 +270,9 @@ describe("refreshSettingsAgent merges presets per nested ownership", () => {
     // Foreign non-budget change adopted (previously the whole object was overwritten by the stale draft).
     expect(editor?.draft.p5_config.retrieval_presets.broad.candidate_limit).toBe(200);
     expect(editor?.draft.p5_config.summary_max_tokens).toBe(8192);
-    // Local budget draft retained and still dirty for the context page.
+    // Local budget draft retained and still dirty for the memory-tools page.
     expect(editor?.draft.p5_config.retrieval_presets.broad.max_tokens).toBe(7777);
-    expect(dirtyPages(editor)).toEqual(["context"]);
+    expect(dirtyPages(editor)).toEqual(["memory-tools"]);
 
     // Reverse direction: foreign budget change is adopted, local memory non-budget draft retained.
     const second = setup();
@@ -334,8 +333,8 @@ describe("context save is blocked by leftover allocation invalid inputs", () => 
   it("the same gate applies to the bulk path saveAllSettingsPages", async () => {
     const { persisted, updateAgent } = setup();
     await openEditor();
-    store.getState().patchPageAgent("context", {
-      p5_config: { ...persisted.p5_config, recent_turns: 14 },
+    store.getState().patchPageAgent("memory-tools", {
+      p5_config: { ...persisted.p5_config, retrieval_mode: "broad" },
     });
     store.setState({ allocationInvalidInputs: { "agent:A:reading:memory:standard": "x" } });
     expect(await store.getState().saveAllSettingsPages()).toBe(false);

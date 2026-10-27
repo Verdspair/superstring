@@ -1,4 +1,27 @@
+import { createHash } from "node:crypto";
 import type { MemoryCorrection } from "../../shared/contracts";
+import type { MemoryEntryRow } from "../db/memory-repository";
+
+export function memoryRevision(
+  row: Pick<
+    MemoryEntryRow,
+    "id" | "name" | "summary" | "tags" | "body" | "status" | "configSnapshot"
+  >,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        row.id,
+        row.name,
+        row.summary,
+        row.tags,
+        row.body,
+        row.status,
+        row.configSnapshot,
+      ]),
+    )
+    .digest("hex");
+}
 
 export interface RejectedMemory extends Record<string, unknown> {
   name: string;

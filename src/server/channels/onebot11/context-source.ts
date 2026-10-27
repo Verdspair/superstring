@@ -827,6 +827,7 @@ export class BotContextSource {
                 const page = await read.call(memory, {
                   ...input,
                   agentId: o.binding.agentId,
+                  conversationId: o.conversationId,
                   scopes: qqMemoryScopeKeyset(o.snapshot.access).read,
                   owner: this.owner,
                   signal: action.signal,
@@ -4355,6 +4356,7 @@ ${intent.trim()}`,
       const eventKey = eventKeyOf(message);
       const fact = eventKey ? projected.get(eventKey) : undefined;
       let text: string;
+      let sourceTime: number | undefined;
       let extraSources: readonly SourceRef[] = [];
       if (fact && scope) {
         const relations = projectQqTextRelations({ facts: [fact], scope, now });
@@ -4368,6 +4370,7 @@ ${intent.trim()}`,
             part.kind === "image" ? { ...part, category: "unknown" } : part,
           );
           text = contextDumps(rest);
+          if (fact.completeness !== "unavailable") sourceTime = fact.occurredAtSeconds;
           extraSources = relations.sources;
         } else {
           // 投影整跳（事实行已过期）：不回旧正文、不给名字与关系。
@@ -4381,6 +4384,14 @@ ${intent.trim()}`,
       } else if (message.speaker !== "assistant" && message.text !== null) {
         // 真缺失 facts 行且原正文仍有效：沿原 text 标 legacy_partial，不编双名、不回填当前名。
         text = contextDumps({ completeness: "legacy_partial", text: message.text });
+        if (
+          scope &&
+          eventKey &&
+          seq !== null &&
+          sources.some((source) => source.kind === "qq_observation" && source.id === eventKey)
+        ) {
+          sourceTime = message.occurredAtSeconds;
+        }
       } else {
         // 助手发言（走既有 qq_speech ref）与无正文消息沿既有 ref 保 legacy 行为。
         text = contextDumps({ text: message.text });
@@ -4392,6 +4403,9 @@ ${intent.trim()}`,
         // 摘要只压文字关系与正文。媒体描述是模型产物、还会变长，压进摘要既贵又容易把
         // "看图看的"当成事实；未读的那一份本来就只是计数。
         text,
+        ...(sourceTime === undefined
+          ? {}
+          : { source_time: { kind: "utterance" as const, unix_seconds: sourceTime } }),
         sources: [...sources, ...extraSources],
       };
     });
@@ -4736,6 +4750,7 @@ ${intent.trim()}`,
           ? await this.memory.query({
               ...common,
               mode: o.runtime.p5_config.retrieval_mode,
+              conversationId: o.conversationId,
               scopes: qqMemoryScopeKeyset(o.snapshot.access).read,
             })
           : await this.knowledge.query(common),

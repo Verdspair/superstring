@@ -12,6 +12,7 @@ import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-
 import { fail } from "../errors";
 import { isAlnum } from "./alnum-table";
 import { fullCasefold } from "./casefold-table";
+import { qqMemoryScopeKey } from "./qq-binding-contract";
 
 /** `Scope` literal. */
 export const SCOPES = [
@@ -28,24 +29,30 @@ export type Kind = (typeof KINDS)[number];
 
 export const TEMPLATE_VERSION = "p4-2";
 export const MAX_SOURCE_CHARS = 100_000;
+export const MEMORY_SEARCH_FOLD_VERSION = 1;
 
-/**
- * memory belongs to the **Agent**. The per-scope
- * definitions are kept as the architecture contract for future isolation work
- * but no scope narrows ownership to a single session today.
- */
+/** Fixed SQLite layout predicate shared by the search owner and migration 0075. */
+export const MEMORY_SEARCH_INVALID_LAYOUT_SQL = `folded_search IS NULL OR fold_version IS NULL OR fold_version <> 1 OR CASE WHEN json_valid(folded_search) THEN json_type(folded_search) <> 'array' OR json_array_length(folded_search) <> 5 OR coalesce(json_type(folded_search, '$[0]'), 'missing') <> 'text' OR coalesce(json_type(folded_search, '$[1]'), 'missing') <> 'text' OR coalesce(json_type(folded_search, '$[2]'), 'missing') <> 'text' OR coalesce(json_type(folded_search, '$[3]'), 'missing') <> 'text' OR coalesce(json_type(folded_search, '$[4]'), 'missing') <> 'text' ELSE 1 END`;
+
+/** Each searchable field remains separate so matching cannot span boundaries. */
+export function memorySearchProjection(fields: {
+  id: string;
+  name: string;
+  summary: string;
+  tags: string;
+  body: string;
+}): string {
+  return JSON.stringify(
+    [fields.id, fields.name, fields.summary, fields.tags, fields.body].map(fullCasefold),
+  );
+}
+
+/** Stored scope labels are not runtime conversation-read authority. */
 export const DEFAULT_SCOPE: Scope = "reality_user";
 export const SESSION_BOUND_SCOPES: readonly string[] = ["roleplay_world", "session_only"];
 export const AGENT_LEVEL_SCOPE_KEY = "agent";
 
-/**
- * The memory scope key.
- * Fidelity note: this ignores both `scope` and `session_id` and
- * returns `agent_id`. `session_id` is accepted only so the signature
- * survives and isolation can be re-enabled without a data migration. Do not
- * "fix" this into a per-scope key — that would silently split every Agent's
- * memories and break recall.
- */
+/** Historical Web storage key; runtime read eligibility uses source and conversation authority. */
 export function scopeKey(_scope: string, _sessionId: string, agentId: string): string {
   return agentId;
 }
@@ -207,6 +214,74 @@ export interface PromptMessage {
 }
 
 /** The frozen `config_snapshot` shape written by `enqueue`. */
+export interface QqMemoryRouteSnapshot {
+  version: 1;
+  source_scope_key: string;
+  destination_scope_key: string;
+  binding_id: string;
+  authority_revision: number;
+  owner_identity_revision: number | null;
+}
+
+const QqMemoryRouteSchema = z.strictObject({
+  version: z.literal(1),
+  source_scope_key: z.string().min(1),
+  destination_scope_key: z.string().min(1),
+  binding_id: z.string().min(1),
+  authority_revision: z.number().int().positive(),
+  owner_identity_revision: z.number().int().positive().nullable(),
+});
+
+/** Parse the new route once; absent legacy field retains its original scope. */
+export function memoryJobScopes(snapshot: { scope_key?: unknown; qq_route?: unknown }): {
+  source: string | undefined;
+  destination: string | undefined;
+  route?: QqMemoryRouteSnapshot;
+} {
+  const source = snapshot.scope_key;
+  if (source !== undefined && typeof source !== "string")
+    fail("MEMORY_SOURCE_INVALID", "整理范围无效");
+  if (!Object.hasOwn(snapshot, "qq_route")) return { source, destination: source };
+  const parsed = QqMemoryRouteSchema.safeParse(snapshot.qq_route);
+  if (!parsed.success || parsed.data.source_scope_key !== source || typeof source !== "string")
+    fail("MEMORY_SOURCE_INVALID", "观察来源范围无效");
+  let key: unknown;
+  try {
+    key = JSON.parse(source);
+  } catch {
+    fail("MEMORY_SOURCE_INVALID", "观察来源范围无效");
+  }
+  if (
+    !Array.isArray(key) ||
+    key.length !== 5 ||
+    key[0] !== "qq" ||
+    typeof key[1] !== "string" ||
+    !key[1] ||
+    (key[2] !== "group" && key[2] !== "private") ||
+    typeof key[3] !== "string" ||
+    !key[3] ||
+    typeof key[4] !== "string" ||
+    !key[4] ||
+    ![source, key[4]].includes(parsed.data.destination_scope_key)
+  )
+    fail("MEMORY_SOURCE_INVALID", "观察来源范围无效");
+  try {
+    if (
+      qqMemoryScopeKey({
+        kind: "qq",
+        accountId: key[1],
+        conversationKind: key[2],
+        peerId: key[3],
+        agentId: key[4],
+      }) !== source
+    )
+      fail("MEMORY_SOURCE_INVALID", "观察来源范围无效");
+  } catch {
+    fail("MEMORY_SOURCE_INVALID", "观察来源范围无效");
+  }
+  return { source, destination: parsed.data.destination_scope_key, route: parsed.data };
+}
+
 export interface ConsolidationConfig {
   model: string;
   base_prompt: string;
@@ -217,6 +292,7 @@ export interface ConsolidationConfig {
   template_version: string;
   scope: string;
   scope_key: string;
+  qq_route?: QqMemoryRouteSnapshot;
   /**
    * 辅助分配档（0068，AUX-CONTRACT-FROZEN）：入队时从 agents.p5_config 冻结，重试不读活配置；
    * 缺席＝本用途保持调用方现行为（无输出帽、无输入门）。output_reserved 两种模式下都是
@@ -328,6 +404,7 @@ export function buildConsolidationPrompt(
 export function suppressionPrompt(
   draft: MemoryDraft,
   blocked: Array<Record<string, unknown>>,
+  candidateContext: Record<string, unknown> | null = null,
 ): PromptMessage[] {
   const candidate = {
     name: draft.name,
@@ -341,8 +418,10 @@ export function suppressionPrompt(
       role: "system",
       content:
         "检查候选记忆是否包含屏蔽或已被替代记忆中的同一事实/偏好/约定，包括同义改写。" +
-        "按含义比较每一个事实，而不是比较字面、标题、说话人称或句式。旧条目中的第一人称'我'指用户。" +
-        "例如'我喜欢精炼的汉语回复'与'用户希望答复使用中文，表达简短'含义相同，必须blocked=true。" +
+        "按含义比较每一个事实，并核对有据的事实主体、对象、事件、时间与状态，不只比较字面或句式。" +
+        "发言者不一定是叙事主体，不要把第一人称一律当作用户；主体或时间未知时不得猜测。" +
+        "candidate_context和每条source_context仅是各自可证来源，subject未知时不要从不同说话人推定不同事实。" +
+        "区分计划、尝试、已确认结果与转述；只有来源支持是同一事实时才判重复。" +
         "候选中只要一个事实与任一旧条目相同或属于其含义就blocked=true；其余新事实不能抵消重复。" +
         "数据库选择与语言偏好是不同事实，不因都属于偏好就判为重复。" +
         '只要候选任一事实重复就返回{"blocked":true}，否则返回{"blocked":false}。' +
@@ -350,7 +429,11 @@ export function suppressionPrompt(
     },
     {
       role: "user",
-      content: stringifyJsonSpaced({ candidate, blocked }),
+      content: stringifyJsonSpaced({
+        candidate,
+        ...(candidateContext ? { candidate_context: candidateContext } : {}),
+        blocked,
+      }),
     },
   ];
 }

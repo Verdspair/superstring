@@ -22,7 +22,6 @@ import { effectiveQqTriggers, readQqScheme } from "../../../src/server/db/qq-sch
 import { readQqSettings } from "../../../src/server/db/qq-settings-repository";
 import { getAgentRow, type Orm } from "../../../src/server/db/repositories";
 import { checkQqTask } from "../../../src/server/services/qq-binding-contract";
-import { qqMemoryReadIsCurrent } from "../../../src/server/services/qq-memory-recall";
 import {
   checkQqSpeechSend,
   disabledKindsFromTriggers,
@@ -31,6 +30,7 @@ import {
   planQqPreparedReply,
   type QqStickerStage,
 } from "../../../src/server/services/qq-sticker-runner";
+import { qqMemoryReadIsCurrent } from "./qq-memory-recall";
 import type { QqPendingReview } from "./qq-reply-runner";
 
 export type QqSendPreflight =

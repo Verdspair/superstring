@@ -1,46 +1,32 @@
-import { createHash } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
-import type { ContentItem, MemoryContentResponse, MemoryCorrection } from "../../shared/contracts";
-import { fail } from "../errors";
+import type {
+  ContentItem,
+  MemoryContentResponse,
+  MemoryCorrection,
+  MemoryVisibilityUpdate,
+} from "../../shared/contracts";
+import { AppError, fail } from "../errors";
+import { MEMORY_SEARCH_FOLD_VERSION, memorySearchProjection } from "../services/memory-contract";
 import {
   correctionFields,
   correctionMetadata,
   correctionSnapshot,
   isCorrectionRetired,
   memoryMetadata,
+  memoryRevision,
 } from "../services/memory-revision";
-import { entries, govern, type MemoryEntryRow, validateEntrySources } from "./memory-repository";
+import { assertQqRouteCurrent, entries, govern, validateEntrySources } from "./memory-repository";
 import {
   acceptsObservationSources,
   loadMessageIntegrity,
   loadSessionIntegrity,
   loadTurnIntegrity,
+  memoryPublicationSourceRevision,
   observationContentSources,
   observationSources,
 } from "./memory-source-repository";
 import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
-
-export function memoryRevision(
-  row: Pick<
-    MemoryEntryRow,
-    "id" | "name" | "summary" | "tags" | "body" | "status" | "configSnapshot"
-  >,
-): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify([
-        row.id,
-        row.name,
-        row.summary,
-        row.tags,
-        row.body,
-        row.status,
-        row.configSnapshot,
-      ]),
-    )
-    .digest("hex");
-}
 
 /**
  * The chat-source validity rule shared by the per-memory reader and the batched
@@ -145,13 +131,27 @@ export function memoryContent(orm: Orm, agentId: string, memoryId: string): Memo
       valid,
     };
   });
+  const routed = Object.hasOwn(memoryMetadata(row.configSnapshot), "qq_route");
+  let routedValid = false;
+  if (routed) {
+    try {
+      assertQqRouteCurrent(orm, agentId, row.configSnapshot);
+      validateEntrySources(orm, [row]);
+      routedValid = true;
+    } catch (error) {
+      if (
+        !(error instanceof AppError) ||
+        !["MEMORY_SOURCE_INVALID", "MEMORY_STATE_CONFLICT"].includes(error.code)
+      )
+        throw error;
+    }
+  }
   const sources: ContentItem["sources"] = [
     ...chatSources,
     ...observationContentSources(observations).map(
       (source) =>
-        // An observation is intact exactly when its dedup row still matches; the
-        // repository already rejected the memory otherwise.
-        ({ ...source, valid: true }) as ContentItem["sources"][number],
+        // Routed validity is owned by the complete source proof, not target scope.
+        ({ ...source, valid: routed ? routedValid : true }) as ContentItem["sources"][number],
     ),
   ];
   return {
@@ -170,7 +170,9 @@ export function memoryContent(orm: Orm, agentId: string, memoryId: string): Memo
         sources.length > 0 &&
         sources.every((source) => source.valid) &&
         row.status !== "invalid" &&
-        (acceptsObservationSources(row.scopeKey, agentId) || observations.length === 0)
+        (routed
+          ? routedValid
+          : acceptsObservationSources(row.scopeKey, agentId) || observations.length === 0)
           ? "valid"
           : "invalid",
     },
@@ -180,6 +182,109 @@ export function memoryContent(orm: Orm, agentId: string, memoryId: string): Memo
     // Original text is only kept for chat turns. An observation stores no message
     // body, so a QQ memory has no recap here — that is deliberate, not a gap.
     source_messages: sourceMessages,
+  };
+}
+
+/** Caller owns the management transaction. */
+export function setMemoryVisibility(
+  orm: Orm,
+  agentId: string,
+  id: string,
+  input: MemoryVisibilityUpdate,
+): { visibility: string; visibility_revision: number; recipient_agent_ids: string[] } {
+  const row = entries(orm, agentId, [id])[0]!;
+  if (row.visibilityRevision !== input.expected_revision)
+    fail("MEMORY_STATE_CONFLICT", "记忆授权已变化，请重新加载");
+  if (row.status !== "active" || isCorrectionRetired(row.configSnapshot))
+    fail("MEMORY_STATE_CONFLICT", "只能发布有效记忆");
+  const recipients = [...input.recipient_agent_ids].sort();
+  if (
+    (input.visibility === "session_private" && recipients.length !== 0) ||
+    (input.visibility === "agent_shared" &&
+      (recipients.length !== 1 || recipients[0] !== agentId)) ||
+    (input.visibility === "public" && recipients.length === 0)
+  )
+    fail("MEMORY_STATE_CONFLICT", "接收助手与可见范围不一致");
+  if (recipients.length) {
+    const known = orm
+      .select({ id: schema.agents.id })
+      .from(schema.agents)
+      .where(inArray(schema.agents.id, recipients))
+      .all();
+    if (known.length !== recipients.length) fail("AGENT_NOT_FOUND", "接收助手不存在", 404);
+  }
+  const current = orm
+    .select()
+    .from(schema.memoryReadGrants)
+    .where(eq(schema.memoryReadGrants.memoryId, id))
+    .all();
+  const previous = current.map((grant) => grant.agentId).sort();
+  const publication =
+    input.visibility === "session_private"
+      ? null
+      : memoryPublicationSourceRevision(orm, row, memoryRevision(row), nowIso());
+  if (
+    row.visibility === input.visibility &&
+    row.publicationSourceRevision === publication &&
+    JSON.stringify(previous) === JSON.stringify(recipients)
+  ) {
+    return {
+      visibility: input.visibility,
+      visibility_revision: row.visibilityRevision,
+      recipient_agent_ids: recipients,
+    };
+  }
+  const result = orm
+    .update(schema.memoryEntries)
+    .set({
+      visibility: input.visibility,
+      visibilityRevision: row.visibilityRevision + 1,
+      publicationSourceRevision: publication,
+    })
+    .where(
+      and(
+        eq(schema.memoryEntries.id, id),
+        eq(schema.memoryEntries.visibilityRevision, input.expected_revision),
+      ),
+    )
+    .returning({ id: schema.memoryEntries.id })
+    .get();
+  if (!result) fail("MEMORY_STATE_CONFLICT", "记忆授权已变化，请重新加载");
+  for (const grant of current) {
+    if (!recipients.includes(grant.agentId))
+      orm
+        .delete(schema.memoryReadGrants)
+        .where(
+          and(
+            eq(schema.memoryReadGrants.memoryId, id),
+            eq(schema.memoryReadGrants.agentId, grant.agentId),
+          ),
+        )
+        .run();
+  }
+  const existing = new Set(previous);
+  for (const recipient of recipients) {
+    if (!existing.has(recipient))
+      orm
+        .insert(schema.memoryReadGrants)
+        .values({ memoryId: id, agentId: recipient, token: crypto.randomUUID() })
+        .run();
+    else if (row.visibility !== input.visibility || row.publicationSourceRevision !== publication)
+      orm
+        .update(schema.memoryReadGrants)
+        .set({ token: crypto.randomUUID() })
+        .where(
+          and(
+            eq(schema.memoryReadGrants.memoryId, id),
+            eq(schema.memoryReadGrants.agentId, recipient),
+          ),
+        )
+        .run();
+  }
+  return {
+    visibility: input.visibility,
+    visibility_revision: row.visibilityRevision + 1,
+    recipient_agent_ids: recipients,
   };
 }
 
@@ -239,12 +344,18 @@ export function correctMemory(
       .run();
   }
   const replacementId = newId();
+  const fields = correctionFields(input);
   orm
     .insert(schema.memoryEntries)
     .values({
       ...row,
-      ...correctionFields(input),
+      ...fields,
       id: replacementId,
+      visibility: "session_private",
+      visibilityRevision: 1,
+      publicationSourceRevision: null,
+      foldedSearch: memorySearchProjection({ id: replacementId, ...fields }),
+      foldVersion: MEMORY_SEARCH_FOLD_VERSION,
       status: row.status,
       configSnapshot: correctionSnapshot(row.configSnapshot, id, uniqueRejected),
       createdAt: nowIso(),

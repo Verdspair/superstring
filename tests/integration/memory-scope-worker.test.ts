@@ -257,6 +257,24 @@ describe("worker keeps the blocked list inside one scope", () => {
         status: "suppressed",
         body: "网页已屏蔽内容",
       });
+      const messages = h.orm
+        .select()
+        .from(schema.messages)
+        .where(eq(schema.messages.turnId, turnId))
+        .all();
+      const user = messages.find((message) => message.role === "user");
+      const assistant = messages.find((message) => message.role === "assistant");
+      if (!user || !assistant) throw new Error("missing source messages");
+      h.orm
+        .insert(schema.memorySources)
+        .values({
+          memoryId: "m_web_suppressed",
+          turnId,
+          userMessageId: user.id,
+          assistantMessageId: assistant.id,
+          sequenceNo: user.sequenceNo,
+        })
+        .run();
       h.gateway.replies = [DRAFT_REPLY, JSON.stringify({ blocked: false })];
       enqueue(h.orm, AGENT_ID, "req_web", {
         kind: "manual",

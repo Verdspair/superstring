@@ -344,11 +344,17 @@ function EnumField({
   const { custom, value } = overrideOf(editor, group, name);
   const baseValue = typeof base?.[name] === "string" ? (base[name] as string) : null;
   const labels = ENUM_OPTION_LABELS[`${group}.${name}`] ?? {};
+  const hints: Record<string, string> = {
+    "message_settings.reply_mode": t("hints.qqEnum.message_settings.reply_mode"),
+    "message_settings.time_display": t("hints.qqEnum.message_settings.time_display"),
+    "media_input.mode": t("hints.qqEnum.media_input.mode"),
+    "rhythm.participation_timing": t("hints.qqEnum.rhythm.participation_timing"),
+  };
   return (
     <Field
       label={labelKey}
       info={infoKey}
-      tooltip={infoKey ? t(infoKey) : t(`hints.qqEnum.${group}.${name}`)}
+      tooltip={infoKey ? t(infoKey) : (hints[`${group}.${name}`] ?? t(labelKey))}
     >
       <NativeSelect
         data-field={`${group}.${name}`}
@@ -651,11 +657,23 @@ function ThreeStateField({
     effectivePair?.continuous === false &&
     (custom ? value === true : baseValue === true);
 
+  const hints: Record<string, string> = {
+    "triggers.direct_reply": t("hints.qqSwitch.triggers.direct_reply"),
+    "triggers.follow_up": t("hints.qqSwitch.triggers.follow_up"),
+    "triggers.chiming_in": t("hints.qqSwitch.triggers.chiming_in"),
+    "triggers.idle_topic": t("hints.qqSwitch.triggers.idle_topic"),
+    "rhythm.active_hours_enabled": t("hints.qqSwitch.rhythm.active_hours_enabled"),
+    "rhythm.initiative_queue_on_busy": t("hints.qqSwitch.rhythm.initiative_queue_on_busy"),
+    "rhythm.initiative_time_window_enabled": t(
+      "hints.qqSwitch.rhythm.initiative_time_window_enabled",
+    ),
+    "reply.split_by_speaker": t("hints.qqSwitch.reply.split_by_speaker"),
+  };
   return (
     <Field
       label={labelKey}
       info={infoKey}
-      tooltip={infoKey ? t(infoKey) : t(`hints.qqSwitch.${group}.${name}`)}
+      tooltip={infoKey ? t(infoKey) : (hints[`${group}.${name}`] ?? t(labelKey))}
     >
       <NativeSelect
         data-field={`${group}.${name}`}

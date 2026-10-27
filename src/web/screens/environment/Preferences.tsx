@@ -262,6 +262,7 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
             className="space-y-3 rounded-lg border bg-muted/20 p-3 text-base leading-relaxed"
             aria-label={t("library.font.preview")}
           >
+            {/* i18next-instrument-ignore-next-line */}
             <p>山海之间，灵感自来 · The quick brown fox 0123456789</p>
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <Input

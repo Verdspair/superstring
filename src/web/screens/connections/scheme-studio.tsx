@@ -170,11 +170,17 @@ function SchemeEnum({
         ? "media_input"
         : group;
   const labels = schemeEnumLabels[`${canonicalGroup}.${name}`] ?? {};
+  const hints: Record<string, string> = {
+    "message_settings.reply_mode": t("hints.qqEnum.message_settings.reply_mode"),
+    "message_settings.time_display": t("hints.qqEnum.message_settings.time_display"),
+    "media_input.mode": t("hints.qqEnum.media_input.mode"),
+    "rhythm.participation_timing": t("hints.qqEnum.rhythm.participation_timing"),
+  };
   return (
     <Field
       label={label}
       info={info}
-      tooltip={info ? t(info) : t(`hints.qqEnum.${canonicalGroup}.${name}`)}
+      tooltip={info ? t(info) : (hints[`${canonicalGroup}.${name}`] ?? t(label))}
     >
       <NativeSelect
         id={`scheme-field-${group}.${name}`}

@@ -5,17 +5,18 @@ import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet } from "../../state/types";
 import { type KnowledgeState, knowledgeReadDirty } from "./types";
 
-export function createKnowledgeReadActions(
-  set: StoreSet,
-  get: StoreGet,
-): Pick<
+type KnowledgeActions = Pick<
   KnowledgeState,
   | "loadKnowledgeRead"
   | "refreshKnowledgeRead"
   | "patchKnowledgeRead"
   | "saveKnowledgeRead"
   | "discardKnowledgeRead"
-> {
+>;
+
+type KnowledgeCapture = { api: ReturnType<StoreGet>["apiClient"]; agentId: string; token: object };
+
+export function createKnowledgeReadActions(set: StoreSet, get: StoreGet) {
   let read = 0;
   const load = async (refresh: boolean) => {
     const agentId = get().editorAgentId;
@@ -65,7 +66,92 @@ export function createKnowledgeReadActions(
       if (matches()) set({ knowledgeReadLoading: false });
     }
   };
-  return {
+  let saveOwner: object | null = null;
+  const taskStep = {
+    acquire(owner: object) {
+      saveOwner = owner;
+    },
+    release(owner: object) {
+      if (saveOwner === owner) {
+        saveOwner = null;
+        set({ settingsSaving: false });
+      }
+    },
+    capture(): KnowledgeCapture | null {
+      const editor = get().knowledgeReadEditor;
+      if (editor && editor.agentId !== get().editorAgentId) return null;
+      if (
+        editor &&
+        `agent:${editor.agentId}:reading:knowledgeAgent` in get().allocationInvalidInputs
+      )
+        throw new Error(msg("上下文预算必须为正整数。"));
+      if (!knowledgeReadDirty(editor)) return null;
+      if (
+        !editor ||
+        editor.agentId !== get().editorAgentId ||
+        get().knowledgeReadLoading ||
+        get().knowledgeBusy
+      )
+        throw new Error(msg("保存失败，请修正后重试或取消。"));
+      if (
+        !AgentKnowledgeReadUpdateSchema.safeParse({
+          expected_revision: editor.source.revision,
+          config: editor.draft,
+        }).success
+      )
+        throw new Error(msg("上下文预算必须为正整数。"));
+      return { api: get().apiClient, agentId: editor.agentId, token: editor.token };
+    },
+    matches(capture: KnowledgeCapture): boolean {
+      return (
+        get().apiClient === capture.api &&
+        get().editorAgentId === capture.agentId &&
+        get().knowledgeReadEditor?.token === capture.token
+      );
+    },
+    async commit(capture: KnowledgeCapture): Promise<boolean> {
+      if (!taskStep.matches(capture)) return false;
+      const editor = get().knowledgeReadEditor;
+      if (!editor) return false;
+      const parsed = AgentKnowledgeReadUpdateSchema.parse({
+        expected_revision: editor.source.revision,
+        config: editor.draft,
+      });
+      try {
+        const saved = await capture.api.saveAgentKnowledgeRead(capture.agentId, parsed);
+        if (!taskStep.matches(capture)) return false;
+        set({
+          knowledgeReadEditor: { ...editor, source: saved, draft: structuredClone(saved.config) },
+        });
+        return true;
+      } catch (error) {
+        if (!taskStep.matches(capture)) return false;
+        set({
+          error:
+            error instanceof ApiError && error.code === "KNOWLEDGE_REVISION_CONFLICT"
+              ? msg("读取配置已被其他操作修改；草稿已保留。请刷新保存基线，核对后再次保存。")
+              : errorText(error),
+        });
+        if (error instanceof ApiError && error.code === "KNOWLEDGE_NOT_FOUND") {
+          try {
+            const documents = await capture.api.listAgentKnowledge(capture.agentId);
+            if (taskStep.matches(capture)) {
+              const current = get().knowledgeReadEditor;
+              if (current)
+                set({
+                  knowledgeReadEditor: { ...current, documents },
+                  error: msg("部分指定资料已失效，请移除后保存；不会自动扩大读取范围。"),
+                });
+            }
+          } catch {
+            /* Preserve the original save failure. */
+          }
+        }
+        return false;
+      }
+    },
+  };
+  const actions: KnowledgeActions = {
     loadKnowledgeRead: () => load(false),
     refreshKnowledgeRead: () => load(true),
     patchKnowledgeRead: (patch) => {
@@ -83,70 +169,27 @@ export function createKnowledgeReadActions(
       set({ knowledgeReadEditor: { ...editor, draft }, feedback: "" });
     },
     saveKnowledgeRead: async () => {
-      const editor = get().knowledgeReadEditor;
-      if (
-        editor &&
-        `agent:${editor.agentId}:reading:knowledgeAgent` in get().allocationInvalidInputs
-      ) {
-        set({ error: msg("上下文预算必须为正整数。") });
-        return false;
-      }
-      if (!knowledgeReadDirty(editor)) return true;
-      if (
-        !editor ||
-        editor.agentId !== get().editorAgentId ||
-        get().settingsSaving ||
-        get().editorLoading ||
-        get().knowledgeReadLoading ||
-        get().knowledgeBusy
-      )
-        return false;
-      const parsed = AgentKnowledgeReadUpdateSchema.safeParse({
-        expected_revision: editor.source.revision,
-        config: editor.draft,
-      });
-      if (!parsed.success) {
-        set({ error: msg("上下文预算必须为正整数。") });
-        return false;
-      }
-      set({ settingsSaving: true, error: null, feedback: "" });
-      const matches = () =>
-        get().knowledgeReadEditor?.token === editor.token && get().editorAgentId === editor.agentId;
+      if (get().settingsSaving || get().editorLoading) return false;
+      let capture: KnowledgeCapture | null;
       try {
-        const saved = await get().apiClient.saveAgentKnowledgeRead(editor.agentId, parsed.data);
-        if (!matches()) return false;
-        set({
-          knowledgeReadEditor: {
-            ...editor,
-            source: saved,
-            draft: structuredClone(saved.config),
-          },
-          feedback: msg("助手知识库读取配置已保存；其他页面与全局草稿保持不变。"),
-        });
+        capture = taskStep.capture();
+      } catch (error) {
+        set({ error: errorText(error) });
+        return false;
+      }
+      if (!capture) return true;
+      const operation = {};
+      taskStep.acquire(operation);
+      set({ settingsSaving: true, error: null, feedback: "" });
+      try {
+        if (!(await taskStep.commit(capture))) return false;
+        set({ feedback: msg("助手知识库读取配置已保存；其他页面与全局草稿保持不变。") });
         return true;
       } catch (error) {
-        if (matches())
-          set({
-            error:
-              error instanceof ApiError && error.code === "KNOWLEDGE_REVISION_CONFLICT"
-                ? msg("读取配置已被其他操作修改；草稿已保留。请刷新保存基线，核对后再次保存。")
-                : errorText(error),
-          });
-        if (error instanceof ApiError && error.code === "KNOWLEDGE_NOT_FOUND") {
-          try {
-            const documents = await get().apiClient.listAgentKnowledge(editor.agentId);
-            if (matches())
-              set({
-                knowledgeReadEditor: { ...editor, documents },
-                error: msg("部分指定资料已失效，请移除后保存；不会自动扩大读取范围。"),
-              });
-          } catch {
-            /* Keep the earlier save failure and draft if the refresh also fails. */
-          }
-        }
+        if (taskStep.matches(capture)) set({ error: errorText(error) });
         return false;
       } finally {
-        set({ settingsSaving: false });
+        taskStep.release(operation);
       }
     },
     discardKnowledgeRead: () => {
@@ -161,4 +204,5 @@ export function createKnowledgeReadActions(
       set({ knowledgeReadEditor: null, knowledgeReadLoading: false });
     },
   };
+  return { actions, taskStep };
 }

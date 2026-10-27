@@ -15,7 +15,7 @@ namespace Superstring.Setup
     {
         internal const int SupportedManifestVersion = 1;
         internal const int SupportedLayoutVersion = 1;
-        internal const int SupportedSchemaVersion = 72;
+        internal const int SupportedSchemaVersion = 75;
         internal const string Product = "superstring";
         internal const string Platform = "win32-x64";
 
@@ -220,6 +220,12 @@ namespace Superstring.Setup
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0071_context_storage_metadata.sql");
             if (manifest.SchemaVersion >= 72 && !seen.Contains("app/resources/migrations/versions/0072_outbound_intent_metadata.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0072_outbound_intent_metadata.sql");
+            if (manifest.SchemaVersion >= 73 && !seen.Contains("app/resources/migrations/versions/0073_memory_conversation_visibility.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0073_memory_conversation_visibility.sql");
+            if (manifest.SchemaVersion >= 74 && !seen.Contains("app/resources/migrations/versions/0074_knowledge_visibility.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0074_knowledge_visibility.sql");
+            if (manifest.SchemaVersion >= 75 && !seen.Contains("app/resources/migrations/versions/0075_memory_search_index.sql"))
+                throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0075_memory_search_index.sql");
             if (manifest.SchemaVersion >= 41 && !seen.Contains("app/resources/migrations/versions/0041_outbound_intents.sql"))
                 throw new InvalidDataException("MANIFEST_MISSING_REQUIRED: app/resources/migrations/versions/0041_outbound_intents.sql");
             var launcher = root.ContainsKey("launcher") ? root["launcher"] as Dictionary<string, object> : null;

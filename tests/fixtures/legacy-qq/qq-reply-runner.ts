@@ -48,11 +48,6 @@ import {
 import { attentionTriggerFilter } from "../../../src/server/services/qq-dispatch";
 import { qqJudgementQuestion } from "../../../src/server/services/qq-judgement-material";
 import {
-  type QqMemoryReadSnapshot,
-  qqMemoryReadIsCurrent,
-  recallQqReplyMemory,
-} from "../../../src/server/services/qq-memory-recall";
-import {
   buildQqPrompt,
   type QqPromptInput,
   qqPromptMessages,
@@ -65,6 +60,11 @@ import {
 import { compileSystemPrompt, runtimeFromAgent } from "../../../src/server/services/runtime-config";
 import { qqEffectiveReplyPrompt } from "../../../src/shared/contracts/qq";
 import type { QqJudgementRun, QqReplyOpening } from "./qq-judgement-runner";
+import {
+  type QqMemoryReadSnapshot,
+  qqMemoryReadIsCurrent,
+  recallQqReplyMemory,
+} from "./qq-memory-recall";
 
 export interface QqPendingReview {
   /** The model's sentence, or null when it wrote nothing (a sticker may still speak, §8.1-2). */

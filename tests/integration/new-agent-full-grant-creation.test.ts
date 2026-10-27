@@ -147,7 +147,7 @@ describe("New Agent Full Default Grant Creation (Server-side Closed Loop)", () =
     business.close();
   });
 
-  it("grants full tool permission overrides and knowledge tokens to new Agent while keeping old scoped/denied/global-off unchanged", async () => {
+  it("grants full tool permission overrides without implicit knowledge grants while keeping old scoped/denied/global-off unchanged", async () => {
     const { dir, service } = createTempPermissionStore();
     const allowedDir = path.resolve(dir, "workspace");
 
@@ -365,10 +365,8 @@ describe("New Agent Full Default Grant Creation (Server-side Closed Loop)", () =
     // Skill has no resource requirement, so no grant was created for it
     expect(grants.find((g) => g.resource.startsWith("skill."))).toBeUndefined();
 
-    // 2. Verify Knowledge grants
-    const newAgentDocs = library.agentDocuments(newAgentId);
-    expect(newAgentDocs).toHaveLength(2);
-    expect(newAgentDocs.map((d) => d.id).sort()).toEqual([doc1.id, doc2.id].sort());
+    // Existing documents are not assigned implicitly.
+    expect(library.agentDocuments(newAgentId)).toEqual([]);
 
     // Verify old document revisions are UNCHANGED
     expect(library.detail(doc1.id).revision).toBe(initialDoc1Revision);
@@ -406,7 +404,7 @@ describe("New Agent Full Default Grant Creation (Server-side Closed Loop)", () =
     ).toBe(false);
   });
 
-  it("handles empty catalog normally without error and grants knowledge documents", async () => {
+  it("handles empty catalog normally without implicitly granting knowledge documents", async () => {
     const { service } = createTempPermissionStore();
     service.replace(service.snapshot().revision, { version: 1, grants: [] });
 
@@ -435,10 +433,8 @@ describe("New Agent Full Default Grant Creation (Server-side Closed Loop)", () =
     expect(res.status).toBe(201);
     const created = (await res.json()) as { id: string };
 
-    // Knowledge document was granted to new agent
-    const newAgentDocs = library.agentDocuments(created.id);
-    expect(newAgentDocs).toHaveLength(1);
-    expect(newAgentDocs[0].id).toBe(doc.id);
+    expect(library.agentDocuments(created.id)).toEqual([]);
+    expect(library.detail(doc.id).id).toBe(doc.id);
 
     // Policy grants remain empty
     expect(service.snapshot().policy.grants).toHaveLength(0);
@@ -589,32 +585,23 @@ describe("New Agent Full Default Grant Creation (Server-side Closed Loop)", () =
     const created = (await res.json()) as { id: string; name: string };
     expect(created.name).toBe("默认无权限服务助手");
 
-    // Knowledge document was granted to new agent
-    const newAgentDocs = library.agentDocuments(created.id);
-    expect(newAgentDocs).toHaveLength(1);
-    expect(newAgentDocs[0].id).toBe(doc.id);
+    expect(library.agentDocuments(created.id)).toEqual([]);
+    expect(library.detail(doc.id).id).toBe(doc.id);
   });
 
-  it("rolls back Agent, persona and read settings when granting a current document fails", async () => {
+  it("creates the Agent without writing implicit knowledge grants", async () => {
     const { service } = createTempPermissionStore();
     const library = new KnowledgeRepository(business.db);
     const doc = library.importDocument({
-      name: "grant failure",
+      name: "existing document",
       category_id: "default",
       original_text: "synthetic",
     });
-    library.importDocument({
-      name: "second grant failure",
-      category_id: "default",
-      original_text: "synthetic second",
-    });
     library.replaceGrants(doc.id, doc.revision, [DEFAULT_AGENT_ID]);
     const oldDocRevision = library.detail(doc.id).revision;
-    const beforeRows = creationRows(business);
-    const beforePolicy = service.snapshot();
+    const oldGrants = business.db.query("SELECT * FROM knowledge_grants").all();
     business.db.run(`CREATE TRIGGER fail_new_knowledge_grant BEFORE INSERT ON knowledge_grants
-      WHEN EXISTS (SELECT 1 FROM knowledge_grants WHERE agent_id = NEW.agent_id)
-      BEGIN SELECT RAISE(ABORT, 'synthetic knowledge grant failure'); END`);
+      BEGIN SELECT RAISE(ABORT, 'unexpected implicit knowledge grant'); END`);
     const app = createApp({
       business,
       gateway,
@@ -623,15 +610,22 @@ describe("New Agent Full Default Grant Creation (Server-side Closed Loop)", () =
     });
     const response = await app.request(
       "/agents",
-      jsonPost({ name: "knowledge failure", model_name: "test-model" }),
+      jsonPost({ name: "no implicit grant", model_name: "test-model" }),
     );
-    expect(response.status).toBe(503);
-    expect(creationRows(business)).toEqual(beforeRows);
-    expect(service.snapshot().policy.grants).toEqual([
-      { resource: "mcp.current", approved: false, agentIds: [], directories: [] },
-    ]);
-    expect(beforePolicy.policy.grants).toEqual([]);
+    expect(response.status).toBe(201);
+    const created = (await response.json()) as { id: string };
+    expect(business.db.query("SELECT * FROM knowledge_grants").all()).toEqual(oldGrants);
+    expect(library.agentDocuments(created.id)).toEqual([]);
     expect(library.detail(doc.id).revision).toBe(oldDocRevision);
+    expect(
+      service.snapshot().policy.grants.find((grant) => grant.resource === "mcp.current")
+        ?.agentOverrides?.[created.id],
+    ).toEqual({
+      enabled: true,
+      approved: true,
+      revision: "current/v1",
+      directories: [],
+    });
   });
 
   it("rolls back the Agent and removes its override when persona insertion fails", async () => {
@@ -909,7 +903,7 @@ describe("Fresh builtin Agent provisioning", () => {
         )
         .get(DEFAULT_AGENT_ID),
     ).toEqual({ enabled: 1, scope: "all", document_ids: "[]" });
-    expect(library.agentDocuments(DEFAULT_AGENT_ID).map((item) => item.id)).toEqual([doc.id]);
+    expect(library.agentDocuments(DEFAULT_AGENT_ID)).toEqual([]);
     expect(business.db.query("SELECT * FROM knowledge_documents WHERE id = ?").get(doc.id)).toEqual(
       documentBefore,
     );
@@ -987,29 +981,34 @@ describe("Fresh builtin Agent provisioning", () => {
     expect(service.snapshot().policy.grants).toEqual([]);
   });
 
-  it("rolls back fresh builtin and its overrides when knowledge granting fails", () => {
+  it("creates the fresh builtin without writing implicit knowledge grants", () => {
     const { service } = createTempPermissionStore();
     const library = new KnowledgeRepository(business.db);
     library.importDocument({
-      name: "bootstrap failure",
+      name: "bootstrap document",
       category_id: "default",
       original_text: "synthetic",
     });
-    const rowsBefore = creationRows(business);
+    const oldGrants = business.db.query("SELECT * FROM knowledge_grants").all();
     business.db.run(`CREATE TRIGGER fail_bootstrap_grant BEFORE INSERT ON knowledge_grants
-      BEGIN SELECT RAISE(ABORT, 'synthetic bootstrap grant failure'); END`);
-    expect(() =>
-      createApp({
-        business,
-        gateway,
-        permissions: service,
-        externalActions: () => [makeAction("mcp.current", currentRequirement)],
-      }),
-    ).toThrow();
-    expect(creationRows(business)).toEqual(rowsBefore);
-    expect(service.snapshot().policy.grants).toEqual([
-      { resource: "mcp.current", approved: false, agentIds: [], directories: [] },
-    ]);
+      BEGIN SELECT RAISE(ABORT, 'unexpected implicit bootstrap grant'); END`);
+    createApp({
+      business,
+      gateway,
+      permissions: service,
+      externalActions: () => [makeAction("mcp.current", currentRequirement)],
+    });
+    expect(business.db.query("SELECT * FROM knowledge_grants").all()).toEqual(oldGrants);
+    expect(library.agentDocuments(DEFAULT_AGENT_ID)).toEqual([]);
+    expect(
+      service.snapshot().policy.grants.find((grant) => grant.resource === "mcp.current")
+        ?.agentOverrides?.[DEFAULT_AGENT_ID],
+    ).toEqual({
+      enabled: true,
+      approved: true,
+      revision: "current/v1",
+      directories: [],
+    });
   });
 
   it("rechecks builtin ownership inside the transaction rather than granting an Agent created after the initial check", () => {

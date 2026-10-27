@@ -26,10 +26,7 @@ import { OutboundDelivery } from "../../src/server/conversation/outbound-deliver
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
-import {
-  correctMemory as correctMemoryEntry,
-  memoryRevision,
-} from "../../src/server/db/memory-content-repository";
+import { correctMemory as correctMemoryEntry } from "../../src/server/db/memory-content-repository";
 import { entries } from "../../src/server/db/memory-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import {
@@ -39,7 +36,7 @@ import {
   schemePrompts,
   schemeRhythm,
 } from "../../src/server/db/qq-scheme-repository";
-import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
+import { readQqRetentionDays, updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import {
   DEFAULT_AGENT_ID,
   DEFAULT_USER_ID,
@@ -52,6 +49,11 @@ import { WakeRepository } from "../../src/server/db/wake-repository";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { RuntimeTelemetry } from "../../src/server/observability/runtime-telemetry";
 import { QqGroupCapabilityGuard } from "../../src/server/permissions/qq-group-capabilities";
+import {
+  MEMORY_SEARCH_FOLD_VERSION,
+  memorySearchProjection,
+} from "../../src/server/services/memory-contract";
+import { memoryRevision } from "../../src/server/services/memory-revision";
 import type {
   OneBotSendRequest,
   OneBotSendResult,
@@ -68,6 +70,7 @@ import { recordInbound } from "../../src/server/services/qq-intake";
 import { qqMediaPolicyRevision } from "../../src/server/services/qq-media-contract";
 import type { QqMediaReadAdapter } from "../../src/server/services/qq-media-reader";
 import { qqExecutionModuleSourceAccess } from "../../src/server/services/qq-member-roster-sources";
+import { observationExpiresAt } from "../../src/server/services/qq-retention";
 import { QQ_RHYTHM_DEFAULT } from "../../src/server/services/qq-rhythm-contract";
 import type { QqSendPort } from "../../src/server/services/qq-send-transport";
 import type { MemoryContentResponse } from "../../src/shared/contracts";
@@ -667,7 +670,7 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
     }),
   );
   const knowledgeRepository = new KnowledgeRepository(db);
-  const seedSourceEvent = () => {
+  const seedSourceEvent = (body: string) => {
     const eventKey = crypto.randomUUID();
     const seconds = Math.floor(Date.parse(now()) / 1000);
     orm
@@ -685,6 +688,17 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
         recordedAt: now(),
       })
       .run();
+    orm
+      .insert(schema.qqObservationText)
+      .values({
+        eventKey,
+        body,
+        occurredAtSeconds: seconds,
+        expiresAt: observationExpiresAt(seconds, readQqRetentionDays(orm)),
+        recordedAt: now(),
+      })
+      .run();
+    journal.ingestOneBotEvent(eventKey, bindingId);
     return { eventKey, seconds };
   };
 
@@ -795,17 +809,22 @@ export function createOneBotHarness(options: OneBotHarnessOptions = {}): OneBotH
     compressionRunOnce: () => current.compressionQueue?.runOnce(),
     sweep: () => current.adapter.sweep(clock.seconds),
     memory(body, options) {
-      const { eventKey, seconds } = seedSourceEvent();
+      const { eventKey, seconds } = seedSourceEvent("synthetic memory source");
       const id = crypto.randomUUID();
+      const name = options?.name ?? body.slice(0, 20);
+      const summary = options?.summary ?? body.slice(0, 40);
+      const tags = "[]";
       orm
         .insert(schema.memoryEntries)
         .values({
           id,
           agentId: DEFAULT_AGENT_ID,
           userId: DEFAULT_USER_ID,
-          name: options?.name ?? body.slice(0, 20),
-          summary: options?.summary ?? body.slice(0, 40),
-          tags: "[]",
+          name,
+          summary,
+          tags,
+          foldedSearch: memorySearchProjection({ id, name, summary, tags, body }),
+          foldVersion: MEMORY_SEARCH_FOLD_VERSION,
           kinds: '["semantic"]',
           body,
           scope: "reality_user",

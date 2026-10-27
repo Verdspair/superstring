@@ -13,7 +13,6 @@ import {
   contextKeywords,
   estimateMessages,
   estimateTokens,
-  SELECTION_JSON_SCHEMA,
   SUMMARY_RESULT_JSON_SCHEMA,
   validateContextIds,
 } from "../../src/server/agent/conversation-context";
@@ -32,6 +31,7 @@ import {
 import { contextDumps } from "../../src/server/db/json-text";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
+import { rebuildMemorySearchProjection } from "../../src/server/db/memory-repository";
 import {
   createSession,
   DEFAULT_AGENT_ID,
@@ -58,6 +58,7 @@ import {
 } from "../../src/shared/contracts";
 import { unicodeStrip } from "../../src/shared/contracts/code-point-string";
 import type { Evidence, SourceRef } from "../../src/shared/contracts/evidence";
+import { SELECTION_JSON_SCHEMA } from "../fixtures/legacy-qq/memory-query";
 import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const MODEL = "qwen/qwen3-4b-2507";
@@ -1214,6 +1215,9 @@ describe("R4 ContextBuilder end-to-end", () => {
         const source = completedTurn(ctx.orm, sessionId, `source-${mode}`);
         for (let index = 1; index <= 3; index += 1)
           seedMemory(ctx.orm, source.id, index, `共同主题正文${index}`);
+        expect(rebuildMemorySearchProjection(ctx.orm, DEFAULT_AGENT_ID, { limit: 3 }).rebuilt).toBe(
+          3,
+        );
         const current = activeTurn(ctx.orm, sessionId, `current-${mode}`, "共同主题是什么");
         const runtime = {
           ...current.prepared.runtime,

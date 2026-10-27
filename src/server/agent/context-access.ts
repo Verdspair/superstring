@@ -10,17 +10,24 @@ import type {
 } from "../../shared/contracts/agent-run";
 import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { AgentRunRepository } from "../db/agent-run-repository";
+import { toOrmHandle } from "../db/connection";
+import { memoryAccessRefs } from "../db/context-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
-import { memoryRevision } from "../db/memory-content-repository";
+import { blockedMemorySourceStates } from "../db/memory-source-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { fail } from "../errors";
 import { type ModuleSourceResolver, resolveSourceStates } from "../modules/composition";
 import { stringifyJsonSpaced } from "../services/memory-contract";
+import { memoryRevision } from "../services/memory-revision";
+import { memoryAccessOwnerMatches, memoryConversationAccess } from "../services/memory-scope";
 import { qqMediaSourceAccess } from "../services/qq-media-sources";
 import { qqMediaReadTaskSourceAccess } from "../services/qq-media-task-sources";
 import { qqMemberRosterSourceAccess } from "../services/qq-member-roster-sources";
 import { qqMemberNameSourceAccess } from "../services/qq-member-sources";
-import { qqMemoryJobSourceAccess } from "../services/qq-memory-fact-input";
+import {
+  qqMemoryJobSourceAccess,
+  qqSuppressionContextStates,
+} from "../services/qq-memory-fact-input";
 import {
   qqMessageFactSourceAccess,
   qqMessageFactSourceAccessMany,
@@ -48,6 +55,9 @@ const DIRECT_SOURCE_KINDS: ReadonlySet<string> = new Set([
   "qq_observation",
   "qq_media_source",
   "qq_member_roster",
+  "memory_access",
+  "memory_suppression_context",
+  "memory_blocked_source",
 ]);
 
 function isDirectSourceKind(kind: string): boolean {
@@ -193,6 +203,61 @@ export function canReadRun(db: Database, owner: RunOwner, principal: ContextPrin
   }
 }
 
+function memoryAccessStates(
+  db: Database,
+  sources: readonly SourceRef[],
+  owner: RunOwner,
+  principal: ContextPrincipal,
+): SourceAccess[] {
+  const result: SourceAccess[] = sources.map(() => "revoked");
+  if (principal.userId !== DEFAULT_USER_ID || !owner.agentId) return result;
+  const groups = new Map<string, Array<{ index: number; source: SourceRef; entryId: string }>>();
+  for (const [index, source] of sources.entries()) {
+    let parts: unknown;
+    try {
+      parts = JSON.parse(source.id);
+    } catch {
+      continue;
+    }
+    if (
+      !Array.isArray(parts) ||
+      parts.length !== 3 ||
+      !parts.every((part) => typeof part === "string") ||
+      parts[0] !== owner.agentId
+    )
+      continue;
+    const [, conversationId, entryId] = parts as [string, string, string];
+    const list = groups.get(conversationId) ?? [];
+    list.push({ index, source, entryId });
+    groups.set(conversationId, list);
+  }
+  const orm = toOrmHandle(db).orm;
+  for (const [conversationId, group] of groups) {
+    const access = memoryConversationAccess(orm, conversationId, owner.agentId, principal.userId);
+    if (!access) continue;
+    if (
+      !memoryAccessOwnerMatches(
+        orm,
+        access,
+        owner,
+        access.channel === "web" ? access.sourceId : undefined,
+      )
+    )
+      continue;
+    const refs = memoryAccessRefs(
+      orm,
+      access,
+      group.map((item) => item.entryId),
+    );
+    for (const item of group) {
+      const current = refs.get(item.entryId);
+      if (current?.id === item.source.id && current.revision === item.source.revision)
+        result[item.index] = "available";
+    }
+  }
+  return result;
+}
+
 /** Source references name facts; each type keeps the authorization rules of its original store. */
 export function sourceAccess(
   db: Database,
@@ -202,6 +267,15 @@ export function sourceAccess(
   now: string,
   purpose: "execution" | "inspection" = "execution",
 ): SourceAccess {
+  if (source.kind === "memory_blocked_source")
+    return (
+      blockedMemorySourceStates(toOrmHandle(db).orm, [source], owner, principal, now)[0] ??
+      "revoked"
+    );
+  if (source.kind === "memory_suppression_context")
+    return (
+      qqSuppressionContextStates(toOrmHandle(db), [source], owner, principal, now)[0] ?? "revoked"
+    );
   // This kind delegates to the media service, which checks owner authorization before
   // any expiry — the generic top-of-function expiry would leak an expired state to a
   // cross-owner before the owner check, so it must precede it (R21).
@@ -240,6 +314,8 @@ export function sourceAccess(
     return "expired";
   }
   switch (source.kind) {
+    case "memory_access":
+      return memoryAccessStates(db, [source], owner, principal)[0] ?? "revoked";
     case "web_turn": {
       const row = db
         .query(`SELECT t.source_valid,t.context_valid,t.generation_status,t.generation_token,
@@ -486,7 +562,47 @@ export function assertContextSources(options: {
       : options.resolveSource?.(source, identity, at);
   resolve.resolveMany = options.resolveSource?.resolveMany;
   const states: (SourceAccess | undefined)[] = [];
+  const blockedRefs = sources.filter((source) => source.kind === "memory_blocked_source");
+  const blockedVerdicts = blockedMemorySourceStates(
+    toOrmHandle(db).orm,
+    blockedRefs,
+    owner,
+    { userId: DEFAULT_USER_ID },
+    now,
+  );
+  const blockedStates = new Map(
+    blockedRefs.map((source, index) => [source, blockedVerdicts[index]]),
+  );
+  const suppressionRefs = sources.filter((source) => source.kind === "memory_suppression_context");
+  const suppressionVerdicts = qqSuppressionContextStates(
+    toOrmHandle(db),
+    suppressionRefs,
+    owner,
+    { userId: DEFAULT_USER_ID },
+    now,
+  );
+  const suppressionStates = new Map(
+    suppressionRefs.map((source, index) => [source, suppressionVerdicts[index]]),
+  );
+  const accessRefs = sources.filter((source) => source.kind === "memory_access");
+  const accessVerdicts = memoryAccessStates(db, accessRefs, owner, { userId: DEFAULT_USER_ID });
+  const accessStates = new Map(accessRefs.map((source, index) => [source, accessVerdicts[index]]));
   for (let index = 0; index < sources.length; ) {
+    if (sources[index]!.kind === "memory_blocked_source") {
+      states.push(blockedStates.get(sources[index]!));
+      index++;
+      continue;
+    }
+    if (sources[index]!.kind === "memory_suppression_context") {
+      states.push(suppressionStates.get(sources[index]!));
+      index++;
+      continue;
+    }
+    if (sources[index]!.kind === "memory_access") {
+      states.push(accessStates.get(sources[index]!));
+      index++;
+      continue;
+    }
     if (sources[index]!.kind === "qq_message_fact" && owner.kind !== "memory_job") {
       let end = index + 1;
       while (end < sources.length && sources[end]!.kind === "qq_message_fact") end++;
@@ -522,6 +638,9 @@ export function assertContextSources(options: {
       while (
         end < sources.length &&
         sources[end]!.kind !== "qq_observation" &&
+        sources[end]!.kind !== "memory_access" &&
+        sources[end]!.kind !== "memory_suppression_context" &&
+        sources[end]!.kind !== "memory_blocked_source" &&
         sources[end]!.kind !== "qq_outbound_message_fact" &&
         sources[end]!.kind !== "qq_message_fact"
       )
@@ -644,8 +763,52 @@ export function inspectContext(
     // 连续同 kind 的 qq_observation 段一次批量读取正文（直连域，从不咨询 resolveSource）；
     // 其余 ref 保持逐条原表达式与求值顺序，不做跨非 observation ref 的预取或重排。
     const states: SourceAccess[] = [];
+    const blockedRefs = stored.sources.filter((source) => source.kind === "memory_blocked_source");
+    const blockedVerdicts = blockedMemorySourceStates(
+      toOrmHandle(db).orm,
+      blockedRefs,
+      run.owner,
+      principal,
+      now,
+    );
+    const blockedStates = new Map(
+      blockedRefs.map((source, index) => [source, blockedVerdicts[index]]),
+    );
+    const suppressionRefs = stored.sources.filter(
+      (source) => source.kind === "memory_suppression_context",
+    );
+    const suppressionVerdicts = qqSuppressionContextStates(
+      toOrmHandle(db),
+      suppressionRefs,
+      run.owner,
+      principal,
+      now,
+    );
+    const suppressionStates = new Map(
+      suppressionRefs.map((source, index) => [source, suppressionVerdicts[index]]),
+    );
+    const accessRefs = stored.sources.filter((source) => source.kind === "memory_access");
+    const accessVerdicts = memoryAccessStates(db, accessRefs, run.owner, principal);
+    const accessStates = new Map(
+      accessRefs.map((source, index) => [source, accessVerdicts[index]]),
+    );
     for (let index = 0; index < stored.sources.length; ) {
       const source = stored.sources[index]!;
+      if (source.kind === "memory_blocked_source") {
+        states.push(blockedStates.get(source) ?? "revoked");
+        index++;
+        continue;
+      }
+      if (source.kind === "memory_suppression_context") {
+        states.push(suppressionStates.get(source) ?? "revoked");
+        index++;
+        continue;
+      }
+      if (source.kind === "memory_access") {
+        states.push(accessStates.get(source) ?? "revoked");
+        index++;
+        continue;
+      }
       if (source.kind === "tool_permission" && resolveSource?.resolveMany) {
         let end = index + 1;
         while (end < stored.sources.length && stored.sources[end]!.kind === "tool_permission")

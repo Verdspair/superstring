@@ -32,9 +32,10 @@ import { ReservationLedger } from "../agent/reservation-ledger";
 import {
   type ContextMessage,
   currentUser,
-  readMemoryCandidate,
+  memoryRevisionsForSession,
   systemPrompt,
 } from "../db/context-repository";
+import { ConversationEventRepository } from "../db/conversation-event-repository";
 import { KnowledgeRepository } from "../db/knowledge-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
 import { fail } from "../errors";
@@ -97,6 +98,12 @@ export class WebContextSource implements ConversationContextSource {
     },
   ) {
     const { runtime } = options;
+    const canonical = new ConversationEventRepository(options.db).ensureWeb(
+      options.sessionId,
+      DEFAULT_USER_ID,
+    );
+    if (!canonical || canonical.agentId !== runtime.agent_id)
+      fail("CONTEXT_SOURCE_INVALID", "会话记忆范围不可用");
     this.owner = {
       kind: "web_turn",
       id: options.turnId,
@@ -137,6 +144,7 @@ export class WebContextSource implements ConversationContextSource {
                     memory.query({
                       agentId: runtime.agent_id,
                       sessionId: options.sessionId,
+                      conversationId: canonical.id,
                       mode: runtime.p5_config.retrieval_mode,
                       scopes: null,
                       ...input,
@@ -158,6 +166,7 @@ export class WebContextSource implements ConversationContextSource {
                           ...input,
                           agentId: runtime.agent_id,
                           sessionId: options.sessionId,
+                          conversationId: canonical.id,
                           scopes: null,
                           owner: this.owner,
                           signal: context.signal,
@@ -654,12 +663,7 @@ export class WebContextSource implements ConversationContextSource {
         { resolveMany: o.resolveSource?.resolveMany },
       ),
       memoryRevisions: (ids) =>
-        new Map(
-          [...new Set(ids)].map((id) => {
-            const item = readMemoryCandidate(o.orm, o.runtime.agent_id, null, id, o.sessionId);
-            return [item.id, item.revision];
-          }),
-        ),
+        memoryRevisionsForSession(o.orm, o.runtime.agent_id, o.sessionId, ids),
       skip: (source) => source.kind === "web_turn" && source.id === o.turnId,
       messages: {
         memory: "已选记忆正文或来源发生变化",

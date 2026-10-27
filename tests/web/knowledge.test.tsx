@@ -16,6 +16,7 @@ const document: KnowledgeDocumentDetail = {
   category_id: "default",
   name: "用户资料",
   import_type: "md",
+  visibility: null,
   content_mode: "draft",
   content_version: 1,
   revision: 3,

@@ -300,6 +300,18 @@ const v72 = readFileSync(
   path.join(import.meta.dir, "../../migrations/versions/0072_outbound_intent_metadata.sql"),
   "utf8",
 );
+const v73 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0073_memory_conversation_visibility.sql"),
+  "utf8",
+);
+const v74 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0074_knowledge_visibility.sql"),
+  "utf8",
+);
+const v75 = readFileSync(
+  path.join(import.meta.dir, "../../migrations/versions/0075_memory_search_index.sql"),
+  "utf8",
+);
 const ddl = (db: Database) =>
   db
     .query(
@@ -316,7 +328,7 @@ const golden: Record<string, string> = {
   knowledge_settings: "id:I auto_enabled:I model_name:T? context_budget:I revision:I",
   knowledge_categories: "id:T name:T revision:I",
   knowledge_documents:
-    "id:T category_id:T name:T original_text:T import_type:T content_mode:T content_version:I revision:I created_at:T updated_at:T",
+    "id:T category_id:T name:T original_text:T import_type:T content_mode:T content_version:I revision:I created_at:T updated_at:T visibility:T?",
   knowledge_grants: "document_id:T agent_id:T token:T created_at:T",
   knowledge_chunks:
     "id:T document_id:T content_version:I ordinal:I start_offset:I end_offset:I body:T",
@@ -420,6 +432,9 @@ describe("frozen schema defaults and product initialization", () => {
     v70,
     v71,
     v72,
+    v73,
+    v74,
+    v75,
   ] as const;
   // Independent snapshots: v1 matches published v0.2.0-alpha; v2-v4 are the
   // accepted pre-ADR0016 development schemas; v5 onwards are the additive QQ
@@ -554,6 +569,9 @@ describe("frozen schema defaults and product initialization", () => {
     // 0071：上下文与追踪存储的覆盖索引；由原生 SQLite 按本文件 ddl() 口径量取。
     "e5d79ecdd5d6089ca4b8530f66af55dd636b2ea0f51e2c0d690bfe4ef8c03a49",
     "051299eb6d1029e5d203e71bbc83f702b75518189ec1d1157c5f0a378ee2f9da",
+    "ad5c36bdf71607c8d74b4386c6cce45d63fa96112285630b17261c7bef9fce18",
+    "194ecba7051aac3dc613177673a74ee0e4fdb532cc6187b20b9efe40fa26b2ca",
+    "a0a956d0925b65900c6996a77ec3da04a0dcb5a426afadfd9e8ba4817a07673a",
   ];
   // The loop is driven BY the fingerprint list, not by a hand-written run of numbers: the two were
   // maintained separately once, the loop stopped one version short, and the newest recorded hash —
@@ -578,7 +596,7 @@ describe("frozen schema defaults and product initialization", () => {
           target_chars: 300,
         });
         ensureBusinessSchema(db);
-        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 72 });
+        expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 75 });
         expect(db.query("SELECT target_chars FROM memory_policies").get()).toEqual({
           target_chars: 300,
         });
@@ -607,15 +625,29 @@ describe("knowledge schema v2 migration", () => {
       old.exec(v1);
       old.exec("PRAGMA user_version = 1");
       seedParents(old);
-      const legacy = BUSINESS_TABLE_NAMES.slice(0, 16).map((table) =>
-        old.query(`SELECT * FROM ${table}`).all(),
+      const legacyNames = BUSINESS_TABLE_NAMES.slice(0, 16);
+      const legacyColumns = new Map(
+        legacyNames.map((table) => [
+          table,
+          (old.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+            (column) => column.name,
+          ),
+        ]),
       );
+      const readLegacy = (table: string) =>
+        old
+          .query(
+            `SELECT ${legacyColumns
+              .get(table)!
+              .map((name) => `"${name}"`)
+              .join(",")} FROM ${table}`,
+          )
+          .all();
+      const legacy = legacyNames.map(readLegacy);
       ensureBusinessSchema(old);
-      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 72 });
+      expect(old.query("PRAGMA user_version").get()).toEqual({ user_version: 75 });
       expect(ddl(old)).toEqual(ddl(fresh.db));
-      expect(
-        BUSINESS_TABLE_NAMES.slice(0, 16).map((table) => old.query(`SELECT * FROM ${table}`).all()),
-      ).toEqual(legacy);
+      expect(legacyNames.map(readLegacy)).toEqual(legacy);
       expect(old.query("PRAGMA foreign_key_check").all()).toEqual([]);
       old.exec(
         "UPDATE knowledge_categories SET name = '用户改名'; UPDATE knowledge_settings SET auto_enabled = 0;",
@@ -716,13 +748,16 @@ describe("knowledge schema v2 migration", () => {
           v70,
           v71,
           v72,
+          v73,
+          v74,
+          v75,
         ]),
       ).toThrow();
       expect(ddl(db)).toEqual(before);
       expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
       expect(db.query("SELECT body FROM memory_entries").get()).toEqual({ body: "旧记忆" });
       ensureBusinessSchema(db);
-      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 72 });
+      expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 75 });
     } finally {
       db.close();
     }

@@ -280,10 +280,49 @@ export const memoryEntries = sqliteTable(
     status: text("status").notNull().default("active"),
     configSnapshot: text("config_snapshot").notNull(), // JSON
     createdAt: text("created_at").notNull(),
+    visibility: text("visibility"),
+    visibilityRevision: integer("visibility_revision").notNull().default(1),
+    publicationSourceRevision: text("publication_source_revision"),
+    foldedSearch: text("folded_search"),
+    foldVersion: integer("fold_version"),
   },
   (t) => [
     check("memory_status", sql`${t.status} IN ('active', 'suppressed', 'replaced', 'invalid')`),
     index("ix_memory_owner_status").on(t.userId, t.agentId, t.status),
+    check(
+      "memory_visibility",
+      sql`${t.visibility} IS NULL OR ${t.visibility} IN ('session_private', 'agent_shared', 'public')`,
+    ),
+    check(
+      "memory_visibility_revision",
+      sql`typeof(${t.visibilityRevision}) = 'integer' AND ${t.visibilityRevision} >= 1`,
+    ),
+    check(
+      "memory_publication_source_revision",
+      sql`${t.publicationSourceRevision} IS NULL OR length(${t.publicationSourceRevision}) > 0`,
+    ),
+    check(
+      "memory_fold_version",
+      sql`${t.foldVersion} IS NULL OR (typeof(${t.foldVersion}) = 'integer' AND ${t.foldVersion} >= 1)`,
+    ),
+  ],
+);
+
+export const memoryReadGrants = sqliteTable(
+  "memory_read_grants",
+  {
+    memoryId: text("memory_id")
+      .notNull()
+      .references(() => memoryEntries.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    token: text("token").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.memoryId, t.agentId] }),
+    check("memory_read_grant_token", sql`length(${t.token}) > 0`),
+    index("ix_memory_read_grants_agent").on(t.agentId, t.memoryId),
   ],
 );
 
@@ -459,6 +498,7 @@ export const knowledgeDocuments = sqliteTable(
     name: text("name").notNull(),
     originalText: text("original_text").notNull(),
     importType: text("import_type").notNull(),
+    visibility: text("visibility"),
     contentMode: text("content_mode").notNull().default("draft"),
     contentVersion: integer("content_version").notNull().default(1),
     revision: integer("revision").notNull().default(1),
@@ -470,6 +510,10 @@ export const knowledgeDocuments = sqliteTable(
     check("knowledge_original_text", sql`length(${t.originalText}) > 0`),
     check("knowledge_import_type", sql`${t.importType} IN ('text', 'txt', 'md')`),
     check("knowledge_content_mode", sql`${t.contentMode} IN ('draft', 'original')`),
+    check(
+      "knowledge_visibility",
+      sql`${t.visibility} IS NULL OR ${t.visibility} IN ('private', 'public')`,
+    ),
     check("knowledge_content_version", sql`${t.contentVersion} >= 1`),
     check("knowledge_document_revision", sql`${t.revision} >= 1`),
     index("ix_knowledge_documents_category").on(t.categoryId, t.id),
@@ -1771,34 +1815,49 @@ export const qqJudgementReadings = sqliteTable(
 );
 
 // 0040–0041: canonical conversations and durable effects.
-export const conversations = sqliteTable("conversations", {
-  id: text("id").primaryKey().notNull(),
-  channel: text("channel").notNull(),
-  topology: text("topology").notNull(),
-  sourceId: text("source_id").notNull(),
-  agentId: text("agent_id")
-    .notNull()
-    .references(() => agents.id, { onDelete: "cascade" }),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id),
-  bindingEpoch: integer("binding_epoch").notNull(),
-  sourceWatermark: integer("source_watermark").notNull().default(0),
-  nextSeq: integer("next_seq").notNull().default(1),
-  consumedSeq: integer("consumed_seq").notNull().default(0),
-  // 0054：自主接话的持久观察边界。direct 的 consumed_seq 不能代替它——两条路径各自推进，
-  // 互不吞并；条数永远从边界与事件事实派生，不另存冗余 count。
-  chimingInObservedSeq: integer("chiming_in_observed_seq").notNull().default(0),
-  /**
-   * 0055：自主接话上一次**完整有效判定**（含决定沉默）的时刻，是时间窗口的起算锚之一。
-   * NULL＝本会话还没有过有效判定。回复子任务是否跑完不参与：判定一完成就与游标同事务写入，
-   * 所以它记的是「判过了」，不是「说完了」。
-   */
-  chimingInJudgedAt: text("chiming_in_judged_at"),
-  createdAt: text("created_at").notNull(),
-  updatedAt: text("updated_at").notNull(),
-  closedAt: text("closed_at"),
-});
+export const conversations = sqliteTable(
+  "conversations",
+  {
+    id: text("id").primaryKey().notNull(),
+    channel: text("channel").notNull(),
+    topology: text("topology").notNull(),
+    sourceId: text("source_id").notNull(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    bindingEpoch: integer("binding_epoch").notNull(),
+    sourceWatermark: integer("source_watermark").notNull().default(0),
+    nextSeq: integer("next_seq").notNull().default(1),
+    consumedSeq: integer("consumed_seq").notNull().default(0),
+    // 0054：自主接话的持久观察边界。direct 的 consumed_seq 不能代替它——两条路径各自推进，
+    // 互不吞并；条数永远从边界与事件事实派生，不另存冗余 count。
+    chimingInObservedSeq: integer("chiming_in_observed_seq").notNull().default(0),
+    /**
+     * 0055：自主接话上一次**完整有效判定**（含决定沉默）的时刻，是时间窗口的起算锚之一。
+     * NULL＝本会话还没有过有效判定。回复子任务是否跑完不参与：判定一完成就与游标同事务写入，
+     * 所以它记的是「判过了」，不是「说完了」。
+     */
+    chimingInJudgedAt: text("chiming_in_judged_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    closedAt: text("closed_at"),
+    memoryReadMode: text("memory_read_mode").notNull().default("current_conversation"),
+    memoryConfigRevision: integer("memory_config_revision").notNull().default(1),
+  },
+  (t) => [
+    check(
+      "conversation_memory_read_mode",
+      sql`${t.memoryReadMode} IN ('current_conversation', 'agent_shared')`,
+    ),
+    check(
+      "conversation_memory_config_revision",
+      sql`typeof(${t.memoryConfigRevision}) = 'integer' AND ${t.memoryConfigRevision} >= 1`,
+    ),
+  ],
+);
 
 export const wakeSignals = sqliteTable(
   "wake_signals",
@@ -2677,6 +2736,7 @@ export const businessTables = {
   memoryPolicies,
   memorySessionStates,
   memoryEntries,
+  memoryReadGrants,
   memorySources,
   memoryLinks,
   memoryProcessedTurns,

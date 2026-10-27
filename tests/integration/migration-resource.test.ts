@@ -94,6 +94,9 @@ const BUSINESS_MIGRATION_FILE_NAMES = [
   "0070_context_source_lookup.sql",
   "0071_context_storage_metadata.sql",
   "0072_outbound_intent_metadata.sql",
+  "0073_memory_conversation_visibility.sql",
+  "0074_knowledge_visibility.sql",
+  "0075_memory_search_index.sql",
 ];
 
 const resources = BUSINESS_MIGRATION_FILE_NAMES.map((name) =>
@@ -134,7 +137,7 @@ describe("explicit migration resources", () => {
         }),
       ).toThrow("REJECT_UNKNOWN_STRUCTURE");
       const reopened = openBusinessDb({ path: filename, migrationSql: resources });
-      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 72 });
+      expect(reopened.db.query("PRAGMA user_version").get()).toEqual({ user_version: 75 });
       reopened.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -231,7 +234,7 @@ describe("explicit migration resources", () => {
         SUPERSTRING_APP_ROOT: dir,
       });
       expect(layout).not.toBeNull();
-      expect(layout?.businessMigrationSql.length).toBe(72);
+      expect(layout?.businessMigrationSql.length).toBe(75);
       expect(layout?.businessMigrationSql.every((sql) => sql.trim().length > 0)).toBe(true);
       expect(layout && "probeMigrationSql" in layout).toBe(false);
     } finally {
@@ -263,7 +266,7 @@ describe("explicit migration resources", () => {
       const calls = inspection.mock.calls.map(([filename]) => String(filename));
       const inspected = new Set(calls);
       expect(calls.filter((filename) => filename === versions)).toHaveLength(1);
-      expect(layout?.businessMigrationSql.length).toBe(72);
+      expect(layout?.businessMigrationSql.length).toBe(75);
       expect(existsSync(path.join(dir, "userdata"))).toBe(false);
       expect(inspected.has(path.join(versions, "0001_initial.sql"))).toBe(true);
       expect(
