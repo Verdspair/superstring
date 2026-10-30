@@ -1,13 +1,5 @@
-import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
+import type { Evidence, MemoryEvidenceMetadata, SourceRef } from "../../shared/contracts/evidence";
 import type { MemoryScopeKeys } from "../services/memory-scope";
-
-export type MemoryReadMode =
-  | "off"
-  | "conservative"
-  | "standard"
-  | "broad"
-  | "full_catalog"
-  | "full_body";
 
 /** Public query contracts carry intent and authority, not one backend's Agent configuration. */
 export interface EvidenceQueryPage {
@@ -18,6 +10,7 @@ export interface EvidenceQueryPage {
 }
 export type EvidenceQueryResponse = readonly Evidence[] | EvidenceQueryPage;
 export interface EvidenceTextPage {
+  readonly metadata?: MemoryEvidenceMetadata;
   readonly text: string;
   readonly offset: number;
   readonly total: number;
@@ -26,7 +19,6 @@ export interface EvidenceTextPage {
 
 export interface MemoryQuery {
   agentId: string;
-  mode: MemoryReadMode;
   sessionId?: string;
   conversationId?: string;
   scopes: MemoryScopeKeys;

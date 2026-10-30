@@ -544,7 +544,9 @@ export function InspectedEvidence({
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab} className="min-w-0 gap-4">
       <TabsList
-        className="h-auto w-full flex-wrap sm:w-fit"
+        presentation="compact"
+        flow="wrap"
+        className="w-full sm:w-fit"
         aria-label={t("observability.modelInputOutputAndSources")}
       >
         <TabsTrigger value="input">{t("observability.modelInput")}</TabsTrigger>

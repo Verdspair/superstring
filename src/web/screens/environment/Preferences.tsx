@@ -43,6 +43,7 @@ import {
   CLOSE_ANIMATION_STORAGE_KEY,
   isCloseAnimationEnabled,
 } from "../../../shared/desktop-preferences";
+import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 
 /** The desktop host applies this on close; missing or unreadable values keep the animation. */
 function readCloseAnimation(): boolean {
@@ -130,16 +131,13 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
   const modeIcon = { system: Laptop, light: Sun, dark: Moon };
 
   return (
-    <div className="mx-auto h-full min-h-0 w-full max-w-[1160px] overflow-y-auto space-y-[24px] px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]">
-      <header className="workspace-page-header">
-        <p className="workspace-page-location">
-          {t("brand.workspace", { "0": t("library.preferences") })}
-        </p>
-        <h1 className="workspace-page-title">{t("library.make.this.workspace.yours")}</h1>
-        <p className="workspace-page-description">
-          {t("library.language.color.and.desktop.behavior.changes.apply.immediately")}
-        </p>
-      </header>
+    <div className="min-w-0 space-y-[24px] p-4">
+      <WorkspacePageHeader
+        location={t("brand.workspace", { "0": t("library.preferences") })}
+        title={t("library.make.this.workspace.yours")}
+        description={t("library.language.color.and.desktop.behavior.changes.apply.immediately")}
+        headingLevel={2}
+      />
 
       {notice && (
         <p
@@ -151,7 +149,7 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
       )}
 
       <SettingsGroup title={t("library.interface.language")}>
-        <div className="p-4 sm:p-5">
+        <div className="settings-content-padding">
           <Field label="library.language" tooltip={t("hints.system.language")}>
             <NativeSelect
               value={locale}
@@ -172,7 +170,7 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
         title={t("library.appearance")}
         description={t("library.keep.your.personal.color.palette.while.keeping.text.and")}
       >
-        <div className="p-4 sm:p-5 space-y-3">
+        <div className="settings-content-padding space-y-3">
           <div className="grid grid-cols-3 gap-2 sm:gap-3">
             {MODES.map((item) => {
               const Icon = modeIcon[item.id];
@@ -201,7 +199,7 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
           </div>
         </div>
 
-        <div className="p-4 sm:p-5 space-y-3">
+        <div className="settings-content-padding space-y-3">
           <Field label="library.font" tooltip={t("hints.system.font")}>
             <NativeSelect
               value={font}
@@ -278,7 +276,7 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
           </figure>
         </div>
 
-        <div className="p-4 sm:p-5 space-y-3">
+        <div className="settings-content-padding space-y-3">
           <h3 className="text-sm font-medium text-foreground">{t("library.theme.color")}</h3>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {SELECTABLE_THEMES.map((item) => {
@@ -313,7 +311,7 @@ export function Preferences({ active = true }: { active?: boolean } = {}) {
           title={t("library.desktop.behavior")}
           description={t("library.desktop.behavior.description")}
         >
-          <div className="p-4 sm:p-5">
+          <div className="settings-content-padding">
             <Field label="preferences.closeAnimation.label" info="preferences.closeAnimation.hint">
               <NativeSelect
                 value={closeAnimation ? "on" : "off"}

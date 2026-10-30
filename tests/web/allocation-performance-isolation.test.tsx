@@ -5,11 +5,28 @@ import { type AgentResponse, PersonaResponseSchema } from "../../src/shared/cont
 import type { QqSchemeResponse } from "../../src/shared/contracts/qq";
 import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { newPageEditor } from "../../src/web/features/agents/page-drafts";
-import {
-  openContextAllocation,
-  resetContextAllocationTarget,
-  setContextAllocationTarget,
-} from "../../src/web/features/context-allocation";
+
+const openContextAllocation = (
+  target: Partial<import("../../src/web/features/context-allocation").ContextAllocationTarget> = {},
+) => store.getState().openContextAllocation(target);
+const resetContextAllocationTarget = () =>
+  store.setState({
+    contextAllocationTarget: {
+      purpose: "assistant",
+      agentId: null,
+      schemeId: null,
+      bindingId: null,
+      returnRoute: null,
+      returnLabel: null,
+    },
+  });
+const setContextAllocationTarget = (
+  target: Partial<import("../../src/web/features/context-allocation").ContextAllocationTarget>,
+) =>
+  store.setState((state) => ({
+    contextAllocationTarget: { ...state.contextAllocationTarget, ...target },
+  }));
+
 import { selectLocale } from "../../src/web/i18n";
 import { CapabilityEditor } from "../../src/web/screens/assistants/StudioEditors";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
@@ -309,7 +326,8 @@ describe("allocation performance & render isolation (PROVEN RED FIRST)", () => {
     expect(callsForVisionModel).toBe(0);
     expect(getModelCapacity).toHaveBeenCalledTimes(1);
 
-    // Agent identity guard: switching active agent revalidates even if model is identical
+    // This global knowledge host is independent of the selected Agent. The Agent host
+    // has its own identity-revalidation test below.
     const AGENT_ID_2 = "99999999-9999-4999-8999-999999999999";
     const mockAgent2: AgentResponse = {
       ...mockAgent,
@@ -322,7 +340,8 @@ describe("allocation performance & render isolation (PROVEN RED FIRST)", () => {
         editorAgentId: AGENT_ID_2,
       });
     });
-    expect(getModelCapacity.mock.calls.filter(([m]) => m === "shared-agent-model").length).toBe(2);
+    expect(getModelCapacity.mock.calls.filter(([m]) => m === "shared-agent-model").length).toBe(1);
+    expect(getModelCapacity).toHaveBeenCalledTimes(1);
   });
 
   it("visual tab switching inside ModelPurposes fires zero network requests once loaded", async () => {

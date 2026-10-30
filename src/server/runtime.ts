@@ -8,6 +8,7 @@ import type { Hono } from "hono";
 import { SourceRefSchema } from "../shared/contracts/evidence";
 import { executionPolicy } from "../shared/contracts/permissions";
 import { QqManagedEventsPageSchema } from "../shared/contracts/qq-managed-events";
+import type { ToolDefinition } from "../shared/contracts/tool-directory";
 import { ActionExecutor } from "./agent/action-executor";
 import { type AgentRuntime, createAgentRuntime } from "./agent/agent-runtime";
 import type { CodeRunner } from "./agent/code-runner";
@@ -27,6 +28,7 @@ import {
   type QqMediaInputService,
 } from "./channels/onebot11/media-input-service";
 import { BotWorker } from "./conversation/bot-worker";
+import { type BotEvidenceScope, evidenceScopeExists } from "./conversation/evidence-scope";
 import { AgentRunRepository } from "./db/agent-run-repository";
 import { AgentTaskRepository } from "./db/agent-task-repository";
 import type { BusinessDbHandle } from "./db/connection";
@@ -54,11 +56,7 @@ import {
   type ModuleComposition,
   type ModuleSourceResolver,
 } from "./modules/composition";
-import {
-  type BotEvidenceScope,
-  conversationEvidenceSourceAccess,
-  evidenceScopeExists,
-} from "./modules/conversation-evidence";
+import { conversationEvidenceSourceAccess } from "./modules/conversation-evidence";
 import { loadConversationEvidence } from "./modules/conversation-evidence-store";
 import { FileNapCatConfigStore } from "./napcat/config";
 import { NapCatControlClient } from "./napcat/control-client";
@@ -91,9 +89,10 @@ import { createQqMediaSourceFetcher } from "./services/qq-media-source";
 import { qqExecutionModuleSourceAccess } from "./services/qq-member-roster-sources";
 import type { QqSendPort } from "./services/qq-send-transport";
 import { DEFAULT_QQ_STICKER_DIRECTORY, QqStickerStore } from "./services/qq-sticker-store";
-import { createSkillActions } from "./skills/actions";
+import { createSkillActions, skillToolDefinitions } from "./skills/actions";
+import { loadMergedSkillCatalog } from "./skills/config";
 import { skillSourceAccess } from "./skills/sources";
-import { createWebActions } from "./web-access/actions";
+import { createWebActions, createWebToolDefinitions } from "./web-access/actions";
 import { FileWebAccessConfigStore } from "./web-access/config";
 
 export const DEFAULT_BUSINESS_DB_PATH = path.resolve("data/superstring.sqlite");
@@ -271,6 +270,15 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Super
     ...(mcpHost?.current() ?? []),
     ...createSkillActions(options.skillRoot),
     ...createWebActions(webAccess ? { config: () => webAccess.read().config } : {}),
+  ];
+  const externalToolDefinitions = (includeSkills: boolean): readonly ToolDefinition[] => [
+    ...(mcpHost?.current() ?? []).map(({ description, permission, sandboxCallable }) => ({
+      description,
+      permission,
+      sandboxCallable,
+    })),
+    ...(includeSkills ? skillToolDefinitions(loadMergedSkillCatalog(options.skillRoot)) : []),
+    ...createWebToolDefinitions(),
   ];
   const tasks = new AgentTaskService({
     repository: new AgentTaskRepository(business.db),
@@ -804,6 +812,7 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Super
       qqConnectionState: () => qqIntake.state,
       qqStickerDirectory: options.qqStickerDirectory,
       externalActions,
+      externalToolDefinitions,
       tasks,
       permissions: options.permissionConfigPath ? permissions : undefined,
       telemetryRetentionDays: () => execution().telemetry.retentionDays,

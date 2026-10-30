@@ -93,9 +93,9 @@ describe("memory management access metadata", () => {
         recipient_agent_ids: [],
         origin_complete: true,
         origins: [{ channel: "web", conversation_id: f.canonical.id }],
-        source_validity: "not_evaluated",
-        runtime_eligibility: "not_evaluated",
-        raw_preview: "not_evaluated",
+        source_validity: "valid",
+        runtime_eligibility: "unknown",
+        raw_preview: "unknown",
       });
       expect(JSON.stringify(body)).not.toContain("PRIVATE");
       const put = await f.app.request(`${url}/visibility`, {
@@ -281,7 +281,14 @@ describe("memory management access metadata", () => {
         }
         expect(statements.length).toBeGreaterThan(0);
         expect(statements.length).toBeLessThanOrEqual(5);
-        expect(statements.some((sql) => /messages\b|\bcontent\b/.test(sql))).toBe(false);
+        expect(
+          statements.some((sql) =>
+            /(?:\bu\.content\b|\ba\.content\b|\bmessages\.content\b|select\s+\*\s+from\s+messages)/.test(
+              sql,
+            ),
+          ),
+        ).toBe(false);
+        expect(statements.filter((sql) => sql.includes("from memory_sources")).length).toBe(1);
       } finally {
         f.business.close();
       }

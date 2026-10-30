@@ -34,8 +34,8 @@ import {
   createQqMediaTools,
   type QqMediaToolsOptions,
 } from "../../src/server/services/qq-media-tools";
-import { SPEECH_REPLY_DESCRIPTION } from "../../src/shared/contracts/agent-action-descriptions";
-import { SpeechReplyArgumentsSchema } from "../../src/shared/contracts/agent-output";
+import { REPLY_TEXT_DESCRIPTION } from "../../src/shared/contracts/agent-action-descriptions";
+import { ReplyTextArgumentsSchema } from "../../src/shared/contracts/agent-output";
 import type { ConversationAddressing } from "../../src/shared/contracts/conversation";
 import type { SourceRef } from "../../src/shared/contracts/evidence";
 
@@ -394,7 +394,7 @@ describe("run-scoped QQ media tools", () => {
             ).not.toContain('"name":"media.note.read"');
             return JSON.stringify({
               kind: "invoke",
-              name: "speech.reply",
+              name: "reply.text",
               arguments: {
                 outputs: [{ kind: "inline", targetId: "peer", text: "已读到图片描述" }],
               },
@@ -406,11 +406,7 @@ describe("run-scoped QQ media tools", () => {
           },
         },
       });
-      const actionDescriptions = [
-        list.description,
-        described.description,
-        SPEECH_REPLY_DESCRIPTION,
-      ];
+      const actionDescriptions = [list.description, described.description, REPLY_TEXT_DESCRIPTION];
       const agentSpec: AgentSpec = {
         id: "qq.inline-description.test",
         version: "1",
@@ -431,11 +427,11 @@ describe("run-scoped QQ media tools", () => {
         authorizedTargets: ["peer"],
         outputMode: "buffered",
         terminalAction: {
-          descriptions: [SPEECH_REPLY_DESCRIPTION],
+          descriptions: [REPLY_TEXT_DESCRIPTION],
           parse: (calls) => {
-            if (calls.length !== 1 || calls[0]?.name !== SPEECH_REPLY_DESCRIPTION.name)
+            if (calls.length !== 1 || calls[0]?.name !== REPLY_TEXT_DESCRIPTION.name)
               throw new Error("invalid terminal reply contribution");
-            return SpeechReplyArgumentsSchema.parse(calls[0].arguments).outputs;
+            return ReplyTextArgumentsSchema.parse(calls[0].arguments).outputs;
           },
         },
         actions,
@@ -1606,7 +1602,7 @@ describe("run-scoped QQ media tools", () => {
             });
             return JSON.stringify({
               kind: "invoke",
-              name: "speech.reply",
+              name: "reply.text",
               arguments: {
                 outputs: [{ kind: "inline", targetId: "peer", text: "已按列表描述图片" }],
               },
@@ -1618,11 +1614,7 @@ describe("run-scoped QQ media tools", () => {
           },
         },
       });
-      const actionDescriptions = [
-        list.description,
-        described.description,
-        SPEECH_REPLY_DESCRIPTION,
-      ];
+      const actionDescriptions = [list.description, described.description, REPLY_TEXT_DESCRIPTION];
       const agentSpec: AgentSpec = {
         id: "qq.runtime-activation.test",
         version: "1",
@@ -1643,11 +1635,11 @@ describe("run-scoped QQ media tools", () => {
         authorizedTargets: ["peer"],
         outputMode: "buffered",
         terminalAction: {
-          descriptions: [SPEECH_REPLY_DESCRIPTION],
+          descriptions: [REPLY_TEXT_DESCRIPTION],
           parse: (calls) => {
-            if (calls.length !== 1 || calls[0]?.name !== SPEECH_REPLY_DESCRIPTION.name)
+            if (calls.length !== 1 || calls[0]?.name !== REPLY_TEXT_DESCRIPTION.name)
               throw new Error("invalid terminal reply contribution");
-            return SpeechReplyArgumentsSchema.parse(calls[0].arguments).outputs;
+            return ReplyTextArgumentsSchema.parse(calls[0].arguments).outputs;
           },
         },
         actions,

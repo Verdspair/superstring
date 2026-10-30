@@ -178,7 +178,8 @@ export function AddConversationDialog({
       }}
     >
       <DialogContent
-        className="max-h-[90dvh] overflow-y-auto sm:max-w-lg"
+        scrollMode="surface"
+        className="max-h-[90dvh]  sm:max-w-lg"
         showCloseButton={!saving}
         onCloseAutoFocus={onCloseAutoFocus}
       >
@@ -315,12 +316,12 @@ export function AddConversationDialog({
                     <option value="private">{t("connections.privateChat")}</option>
                   </NativeSelect>
                 </Field>
-                <Field label="qq.entry.search" tooltip={t("qq.entry.searchHint")}>
+                <Field label="qq.entry.search" info="qq.entry.searchHint">
                   <Input
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     disabled={busy}
-                    placeholder={t("qq.entry.searchHint")}
+                    placeholder={t("qq.entry.searchPlaceholder")}
                   />
                 </Field>
                 <Field

@@ -35,154 +35,96 @@ function createTestPersona(id = "test-agent-1") {
   });
 }
 
-describe("memory reading owner: page-drafts single-owner regression", () => {
-  it("dirties memory-tools and leaves context clean when only retrieval bytes change", () => {
+describe("single memory read draft owner", () => {
+  it("changing active settings back to the legacy effective value is a no-op", () => {
     const agent = createTestAgent();
-    const persona = createTestPersona();
-    const editor = newPageEditor(agent, persona);
-
+    const editor = newPageEditor(agent, createTestPersona());
+    editor.draft.p5_config = {
+      ...editor.draft.p5_config,
+      memory_read: {
+        enabled: true,
+        max_bytes: agent.p5_config.retrieval_presets.standard.max_tokens,
+      },
+    };
     expect(agentPageDirty(editor, "memory-tools")).toBe(false);
-    expect(agentPageDirty(editor, "context")).toBe(false);
-    expect(dirtyPages(editor)).toEqual([]);
-
-    editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-    const initialBytes = editor.agent.p5_config.retrieval_presets.standard.max_tokens;
-    editor.draft.p5_config.retrieval_presets.standard.max_tokens = initialBytes + 4096;
-
+  });
+  it("edits only the active settings and preserves all legacy raw fields", () => {
+    const agent = createTestAgent();
+    const editor = newPageEditor(agent, createTestPersona());
+    editor.draft.p5_config = {
+      ...editor.draft.p5_config,
+      memory_read: { enabled: true, max_bytes: 2400 },
+    };
     expect(agentPageDirty(editor, "memory-tools")).toBe(true);
     expect(agentPageDirty(editor, "context")).toBe(false);
-    expect(dirtyPages(editor)).toEqual(["memory-tools"]);
+    const payload = pageAgentPayload(editor, "memory-tools");
+    expect(payload.p5_config?.memory_read).toEqual({ enabled: true, max_bytes: 2400 });
+    expect(payload.p5_config?.retrieval_presets).toEqual(agent.p5_config.retrieval_presets);
+    expect(payload.p5_config?.retrieval_mode).toBe(agent.p5_config.retrieval_mode);
+    expect(payload.expected_version).toBe(1);
   });
-
-  it("includes full preset in memory-tools payload with updated bytes and limits", () => {
+  it("context saves use saved memory settings, not the materials draft", () => {
     const agent = createTestAgent();
-    const persona = createTestPersona();
-    const editor = newPageEditor(agent, persona);
-
-    editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-    editor.draft.p5_config.retrieval_presets.standard = {
-      ...editor.draft.p5_config.retrieval_presets.standard,
-      candidate_limit: 250,
-      max_entries: 45,
-      max_tokens: 32768,
+    const editor = newPageEditor(agent, createTestPersona());
+    editor.draft.p5_config = {
+      ...editor.draft.p5_config,
+      memory_read: { enabled: false, max_bytes: 111 },
+      context_window: 32768,
     };
-
-    const payload = pageAgentPayload(editor, "memory-tools");
-    const p5 = payload.p5_config;
-    expect(p5).toBeDefined();
-    expect(p5?.retrieval_presets.standard.candidate_limit).toBe(250);
-    expect(p5?.retrieval_presets.standard.max_entries).toBe(45);
-    expect(p5?.retrieval_presets.standard.max_tokens).toBe(32768);
-  });
-
-  it("takes retrieval presets in context payload strictly from saved baseline", () => {
-    const agent = createTestAgent();
-    const persona = createTestPersona();
-    const editor = newPageEditor(agent, persona);
-
-    editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-    editor.draft.p5_config.retrieval_presets.standard.max_tokens = 99999;
-    editor.draft.p5_config.context_window = 16384;
-
-    const contextPayload = pageAgentPayload(editor, "context");
-    const p5 = contextPayload.p5_config;
-    expect(p5).toBeDefined();
-    expect(p5?.context_window).toBe(16384);
-    expect(p5?.retrieval_presets.standard.max_tokens).toBe(
-      editor.agent.p5_config.retrieval_presets.standard.max_tokens,
+    expect(pageAgentPayload(editor, "context").p5_config?.memory_read).toEqual(
+      agent.p5_config.memory_read,
     );
-  });
-
-  it("preserves context drafts on memory accept and memory drafts on context accept", () => {
-    const agent = createTestAgent();
-    const persona = createTestPersona();
-
-    const editor1 = newPageEditor(agent, persona);
-    editor1.draft.p5_config = structuredClone(editor1.draft.p5_config);
-    editor1.draft.p5_config.retrieval_presets.standard.max_tokens = 50000;
-    editor1.draft.p5_config.context_window = 32000;
-
-    const savedAgentMemory = createTestAgent({
+    expect(pageAgentPayload(editor, "context").p5_config?.context_window).toBe(32768);
+    const saved = {
+      ...agent,
+      p5_config: { ...agent.p5_config, context_window: 32768 },
       config_version: 2,
-      p5_config: {
-        ...agent.p5_config,
-        retrieval_presets: {
-          ...agent.p5_config.retrieval_presets,
-          standard: {
-            ...agent.p5_config.retrieval_presets.standard,
-            max_tokens: 50000,
-          },
-        },
-      },
-    });
-
-    const acceptedMemory = acceptPageAgent(editor1, "memory-tools", savedAgentMemory);
-    expect(agentPageDirty(acceptedMemory, "memory-tools")).toBe(false);
-    expect(acceptedMemory.draft.p5_config.context_window).toBe(32000);
-    expect(agentPageDirty(acceptedMemory, "context")).toBe(true);
-
-    const editor2 = newPageEditor(agent, persona);
-    editor2.draft.p5_config = structuredClone(editor2.draft.p5_config);
-    editor2.draft.p5_config.retrieval_presets.standard.max_tokens = 50000;
-    editor2.draft.p5_config.context_window = 32000;
-
-    const savedAgentContext = createTestAgent({
-      config_version: 2,
-      p5_config: {
-        ...agent.p5_config,
-        context_window: 32000,
-      },
-    });
-
-    const acceptedContext = acceptPageAgent(editor2, "context", savedAgentContext);
-    expect(agentPageDirty(acceptedContext, "context")).toBe(false);
-    expect(acceptedContext.draft.p5_config.retrieval_presets.standard.max_tokens).toBe(50000);
-    expect(agentPageDirty(acceptedContext, "memory-tools")).toBe(true);
-    expect(dirtyPages(acceptedContext)).toEqual(["memory-tools"]);
+    };
+    const accepted = acceptPageAgent(editor, "context", saved);
+    expect(accepted.draft.p5_config.memory_read).toEqual({ enabled: false, max_bytes: 111 });
+    expect(dirtyPages(accepted)).toEqual(["memory-tools"]);
   });
-
-  it("preserves unselected preset modes byte-for-byte in draft and baseline", () => {
+  it("memory success advances only its baseline, retaining context and prompt drafts", () => {
     const agent = createTestAgent();
-    const persona = createTestPersona();
-    const editor = newPageEditor(agent, persona);
-
-    editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-    editor.draft.p5_config.retrieval_presets.standard.max_tokens = 24000;
-
-    const payload = pageAgentPayload(editor, "memory-tools");
-    const p5 = payload.p5_config;
-    expect(p5).toBeDefined();
-
-    expect(p5?.retrieval_presets.conservative).toEqual(
-      editor.agent.p5_config.retrieval_presets.conservative,
-    );
-    expect(p5?.retrieval_presets.broad).toEqual(editor.agent.p5_config.retrieval_presets.broad);
+    const editor = newPageEditor(agent, createTestPersona());
+    editor.draft.p5_config = {
+      ...editor.draft.p5_config,
+      memory_read: { enabled: false, max_bytes: 321 },
+      recent_turns: 25,
+    };
+    const saved = {
+      ...agent,
+      p5_config: { ...agent.p5_config, memory_read: { enabled: false, max_bytes: 321 } },
+      config_version: 2,
+    };
+    const accepted = acceptPageAgent(editor, "memory-tools", saved);
+    expect(agentPageDirty(accepted, "memory-tools")).toBe(false);
+    expect(agentPageDirty(accepted, "context")).toBe(true);
+    expect(accepted.draft.p5_config.recent_turns).toBe(25);
   });
-
-  it.each(["full_catalog", "full_body"] as const)(
-    "preserves %s stored mode without converting to broad",
-    (storedMode) => {
-      const legacyAgent = createTestAgent({
+  it.each(["off", "conservative", "standard", "broad", "full_catalog", "full_body"] as const)(
+    "preserves stored %s and unselected presets on an unrelated save",
+    (mode) => {
+      const agent = createTestAgent({
         p5_config: {
           ...createTestAgent().p5_config,
-          retrieval_mode: storedMode,
-          max_catalog_batches: 15,
-          catalog_batch_size: 25,
+          retrieval_mode: mode,
+          max_catalog_batches: 7,
+          catalog_batch_size: 9,
         },
       });
-      const persona = createTestPersona();
-      const editor = newPageEditor(legacyAgent, persona);
-
-      editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-      editor.draft.p5_config.retrieval_presets.standard.max_tokens = 28000;
-
-      const payload = pageAgentPayload(editor, "memory-tools");
-      const p5 = payload.p5_config;
-      expect(p5).toBeDefined();
-
-      expect(p5?.retrieval_mode).toBe(storedMode);
-      expect(p5?.max_catalog_batches).toBe(15);
-      expect(p5?.catalog_batch_size).toBe(25);
+      const editor = newPageEditor(agent, createTestPersona());
+      editor.draft.name = "renamed";
+      expect(pageAgentPayload(editor, "basic")).not.toHaveProperty("p5_config");
+      editor.draft.p5_config = {
+        ...editor.draft.p5_config,
+        memory_read: { enabled: mode !== "off", max_bytes: 100 },
+      };
+      const saved = pageAgentPayload(editor, "memory-tools").p5_config!;
+      expect(saved.retrieval_mode).toBe(mode);
+      expect(saved.retrieval_presets).toEqual(agent.p5_config.retrieval_presets);
+      expect(saved.max_catalog_batches).toBe(7);
+      expect(saved.catalog_batch_size).toBe(9);
     },
   );
 });

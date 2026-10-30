@@ -6,7 +6,7 @@ import {
   type EvidenceCatalogEntry,
   type EvidenceQueryModule,
 } from "../../src/server/agent/built-in-actions";
-import { inputUnits, textMessage } from "../../src/server/agent/context-engine";
+import { ContextEngine, inputUnits, textMessage } from "../../src/server/agent/context-engine";
 import { fail } from "../../src/server/errors";
 import type { EvidenceTextPage } from "../../src/server/modules/contracts";
 import type { Evidence, SourceRef } from "../../src/shared/contracts/evidence";
@@ -118,6 +118,147 @@ afterEach(() => {
 });
 
 describe("run-scoped evidence tool pages", () => {
+  it("preserves memory origin through catalog continuation and fresh Unicode read pages without changing other domains", async () => {
+    const sample = { ...evidence("one", ""), metadata: { content_origin: "derived" as const } };
+    const corrected = {
+      ...evidence("two", ""),
+      metadata: { content_origin: "manual_correction" as const },
+    };
+    const text = "甲𠮷乙";
+    const tool = tools({
+      memory: {
+        query: async () => [sample, corrected],
+        read: async ({ offset, limit }) => {
+          const points = [...text];
+          const end = Math.min(points.length, offset + limit);
+          return {
+            text: points.slice(offset, end).join(""),
+            offset,
+            total: points.length,
+            nextOffset: end < points.length ? end : null,
+            metadata: { content_origin: "manual_correction" as const },
+          };
+        },
+      },
+      history: { query: async () => [evidence("history")] },
+    });
+    const ctx = context();
+    const first = await tool.execute("memory.query", { query: "", limit: 1 }, ctx);
+    expect(catalog(first).items).toMatchObject([
+      { id: "one", metadata: { content_origin: "derived" } },
+    ]);
+    const second = await tool.execute(
+      "memory.query",
+      {
+        query: "",
+        limit: 1,
+        cursor: cursor(first),
+      },
+      ctx,
+    );
+    expect(catalog(second).items).toMatchObject([
+      { id: "two", metadata: { content_origin: "manual_correction" } },
+    ]);
+    expect(catalog(second).nextCursor).toBeNull();
+    const ref = bodyRef(first);
+    const one = await tool.execute("memory.read", { bodyRef: ref, offset: 0, limit: 2 }, ctx);
+    expect(textResult(one).items[0]).toMatchObject({
+      text: "甲𠮷",
+      offset: 0,
+      nextOffset: 2,
+      metadata: { content_origin: "manual_correction" },
+    });
+    const two = await tool.execute("memory.read", { bodyRef: ref, offset: 2, limit: 2 }, ctx);
+    expect(textResult(two).items[0]).toMatchObject({
+      text: "乙",
+      offset: 2,
+      nextOffset: null,
+      metadata: { content_origin: "manual_correction" },
+    });
+    const history = await tool.execute("history.query", { query: "" }, ctx);
+    expect(Object.keys(catalog(history).items[0]).sort()).toEqual([
+      "bodyRef",
+      "id",
+      "summary",
+      "title",
+    ]);
+    const historyRead = await tool.execute("history.read", { bodyRef: bodyRef(history) }, ctx);
+    expect(Object.keys(textResult(historyRead).items[0]).sort()).toEqual([
+      "bodyRef",
+      "id",
+      "nextOffset",
+      "offset",
+      "text",
+    ]);
+    const opaque = tools({ unknown: { query: async () => [sample] } });
+    const unknown = await opaque.execute("unknown.query", { query: "" }, context("unknown"));
+    expect(Object.keys(catalog(unknown).items[0]).sort()).toEqual([
+      "bodyRef",
+      "id",
+      "summary",
+      "title",
+    ]);
+  });
+
+  it("charges optional memory origin in the actual model observation rather than admitting it for free", async () => {
+    const sample = {
+      ...evidence("origin-fee", "body"),
+      sources: [{ kind: "memory_access", id: "internal", revision: "r".repeat(4096) }],
+      metadata: { content_origin: "derived" as const },
+    };
+    const expected = {
+      status: "ok",
+      items: [
+        {
+          id: sample.id,
+          title: "title origin-fee",
+          summary: "summary origin-fee",
+          bodyRef: "0".repeat(36),
+          metadata: sample.metadata,
+        },
+      ],
+      nextCursor: null,
+    };
+    const engine = new ContextEngine();
+    const spec = {
+      id: "origin-price",
+      context: "conversation" as const,
+      availableActions: [],
+      limits: { steps: 16 },
+    };
+    const emptyUnits = engine.render(spec, {}, [], []).units;
+    const units = (value: unknown) =>
+      engine.render(
+        spec,
+        {},
+        [
+          {
+            id: "00000000-0000-0000-0000-000000000000",
+            name: "memory.query",
+            arguments: { query: "" },
+            value,
+            sources: sample.sources,
+          },
+        ],
+        [],
+      ).units - emptyUnits;
+    const allowance = units(expected);
+    const oldItem = {
+      id: expected.items[0].id,
+      title: expected.items[0].title,
+      summary: expected.items[0].summary,
+      bodyRef: expected.items[0].bodyRef,
+    };
+    expect(allowance).toBeGreaterThan(units({ ...expected, items: [oldItem] }));
+    const tool = tools({ memory: { query: async () => [sample] } }, { budget: () => allowance });
+    const ctx = context();
+    const result = await tool.execute("memory.query", { query: "" }, ctx);
+    expect(catalog(result).items[0]).toMatchObject({ metadata: sample.metadata });
+    expect(units(result.value)).toBe(allowance);
+    expect((await tool.execute("memory.query", { query: "" }, ctx)).value).toEqual(budgetFailure);
+    expect(result.sources).toEqual(sample.sources);
+  });
+
   it("binds refs to the complete owner, run and domain without replacing earlier query refs", async () => {
     const module: EvidenceQueryModule = { query: async ({ query }) => [evidence(query)] };
     const tool = tools({ memory: module, knowledge: module });
@@ -1216,5 +1357,113 @@ describe("run-scoped evidence tool pages", () => {
     expect((await huge.execute("memory.query", { query: "" }, context("huge"))).value).toEqual(
       budgetFailure,
     );
+  });
+
+  it("prices actual projected memory observations under the unchanged cumulative 4096 allowance", async () => {
+    const authority = { kind: "memory_access", id: "owned-entry", revision: "a".repeat(4096) };
+    const business = { kind: "future_business_source", id: "entry", revision: "content-1" };
+    const sample = { ...evidence("entry", "证"), sources: [authority, business] };
+    const original = structuredClone(sample);
+    const checked: SourceRef[][] = [];
+    const tool = tools(
+      { memory: { query: async () => [sample] } },
+      {
+        budget: () => 4096,
+        assertSources: (sources) => {
+          checked.push(structuredClone([...sources]));
+        },
+        fit: async () => (_value, sources) => {
+          expect(sources).toContainEqual(authority);
+          expect(sources).toContainEqual(business);
+          return true;
+        },
+      },
+    );
+    const engine = new ContextEngine();
+    const pricingSpec = {
+      id: "memory-pages",
+      context: "conversation" as const,
+      availableActions: tool.actions.map((action) => action.description),
+      limits: { steps: 16 },
+    };
+    const emptyUnits = engine.render(pricingSpec, {}, [], []).units;
+    const units = (name: string, args: Record<string, unknown>, result: Observation) =>
+      engine.render(
+        pricingSpec,
+        {},
+        [
+          {
+            ...result,
+            id: "00000000-0000-0000-0000-000000000000",
+            name,
+            arguments: args,
+          },
+        ],
+        [],
+      ).units - emptyUnits;
+    const ctx = context();
+    const args = { query: "entry" };
+    const query = await tool.execute("memory.query", args, ctx);
+    expect(catalog(query).status).toBe("ok");
+    const queryUnits = units("memory.query", args, query);
+    expect(queryUnits).toBeLessThan(4096);
+    expect(observationUnits("memory.query", args, query.value, query.sources)).toBeGreaterThan(
+      4096,
+    );
+    expect(query.sources).toEqual(sample.sources);
+    const readArgs = { bodyRef: bodyRef(query) };
+    const firstRead = await tool.execute("memory.read", readArgs, ctx);
+    expect(textResult(firstRead).items[0]?.text).toBe(sample.text);
+    const readUnits = units("memory.read", readArgs, firstRead);
+    const remainingReads = Math.floor((4096 - queryUnits - readUnits) / readUnits);
+    for (let index = 0; index < remainingReads; index++) {
+      expect((await tool.execute("memory.read", readArgs, ctx)).value).toEqual(firstRead.value);
+    }
+    expect((await tool.execute("memory.read", readArgs, ctx)).value).toEqual(budgetFailure);
+    expect(
+      checked.some((sources) => JSON.stringify(sources) === JSON.stringify(sample.sources)),
+    ).toBe(true);
+    expect(sample).toEqual(original);
+    const rendered = engine.render(
+      pricingSpec,
+      {},
+      [
+        {
+          ...query,
+          id: "00000000-0000-0000-0000-000000000000",
+          name: "memory.query",
+          arguments: args,
+        },
+      ],
+      [],
+    );
+    expect(rendered.sources).toEqual(sample.sources);
+    const message = rendered.messages.at(-1)?.content[0];
+    if (message?.kind !== "text") throw new Error("missing actual observation message");
+    expect(JSON.parse(message.text).value.sources).toEqual([business]);
+    tool.release(ctx);
+    await expect(tool.execute("memory.read", readArgs, ctx)).rejects.toMatchObject({
+      code: "CONTEXT_INVALID_SELECTION",
+    });
+  });
+
+  it("retains the full authority footprint cap and cancellation after model projection", async () => {
+    const sample = evidence("oversized-internal", "body");
+    sample.sources = [
+      { kind: "memory_access", id: "entry", revision: "a".repeat(2 * 1024 * 1024 + 1) },
+    ];
+    const retained = tools({ memory: { query: async () => [sample] } });
+    expect((await retained.execute("memory.query", { query: "entry" }, context())).value).toEqual(
+      budgetFailure,
+    );
+    const pending = deferred<Evidence[]>();
+    const cancelled = tools({ memory: { query: () => pending.promise } });
+    const ctx = context("cancelled-authority");
+    const query = cancelled.execute("memory.query", { query: "entry" }, ctx);
+    ctx.controller.abort(new Error("cancel authority result"));
+    pending.resolve([
+      { ...evidence("small"), sources: [{ kind: "memory_access", id: "entry", revision: "1" }] },
+    ]);
+    await expect(query).rejects.toThrow("cancel authority result");
   });
 });

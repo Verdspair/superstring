@@ -1,25 +1,77 @@
 import type { GlobalAuxiliaryAllocation } from "../../../shared/contracts/context-allocation";
 import { OrganizationSettingsUpdateSchema } from "../../../shared/contracts/organization";
 import { msg } from "../../i18n";
+import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet } from "../../state/types";
 import {
   type GlobalAuxiliaryRole,
   type KnowledgeState,
+  knowledgeFieldConflict,
   type OrganizationSaveScope,
   organizationDirty,
 } from "./types";
 
-/** 与已存基线比较分配草稿：草稿未打开（undefined）或与基线等值都视为不脏。 */
-function allocationDirty(editor: {
-  auxiliaryAllocation?: GlobalAuxiliaryAllocation;
-  source: { auxiliary_allocation?: GlobalAuxiliaryAllocation };
-}): boolean {
-  if (editor.auxiliaryAllocation === undefined) return false;
-  return (
-    JSON.stringify(editor.auxiliaryAllocation) !==
-    JSON.stringify(editor.source.auxiliary_allocation ?? undefined)
-  );
+const equalProfile = (left: unknown, right: unknown) =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+/** Only roles changed against the previous saved source survive a refresh. */
+function mergeAllocationDraft(
+  previous: {
+    auxiliaryAllocation?: GlobalAuxiliaryAllocation;
+    source: { auxiliary_allocation?: GlobalAuxiliaryAllocation };
+  },
+  fresh: GlobalAuxiliaryAllocation | undefined,
+): GlobalAuxiliaryAllocation | undefined {
+  const draft = previous.auxiliaryAllocation;
+  if (draft === undefined) return fresh;
+  const baseline = previous.source.auxiliary_allocation ?? {};
+  const merged: Record<string, unknown> = { ...fresh };
+  for (const role of new Set([...Object.keys(baseline), ...Object.keys(draft)])) {
+    const key = role as keyof GlobalAuxiliaryAllocation;
+    const edited = draft[key];
+    const saved = baseline[key];
+    if (equalProfile(edited, saved)) continue;
+    if (edited === undefined) {
+      delete merged[key];
+      continue;
+    }
+    if (saved === undefined) {
+      merged[key] = edited;
+      continue;
+    }
+    const next: Record<string, unknown> = { ...(fresh?.[key] ?? edited) };
+    for (const field of ["mode", "input_limit", "output_reserved"] as const) {
+      if (edited[field] === saved[field]) continue;
+      if (edited[field] === undefined) delete next[field];
+      else Object.assign(next, { [field]: edited[field] });
+    }
+    merged[key] = next;
+  }
+  return Object.keys(merged).length || fresh !== undefined || Object.keys(draft).length === 0
+    ? (merged as GlobalAuxiliaryAllocation)
+    : undefined;
+}
+
+function allocationConflict(
+  previous: import("./types").OrganizationEditor,
+  fresh: GlobalAuxiliaryAllocation | undefined,
+): boolean {
+  const draft = previous.auxiliaryAllocation;
+  if (draft === undefined) return false;
+  const baseline = previous.source.auxiliary_allocation ?? {};
+  return [...new Set([...Object.keys(baseline), ...Object.keys(draft)])].some((role) => {
+    const key = role as keyof GlobalAuxiliaryAllocation;
+    const saved = baseline[key],
+      edited = draft[key],
+      remote = fresh?.[key];
+    if (equalProfile(saved, edited)) return false;
+    if (saved === undefined || edited === undefined || remote === undefined)
+      return !equalProfile(remote, saved) && !equalProfile(remote, edited);
+    return (["mode", "input_limit", "output_reserved"] as const).some((field) =>
+      knowledgeFieldConflict(saved[field], edited[field], remote[field]),
+    );
+  });
 }
 
 export function createOrganizationActions(
@@ -27,6 +79,9 @@ export function createOrganizationActions(
   get: StoreGet,
 ): Pick<
   KnowledgeState,
+  | "acquireOrganizationRead"
+  | "releaseOrganizationRead"
+  | "cancelOrganizationRead"
   | "loadOrganization"
   | "patchOrganization"
   | "patchOrganizationPurposes"
@@ -35,61 +90,158 @@ export function createOrganizationActions(
   | "discardOrganization"
 > {
   let read = 0;
+  let activeApi: ReturnType<StoreGet>["apiClient"] | null = null;
+  let requestTask: ReadTask | null = null;
+  let settleRead: (() => void) | null = null;
+  let inFlight: Promise<void> | null = null;
+  let suspended = false;
+  const consumers = new Map<object, ReturnType<StoreGet>["apiClient"]>();
+  const cancelRead = () => {
+    suspended = document.visibilityState === "hidden";
+    read++;
+    requestTask?.cancel();
+    requestTask = null;
+    inFlight = null;
+    settleRead?.();
+    settleRead = null;
+    set({ organizationLoading: false });
+  };
   return {
-    loadOrganization: async (refresh = false) => {
-      if (
-        get().organizationLoading ||
-        get().settingsSaving ||
-        (get().organizationEditor && !refresh)
-      )
-        return;
-      const request = ++read;
+    acquireOrganizationRead: (owner: object) => {
       const api = get().apiClient;
-      const previous = get().organizationEditor;
-      set({ organizationLoading: true, organizationError: null });
-      try {
-        const source = await api.getOrganizationSettings();
-        if (request !== read || get().apiClient !== api) return;
-        set({
-          organizationEditor: {
-            token: previous?.token ?? {},
-            source,
-            modelName:
-              previous && organizationDirty(previous) ? previous.modelName : source.model_name,
-            visionModelName:
-              previous && organizationDirty(previous)
-                ? previous.visionModelName
-                : source.vision_model_name,
-            transcriptionModelName:
-              previous && organizationDirty(previous)
-                ? previous.transcriptionModelName
-                : source.transcription_model_name,
-            // 分配草稿与模型草稿分开记脏：基线刷新不覆盖未提交的分配编辑。
-            auxiliaryAllocation:
-              previous && allocationDirty(previous)
-                ? previous.auxiliaryAllocation
-                : (source.auxiliary_allocation ?? undefined),
-          },
-          error: null,
-        });
-      } catch (error) {
-        if (request === read && get().apiClient === api)
-          set({ organizationError: errorText(error) });
-      } finally {
-        if (request === read && get().apiClient === api) set({ organizationLoading: false });
+      if (activeApi && activeApi !== api) {
+        consumers.clear();
+        cancelRead();
       }
+      consumers.set(owner, api);
+      return get().loadOrganization();
+    },
+    releaseOrganizationRead: (owner: object) => {
+      const api = consumers.get(owner);
+      if (!api) return;
+      consumers.delete(owner);
+      if (api !== get().apiClient || api !== activeApi) return;
+      if (![...consumers.values()].some((consumerApi) => consumerApi === api)) cancelRead();
+    },
+    cancelOrganizationRead: () => {
+      consumers.clear();
+      cancelRead();
+    },
+    loadOrganization: async (refresh = false) => {
+      const explicitRefresh = refresh;
+      const api = get().apiClient;
+      const sameApi = activeApi === api;
+      if (activeApi && !sameApi) {
+        for (const [owner, ownerApi] of consumers) if (ownerApi !== api) consumers.delete(owner);
+      }
+      refresh = refresh || (sameApi && suspended);
+      if (sameApi && get().organizationLoading && !refresh) {
+        if (inFlight) return inFlight;
+        return;
+      }
+      if (get().settingsSaving || (sameApi && get().organizationEditor && !refresh)) return;
+      const previous = sameApi ? get().organizationEditor : null;
+      requestTask?.cancel();
+      requestTask = null;
+      inFlight = null;
+      settleRead?.();
+      activeApi = api;
+      suspended = false;
+      const request = ++read;
+      const matches = () => request === read && get().apiClient === api;
+      set({
+        organizationLoading: true,
+        organizationError: null,
+        ...(!sameApi ? { organizationEditor: null } : {}),
+      });
+      const promise = new Promise<void>((resolve) => {
+        settleRead = resolve;
+        const task = startRead((signal) => api.getOrganizationSettings(signal), {
+          success: (source) => {
+            if (!matches()) return;
+            if (
+              !explicitRefresh &&
+              previous &&
+              (knowledgeFieldConflict(
+                previous.source.model_name,
+                previous.modelName,
+                source.model_name,
+              ) ||
+                knowledgeFieldConflict(
+                  previous.source.vision_model_name,
+                  previous.visionModelName,
+                  source.vision_model_name,
+                ) ||
+                knowledgeFieldConflict(
+                  previous.source.transcription_model_name,
+                  previous.transcriptionModelName,
+                  source.transcription_model_name,
+                ) ||
+                allocationConflict(previous, source.auxiliary_allocation))
+            ) {
+              set({
+                organizationError: msg(
+                  "远端设置已更改；本地草稿保留，未自动推进保存版本。请显式刷新并核对后重试。",
+                ),
+              });
+              return;
+            }
+            set({
+              organizationEditor: {
+                token: previous?.token ?? {},
+                source,
+                modelName:
+                  previous && previous.modelName !== previous.source.model_name
+                    ? previous.modelName
+                    : source.model_name,
+                visionModelName:
+                  previous && previous.visionModelName !== previous.source.vision_model_name
+                    ? previous.visionModelName
+                    : source.vision_model_name,
+                transcriptionModelName:
+                  previous &&
+                  previous.transcriptionModelName !== previous.source.transcription_model_name
+                    ? previous.transcriptionModelName
+                    : source.transcription_model_name,
+                auxiliaryAllocation: previous
+                  ? mergeAllocationDraft(previous, source.auxiliary_allocation)
+                  : source.auxiliary_allocation,
+              },
+              organizationError: null,
+            });
+          },
+          failure: (error) => {
+            if (matches()) set({ organizationError: errorText(error) });
+          },
+          settled: () => {
+            if (requestTask === task) {
+              requestTask = null;
+              inFlight = null;
+            }
+            if (settleRead === resolve) settleRead = null;
+            if (matches()) set({ organizationLoading: false });
+            resolve();
+          },
+        });
+        requestTask = task;
+      });
+      inFlight = promise;
+      return promise;
     },
     patchOrganization: (modelName) => {
+      if (activeApi && activeApi !== get().apiClient) return;
       const editor = get().organizationEditor;
       if (!editor || get().organizationLoading || get().settingsSaving) return;
       set({ organizationEditor: { ...editor, modelName }, feedback: "" });
     },
     patchOrganizationPurposes: (patch) => {
+      if (activeApi && activeApi !== get().apiClient) return;
       const editor = get().organizationEditor;
       if (!editor || get().organizationLoading || get().settingsSaving) return;
       set({ organizationEditor: { ...editor, ...patch }, feedback: "" });
     },
     patchOrganizationAllocation: (next) => {
+      if (activeApi && activeApi !== get().apiClient) return;
       const editor = get().organizationEditor;
       if (!editor || get().organizationLoading || get().settingsSaving) return;
       set({ organizationEditor: { ...editor, auxiliaryAllocation: next }, feedback: "" });
@@ -98,6 +250,7 @@ export function createOrganizationActions(
       scope: OrganizationSaveScope = "models",
       allocationRoles?: readonly GlobalAuxiliaryRole[],
     ) => {
+      if (activeApi && activeApi !== get().apiClient) return false;
       const editor = get().organizationEditor;
       const saveOrgModel = scope === "organization-model" || scope === "models" || scope === "all";
       const saveQqModels = scope === "qq-models" || scope === "models" || scope === "all";
@@ -111,7 +264,7 @@ export function createOrganizationActions(
               )
             : invalidKeys.some((key) => key.startsWith("global:aux:"));
         if (hasBlockedInvalid) {
-          set({ error: msg("请先修正方案中的无效数字，再保存。") });
+          set({ organizationError: msg("请先修正方案中的无效数字，再保存。") });
           return false;
         }
       }
@@ -121,7 +274,13 @@ export function createOrganizationActions(
         saveAllocation && organizationDirty(editor, "allocation", allocationRoles);
       if (!editor || (!modelsDirty && !allocationDirtyForSave)) return true;
       if (get().settingsSaving || get().organizationLoading || get().knowledgeBusy) return false;
-      set({ settingsSaving: true, error: null, feedback: "" });
+      const operation = {};
+      set({
+        settingsSaving: true,
+        settingsSaveOwner: operation,
+        organizationError: null,
+        feedback: "",
+      });
       const api = get().apiClient;
       try {
         let payloadAllocation: GlobalAuxiliaryAllocation | undefined;
@@ -204,10 +363,11 @@ export function createOrganizationActions(
       } catch (error) {
         // CAS 冲突等失败：保留原稿（含分配草稿），不伪装保存成功。
         if (get().organizationEditor?.token === editor.token && get().apiClient === api)
-          set({ error: errorText(error) });
+          set({ organizationError: errorText(error) });
         return false;
       } finally {
-        if (get().apiClient === api) set({ settingsSaving: false });
+        if (get().settingsSaveOwner === operation)
+          set({ settingsSaving: false, settingsSaveOwner: null });
       }
     },
     discardOrganization: (
@@ -215,6 +375,12 @@ export function createOrganizationActions(
       allocationRoles?: readonly GlobalAuxiliaryRole[],
     ) => {
       if (get().settingsSaving) return;
+      requestTask?.cancel();
+      requestTask = null;
+      inFlight = null;
+      settleRead?.();
+      settleRead = null;
+      set({ organizationLoading: false });
       if (scope === "organization-model") {
         const editor = get().organizationEditor;
         if (!editor) return;

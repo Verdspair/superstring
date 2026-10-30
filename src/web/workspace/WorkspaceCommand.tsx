@@ -1,5 +1,5 @@
 import { MessageCircle } from "lucide-react";
-import { useRef } from "react";
+import { useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Command,
@@ -25,6 +25,7 @@ export function WorkspaceCommand({
   returnTo: HTMLElement | null;
 }) {
   const { t } = useTranslation();
+  const searchHintId = useId();
   const ids = useSuperstringStore((s) => s.directoryIds);
   const summaries = useSuperstringStore((s) => s.summaryById);
   const navigated = useRef(false);
@@ -44,6 +45,7 @@ export function WorkspaceCommand({
       }}
     >
       <DialogContent
+        scrollMode="none"
         className="gap-0 overflow-hidden p-0 sm:max-w-xl"
         showCloseButton={false}
         onOpenAutoFocus={() => {
@@ -55,12 +57,14 @@ export function WorkspaceCommand({
         }}
       >
         <DialogTitle className="sr-only">{t("workspace.search_and_jump")}</DialogTitle>
-        <DialogDescription className="sr-only">
+        <DialogDescription id={searchHintId} className="sr-only">
           {t("workspace.search_pages_or_loaded_conversations_use_the_arrow_keys_to_select_and_en")}
         </DialogDescription>
         <Command loop label={t("workspace.search_and_jump")} className="border-none bg-transparent">
           <CommandInput
-            placeholder={t("workspace.search_pages_or_loaded_conversations")}
+            placeholder={t("workspace.pageSearchPlaceholder")}
+            aria-label={t("workspace.search_pages_or_loaded_conversations")}
+            aria-describedby={searchHintId}
             className="h-11 text-sm"
           />
           <CommandList className="max-h-[min(60svh,30rem)] px-1 py-1">
@@ -134,7 +138,11 @@ export function WorkspaceCommand({
             </CommandGroup>
           </CommandList>
           <div className="flex items-center justify-between border-t border-border/50 px-3 py-2 text-[11px] text-muted-foreground">
-            <span>{t("workspace.arrows_to_select_enter_to_open_esc_to_close")}</span>
+            <span>
+              {t(
+                "workspace.search_pages_or_loaded_conversations_use_the_arrow_keys_to_select_and_en",
+              )}
+            </span>
           </div>
         </Command>
       </DialogContent>

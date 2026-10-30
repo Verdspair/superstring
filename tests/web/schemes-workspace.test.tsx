@@ -418,7 +418,9 @@ it("详情两种任务视图：默认方案设置，切到使用会话再回来�
   expect(store.getState().qqSchemeView).toBe("bindings");
   expect(store.getState().navigationConfirmOpen).toBe(false);
   expect(store.getState().qqSchemeEditor?.name).toBe("改过的名字");
-  await userEvent.click(settingsTab);
+  await userEvent.click(
+    screen.getByRole("tab", { name: translate("schemes.bindings.viewSettings") }),
+  );
   await act(async () => {});
   expect(store.getState().qqSchemeView).toBe("settings");
   expect(store.getState().qqSchemeEditor?.name).toBe("改过的名字");
@@ -475,6 +477,51 @@ it("目录提供三项等权应用任务，不再提供旧全局胶囊", async (
   expect(screen.queryByRole("button", { name: "本群配置" })).toBeNull();
 });
 
+it("keeps the directory heading, app tasks, filters and scheme rows in one retained scroll owner", async () => {
+  await renderDirectory();
+  const owner = document.querySelector<HTMLElement>('[data-qq-retained-scroll="schemes"]');
+  if (!owner) throw new Error("Missing scheme directory scroll owner");
+  const heading = screen.getByRole("heading", {
+    name: translate("workspace.schemes"),
+    level: 1,
+  });
+  const search = screen.getByLabelText(translate("schemes.search"));
+  const row = screen.getByRole("button", { name: /夜间方案/ });
+  for (const control of [
+    heading,
+    search,
+    row,
+    screen.getByRole("heading", { name: "QQ" }),
+    screen.getByRole("combobox", { name: translate("schemes.appFilter") }),
+    screen.getByRole("combobox", { name: translate("schemes.usageFilter") }),
+    ...[
+      "schemes.workspace.bindings",
+      "schemes.qq.connectionTitle",
+      "connections.dataRetention",
+      "schemes.refresh",
+      "connections.newScheme",
+    ].map((key) => screen.getByRole("button", { name: translate(key) })),
+  ]) {
+    expect(owner.contains(control)).toBe(true);
+  }
+  expect(owner.matches("[data-workspace-scroll]")).toBe(true);
+  expect(owner.querySelector("[data-workspace-scroll]")).toBeNull();
+  fireEvent.change(search, { target: { value: "夜间" } });
+  owner.scrollTop = 73;
+  fireEvent.scroll(owner);
+  fireEvent.click(row);
+  await act(async () => {});
+  expect(owner.hidden).toBe(true);
+  expect(heading.isConnected).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: translate("schemes.backToCatalog") }));
+  await act(async () => {});
+  expect(document.querySelector('[data-qq-retained-scroll="schemes"]')).toBe(owner);
+  expect(owner.hidden).toBe(false);
+  expect(owner.scrollTop).toBe(73);
+  expect(screen.getByLabelText(translate("schemes.search"))).toBe(search);
+  expect((search as HTMLInputElement).value).toBe("夜间");
+});
+
 it("qq-app-schemes 别名与方案库同页：方案目录只挂一次，切换不重挂", async () => {
   await renderDirectory();
   expect(screen.getAllByLabelText(translate("schemes.search"))).toHaveLength(1);
@@ -519,6 +566,40 @@ it("详情返回复用 QQ 草稿三选，取消保留草稿与原路由", async 
   expect(store.getState().settingsRoute).toBe("qq-scheme-config");
 });
 
+it("keeps the detail title, view switch and studio actions in the task scroll owner", async () => {
+  await renderDetail();
+  const viewport = document.querySelector('[data-slot="scroll-area-viewport"]');
+  if (!viewport) throw new Error("Missing detail scroll owner");
+  for (const control of [
+    screen.getByRole("heading", { name: "默认方案", level: 1 }),
+    screen.getByRole("button", { name: translate("schemes.backToCatalog") }),
+    screen.getByRole("tab", { name: translate("schemes.bindings.viewSettings") }),
+    screen.getByRole("button", { name: translate("connections.saveScheme") }),
+  ]) {
+    expect(viewport.contains(control)).toBe(true);
+  }
+});
+
+it("keeps the usage view heading and return controls in its own scroll owner", async () => {
+  await renderDetail();
+  await userEvent.click(
+    screen.getByRole("tab", {
+      name: new RegExp(`^${translate("schemes.bindings.viewBindings")}`),
+    }),
+  );
+  await act(async () => {});
+  const usage = document.querySelector('[data-scheme-view="bindings"]');
+  if (!usage) throw new Error("Missing scheme usage scroll owner");
+  expect(usage.contains(screen.getByRole("heading", { name: "默认方案", level: 1 }))).toBe(true);
+  expect(
+    usage.contains(screen.getByRole("button", { name: translate("schemes.backToCatalog") })),
+  ).toBe(true);
+  await userEvent.click(
+    screen.getByRole("tab", { name: translate("schemes.bindings.viewSettings") }),
+  );
+  expect(store.getState().qqSchemeView).toBe("settings");
+});
+
 it("详情唯一页标题显示真实编辑对象，嵌入编辑器不叠页头", async () => {
   await renderDetail();
   const name = screen.getByRole("heading", { name: "默认方案", level: 1 });
@@ -538,13 +619,19 @@ it("使用会话读到目录后保留真实计数，读取失败不伪装成空�
   const entry = document.querySelector("[data-scheme-usage]") as HTMLElement;
   await userEvent.click(entry);
   await act(async () => {});
+  const currentEntry = document.querySelector(
+    '[data-scheme-view="bindings"] [data-scheme-usage]',
+  ) as HTMLElement;
+  expect(entry.isConnected).toBe(false);
+  expect(currentEntry.isConnected).toBe(true);
+  expect(currentEntry.getAttribute("aria-selected")).toBe("true");
   const expected = store
     .getState()
     .qqBindings.filter((binding) => binding.scheme_id === SCHEME_A).length;
   expect(
-    within(entry).getByLabelText(translate("schemes.usageCount", String(expected))),
+    within(currentEntry).getByLabelText(translate("schemes.usageCount", String(expected))),
   ).toBeTruthy();
   act(() => store.setState({ qqBindingsLoaded: false, qqSchemeUsage: null }));
   expect(screen.getByText(translate("schemes.usageUnknown"))).toBeTruthy();
-  expect(within(entry).queryByLabelText(translate("schemes.usageCount", "0"))).toBeNull();
+  expect(within(currentEntry).queryByLabelText(translate("schemes.usageCount", "0"))).toBeNull();
 });

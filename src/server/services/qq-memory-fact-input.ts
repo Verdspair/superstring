@@ -27,23 +27,24 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
+import { evidenceScopeExists, inTimeline, ownerScope } from "../conversation/evidence-scope";
 import { bodyRevision } from "../db/conversation-event-repository";
 import { readQqBinding } from "../db/qq-binding-repository";
 import { readQqOwnerIdentity } from "../db/qq-owner-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { fail } from "../errors";
-import { evidenceScopeExists } from "../modules/conversation-evidence";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
-import { inTimeline } from "../modules/conversation-evidence-store";
 import { memoryJobScopes, type QqMemoryRouteSnapshot } from "./memory-contract";
 import { correctionMetadata, memoryRevision } from "./memory-revision";
 import { qqConversationKey, qqMemoryScopeKey, resolveQqMemoryAccess } from "./qq-binding-contract";
-import { ownerScope } from "./qq-media-sources";
 import { createQqMemberNameSource, qqMemberNameSourceAccess } from "./qq-member-sources";
 import { projectQqMessageFacts } from "./qq-message-fact-projection";
 import {
+  publicationFactStates,
   qqMessageFactSourceAccess,
   qqMessageFactSourceAccessMany,
+  qqMessageFactSourceRevision,
+  qqPublicationMaterialMetadata,
 } from "./qq-message-fact-sources";
 import { isObservationExpired } from "./qq-retention";
 import { projectQqTextRelations } from "./qq-text-relations";
@@ -396,9 +397,34 @@ type QqPublicationBatchInput = {
 
 type QqFact = ReturnType<typeof projectQqMessageFacts>[number];
 
-function collectQqEntryPublicationSources(input: QqPublicationBatchInput): {
+export interface PublicationMaterial {
+  kind: "web_message" | "qq_message_fact" | "qq_observation";
+  id: string;
+  revision: string;
+  own_cap: string | null;
+  consumable_cap: string | null;
+  producer_revision: string | null;
+}
+function publicationMetadataRows(db: Database, ids: readonly string[]): Map<string, LoadRow> {
+  const rows = db
+    .query(`SELECT e.event_key AS eventKey,e.account_id AS accountId,e.conversation_kind AS conversationKind,
+    e.peer_id AS peerId,e.agent_id AS agentId,NULL AS body,t.expires_at AS bodyExpiresAt,f.expires_at AS factExpiresAt,
+    e.message_id AS messageId,e.occurred_at_seconds AS occurredAtSeconds,e.speaker_kind AS speakerKind,e.speaker_id AS speakerId
+    FROM json_each(?) requested JOIN qq_events e ON e.event_key=requested.value
+    LEFT JOIN qq_message_facts f ON f.event_key=e.event_key LEFT JOIN qq_observation_text t ON t.event_key=e.event_key`)
+    .all(JSON.stringify([...new Set(ids)])) as LoadRow[];
+  return new Map(rows.map((row) => [row.eventKey, row]));
+}
+
+export function collectQqEntryPublicationSources(
+  input: QqPublicationBatchInput,
+  metadataOnly = false,
+  captureMaterials = false,
+): {
   proof: ReadonlyMap<string, unknown[]>;
   facts: ReadonlyMap<string, QqFact>;
+  authority: ReadonlyMap<string, unknown[]>;
+  materials: ReadonlyMap<string, PublicationMaterial[]>;
 } {
   const groups = new Map<
     string,
@@ -407,8 +433,12 @@ function collectQqEntryPublicationSources(input: QqPublicationBatchInput): {
   const proof = new Map<string, unknown[]>();
   const facts = new Map<string, QqFact>();
   const invalid = new Set<string>();
+  const authority = new Map<string, unknown[]>();
+  const materials = new Map<string, PublicationMaterial[]>();
   for (const entry of input.entries) {
     proof.set(entry.id, []);
+    authority.set(entry.id, []);
+    materials.set(entry.id, []);
     for (const source of entry.sources) {
       const key = JSON.stringify([entry.agentId, source.scopeKey]);
       const group = groups.get(key) ?? {
@@ -450,12 +480,41 @@ function collectQqEntryPublicationSources(input: QqPublicationBatchInput): {
       list.push(match.conversationId);
       byEvent.set(match.eventKey, list);
     }
-    const events = loadRows(input.db, ids);
+    const events = publicationMetadataRows(input.db, ids);
+    const materialMetadata = metadataOnly ? null : qqPublicationMaterialMetadata(input.db, ids);
+    const liveIds = metadataOnly
+      ? []
+      : ids.filter((id) => {
+          const material = materialMetadata!.get(id);
+          const event = events.get(id);
+          return (
+            !!event &&
+            event.accountId === scope.accountId &&
+            event.conversationKind === scope.conversationKind &&
+            event.peerId === scope.peerId &&
+            event.agentId === scope.agentId &&
+            !!material &&
+            (!material.factExists ||
+              (!!material.factCap && !isObservationExpired(material.factCap, input.now))) &&
+            (!material.bodyExists ||
+              (!!material.bodyCap && !isObservationExpired(material.bodyCap, input.now)))
+          );
+        });
+    if (liveIds.length) {
+      const bodies = input.db
+        .query(`SELECT event_key AS id,body FROM qq_observation_text
+        WHERE event_key IN (SELECT value FROM json_each(?)) AND expires_at>?`)
+        .all(JSON.stringify(liveIds), input.now) as { id: string; body: string }[];
+      for (const body of bodies) {
+        const event = events.get(body.id);
+        if (event) event.body = body.body;
+      }
+    }
     const projected = new Map(
-      projectQqMessageFacts({ db: input.db, orm: input.orm }, scope, ids, input.now).map((fact) => [
-        fact.id,
-        fact,
-      ]),
+      (metadataOnly
+        ? []
+        : projectQqMessageFacts({ db: input.db, orm: input.orm }, scope, liveIds, input.now)
+      ).map((fact) => [fact.id, fact]),
     );
     for (const [eventKey, fact] of projected)
       facts.set(JSON.stringify([agentId, scopeKey, eventKey]), fact);
@@ -484,6 +543,20 @@ function collectQqEntryPublicationSources(input: QqPublicationBatchInput): {
         invalid.add(id);
         continue;
       }
+      authority
+        .get(id)!
+        .push([
+          "qq-authority",
+          source.eventKey,
+          source.scopeKey,
+          source.conversationKey,
+          source.messageId,
+          source.occurredAtSeconds,
+          source.speakerKind,
+          source.speakerId,
+          scope,
+        ]);
+      if (metadataOnly) continue;
       const fact = projected.get(source.eventKey);
       let refs: SourceRef[];
       if (fact && fact.completeness !== "unavailable") refs = [...fact.sources];
@@ -506,6 +579,21 @@ function collectQqEntryPublicationSources(input: QqPublicationBatchInput): {
         invalid.add(id);
         continue;
       }
+      const material = materialMetadata?.get(source.eventKey);
+      for (const ref of captureMaterials ? refs : []) {
+        if (ref.kind !== "qq_message_fact" && ref.kind !== "qq_observation") {
+          invalid.add(id);
+          continue;
+        }
+        materials.get(id)!.push({
+          kind: ref.kind,
+          id: ref.id,
+          revision: ref.revision,
+          own_cap: ref.kind === "qq_message_fact" ? material!.factCap : material!.bodyCap,
+          consumable_cap: ref.expiresAt ?? null,
+          producer_revision: ref.kind === "qq_message_fact" ? material!.producerRevision : null,
+        });
+      }
       proof
         .get(id)!
         .push([
@@ -522,14 +610,192 @@ function collectQqEntryPublicationSources(input: QqPublicationBatchInput): {
         ]);
     }
   }
-  for (const id of invalid) proof.delete(id);
-  return { proof, facts };
+  for (const id of invalid) {
+    proof.delete(id);
+    authority.delete(id);
+    materials.delete(id);
+  }
+  return { proof, facts, authority, materials };
 }
 
 export function qqEntryPublicationSourcesBatch(
   input: QqPublicationBatchInput,
 ): ReadonlyMap<string, unknown[]> {
   return collectQqEntryPublicationSources(input).proof;
+}
+
+export function qqPublicationRouteAuthority(
+  store: EvidenceStore,
+  entry: { agentId: string; configSnapshot: string; scopeKey: string },
+): unknown[] | null {
+  let snapshot: { scope_key?: unknown; qq_route?: unknown };
+  try {
+    snapshot = JSON.parse(entry.configSnapshot);
+  } catch {
+    return null;
+  }
+  const { route, source, destination } = memoryJobScopes(snapshot);
+  if (!route) return [];
+  if (destination !== entry.scopeKey || typeof source !== "string") return null;
+  const scope = resolveCurrentQqScope(store.db, entry.agentId, source);
+  const binding = scope && readQqBinding(store.orm, scope.bindingId);
+  if (
+    !scope ||
+    !binding ||
+    binding.id !== route.binding_id ||
+    scope.authorityRevision !== route.authority_revision ||
+    binding.ownerIdentityRevision !== route.owner_identity_revision
+  )
+    return null;
+  const owner = readQqOwnerIdentity(store.orm);
+  const access = resolveQqMemoryAccess(binding, owner);
+  if (access.kind !== "resolved" || qqMemoryScopeKey(access.access.writeScope) !== destination)
+    return null;
+  return [route, scope, binding.ownerIdentityRevision, owner];
+}
+
+/** Retained publication never fetches a material after its captured own cap. */
+export function verifyRetainedQqMaterials(
+  input: QqPublicationBatchInput,
+  materials: ReadonlyMap<string, readonly PublicationMaterial[]>,
+  authority: ReadonlyMap<string, unknown[]> = collectQqEntryPublicationSources(
+    input,
+    true,
+  ).authority,
+): ReadonlySet<string> {
+  const ids = [
+    ...new Set(
+      [...materials.values()]
+        .flat()
+        .filter((material) => material.kind !== "web_message")
+        .map((material) => material.id),
+    ),
+  ];
+  const metadata = qqPublicationMaterialMetadata(input.db, ids);
+  const now = Date.parse(input.now);
+  if (!Number.isFinite(now)) return new Set();
+  const invalid = new Set<string>();
+  const groups = new Map<
+    string,
+    {
+      scope: QqMemoryFactScope;
+      facts: Array<{ entry: string; material: PublicationMaterial }>;
+      observations: Array<{ entry: string; material: PublicationMaterial }>;
+    }
+  >();
+  const live = (cap: string | null) =>
+    cap !== null && Number.isFinite(Date.parse(cap)) && Date.parse(cap) > now;
+  for (const entry of input.entries) {
+    const parts = authority.get(entry.id);
+    if (!parts) {
+      invalid.add(entry.id);
+      continue;
+    }
+    const authorityByEvent = new Map<string, unknown[]>();
+    for (const part of parts) {
+      if (Array.isArray(part) && typeof part[1] === "string" && !authorityByEvent.has(part[1]))
+        authorityByEvent.set(part[1], part);
+    }
+    const materialsByEvent = new Map<
+      string,
+      { descriptors: PublicationMaterial[]; observation?: PublicationMaterial }
+    >();
+    for (const material of materials.get(entry.id) ?? []) {
+      if (material.kind === "web_message") continue;
+      const event: { descriptors: PublicationMaterial[]; observation?: PublicationMaterial } =
+        materialsByEvent.get(material.id) ?? { descriptors: [] };
+      event.descriptors.push(material);
+      if (material.kind === "qq_observation") event.observation ??= material;
+      materialsByEvent.set(material.id, event);
+    }
+    for (const source of entry.sources) {
+      const part = authorityByEvent.get(source.eventKey);
+      const scope = part?.[8] as QqMemoryFactScope | undefined;
+      if (!scope) {
+        invalid.add(entry.id);
+        break;
+      }
+      const key = JSON.stringify(scope);
+      const group = groups.get(key) ?? { scope, facts: [], observations: [] };
+      const eventMaterials = materialsByEvent.get(source.eventKey);
+      if (!eventMaterials) {
+        invalid.add(entry.id);
+        break;
+      }
+      for (const material of eventMaterials.descriptors) {
+        const current = metadata.get(material.id);
+        const capturedLive = live(material.own_cap);
+        const exists =
+          material.kind === "qq_message_fact" ? current?.factExists : current?.bodyExists;
+        const cap = material.kind === "qq_message_fact" ? current?.factCap : current?.bodyCap;
+        if (
+          material.kind === "qq_message_fact" &&
+          exists &&
+          current?.producerRevision !== material.producer_revision
+        ) {
+          invalid.add(entry.id);
+          break;
+        }
+        if (!capturedLive) continue;
+        if (!exists || !live(cap ?? null)) {
+          invalid.add(entry.id);
+          break;
+        }
+        if (material.kind === "qq_message_fact") {
+          const raw = eventMaterials.observation;
+          if (raw && !live(raw.own_cap)) {
+            // The persisted fact producer revision is independently meaningful;
+            // its composite payload hash cannot reread an expired raw dependency.
+            if (!material.producer_revision) invalid.add(entry.id);
+            continue;
+          }
+          if (current?.bodyExists && (!raw || !live(current.bodyCap))) {
+            invalid.add(entry.id);
+            break;
+          }
+          group.facts.push({ entry: entry.id, material });
+        } else group.observations.push({ entry: entry.id, material });
+      }
+      groups.set(key, group);
+    }
+  }
+  for (const group of groups.values()) {
+    const requestedFacts = group.facts.filter((item) => !invalid.has(item.entry));
+    const states = publicationFactStates(
+      input.db,
+      group.scope,
+      [...new Set(requestedFacts.map((item) => item.material.id))],
+      input.now,
+    );
+    for (const { entry, material } of requestedFacts) {
+      const state = states.get(material.id);
+      if (
+        !state ||
+        state.textConsistency !== null ||
+        qqMessageFactSourceRevision(
+          group.scope,
+          state.fact,
+          state.visibleParts,
+          state.bodyRevisionValue,
+        ) !== material.revision
+      )
+        invalid.add(entry);
+    }
+    const observations = group.observations.filter((item) => !invalid.has(item.entry));
+    if (observations.length) {
+      const rows = input.db
+        .query(`SELECT event_key AS id,body FROM qq_observation_text
+        WHERE event_key IN (SELECT value FROM json_each(?)) AND expires_at>? AND length(CAST(body AS BLOB))<=262144`)
+        .all(
+          JSON.stringify([...new Set(observations.map((item) => item.material.id))]),
+          input.now,
+        ) as { id: string; body: string }[];
+      const bodies = new Map(rows.map((row) => [row.id, bodyRevision(row.body)]));
+      for (const { entry, material } of observations)
+        if (bodies.get(material.id) !== material.revision) invalid.add(entry);
+    }
+  }
+  return new Set(input.entries.filter((entry) => !invalid.has(entry.id)).map((entry) => entry.id));
 }
 
 export interface SuppressionSourceContext {

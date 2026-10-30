@@ -11,12 +11,27 @@ import {
   newPageEditor,
   pageAgentPayload,
 } from "../../src/web/features/agents/page-drafts";
-import {
-  getContextAllocationTarget,
-  resetContextAllocationTarget,
-  returnFromContextAllocation,
-  setContextAllocationTarget,
-} from "../../src/web/features/context-allocation";
+
+const getContextAllocationTarget = () => store.getState().contextAllocationTarget;
+const resetContextAllocationTarget = () =>
+  store.setState({
+    contextAllocationTarget: {
+      purpose: "assistant",
+      agentId: null,
+      schemeId: null,
+      bindingId: null,
+      returnRoute: null,
+      returnLabel: null,
+    },
+  });
+const returnFromContextAllocation = () => store.getState().returnFromContextAllocation();
+const setContextAllocationTarget = (
+  target: Partial<import("../../src/web/features/context-allocation").ContextAllocationTarget>,
+) =>
+  store.setState((state) => ({
+    contextAllocationTarget: { ...state.contextAllocationTarget, ...target },
+  }));
+
 import { useSuperstringStore as store } from "../../src/web/store";
 
 function createMockAgent(id = "test-agent"): AgentResponse {
@@ -52,102 +67,50 @@ beforeEach(() => {
 });
 
 describe("Context Allocation & Memory Tools Single Ownership Architecture", () => {
-  it("case 1: memory-tools page dirty and payload owns all retrieval_presets fields including max_tokens", () => {
+  it("case 1: materials owns single active settings and retains raw legacy presets", () => {
     const editor = newPageEditor(createMockAgent(), createMockPersona());
-    editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-
-    // Baseline: not dirty
-    expect(agentPageDirty(editor, "memory-tools")).toBe(false);
-
-    // Modifying max_tokens DOES make memory-tools dirty (single memory owner)
-    editor.draft.p5_config.retrieval_presets.broad.max_tokens = 9999;
+    editor.draft.p5_config = {
+      ...editor.draft.p5_config,
+      memory_read: { enabled: false, max_bytes: 999 },
+    };
     expect(agentPageDirty(editor, "memory-tools")).toBe(true);
-
-    // Modifying candidate_limit also makes memory-tools dirty
-    editor.draft.p5_config.retrieval_presets.broad.candidate_limit = 88;
-    expect(agentPageDirty(editor, "memory-tools")).toBe(true);
-
-    // Modifying retrieval_presets does NOT make context page dirty
     expect(agentPageDirty(editor, "context")).toBe(false);
-
-    // Payload for memory-tools includes both modified candidate_limit and max_tokens
-    const payload = pageAgentPayload(editor, "memory-tools");
-    expect(payload.p5_config?.retrieval_presets.broad.candidate_limit).toBe(88);
-    expect(payload.p5_config?.retrieval_presets.broad.max_tokens).toBe(9999);
+    expect(pageAgentPayload(editor, "memory-tools").p5_config?.memory_read).toEqual({
+      enabled: false,
+      max_bytes: 999,
+    });
+    expect(pageAgentPayload(editor, "memory-tools").p5_config?.retrieval_presets).toEqual(
+      editor.agent.p5_config.retrieval_presets,
+    );
   });
-
-  it("case 2: context page dirty and payload owns context fields, excluding retrieval_presets", () => {
+  it("case 2: context excludes unsaved memory settings and every legacy reading field", () => {
     const editor = newPageEditor(createMockAgent(), createMockPersona());
-    editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-
-    // Baseline: not dirty
-    expect(agentPageDirty(editor, "context")).toBe(false);
-
-    // Modifying candidate_limit does NOT make context dirty
-    editor.draft.p5_config.retrieval_presets.broad.candidate_limit = 77;
-    expect(agentPageDirty(editor, "context")).toBe(false);
-
-    // Modifying context_window DOES make context dirty
-    editor.draft.p5_config.context_window = 32768;
-    expect(agentPageDirty(editor, "context")).toBe(true);
-
-    // Payload for context includes context_window but baseline retrieval_presets
-    const payload = pageAgentPayload(editor, "context");
-    expect(payload.p5_config?.context_window).toBe(32768);
-    expect(payload.p5_config?.retrieval_presets).toEqual(editor.agent.p5_config.retrieval_presets);
-    expect(payload.p5_config?.retrieval_presets.broad.candidate_limit).toBe(120);
+    editor.draft.p5_config = {
+      ...editor.draft.p5_config,
+      memory_read: { enabled: false, max_bytes: 999 },
+      context_window: 32768,
+    };
+    const payload = pageAgentPayload(editor, "context").p5_config;
+    expect(payload?.context_window).toBe(32768);
+    expect(payload?.memory_read).toEqual(editor.agent.p5_config.memory_read);
+    expect(payload?.retrieval_presets).toEqual(editor.agent.p5_config.retrieval_presets);
   });
-
-  it("case 3: acceptPageAgent preserves cross-page dirty fields without leaking or clobbering", () => {
+  it("case 3: accepting each page advances only its saved baseline", () => {
     const editor = newPageEditor(createMockAgent(), createMockPersona());
-    editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-
-    // User edits candidate_limit (memory-tools) and context_window (context)
-    editor.draft.p5_config.retrieval_presets.broad.candidate_limit = 123;
-    editor.draft.p5_config.context_window = 32768;
-
-    // Simulate saving memory-tools: server returns saved agent with new candidate_limit
-    const savedFromMemoryTools: AgentResponse = {
+    editor.draft.p5_config = {
+      ...editor.draft.p5_config,
+      memory_read: { enabled: true, max_bytes: 123 },
+      context_window: 32768,
+    };
+    const saved: AgentResponse = {
       ...editor.agent,
       config_version: 2,
-      p5_config: {
-        ...editor.agent.p5_config,
-        retrieval_presets: {
-          ...editor.agent.p5_config.retrieval_presets,
-          broad: {
-            ...editor.agent.p5_config.retrieval_presets.broad,
-            candidate_limit: 123,
-          },
-        },
-      },
+      p5_config: { ...editor.agent.p5_config, memory_read: { enabled: true, max_bytes: 123 } },
     };
-
-    // Accept memory-tools page
-    const acceptedMemory = acceptPageAgent(editor, "memory-tools", savedFromMemoryTools);
-    // Baseline updated for memory-tools
-    expect(acceptedMemory.agent.p5_config.retrieval_presets.broad.candidate_limit).toBe(123);
-    // Draft keeps unsaved context_window for context
-    expect(acceptedMemory.draft.p5_config.context_window).toBe(32768);
-    // memory-tools is clean, context is still dirty
-    expect(agentPageDirty(acceptedMemory, "memory-tools")).toBe(false);
-    expect(agentPageDirty(acceptedMemory, "context")).toBe(true);
-
-    // Now simulate saving context: server returns saved agent with new context_window
-    const savedFromContext: AgentResponse = {
-      ...acceptedMemory.agent,
-      config_version: 3,
-      p5_config: {
-        ...acceptedMemory.agent.p5_config,
-        context_window: 32768,
-      },
-    };
-
-    // Accept context page
-    const acceptedContext = acceptPageAgent(acceptedMemory, "context", savedFromContext);
-    // Both are now clean
-    expect(acceptedContext.agent.p5_config.context_window).toBe(32768);
-    expect(agentPageDirty(acceptedContext, "context")).toBe(false);
-    expect(agentPageDirty(acceptedContext, "memory-tools")).toBe(false);
+    const accepted = acceptPageAgent(editor, "memory-tools", saved);
+    expect(agentPageDirty(accepted, "memory-tools")).toBe(false);
+    expect(agentPageDirty(accepted, "context")).toBe(true);
+    expect(accepted.draft.p5_config.context_window).toBe(32768);
   });
 
   it("case 4: returnFromContextAllocation keeps returnRoute on cancel and only resets when navigation accepted", () => {

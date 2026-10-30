@@ -31,6 +31,7 @@ import { formatDate, i18n } from "../../src/web/i18n/runtime";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { SchemeBindingsView } from "../../src/web/screens/connections/scheme-bindings";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { NavigationGuard } from "../../src/web/workspace/NavigationGuard";
 import { render } from "./helpers/render-with-providers";
 
 const ui = (key: string, values?: Record<string, unknown>) => i18n.t(key, values) as string;
@@ -709,12 +710,65 @@ describe("草稿的保存与放弃", () => {
     expect(qqDraftChanges(store.getState())).toEqual([]);
   });
 
-  it("私聊更换方案沿用绑定保存，不读取群聊专属配置", async () => {
+  it.each(["keep", "reset"] as const)(
+    "私聊自定义换方案：取消不写，显式 %s 随绑定请求提交",
+    async (decision) => {
+      const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+      const { fake } = await renderBoards({
+        listQqBindings: vi.fn().mockResolvedValue([row]),
+        listQqConversations: vi
+          .fn()
+          .mockResolvedValue([conversation("30003", "private", BINDING_A)]),
+        getQqGroupConfig: vi
+          .fn()
+          .mockResolvedValue(qqConfigOf(row, { context: { reply_token_budget: 8000 } })),
+      });
+      await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+      const sheet = screen.getByRole("dialog");
+      await userEvent.selectOptions(
+        within(sheet).getByLabelText(ui("connections.schemes")),
+        SCHEME_B,
+      );
+      const save = within(sheet).getByRole("button", { name: ui("connections.saveBinding") });
+      await userEvent.click(save);
+      const title = ui("schemes.qq.groupConfig.scheme.confirmTitle", { "0": "夜间方案" });
+      const preview = await screen.findByRole("dialog", { name: title });
+      expect(within(preview).getByText("8000 → 6000")).toBeTruthy();
+      await userEvent.click(
+        within(preview).getByRole("button", { name: ui("connections.cancel") }),
+      );
+      expect(fake.updateQqBinding).not.toHaveBeenCalled();
+      expect(store.getState().qqInputs.choices[BINDING_A]?.schemeId).toBe(SCHEME_B);
+      await userEvent.click(save);
+      const confirm = await screen.findByRole("dialog", { name: title });
+      await userEvent.click(
+        within(confirm).getByRole("button", {
+          name: ui(
+            decision === "keep"
+              ? "schemes.qq.groupConfig.scheme.keepLabel"
+              : "schemes.qq.groupConfig.scheme.resetLabel",
+          ),
+        }),
+      );
+      await waitFor(() =>
+        expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_A, {
+          agent_id: AGENT_A,
+          scheme_id: SCHEME_B,
+          scheme_change: decision,
+          scheme_change_baseline: { config_revision: 0, scheme_revision: 3 },
+          expected_revision: 1,
+        }),
+      );
+      expect(fake.updateQqScheme).not.toHaveBeenCalled();
+    },
+  );
+
+  it("私聊无覆盖时读取配置后直接保存，不伪造决定", async () => {
     const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
     const { fake } = await renderBoards({
       listQqBindings: vi.fn().mockResolvedValue([row]),
       listQqConversations: vi.fn().mockResolvedValue([conversation("30003", "private", BINDING_A)]),
-      getQqGroupConfig: vi.fn().mockRejectedValue(new Error("GROUP_ONLY")),
+      getQqGroupConfig: vi.fn().mockResolvedValue(qqConfigOf(row)),
     });
     await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
     const sheet = screen.getByRole("dialog");
@@ -725,13 +779,88 @@ describe("草稿的保存与放弃", () => {
     await userEvent.click(
       within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
     );
-    await act(async () => {});
-    expect(fake.getQqGroupConfig).not.toHaveBeenCalled();
-    expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_A, {
-      agent_id: AGENT_A,
-      scheme_id: SCHEME_B,
-      expected_revision: 1,
+    await waitFor(() =>
+      expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_A, {
+        agent_id: AGENT_A,
+        scheme_id: SCHEME_B,
+        scheme_change_baseline: { config_revision: 0, scheme_revision: 3 },
+        expected_revision: 1,
+      }),
+    );
+    expect(fake.getQqGroupConfig).toHaveBeenCalledWith(BINDING_A);
+  });
+
+  it.each(["revision", "api"] as const)(
+    "私聊配置读取晚到且 %s 已变化时不提交并保留草稿",
+    async (changed) => {
+      const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+      let resolveConfig!: (value: QqGroupConfigResponse) => void;
+      const pending = new Promise<QqGroupConfigResponse>((resolve) => {
+        resolveConfig = resolve;
+      });
+      const { fake } = await renderBoards({
+        listQqBindings: vi.fn().mockResolvedValue([row]),
+        listQqConversations: vi
+          .fn()
+          .mockResolvedValue([conversation("30003", "private", BINDING_A)]),
+        getQqGroupConfig: vi.fn().mockReturnValue(pending),
+      });
+      await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+      const sheet = screen.getByRole("dialog");
+      await userEvent.selectOptions(
+        within(sheet).getByLabelText(ui("connections.schemes")),
+        SCHEME_B,
+      );
+      await userEvent.click(
+        within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
+      );
+      act(() => {
+        if (changed === "revision") store.setState({ qqBindings: [{ ...row, revision: 2 }] });
+        else store.setState({ apiClient: client() });
+      });
+      await act(async () => {
+        resolveConfig(qqConfigOf(row, { context: { reply_token_budget: 8000 } }));
+        await pending;
+      });
+      expect(fake.updateQqBinding).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("dialog", {
+          name: ui("schemes.qq.groupConfig.scheme.confirmTitle", { "0": "夜间方案" }),
+        }),
+      ).toBeNull();
+      expect(store.getState().qqInputs.choices[BINDING_A]?.schemeId).toBe(SCHEME_B);
+    },
+  );
+
+  it("私聊改 Agent 时不读取旧 Agent 的覆盖；同方案保存也不读取", async () => {
+    const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+    const { fake } = await renderBoards({
+      listQqBindings: vi.fn().mockResolvedValue([row]),
+      listQqConversations: vi.fn().mockResolvedValue([conversation("30003", "private", BINDING_A)]),
     });
+    await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+    const sheet = screen.getByRole("dialog");
+    const save = within(sheet).getByRole("button", { name: ui("connections.saveBinding") });
+    await userEvent.click(save);
+    await waitFor(() => expect(fake.updateQqBinding).toHaveBeenCalledTimes(1));
+    expect(fake.getQqGroupConfig).not.toHaveBeenCalled();
+    await userEvent.selectOptions(
+      within(sheet).getByLabelText(ui("connections.assistant")),
+      AGENT_B,
+    );
+    await userEvent.selectOptions(
+      within(sheet).getByLabelText(ui("connections.schemes")),
+      SCHEME_B,
+    );
+    await userEvent.click(save);
+    await waitFor(() =>
+      expect(fake.updateQqBinding).toHaveBeenNthCalledWith(2, BINDING_A, {
+        agent_id: AGENT_B,
+        scheme_id: SCHEME_B,
+        expected_revision: 1,
+      }),
+    );
+    expect(fake.getQqGroupConfig).not.toHaveBeenCalled();
   });
 
   it("在编辑里选择另一方案改绑正常保存，且不夹带方案草稿", async () => {
@@ -780,6 +909,7 @@ describe("草稿的保存与放弃", () => {
       agent_id: AGENT_A,
       scheme_id: SCHEME_B,
       scheme_change: "keep",
+      scheme_change_baseline: { config_revision: 0, scheme_revision: 3 },
       expected_revision: 1,
     });
     // 同一入口再次选择并「全部跟随新方案」：第二个显式决定同样如实提交。
@@ -798,6 +928,7 @@ describe("草稿的保存与放弃", () => {
       agent_id: AGENT_A,
       scheme_id: SCHEME_B,
       scheme_change: "reset",
+      scheme_change_baseline: { config_revision: 0, scheme_revision: 3 },
       expected_revision: 1,
     });
     expect(fake.updateQqScheme).not.toHaveBeenCalled();
@@ -819,7 +950,14 @@ describe("刷新保存基线", () => {
       .mockResolvedValue([
         QqBindingResponseSchema.parse({ ...bindingOf(SCHEME_A, BINDING_A, "30003"), revision: 9 }),
       ]);
-    const { fake } = await renderBoards({ listQqBindings: list, updateQqBinding: update });
+    const { fake } = await renderBoards({
+      listQqBindings: list,
+      updateQqBinding: update,
+      getQqGroupConfig: vi
+        .fn()
+        .mockResolvedValueOnce(qqConfigOf(bindingOf(SCHEME_A, BINDING_A, "30003")))
+        .mockResolvedValue(qqConfigOf({ ...bindingOf(SCHEME_A, BINDING_A, "30003"), revision: 9 })),
+    });
     await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
     let sheet = screen.getByRole("dialog");
     await userEvent.selectOptions(
@@ -834,6 +972,7 @@ describe("刷新保存基线", () => {
     expect(fake.updateQqBinding).toHaveBeenNthCalledWith(1, BINDING_A, {
       agent_id: AGENT_A,
       scheme_id: SCHEME_B,
+      scheme_change_baseline: { config_revision: 0, scheme_revision: 3 },
       expected_revision: 1,
     });
     expect(store.getState().qqInputs.choices[BINDING_A]?.source?.revision).toBe(1);
@@ -857,6 +996,7 @@ describe("刷新保存基线", () => {
     expect(fake.updateQqBinding).toHaveBeenNthCalledWith(2, BINDING_A, {
       agent_id: AGENT_A,
       scheme_id: SCHEME_B,
+      scheme_change_baseline: { config_revision: 0, scheme_revision: 3 },
       expected_revision: 9,
     });
   });
@@ -1371,4 +1511,399 @@ describe("性能阶段补测：渲染优化与窄订阅保持（FE-P2）", () =>
     });
     expect(onRender).toHaveBeenCalledTimes(0);
   });
+});
+
+describe("binding preview owns only its current editor and submitted choice", () => {
+  const previewTitle = () => ui("schemes.qq.groupConfig.scheme.confirmTitle", { "0": "夜间方案" });
+  async function startPreview(
+    overrides: Partial<typeof api> = {},
+    kind: "group" | "private" = "private",
+  ) {
+    const row = bindingOf(SCHEME_A, BINDING_A, "30003", kind);
+    const { fake } = await renderBoards({
+      listQqBindings: vi.fn().mockResolvedValue([row]),
+      listQqConversations: vi.fn().mockResolvedValue([conversation("30003", kind, BINDING_A)]),
+      ...overrides,
+    });
+    await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+    const sheet = screen.getByRole("dialog");
+    await userEvent.selectOptions(
+      within(sheet).getByLabelText(ui("connections.schemes")),
+      SCHEME_B,
+    );
+    return {
+      row,
+      fake,
+      sheet,
+      save: within(sheet).getByRole("button", { name: ui("connections.saveBinding") }),
+    };
+  }
+  it.each(["group", "private"] as const)(
+    "%s pending empty-config answer cannot save an old target after the choice changes",
+    async (kind) => {
+      let resolveConfig!: (response: QqGroupConfigResponse) => void;
+      const pending = new Promise<QqGroupConfigResponse>((resolve) => {
+        resolveConfig = resolve;
+      });
+      const { row, fake, sheet, save } = await startPreview(
+        { getQqGroupConfig: vi.fn(() => pending) },
+        kind,
+      );
+      await userEvent.click(save);
+      await userEvent.selectOptions(
+        within(sheet).getByLabelText(ui("connections.schemes")),
+        SCHEME_A,
+      );
+      const current = store.getState().qqInputs.choices[BINDING_A];
+      await act(async () => {
+        resolveConfig(qqConfigOf(row));
+        await pending;
+      });
+      expect(fake.updateQqBinding).not.toHaveBeenCalled();
+      expect(store.getState().qqInputs.choices[BINDING_A]).toBe(current);
+      expect(screen.queryByRole("dialog", { name: previewTitle() })).toBeNull();
+    },
+  );
+  it("closing and reopening while config is pending cannot write or open a stale confirmation", async () => {
+    let resolveConfig!: (response: QqGroupConfigResponse) => void;
+    const pending = new Promise<QqGroupConfigResponse>((resolve) => {
+      resolveConfig = resolve;
+    });
+    const { row, fake, save } = await startPreview({ getQqGroupConfig: vi.fn(() => pending) });
+    await userEvent.click(save);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+    await act(async () => {
+      resolveConfig(qqConfigOf(row, { prompts: { scene: "old read" } }));
+      await pending;
+    });
+    expect(fake.updateQqBinding).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: previewTitle() })).toBeNull();
+    expect(store.getState().qqInputs.choices[BINDING_A]?.schemeId).toBe(SCHEME_B);
+  });
+  it.each(["api", "binding", "target", "choice"] as const)(
+    "confirmation refuses a changed %s and preserves the draft",
+    async (changed) => {
+      const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+      const { fake, save } = await startPreview({
+        getQqGroupConfig: vi.fn().mockResolvedValue({
+          ...qqConfigOf(row, { prompts: { scene: "previewed" } }),
+          revision: 7,
+        }),
+      });
+      await userEvent.click(save);
+      const preview = await screen.findByRole("dialog", { name: previewTitle() });
+      act(() => {
+        if (changed === "api") store.setState({ apiClient: client() });
+        else if (changed === "binding") store.setState({ qqBindings: [{ ...row, revision: 2 }] });
+        else if (changed === "target")
+          store.setState({
+            qqSchemes: [scheme(), scheme({ id: SCHEME_B, name: "夜间方案", revision: 4 })],
+          });
+        else
+          store.setState((state) => ({
+            qqInputs: {
+              ...state.qqInputs,
+              choices: {
+                ...state.qqInputs.choices,
+                [BINDING_A]: { ...state.qqInputs.choices[BINDING_A], schemeId: SCHEME_A },
+              },
+            },
+          }));
+      });
+      const current = store.getState().qqInputs.choices[BINDING_A];
+      await userEvent.click(
+        within(preview).getByRole("button", {
+          name: ui("schemes.qq.groupConfig.scheme.resetLabel"),
+        }),
+      );
+      expect(fake.updateQqBinding).not.toHaveBeenCalled();
+      expect(store.getState().qqInputs.choices[BINDING_A]).toBe(current);
+    },
+  );
+  it("keep uses the previewed config revision; 409 keeps the draft and a new preview can retry", async () => {
+    const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ ...qqConfigOf(row, { prompts: { scene: "first" } }), revision: 7 })
+      .mockResolvedValue({ ...qqConfigOf(row, { prompts: { scene: "second" } }), revision: 8 });
+    const write = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("config changed"))
+      .mockResolvedValue({ ...row, scheme_id: SCHEME_B, revision: 2 });
+    const { fake, save } = await startPreview({ getQqGroupConfig: read, updateQqBinding: write });
+    await userEvent.click(save);
+    const first = await screen.findByRole("dialog", { name: previewTitle() });
+    await userEvent.click(
+      within(first).getByRole("button", { name: ui("schemes.qq.groupConfig.scheme.keepLabel") }),
+    );
+    await waitFor(() => expect(store.getState().error).toBe("config changed"));
+    expect(store.getState().qqInputs.choices[BINDING_A]?.schemeId).toBe(SCHEME_B);
+    expect(fake.updateQqBinding).toHaveBeenNthCalledWith(1, BINDING_A, {
+      agent_id: AGENT_A,
+      scheme_id: SCHEME_B,
+      scheme_change: "keep",
+      scheme_change_baseline: { config_revision: 7, scheme_revision: 3 },
+      expected_revision: 1,
+    });
+    await userEvent.click(save);
+    const second = await screen.findByRole("dialog", { name: previewTitle() });
+    await userEvent.click(
+      within(second).getByRole("button", { name: ui("schemes.qq.groupConfig.scheme.resetLabel") }),
+    );
+    await waitFor(() => expect(fake.updateQqBinding).toHaveBeenCalledTimes(2));
+    expect(fake.updateQqBinding).toHaveBeenNthCalledWith(2, BINDING_A, {
+      agent_id: AGENT_A,
+      scheme_id: SCHEME_B,
+      scheme_change: "reset",
+      scheme_change_baseline: { config_revision: 8, scheme_revision: 3 },
+      expected_revision: 1,
+    });
+    await waitFor(() => expect(store.getState().qqInputs.choices[BINDING_A]).toBeUndefined());
+  });
+  it("an acknowledged PUT does not erase a newer choice made by another editor owner", async () => {
+    let resolvePut!: (response: QqBindingResponse) => void;
+    const pending = new Promise<QqBindingResponse>((resolve) => {
+      resolvePut = resolve;
+    });
+    const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+    const { save } = await startPreview({
+      getQqGroupConfig: vi.fn().mockResolvedValue(qqConfigOf(row)),
+      updateQqBinding: vi.fn(() => pending),
+    });
+    await userEvent.click(save);
+    act(() =>
+      store.setState((state) => ({
+        qqInputs: {
+          ...state.qqInputs,
+          choices: {
+            ...state.qqInputs.choices,
+            [BINDING_A]: { ...state.qqInputs.choices[BINDING_A], schemeId: SCHEME_A },
+          },
+        },
+      })),
+    );
+    const current = store.getState().qqInputs.choices[BINDING_A];
+    await act(async () => {
+      resolvePut({ ...row, scheme_id: SCHEME_B, revision: 2 });
+      await pending;
+    });
+    expect(store.getState().qqInputs.choices[BINDING_A]).toBe(current);
+    expect(store.getState().qqBindings[0]?.scheme_id).toBe(SCHEME_B);
+  });
+  it("unmounted editor never starts a PUT from its pending config answer", async () => {
+    let resolveConfig!: (response: QqGroupConfigResponse) => void;
+    const pending = new Promise<QqGroupConfigResponse>((resolve) => {
+      resolveConfig = resolve;
+    });
+    const { row, fake, save } = await startPreview({ getQqGroupConfig: vi.fn(() => pending) });
+    await userEvent.click(save);
+    cleanup();
+    await act(async () => {
+      resolveConfig(qqConfigOf(row));
+      await pending;
+    });
+    expect(fake.updateQqBinding).not.toHaveBeenCalled();
+    expect(store.getState().qqInputs.choices[BINDING_A]?.schemeId).toBe(SCHEME_B);
+  });
+});
+
+describe("navigation scheme changes use the original binding confirmation", () => {
+  async function openHandoff(update: typeof api.updateQqBinding) {
+    const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+    const { fake } = await renderBoards({
+      listQqBindings: vi.fn().mockResolvedValue([row]),
+      listQqConversations: vi.fn().mockResolvedValue([conversation("30003", "private", BINDING_A)]),
+      getQqGroupConfig: vi.fn().mockResolvedValue({
+        ...qqConfigOf(row, { prompts: { scene: "kept private draft" } }),
+        revision: 6,
+      }),
+      updateQqBinding: update,
+    });
+    render(<NavigationGuard />);
+    await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+    const original = screen.getByRole("dialog");
+    await userEvent.selectOptions(
+      within(original).getByLabelText(ui("connections.schemes")),
+      SCHEME_B,
+    );
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    act(() => store.getState().openSettingsRoute("qq-stickers"));
+    const pending = store.getState().pendingNavigation;
+    const guard = await screen.findByRole("alertdialog");
+    await userEvent.click(
+      within(guard).getByRole("button", { name: ui("workspace.save_and_continue") }),
+    );
+    await waitFor(() =>
+      expect(store.getState().qqInputs.bindingSchemeConfirmationId).toBe(BINDING_A),
+    );
+    expect(fake.updateQqBinding).not.toHaveBeenCalled();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    return { fake, pending, row, editor: screen.getByRole("dialog") };
+  }
+  it.each(["keep", "reset"] as const)(
+    "navigation %s confirms once, clears only the submitted choice and continues to the original destination",
+    async (decision) => {
+      const write = vi.fn<typeof api.updateQqBinding>().mockResolvedValue({
+        ...bindingOf(SCHEME_A, BINDING_A, "30003", "private"),
+        scheme_id: SCHEME_B,
+        revision: 2,
+      });
+      const { fake, pending, editor } = await openHandoff(write);
+      expect(store.getState().pendingNavigation).toBe(pending);
+      await userEvent.click(
+        within(editor).getByRole("button", { name: ui("connections.saveBinding") }),
+      );
+      const preview = await screen.findByRole("dialog", {
+        name: ui("schemes.qq.groupConfig.scheme.confirmTitle", { "0": "夜间方案" }),
+      });
+      await userEvent.click(
+        within(preview).getByRole("button", {
+          name: ui(
+            decision === "keep"
+              ? "schemes.qq.groupConfig.scheme.keepLabel"
+              : "schemes.qq.groupConfig.scheme.resetLabel",
+          ),
+        }),
+      );
+      await waitFor(() => expect(store.getState().settingsRoute).toBe("qq-stickers"));
+      expect(fake.updateQqBinding).toHaveBeenCalledTimes(1);
+      expect(fake.updateQqBinding).toHaveBeenCalledWith(BINDING_A, {
+        agent_id: AGENT_A,
+        scheme_id: SCHEME_B,
+        scheme_change: decision,
+        scheme_change_baseline: { config_revision: 6, scheme_revision: 3 },
+        expected_revision: 1,
+      });
+      expect(store.getState().pendingNavigation).toBeNull();
+      expect(store.getState().qqInputs.choices[BINDING_A]).toBeUndefined();
+      expect(store.getState().qqInputs.bindingSchemeConfirmationId).toBeNull();
+    },
+  );
+  it("canceling either preview or the handed-off editor keeps the choice and original pending navigation", async () => {
+    const write = vi.fn<typeof api.updateQqBinding>();
+    const { pending, editor } = await openHandoff(write);
+    const choice = store.getState().qqInputs.choices[BINDING_A];
+    await userEvent.click(
+      within(editor).getByRole("button", { name: ui("connections.saveBinding") }),
+    );
+    const preview = await screen.findByRole("dialog", {
+      name: ui("schemes.qq.groupConfig.scheme.confirmTitle", { "0": "夜间方案" }),
+    });
+    await userEvent.click(within(preview).getByRole("button", { name: ui("connections.cancel") }));
+    expect(store.getState().qqInputs.choices[BINDING_A]).toBe(choice);
+    expect(store.getState().pendingNavigation).toBe(pending);
+    await userEvent.keyboard("{Escape}");
+    const guard = await screen.findByRole("alertdialog");
+    expect(store.getState().qqInputs.bindingSchemeConfirmationId).toBeNull();
+    expect(store.getState().qqInputs.choices[BINDING_A]).toBe(choice);
+    expect(store.getState().pendingNavigation).toBe(pending);
+    expect(write).not.toHaveBeenCalled();
+    await userEvent.click(within(guard).getByRole("button", { name: ui("workspace.stay_here") }));
+    expect(store.getState().pendingNavigation).toBeNull();
+    expect(store.getState().qqInputs.choices[BINDING_A]).toBe(choice);
+  });
+  it("a 409 remains in the handed-off editor without dropping the draft or continuing navigation", async () => {
+    const write = vi
+      .fn<typeof api.updateQqBinding>()
+      .mockRejectedValue(new Error("preview config changed elsewhere"));
+    const { pending, editor } = await openHandoff(write);
+    await userEvent.click(
+      within(editor).getByRole("button", { name: ui("connections.saveBinding") }),
+    );
+    const preview = await screen.findByRole("dialog", {
+      name: ui("schemes.qq.groupConfig.scheme.confirmTitle", { "0": "夜间方案" }),
+    });
+    await userEvent.click(
+      within(preview).getByRole("button", { name: ui("schemes.qq.groupConfig.scheme.resetLabel") }),
+    );
+    await waitFor(() => expect(store.getState().error).toBe("preview config changed elsewhere"));
+    expect(store.getState().pendingNavigation).toBe(pending);
+    expect(store.getState().settingsRoute).not.toBe("qq-stickers");
+    expect(store.getState().qqInputs.bindingSchemeConfirmationId).toBe(BINDING_A);
+    expect(store.getState().qqInputs.choices[BINDING_A]?.schemeId).toBe(SCHEME_B);
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("navigation handoff suspends an already open binding editor rather than rendering a duplicate", async () => {
+  const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+  await renderBoards({
+    listQqBindings: vi.fn().mockResolvedValue([row]),
+    listQqConversations: vi.fn().mockResolvedValue([conversation("30003", "private", BINDING_A)]),
+  });
+  render(<NavigationGuard />);
+  await userEvent.click(screen.getByRole("button", { name: ui("connections.manage") }));
+  const original = screen.getByRole("dialog");
+  await userEvent.selectOptions(
+    within(original).getByLabelText(ui("connections.schemes")),
+    SCHEME_B,
+  );
+  act(() => store.getState().openSettingsRoute("qq-stickers"));
+  const guard = await screen.findByRole("alertdialog");
+  await userEvent.click(
+    within(guard).getByRole("button", { name: ui("workspace.save_and_continue") }),
+  );
+  await waitFor(() =>
+    expect(store.getState().qqInputs.bindingSchemeConfirmationId).toBe(BINDING_A),
+  );
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(store.getState().qqInputs.choices[BINDING_A]?.schemeId).toBe(SCHEME_B);
+  await userEvent.keyboard("{Escape}");
+  await screen.findByRole("alertdialog");
+  expect(store.getState().qqInputs.choices[BINDING_A]?.schemeId).toBe(SCHEME_B);
+});
+
+it("navigation confirmation keeps an already committed binding baseline and does not replay it after another draft fails", async () => {
+  const row = bindingOf(SCHEME_A, BINDING_A, "30003", "private");
+  const write = vi.fn().mockResolvedValue({ ...row, scheme_id: SCHEME_B, revision: 2 });
+  const { fake } = await renderBoards({
+    listQqBindings: vi.fn().mockResolvedValue([row]),
+    listQqConversations: vi.fn().mockResolvedValue([conversation("30003", "private", BINDING_A)]),
+    getQqGroupConfig: vi.fn().mockResolvedValue(qqConfigOf(row, { prompts: { scene: "private" } })),
+    updateQqBinding: write,
+  });
+  render(<NavigationGuard />);
+  act(() =>
+    store.setState((state) => ({
+      qqInputs: {
+        ...state.qqInputs,
+        choices: { [BINDING_A]: { source: row, agentId: AGENT_A, schemeId: SCHEME_B } },
+        manualPeer: "60006",
+        manualAgentId: "",
+        manualSchemeId: SCHEME_A,
+      },
+    })),
+  );
+  act(() => store.getState().openSettingsRoute("qq-stickers"));
+  const pending = store.getState().pendingNavigation;
+  const guard = await screen.findByRole("alertdialog");
+  await userEvent.click(
+    within(guard).getByRole("button", { name: ui("workspace.save_and_continue") }),
+  );
+  const editor = await screen.findByRole("dialog");
+  await userEvent.click(
+    within(editor).getByRole("button", { name: ui("connections.saveBinding") }),
+  );
+  const preview = await screen.findByRole("dialog", {
+    name: ui("schemes.qq.groupConfig.scheme.confirmTitle", { "0": "夜间方案" }),
+  });
+  await userEvent.click(
+    within(preview).getByRole("button", { name: ui("schemes.qq.groupConfig.scheme.keepLabel") }),
+  );
+  await waitFor(() => expect(store.getState().qqInputs.choices[BINDING_A]).toBeUndefined());
+  await screen.findByRole("alertdialog");
+  expect(store.getState().pendingNavigation).toBe(pending);
+  expect(store.getState().qqBindings[0]?.revision).toBe(2);
+  expect(store.getState().qqInputs.manualPeer).toBe("60006");
+  expect(fake.updateQqBinding).toHaveBeenCalledTimes(1);
+  expect(fake.createQqBinding).not.toHaveBeenCalled();
+  await act(async () => {
+    await store.getState().confirmSaveAndContinue();
+  });
+  expect(fake.updateQqBinding).toHaveBeenCalledTimes(1);
+  expect(store.getState().pendingNavigation).toBe(pending);
 });

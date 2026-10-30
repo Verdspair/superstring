@@ -9,6 +9,8 @@ it("does not expose mutable system definition flags or accept executable callbac
     capability: "memory.read",
     effect: "read",
     sandboxCallable: true,
+    invocation: "action" as const,
+    scope: "conversation" as const,
     origin: "system",
     globalEnabled: true,
     functionId: "memory-query",

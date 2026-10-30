@@ -229,7 +229,7 @@ export function QqManagedMessageStream({
 
   return (
     <SettingsGroup title={t("connections.stream.title", "QQ 协议事件流")} icon={Terminal}>
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 p-4 sm:p-5">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 settings-content-padding">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {error ? (
             <Badge
@@ -328,7 +328,11 @@ export function QqManagedMessageStream({
       {/* Tabs */}
       <div className="min-w-0 px-4 py-3 sm:px-5">
         <Tabs value={filterType} onValueChange={setFilterType} className="w-full">
-          <TabsList className="flex h-auto w-fit max-w-full flex-wrap justify-start gap-1 group-data-horizontal/tabs:h-auto">
+          <TabsList
+            presentation="compact"
+            flow="wrap"
+            className="flex w-fit max-w-full justify-start gap-1"
+          >
             <TabsTrigger value="all" className="min-h-8 px-3 text-[12.5px]">
               {t("connections.stream.filter.all", "全部")}
             </TabsTrigger>
@@ -426,7 +430,7 @@ export function QqManagedMessageStream({
         open={selectedEvent !== null}
         onOpenChange={(open) => !open && setSelectedSequence(null)}
       >
-        <DialogContent className="max-w-lg font-mono text-xs">
+        <DialogContent scrollMode="surface" className="max-w-lg font-mono text-xs">
           <DialogHeader>
             <DialogTitle className="workspace-dialog-title font-sans">
               {t("connections.stream.detail.title", "事件结构详情")}

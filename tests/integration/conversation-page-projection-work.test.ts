@@ -777,6 +777,362 @@ function expectScalar(f: ReturnType<typeof fixture>, atTime = at) {
   return expected;
 }
 
+function traceBodyRows(db: Database) {
+  const reads: Array<{ sql: string; args: unknown[]; rows: Record<string, unknown>[] }> = [];
+  const query = db.query,
+    prepare = db.prepare;
+  let constructing = false;
+  const wrap = (original: typeof db.query) =>
+    ((sql: string) => {
+      if (constructing) return Reflect.apply(original, db, [sql]);
+      constructing = true;
+      let statement: ReturnType<typeof db.query>;
+      try {
+        statement = Reflect.apply(original, db, [sql]);
+      } finally {
+        constructing = false;
+      }
+      return new Proxy(statement, {
+        get(target, key) {
+          const method = Reflect.get(target, key, target);
+          if (key === "get" || key === "all")
+            return (...args: unknown[]) => {
+              const result = Reflect.apply(method, target, args);
+              reads.push({
+                sql,
+                args,
+                rows: structuredClone(Array.isArray(result) ? result : result ? [result] : []),
+              });
+              return result;
+            };
+          return typeof method === "function" ? method.bind(target) : method;
+        },
+      });
+    }) as typeof db.query;
+  db.query = wrap(query);
+  db.prepare = wrap(prepare);
+  return {
+    reads,
+    restore() {
+      db.query = query;
+      db.prepare = prepare;
+    },
+  };
+}
+
+describe("QQ source body expiry before payload selection", () => {
+  const cases: {
+    name: string;
+    stored: string;
+    source: string;
+    ref: string;
+    state: "active" | "expired";
+  }[] = [
+    { name: "stored exact boundary", stored: at, source: far, ref: far, state: "expired" },
+    { name: "event exact boundary", stored: far, source: at, ref: far, state: "expired" },
+    { name: "observation exact boundary", stored: far, source: far, ref: at, state: "expired" },
+    { name: "invalid stored cap", stored: "invalid", source: far, ref: far, state: "expired" },
+    { name: "invalid event cap", stored: far, source: "invalid", ref: far, state: "expired" },
+    { name: "invalid observation cap", stored: far, source: far, ref: "invalid", state: "expired" },
+    {
+      name: "one millisecond before expiry",
+      stored: "2026-01-01T00:00:00.001Z",
+      source: far,
+      ref: far,
+      state: "active",
+    },
+    {
+      name: "offset exact boundary",
+      stored: "2026-01-01T08:00:00+08:00",
+      source: far,
+      ref: far,
+      state: "expired",
+    },
+    {
+      name: "Date.parse non-ISO future",
+      stored: "01 Jan 2099 00:00:00 GMT",
+      source: far,
+      ref: far,
+      state: "active",
+    },
+    {
+      name: "Date.parse non-ISO boundary",
+      stored: "01 Jan 2026 00:00:00 GMT",
+      source: far,
+      ref: far,
+      state: "expired",
+    },
+  ];
+  it.each(cases)(
+    "keeps $name metadata but selects no expired body in either consumer mode",
+    (test) => {
+      const f = fixture();
+      const event = f.inbound("cap-case", test.stored);
+      const text = "synthetic cap-case";
+      event.source = { ...event.source, revision: at, expiresAt: test.source };
+      event.sources = [
+        event.source,
+        {
+          kind: "qq_observation",
+          id: event.source.id,
+          revision: bodyRevision(text),
+          expiresAt: test.ref,
+        },
+      ];
+      for (const inspection of [false, true]) {
+        const trace = traceBodyRows(f.db);
+        f.db.exec("PRAGMA query_only=ON");
+        try {
+          const body = projection
+            .conversationSourceBodies(f.db, [event], at, inspection)
+            .get(event)!;
+          expect(body.state).toBe(test.state);
+          expect(body.text).toBe(test.state === "active" ? text : null);
+          expect(body.expiresAt).toBe([test.stored, test.source, test.ref].sort()[0]!);
+          expect(body.revision).toBe(test.state === "active" ? bodyRevision(text) : "");
+          const metadata = trace.reads.filter((read) =>
+            read.sql.includes("NULL AS text,NULL AS status,t.expires_at"),
+          );
+          expect(metadata).toHaveLength(1);
+          expect(metadata[0]!.rows.map((row) => row.text)).toEqual([null]);
+          expect(metadata[0]!.rows[0]!.expiresAt).toBe(test.stored);
+          const payload = trace.reads.filter((read) => read.sql.includes("t.body"));
+          expect(payload).toHaveLength(test.state === "active" ? 1 : 0);
+          expect(payload.flatMap((read) => read.rows.map((row) => row.text))).toEqual(
+            test.state === "active" ? [text] : [],
+          );
+          expect(trace.reads).toHaveLength(test.state === "active" ? 2 : 1);
+        } finally {
+          f.db.exec("PRAGMA query_only=OFF");
+          trace.restore();
+        }
+      }
+    },
+  );
+
+  it.each([1, 32, 400])(
+    "uses one metadata batch and zero payload rows for %i expired selected sources",
+    (count) => {
+      const f = fixture();
+      const events = Array.from({ length: count }, (_, index) => f.inbound(`expired:${index}`, at));
+      for (const inspection of [false, true]) {
+        const trace = traceBodyRows(f.db);
+        try {
+          const bodies = projection.conversationSourceBodies(f.db, events, at, inspection);
+          expect(events.map((event) => bodies.get(event)!.state)).toEqual(
+            Array(count).fill("expired"),
+          );
+          expect(events.map((event) => bodies.get(event)!.text)).toEqual(Array(count).fill(null));
+          expect(trace.reads).toHaveLength(1);
+          expect(trace.reads[0]!.rows).toHaveLength(count);
+          expect(trace.reads[0]!.rows.map((row) => row.text)).toEqual(Array(count).fill(null));
+          expect(trace.reads.filter((read) => /t\.body|length\(/.test(read.sql))).toHaveLength(0);
+        } finally {
+          trace.restore();
+        }
+      }
+    },
+  );
+
+  it("batches only live ordinals while preserving duplicate source identities, ordering and all matching caps", () => {
+    const f = fixture();
+    const original = f.inbound("same-id");
+    original.source = { ...original.source, revision: at };
+    const ref = {
+      kind: "qq_observation",
+      id: original.source.id,
+      revision: bodyRevision("synthetic same-id"),
+      expiresAt: far,
+    };
+    original.sources = [original.source, ref];
+    const expired: ConversationEvent = {
+      ...original,
+      source: { ...original.source, expiresAt: at },
+    };
+    const invalid: ConversationEvent = {
+      ...original,
+      sources: [original.source, ref, { ...ref, expiresAt: "invalid" }],
+    };
+    const unrelatedRef: ConversationEvent = {
+      ...original,
+      sources: [...original.sources, { ...ref, id: "unrelated-id", expiresAt: at }],
+    };
+    const missing: ConversationEvent = {
+      ...original,
+      source: { ...original.source, id: "missing" },
+    };
+    const events = [expired, original, invalid, unrelatedRef, missing];
+    const trace = traceBodyRows(f.db);
+    try {
+      const bodies = projection.conversationSourceBodies(f.db, events, at, true);
+      expect(events.map((event) => bodies.get(event)!.state)).toEqual([
+        "expired",
+        "active",
+        "expired",
+        "active",
+        "revoked",
+      ]);
+      expect(events.map((event) => bodies.get(event)!.text)).toEqual([
+        null,
+        "synthetic same-id",
+        null,
+        "synthetic same-id",
+        null,
+      ]);
+      const metadata = trace.reads.filter((read) =>
+        read.sql.includes("NULL AS text,NULL AS status,t.expires_at"),
+      );
+      expect(metadata).toHaveLength(1);
+      expect(metadata[0]!.rows.map((row) => row.text)).toEqual([null, null, null, null]);
+      const payload = trace.reads.filter((read) => read.sql.includes("t.body"));
+      expect(payload).toHaveLength(1);
+      expect(payload[0]!.rows.map((row) => Number(row.ordinal))).toEqual([1, 3]);
+      expect(payload[0]!.rows.map((row) => row.text)).toEqual([
+        "synthetic same-id",
+        "synthetic same-id",
+      ]);
+      expect(
+        JSON.parse(String(payload[0]!.args[1])).map((row: { ordinal: number }) =>
+          Number(row.ordinal),
+        ),
+      ).toEqual([1, 3]);
+    } finally {
+      trace.restore();
+    }
+    const tracePage = traceBodyRows(f.db);
+    try {
+      const views = projection.projectConversationEvents(f.db, events, at);
+      expect(views.map((view) => view.contentState)).toEqual([
+        "expired",
+        "active",
+        "expired",
+        "active",
+        "revoked",
+      ]);
+      expect(views.map((view) => view.text)).toEqual([
+        null,
+        "synthetic same-id",
+        null,
+        "synthetic same-id",
+        null,
+      ]);
+      const payload = tracePage.reads.filter((read) => read.sql.includes("t.body"));
+      expect(payload).toHaveLength(1);
+      expect(payload[0]!.rows.map((row) => Number(row.ordinal))).toEqual([1, 3]);
+    } finally {
+      tracePage.restore();
+    }
+  });
+
+  it("retains inspection identity, revision, empty-body and byte-size rules without reading expired oversized payloads", () => {
+    const f = fixture();
+    const event = f.inbound("shape");
+    event.source = { ...event.source, revision: at };
+    function body(text: string, until = far) {
+      f.db
+        .query("UPDATE qq_observation_text SET body=?,expires_at=? WHERE event_key=?")
+        .run(text, until, event.source.id);
+      event.sources = [
+        event.source,
+        {
+          kind: "qq_observation",
+          id: event.source.id,
+          revision: bodyRevision(text),
+          expiresAt: far,
+        },
+      ];
+    }
+    // Normal producers forbid empty text; retain the reader's legacy empty-row semantics.
+    f.db.exec("PRAGMA ignore_check_constraints=ON");
+    try {
+      body("");
+    } finally {
+      f.db.exec("PRAGMA ignore_check_constraints=OFF");
+    }
+    expect(projection.conversationSourceBodies(f.db, [event], at, true).get(event)).toMatchObject({
+      state: "active",
+      text: "",
+    });
+    expect(projection.conversationSourceBodies(f.db, [event], at).get(event)).toMatchObject({
+      state: "unavailable",
+      text: null,
+    });
+    body("a".repeat(262144));
+    expect(
+      projection.conversationSourceBodies(f.db, [event], at, true).get(event)!.text?.length,
+    ).toBe(262144);
+    body("a".repeat(262145));
+    const oversizedTrace = traceBodyRows(f.db);
+    try {
+      expect(projection.conversationSourceBodies(f.db, [event], at, true).get(event)).toMatchObject(
+        { state: "unavailable", text: null },
+      );
+      const payload = oversizedTrace.reads.filter((read) => read.sql.includes("t.body"));
+      expect(payload).toHaveLength(1);
+      expect(payload[0]!.rows.map((row) => row.text)).toEqual([null]);
+    } finally {
+      oversizedTrace.restore();
+    }
+    expect(projection.conversationSourceBodies(f.db, [event], at).get(event)!.text?.length).toBe(
+      262145,
+    );
+    body("🦄".repeat(65537));
+    expect(projection.conversationSourceBodies(f.db, [event], at, true).get(event)).toMatchObject({
+      state: "unavailable",
+      text: null,
+    });
+    body("🦄".repeat(65537), at);
+    const expiredTrace = traceBodyRows(f.db);
+    try {
+      expect(projection.conversationSourceBodies(f.db, [event], at, true).get(event)).toMatchObject(
+        { state: "expired", text: null, revision: "" },
+      );
+      expect(expiredTrace.reads.filter((read) => /t\.body|length\(/.test(read.sql))).toHaveLength(
+        0,
+      );
+      expect(expiredTrace.reads[0]!.rows[0]!.text).toBeNull();
+    } finally {
+      expiredTrace.restore();
+    }
+    body("normal");
+    event.sources[1] = { ...event.sources[1]!, revision: "changed" };
+    expect(projection.conversationSourceBodies(f.db, [event], at, true).get(event)).toMatchObject({
+      state: "unavailable",
+      text: null,
+    });
+    body("normal");
+    event.source = { ...event.source, revision: "changed" };
+    expect(projection.conversationSourceBodies(f.db, [event], at, true).get(event)).toMatchObject({
+      state: "unavailable",
+      text: null,
+    });
+    event.source = { ...event.source, revision: at };
+    const observation: ConversationEvent = {
+      ...event,
+      source: { ...event.sources[1]!, kind: "qq_observation" },
+    };
+    expect(
+      projection.conversationSourceBodies(f.db, [observation], at, true).get(observation),
+    ).toMatchObject({ state: "active", text: "normal" });
+    const foreign: ConversationEvent = { ...event, conversationId: "not-the-owning-conversation" };
+    const foreignTrace = traceBodyRows(f.db);
+    try {
+      expect(
+        projection.conversationSourceBodies(f.db, [foreign], at, true).get(foreign),
+      ).toMatchObject({ state: "revoked", text: null });
+      expect(foreignTrace.reads).toHaveLength(1);
+      expect(foreignTrace.reads[0]!.rows).toEqual([]);
+    } finally {
+      foreignTrace.restore();
+    }
+    f.db.query("DELETE FROM qq_observation_text WHERE event_key=?").run(event.source.id);
+    expect(projection.conversationSourceBodies(f.db, [event], at, true).get(event)).toMatchObject({
+      state: "unavailable",
+      text: null,
+    });
+  });
+});
+
 describe("selected conversation page projection", () => {
   for (const historySize of [100, 1000, 10000]) {
     it(`shares metadata reads for 100 selected events with ${historySize} retained activations`, () => {

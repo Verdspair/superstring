@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConversationEventView } from "../../../shared/contracts/conversation";
 import { addConversationChangeListener } from "../../services/conversation-changes";
 import {
@@ -8,15 +8,17 @@ import {
 } from "../../services/page-snapshot-cache";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
+import { scheduleSourceExpiry, sourceExpired } from "./source-expiry";
 
 export type HistoryChange = "initial" | "older" | "refresh" | "clear";
 export type BeforeHistoryChange = (kind: HistoryChange, next: ConversationEventView[]) => void;
 
+function documentHidden(): boolean {
+  return document.visibilityState === "hidden";
+}
+
 function lapsedAt(row: ConversationEventView, now: number): boolean {
-  return Boolean(
-    (row.source?.expiresAt && now >= Date.parse(row.source.expiresAt)) ||
-      row.sources.some((source) => source.expiresAt && now >= Date.parse(source.expiresAt)),
-  );
+  return [row.source, ...row.sources].some((source) => sourceExpired(source.expiresAt, now));
 }
 
 function redactEvent(
@@ -63,33 +65,32 @@ export function useConversationEvents(
   const readState = useRef<"unsettled" | "failed" | "loaded">("unsettled");
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
-  const lastScope = useRef({ id, agentId, bindingEpoch, api });
-  const expiryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ownerScope = useMemo(
+    () => ({ id, agentId, bindingEpoch, api }),
+    [id, agentId, bindingEpoch, api],
+  );
+  const lastScope = useRef(ownerScope);
+  const expiryTimer = useRef<(() => void) | null>(null);
 
-  const cancel = useCallback(() => {
+  const cancelExpiry = useCallback(() => {
+    expiryTimer.current?.();
+    expiryTimer.current = null;
+  }, []);
+
+  const cancelReads = useCallback(() => {
     rangeRead.current?.abort();
     tailRead.current?.abort();
     rangeRead.current = null;
     tailRead.current = null;
     pendingRevalidate.current = false;
-    if (expiryTimer.current !== null) {
-      clearTimeout(expiryTimer.current);
-      expiryTimer.current = null;
-    }
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    const previous = lastScope.current;
-    if (
-      previous.id === id &&
-      previous.agentId === agentId &&
-      previous.bindingEpoch === bindingEpoch &&
-      previous.api === api
-    )
-      return;
-    cancel();
-    lastScope.current = { id, agentId, bindingEpoch, api };
+    if (lastScope.current === ownerScope) return;
+    cancelReads();
+    cancelExpiry();
+    lastScope.current = ownerScope;
     first.current = 0;
     current.current = [];
     wantedSeq.current = 0;
@@ -98,30 +99,7 @@ export function useConversationEvents(
     setHasMore(false);
     setError("");
     notify.current?.("clear", []);
-  }, [id, agentId, bindingEpoch, api, cancel]);
-
-  useEffect(() => {
-    let active = true;
-    if (!sessionStateStorage || !id || agentId === null || bindingEpoch === null) return;
-    const scope = lastScope.current;
-    void loadQqEventsCache(sessionStateStorage, id, agentId, bindingEpoch).then((cached) => {
-      if (
-        active &&
-        lastScope.current === scope &&
-        cached?.length &&
-        !current.current.length &&
-        readState.current === "unsettled"
-      ) {
-        current.current = cached;
-        setItems(cached);
-        notify.current?.("initial", cached);
-        scheduleExpiryRef.current();
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, [id, agentId, bindingEpoch, sessionStateStorage]);
+  }, [ownerScope, cancelReads, cancelExpiry]);
 
   const publish = useCallback((kind: HistoryChange, records: ConversationEventView[]) => {
     const now = Date.now();
@@ -150,16 +128,10 @@ export function useConversationEvents(
 
   const scheduleExpiryRef = useRef<() => void>(() => {});
 
-  const sanitizeExpired = useCallback(() => {
-    publish("refresh", current.current);
-  }, [publish]);
+  const sanitizeExpired = useCallback(() => publish("refresh", current.current), [publish]);
 
   const scheduleExpiry = useCallback(() => {
-    if (expiryTimer.current !== null) {
-      clearTimeout(expiryTimer.current);
-      expiryTimer.current = null;
-    }
-    if (!enabledRef.current || document.visibilityState === "hidden") return;
+    cancelExpiry();
     const now = Date.now();
     let nearest = Number.POSITIVE_INFINITY;
     for (const row of current.current) {
@@ -170,15 +142,44 @@ export function useConversationEvents(
       }
     }
     if (!Number.isFinite(nearest)) return;
-    expiryTimer.current = setTimeout(
-      () => {
-        expiryTimer.current = null;
-        sanitizeExpired();
-      },
-      Math.min(2_147_483_647, Math.max(0, nearest - Date.now())),
-    );
-  }, [sanitizeExpired]);
+    const scope = lastScope.current;
+    expiryTimer.current = scheduleSourceExpiry([new Date(nearest).toISOString()], () => {
+      if (lastScope.current !== scope) return;
+      expiryTimer.current = null;
+      sanitizeExpired();
+    });
+  }, [sanitizeExpired, cancelExpiry]);
   scheduleExpiryRef.current = scheduleExpiry;
+
+  // Loaded content expires even while its retained workspace is not reading.
+  useEffect(() => {
+    if (lastScope.current !== ownerScope) return;
+    scheduleExpiry();
+    return cancelExpiry;
+  }, [ownerScope, scheduleExpiry, cancelExpiry]);
+
+  useEffect(() => {
+    let active = true;
+    const scope = ownerScope;
+    if (!sessionStateStorage || !scope.id || scope.agentId === null || scope.bindingEpoch === null)
+      return;
+    void loadQqEventsCache(sessionStateStorage, scope.id, scope.agentId, scope.bindingEpoch).then(
+      (cached) => {
+        if (
+          active &&
+          lastScope.current === scope &&
+          cached?.length &&
+          !current.current.length &&
+          readState.current === "unsettled"
+        ) {
+          publish("initial", cached);
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [ownerScope, sessionStateStorage, publish]);
 
   const save = useCallback(() => {
     void saveQqEventsCache(sessionStateStorage, id, agentId, bindingEpoch, current.current);
@@ -204,7 +205,13 @@ export function useConversationEvents(
   );
 
   const append = useCallback(async () => {
-    if (tailRead.current || readState.current !== "loaded") return;
+    if (
+      !enabledRef.current ||
+      documentHidden() ||
+      tailRead.current ||
+      readState.current !== "loaded"
+    )
+      return;
     const controller = new AbortController();
     const scope = lastScope.current;
     tailRead.current = controller;
@@ -239,7 +246,7 @@ export function useConversationEvents(
           pendingRevalidate.current &&
           !rangeRead.current &&
           enabledRef.current &&
-          document.visibilityState !== "hidden"
+          !documentHidden()
         ) {
           pendingRevalidate.current = false;
           revalidateRef.current();
@@ -250,6 +257,7 @@ export function useConversationEvents(
 
   const load = useCallback(
     async (older = false) => {
+      if (!enabledRef.current || documentHidden()) return;
       if (rangeRead.current) {
         if (!older) pendingRevalidate.current = true;
         return;
@@ -337,7 +345,7 @@ export function useConversationEvents(
         if (rangeRead.current === controller) {
           rangeRead.current = null;
           setLoading(false);
-          if (enabledRef.current && document.visibilityState !== "hidden") {
+          if (enabledRef.current && !documentHidden()) {
             if (pendingRevalidate.current && !tailRead.current) {
               pendingRevalidate.current = false;
               void load();
@@ -364,22 +372,22 @@ export function useConversationEvents(
 
   useEffect(() => {
     const pause = () => {
-      cancel();
-      notify.current?.("refresh", current.current);
+      cancelReads();
+      if (!sanitizeExpired()) notify.current?.("refresh", current.current);
     };
     if (!enabled) {
       pause();
       return;
     }
     const refresh = () => {
-      if (document.visibilityState !== "hidden") {
+      if (lastScope.current === ownerScope && !documentHidden()) {
         sanitizeExpired();
         void load();
       }
     };
-    let hidden = document.visibilityState === "hidden";
+    let hidden = documentHidden();
     const visibility = () => {
-      const nextHidden = document.visibilityState === "hidden";
+      const nextHidden = documentHidden();
       if (nextHidden === hidden) return;
       hidden = nextHidden;
       if (hidden) pause();
@@ -388,10 +396,10 @@ export function useConversationEvents(
     refresh();
     document.addEventListener("visibilitychange", visibility);
     return () => {
-      cancel();
+      cancelReads();
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [enabled, load, sanitizeExpired, cancel]);
+  }, [enabled, ownerScope, load, sanitizeExpired, cancelReads]);
 
   useEffect(
     () =>
@@ -405,7 +413,7 @@ export function useConversationEvents(
           event.seq <= Math.max(wantedSeq.current, current.current.at(-1)?.seq ?? 0);
         if (event.event === "conversation_changed")
           wantedSeq.current = Math.max(wantedSeq.current, event.seq);
-        if (!enabled || document.visibilityState === "hidden") return;
+        if (!enabled || documentHidden()) return;
         // A repeated seq can revise a row not yet published by the pending tail response.
         if (changedDuringTail) {
           pendingRevalidate.current = true;

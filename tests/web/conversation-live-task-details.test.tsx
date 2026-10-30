@@ -315,7 +315,12 @@ describe("conversation live task details", () => {
   it("EvidenceWorkbench does not auto-inspect a model child by default", async () => {
     const inspect = vi.fn<SuperstringApi["inspectRunContext"]>().mockResolvedValue(exact);
     store.getState().resetForTests({ ...api, inspectRunContext: inspect });
-    render(<EvidenceWorkbench item={modelSpan()} />);
+    render(
+      <EvidenceWorkbench
+        renderRun={(runId) => <RunWorkspace runId={runId} />}
+        item={modelSpan()}
+      />,
+    );
 
     const workbench = await screen.findByRole("region", { name: "步骤检查器" });
     expect(
@@ -328,7 +333,13 @@ describe("conversation live task details", () => {
     const deferred = makeDeferred<InspectedContext>();
     const inspect = vi.fn<SuperstringApi["inspectRunContext"]>(() => deferred.promise);
     store.getState().resetForTests({ ...api, inspectRunContext: inspect });
-    render(<EvidenceWorkbench item={modelSpan()} autoInspect />);
+    render(
+      <EvidenceWorkbench
+        renderRun={(runId) => <RunWorkspace runId={runId} />}
+        item={modelSpan()}
+        autoInspect
+      />,
+    );
 
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
     expect(inspect.mock.calls[0][0]).toEqual({ runId: "run-child-9", stepId: "step-child-9" });
@@ -384,15 +395,26 @@ describe("conversation live task details", () => {
       .mockResolvedValueOnce(pending)
       .mockResolvedValue(exact);
     store.getState().resetForTests({ ...api, inspectRunContext: inspect });
-    const view = render(<EvidenceWorkbench item={modelSpan()} autoInspect />);
+    const view = render(
+      <EvidenceWorkbench
+        renderRun={(runId) => <RunWorkspace runId={runId} />}
+        item={modelSpan()}
+        autoInspect
+      />,
+    );
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
     view.rerender(
-      <EvidenceWorkbench item={modelSpan({ status: "completed", finishedAt: now })} autoInspect />,
+      <EvidenceWorkbench
+        renderRun={(runId) => <RunWorkspace runId={runId} />}
+        item={modelSpan({ status: "completed", finishedAt: now })}
+        autoInspect
+      />,
     );
     expect(await screen.findByText("Protected input")).toBeTruthy();
     await waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
     view.rerender(
       <EvidenceWorkbench
+        renderRun={(runId) => <RunWorkspace runId={runId} />}
         item={modelSpan({ status: "completed", finishedAt: now, code: "UPDATED_METADATA" })}
         autoInspect
       />,
@@ -403,7 +425,11 @@ describe("conversation live task details", () => {
       screen.getByRole("button", { name: i18n.t("observability.hideActualInputAndOutput") }),
     );
     view.rerender(
-      <EvidenceWorkbench item={modelSpan({ status: "failed", finishedAt: now })} autoInspect />,
+      <EvidenceWorkbench
+        renderRun={(runId) => <RunWorkspace runId={runId} />}
+        item={modelSpan({ status: "failed", finishedAt: now })}
+        autoInspect
+      />,
     );
     await act(async () => {});
     expect(inspect).toHaveBeenCalledTimes(2);

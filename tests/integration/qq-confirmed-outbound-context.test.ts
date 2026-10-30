@@ -28,7 +28,7 @@
 // 不调用它则 `replyScope` 恒 null、`expandQqReplies` 整段不跑。
 // 断言一律按 **JSON.parse 后的真实结构**（事实段 `msg=` 行、引用段 `roots`），
 // 不用 `JSON.stringify` 的转义子串——`contextDumps` 递归排序后 `facts` 排在 `kind`
-// 之前，按 kind 标签切 substring 必然截掉正文（2026-10-04 joint2 实测 3 例红即此因）。
+// 之前，按 kind 标签切 substring 会截掉正文。
 // 过期只经**生产合法的存储设置**（`updateQqStorageSettings`，最小 1 天）＋读时刻越帽造，
 // 不给事实行塞私设的 0 天窗口。
 // 不接真实 QQ/模型/网络，不读真实数据；不新增表/列，不改任何产品契约。
@@ -120,7 +120,7 @@ function setup(readAt: string = now) {
   const agentRow = getAgentRow(h.orm, DEFAULT_AGENT_ID);
   if (!agentRow) throw new Error("fixture: default agent row missing");
   const runtime = runtimeFromAgent(agentRow);
-  runtime.p5_config.retrieval_mode = "off";
+  runtime.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
   const journal = new ConversationEventRepository(h.db);
   const outbox = new OutboundIntentRepository(h.db);
   const conversation = journal.ensureOneBot(binding.id);
@@ -164,8 +164,7 @@ function setup(readAt: string = now) {
   /**
    * 真实 bindRun（生产接线点：`AgentRuntime` 在 `input.context.bindRun(actionContext)` 处
    * 登记一次）。不调用它则 `runId` 恒 undefined，`context-source` 的 `replyScope` 恒 null
-   * ——`expandQqReplies` 整段不跑，引用区连 `qq_reply_roots` 都不会出现（本文件 2026-10-04
-   * joint2 实测 3 例红即此因）。这里走公开方法，不改产品、不造内部字段。
+   * ——`expandQqReplies` 整段不跑，引用区不会出现 `qq_reply_roots`。
    */
   const buildSource = (runId: string) => {
     const source = new BotContextSource({
@@ -386,8 +385,7 @@ const readInput = () => ({ signal: new AbortController().signal, observations: [
  * 材料里每条消息的真实文本（`ModelMessage.content` 是**片段数组**，不是字符串）。
  *
  * `textMessage(role, text)` 产出 `{ role, content: [{ kind: "text", text }] }`，
- * 所以按 `typeof content === "string"` 读**永远读不到**——本文件 2026-10-04 joint3 的
- * case1/2/4/5/6 六红全部源于此：facts/roots 取段器恒返回空，断言在空集上失败。
+ * 所以按 `typeof content === "string"` 读取会使 facts/roots 取段器返回空。
  * 这里按真实形状取每个 text 片段并拼接，不做子串猜测。
  */
 function messageTexts(material: unknown): string[] {
@@ -902,18 +900,14 @@ describe("confirmed assistant outbound parts reach the shared context", () => {
   });
 
   /**
-   * 规格 §4.3「同一消息最多供一次正文」：一条已确认出站件的原话**只**出现在
+   * 同一消息最多供一次正文：一条已确认出站件的原话**只**出现在
    * `qq_message_facts` 资料段，附近期群聊时间线里不再重复一份。
    *
    * 关联是精确 id，不是内容或时刻猜测：发送通路在**同一事务**里把 `qq_send_log` 的行 id
    * 交给 `recordQqSpeech` 当 `qq_speech_log.id`，而 `outbound_intents.legacy_send_id` 指向
    * 同一行，于是 `qq_speech` source id 就是该出站意图的 `legacy_send_id`。本例先把这个等式
    * 断言下来（不是靠它通过，而是证明去重确实建立在真实关联上），再断言正文只出现一次。
-   *
-   * 修复前这条是红的：时间线去重按 `outbound_intent` source 匹配，对已确认意图是死代码
-   * （已确认意图的时间线条目来自 `ownSpeechSince`，sources 只有 `qq_speech`）。2026-10-04
-   * joint2 log 第 2 例 received 值可证：同一条"我是这么想的"同时出现在时间线与 facts 段。
-   * 期望值不因修复而放宽。
+   * 已确认意图的时间线条目来自 `ownSpeechSince`，sources 只有 `qq_speech`。
    */
   it("carries one confirmed message body exactly once, never duplicated in the timeline", async () => {
     const f = setup();

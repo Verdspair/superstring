@@ -1,19 +1,17 @@
-// 大设置入口同一视觉权重：outline 默认尺寸（h-8=32px）、可换行、带对应功能图标；
-// 同页其余保存/刷新按钮保持原级；草稿安全跳转行为不变。
+// 大设置入口使用同级 outline 与功能图标；普通保存和刷新保留各自 size。
+// 共用按钮允许长文字换行，草稿安全跳转行为不变。
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { selectLocale } from "../../src/web/i18n";
-import {
-  KnowledgeToolSettings,
-  MemoryReadingRules,
-} from "../../src/web/screens/assistants/ResourceRules";
+import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
+
 import { CapabilitiesWorkspace } from "../../src/web/screens/connections/CapabilitiesWorkspace";
 import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { setupLibrary } from "./helpers/library-fixture";
 
-// sm 是 h-7=28px，默认尺寸才是 h-8=32px；大页入口用默认尺寸并允许高度自适应换行。
+// 大页入口与常规任务操作分别验证，换行由共用按钮负责。
 function expectLargeEntry(button: HTMLElement, icon: string) {
   expect(button.getAttribute("data-variant")).toBe("outline");
   expect(button.getAttribute("data-size")).toBe("default");
@@ -27,7 +25,8 @@ function expectLargeEntry(button: HTMLElement, icon: string) {
 
 function expectOriginalLevel(button: HTMLElement, size: string) {
   expect(button.getAttribute("data-size")).toBe(size);
-  expect(button.className).not.toContain("h-auto");
+  expect(button.className).toContain(size === "sm" ? "min-h-[32px]" : "min-h-[38px]");
+  expect(button.className).toContain("whitespace-normal");
   expect(button.className).not.toContain("min-h-8");
 }
 
@@ -81,36 +80,36 @@ describe("large settings entries share one visual weight", () => {
       ),
     );
     fireEvent.click(screen.getByRole("button", { name: "前往整理默认模型" }));
-    expect(store.getState().settingsRoute).toBe("execution-settings");
+    expect(store.getState().settingsRoute).toBe("long-memory");
+    expect(store.getState().pendingNavigation).toMatchObject({
+      kind: "page",
+      settingsRoute: "execution-settings",
+    });
     expect(store.getState().pageEditor?.draft.name).toBe("Kept draft");
+    store.getState().cancelPendingNavigation();
+    expect(store.getState().pageEditor?.draft.name).toBe("Kept draft");
+    expect(store.getState().settingsRoute).toBe("long-memory");
+    fireEvent.click(screen.getByRole("button", { name: "前往整理默认模型" }));
+    await act(async () => store.getState().confirmDiscardAndContinue());
+    expect(store.getState().settingsRoute).toBe("execution-settings");
+    expect(store.getState().pendingNavigation).toBeNull();
   });
 
-  it("resource rule entries match the same weight while their save/refresh stay put", async () => {
-    // 记忆读取规则已 canonical：同屏同档 Bytes + 规则编辑，各自保存属主；不再有旧摘要跳转卡。
+  it("materials links and task toolbar retain their respective visual weights", async () => {
+    store.setState({ settingsView: "workspace", settingsRoute: "memory-tools" });
     await act(async () =>
       render(
         <DesignSystemProvider>
-          <MemoryReadingRules />
+          <AssistantWorkspace />
         </DesignSystemProvider>,
       ),
     );
-    const memoryEntry = screen.getByRole("button", { name: "前往长期记忆" });
-    expect(memoryEntry.getAttribute("data-variant")).toBe("outline");
-    expect(memoryEntry.querySelector("svg.lucide-book-open")).toBeTruthy();
-    // 各保存入口保持原级且带真实动作：规则保存 memory-tools、Bytes 保存 context。
-    expectOriginalLevel(screen.getByRole("button", { name: "保存记忆规则" }), "default");
-    expectOriginalLevel(screen.getByRole("button", { name: "刷新保存基线" }), "default");
-    cleanup();
-    await act(async () =>
-      render(
-        <DesignSystemProvider>
-          <KnowledgeToolSettings />
-        </DesignSystemProvider>,
-      ),
-    );
-    expectLargeEntry(screen.getByRole("button", { name: "前往知识文档" }), "file-text");
-    expectOriginalLevel(screen.getByRole("button", { name: "刷新授权" }), "default");
-    expectOriginalLevel(screen.getByRole("button", { name: "保存知识规则" }), "default");
+    const memoryEntry = screen.getByRole("button", { name: "管理记忆与来源" });
+    expectLargeEntry(memoryEntry, "book-open");
+    const knowledgeEntry = screen.getByRole("button", { name: "前往知识文档" });
+    expectLargeEntry(knowledgeEntry, "file-text");
+    expectOriginalLevel(screen.getByRole("button", { name: "刷新保存基线" }), "sm");
+    expectOriginalLevel(screen.getByRole("button", { name: "保存 Agent" }), "sm");
   });
 
   it("capabilities short-term context entry matches the same weight and still jumps", async () => {
@@ -124,6 +123,10 @@ describe("large settings entries share one visual weight", () => {
     );
     const jump = screen.getByRole("button", { name: "打开短期上下文" });
     expectLargeEntry(jump, "messages-square");
+    expect(jump.hasAttribute("disabled")).toBe(true);
+    fireEvent.change(screen.getByLabelText("选择要配置的 Agent"), {
+      target: { value: store.getState().agents[0].id },
+    });
     expect(jump.hasAttribute("disabled")).toBe(false);
     fireEvent.click(jump);
     expect(store.getState().settingsRoute).toBe("context");

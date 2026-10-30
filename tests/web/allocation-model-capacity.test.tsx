@@ -11,7 +11,7 @@ beforeEach(async () => {
 });
 afterEach(cleanup);
 it("uses the model capacity endpoint and carries the precise model target through guarded navigation", async () => {
-  const getModelCapacity = vi.fn(async (model: string) => ({
+  const getModelCapacity = vi.fn(async (model: string, _signal?: AbortSignal) => ({
     model,
     status: "loaded" as const,
     context_length: 65536,
@@ -19,7 +19,11 @@ it("uses the model capacity endpoint and carries the precise model target throug
   store.setState({ apiClient: { ...store.getState().apiClient, getModelCapacity } });
   render(<AllocationModelCapacity model="declared-model" />);
   await waitFor(() => expect(screen.getByText(/65536 Tokens/)).toBeTruthy());
-  expect(getModelCapacity).toHaveBeenCalledWith("declared-model");
+  expect(getModelCapacity).toHaveBeenCalledExactlyOnceWith(
+    "declared-model",
+    expect.any(AbortSignal),
+  );
+  expect(getModelCapacity.mock.calls[0]?.[1]?.aborted).toBe(false);
   fireEvent.click(screen.getByRole("button"));
   await waitFor(() => expect(store.getState().settingsRoute).toBe("external-api"));
   expect(store.getState().modelCapacityTarget).toBe("declared-model");
@@ -32,14 +36,19 @@ it("rejects late capacity from a previously selected model and keeps unknown hon
       resolveOld = resolve;
     },
   );
-  const getModelCapacity = vi.fn((model: string) =>
+  const getModelCapacity = vi.fn((model: string, _signal?: AbortSignal) =>
     model === "old"
       ? old
       : Promise.resolve({ model, status: "unknown" as const, context_length: null }),
   );
   store.setState({ apiClient: { ...store.getState().apiClient, getModelCapacity } });
   const view = render(<AllocationModelCapacity model="old" />);
+  expect(getModelCapacity).toHaveBeenCalledWith("old", expect.any(AbortSignal));
+  const oldSignal = getModelCapacity.mock.calls[0]?.[1];
+  expect(oldSignal?.aborted).toBe(false);
   view.rerender(<AllocationModelCapacity model="new" />);
+  expect(oldSignal?.aborted).toBe(true);
+  expect(getModelCapacity).toHaveBeenCalledWith("new", expect.any(AbortSignal));
   await act(async () => resolveOld({ model: "old", status: "loaded", context_length: 99999 }));
   expect(screen.queryByText(/99999/)).toBeNull();
   expect(screen.getByText("new")).toBeTruthy();

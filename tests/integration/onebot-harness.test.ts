@@ -6,8 +6,14 @@
 // 用途：① 当前内核的行为基线（0.4.0 换内核后逐条对照）；② 验收夹具本身——不接网络、不读真实数据。
 
 import { afterEach, describe, expect, it } from "bun:test";
+import {
+  readQqScheme,
+  schemeRhythm,
+  updateQqScheme,
+} from "../../src/server/db/qq-scheme-repository";
 import type { RunSnapshot } from "../../src/shared/contracts/agent-run";
-import { closeHarnesses, type OneBotHarness } from "../harness/onebot";
+import { batchScore, decideInline, decideNone } from "../harness/model";
+import { closeHarnesses, createOneBotHarness, type OneBotHarness } from "../harness/onebot";
 import {
   type ActionObservation,
   addressedThenInterrupted,
@@ -451,5 +457,132 @@ describe("P0 场景基线：OneBot 整链（离线）", () => {
         message: [{ type: "text", data: { text: "这个我查不到了" } }],
       },
     ]);
+  });
+});
+
+describe("current host behavior after fixed-runner retirement", () => {
+  it.each(["direct_reply", "follow_up", "chiming_in", "idle_topic"] as const)(
+    "%s switch closes an already mature canonical opportunity before any model or output",
+    async (path) => {
+      const follow = path === "follow_up";
+      const h = createOneBotHarness({
+        triggers: {
+          direct_reply: true,
+          follow_up: follow,
+          chiming_in: !follow && path !== "idle_topic",
+          idle_topic: true,
+        },
+        mergeWindowSeconds: 1,
+        initiativeBatchTargetCount: 1,
+        initiativeBatchJitterCount: 0,
+        initiativeTimeWindowEnabled: false,
+        model: [],
+      });
+      const messageId = {
+        direct_reply: "81001",
+        follow_up: "81002",
+        chiming_in: "81003",
+        idle_topic: "81004",
+      }[path];
+      expect(
+        h.receive({
+          id: messageId,
+          text: "a real readable source",
+          speaker: "20002",
+          addressed: path === "direct_reply",
+        }),
+      ).toMatchObject({ kind: "recorded", recorded: true, hasText: true });
+      expect(h.lastEventSeq).toBeGreaterThan(0);
+      if (path === "follow_up") h.advance(2);
+      if (path === "chiming_in") h.advance(2);
+      if (path === "idle_topic") {
+        h.advance(16 * 60);
+        h.sweep();
+      }
+      const before = h.wakes.peek({ at: h.now(), cause: path });
+      expect(before?.cause).toBe(path);
+      const column = {
+        direct_reply: "trigger_direct_reply",
+        follow_up: "trigger_follow_up",
+        chiming_in: "trigger_chiming_in",
+        idle_topic: "trigger_idle_topic",
+      }[path];
+      h.db.query(`UPDATE qq_schemes SET ${column}=0 WHERE id=?`).run(h.scheme.id);
+      expect(await h.activate(path)).toMatchObject({ status: "no_output" });
+      expect(h.model!.calls).toHaveLength(0);
+      expect(h.outbox.list({})).toHaveLength(0);
+      expect(h.sent).toHaveLength(0);
+      expect(h.db.query("SELECT count(*) AS n FROM qq_events").get()).toEqual({ n: 1 });
+    },
+  );
+
+  it("uses a fresh score for a fresh mature batch and the current threshold, without legacy reading writes", async () => {
+    const h = createOneBotHarness({
+      initiativeBatchTargetCount: 1,
+      initiativeBatchJitterCount: 0,
+      initiativeTimeWindowEnabled: false,
+      mergeWindowSeconds: 0,
+      initiativeMinScore: 6,
+      model: [],
+    });
+    expect(h.receive({ id: "82001", text: "first input", speaker: "20002" })).toMatchObject({
+      kind: "recorded",
+      recorded: true,
+      hasText: true,
+    });
+    expect(h.lastEventSeq).toBeGreaterThan(0);
+    h.model!.push([
+      batchScore([
+        { targetId: "20002", score: 5, intent: "below threshold", sourceSeqs: [h.lastEventSeq] },
+      ]),
+    ]);
+    expect(await h.activate("chiming_in")).toMatchObject({ status: "no_output" });
+    expect(h.outbox.list({})).toHaveLength(0);
+    const firstCalls = h.model!.calls.length;
+    expect(firstCalls).toBeGreaterThan(0);
+    expect(h.model!.calls[0]?.model).toBe("judge-model");
+    expect(h.model!.remaining()).toBe(0);
+    const row = readQqScheme(h.orm, h.scheme.id);
+    if (!row) throw new Error("missing scheme");
+    updateQqScheme(h.orm, row.id, {
+      name: row.name,
+      rhythm: { ...schemeRhythm(row), initiative_min_score: 4 },
+      expectedRevision: row.revision,
+    });
+    h.advance(60);
+    const firstSourceSeq = h.lastEventSeq;
+    expect(h.receive({ id: "82002", text: "second input", speaker: "20002" })).toMatchObject({
+      kind: "recorded",
+      recorded: true,
+      hasText: true,
+    });
+    expect(h.lastEventSeq).toBeGreaterThan(firstSourceSeq);
+    h.model!.push([
+      batchScore([
+        { targetId: "20002", score: 5, intent: "new input", sourceSeqs: [h.lastEventSeq] },
+      ]),
+      decideInline("20002", "fresh reply"),
+    ]);
+    expect(await h.activate("chiming_in")).toMatchObject({ status: "completed" });
+    expect(h.model!.calls.length).toBeGreaterThan(firstCalls);
+    expect(h.model!.remaining()).toBe(0);
+    expect(h.outbox.list({})).toHaveLength(1);
+    expect(h.db.query("SELECT * FROM qq_judgement_readings").all()).toEqual([]);
+    await h.deliver();
+    expect(h.sent).toHaveLength(1);
+  });
+  it("does not create an output from a paused addressed input and keeps its observation", async () => {
+    const h = createOneBotHarness({ model: [decideNone()] });
+    h.db.query("UPDATE qq_bindings SET paused=1 WHERE id=?").run(h.bindingId);
+    expect(h.receive({ id: "83001", addressed: true })).toMatchObject({
+      kind: "recorded",
+      recorded: true,
+      hasText: true,
+    });
+    expect(h.lastEventSeq).toBeGreaterThan(0);
+    await h.activate("direct_reply");
+    expect(h.model!.calls).toHaveLength(0);
+    expect(h.outbox.list({})).toHaveLength(0);
+    expect(h.db.query("SELECT count(*) AS n FROM qq_events").get()).toEqual({ n: 1 });
   });
 });

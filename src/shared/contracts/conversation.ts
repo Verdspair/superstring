@@ -17,6 +17,7 @@ export type ConversationMemoryReadModeUpdate = z.infer<
 >;
 
 export const ConversationMemoryReadModeResponseSchema = z.strictObject({
+  conversation_id: z.string(),
   mode: ConversationMemoryReadModeSchema,
   revision: z.number().int().positive(),
 });

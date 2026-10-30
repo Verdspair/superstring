@@ -1,17 +1,14 @@
 import { ArrowLeft, BookOpen, Wrench } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "../../components/ui/tabs";
-import {
-  type AllocationPurpose,
-  openContextAllocation,
-  returnFromContextAllocation,
-} from "../../features/context-allocation";
+import type { AllocationPurpose } from "../../features/context-allocation";
 import { knowledgeModelDirty, organizationDirty } from "../../features/knowledge/types";
 import { translateNotice } from "../../i18n";
+import { useForegroundRead } from "../../services/use-foreground-read";
 import { useSuperstringStore } from "../../store";
 import { AllocationModelCapacity } from "../connections/AllocationModelCapacity";
 import { ContextAllocationAuxiliary } from "../connections/ContextAllocationAuxiliary";
@@ -28,16 +25,22 @@ export function ModelPurposes({
   const { t } = useTranslation();
   const s = useSuperstringStore(
     useShallow((state) => ({
-      agents: state.agents,
       allocationInvalidInputs: state.allocationInvalidInputs,
       apiClient: state.apiClient,
       contextAllocationTarget: state.contextAllocationTarget,
+      openContextAllocation: state.openContextAllocation,
+      returnFromContextAllocation: state.returnFromContextAllocation,
+      acquireKnowledgeModelRead: state.acquireKnowledgeModelRead,
+      releaseKnowledgeModelRead: state.releaseKnowledgeModelRead,
+      acquireOrganizationRead: state.acquireOrganizationRead,
+      releaseOrganizationRead: state.releaseOrganizationRead,
       discardKnowledgeModel: state.discardKnowledgeModel,
       discardOrganization: state.discardOrganization,
-      editorAgentId: state.editorAgentId,
-      editorLoading: state.editorLoading,
-      error: state.error,
-      feedback: state.feedback,
+      error: state.knowledgeModelError.budget,
+      sharedError: state.knowledgeModelError.shared,
+      organizationError: state.organizationError,
+      legacyFeedback: state.feedback,
+      feedback: state.knowledgeModelNotice,
       knowledgeModelEditor: state.knowledgeModelEditor,
       knowledgeModelLoading: state.knowledgeModelLoading,
       loadKnowledgeModel: state.loadKnowledgeModel,
@@ -61,71 +64,42 @@ export function ModelPurposes({
 
   // Subpanel validities
   const [readingValidity, setReadingValidity] = useState({
-    memoryValid: true,
     knowledgeGlobalValid: true,
-    knowledgeAgentValid: true,
   });
 
   // Synchronize initial target and load domains when becoming active
-  useEffect(() => {
-    if (!active) return;
-    void s.loadKnowledgeModel();
-    void s.loadOrganization();
-  }, [active, s.loadKnowledgeModel, s.loadOrganization]);
+  const organizationOwner = useMemo(() => ({ api: s.apiClient }), [s.apiClient]);
+  const knowledgeOwner = useMemo(() => ({ api: s.apiClient }), [s.apiClient]);
+  const readSettings = useCallback(() => {
+    if (useSuperstringStore.getState().apiClient !== s.apiClient) return;
+    void s.acquireKnowledgeModelRead(knowledgeOwner);
+    if (purpose === "aux") void s.acquireOrganizationRead(organizationOwner);
+  }, [
+    purpose,
+    s.apiClient,
+    s.acquireKnowledgeModelRead,
+    knowledgeOwner,
+    s.acquireOrganizationRead,
+    organizationOwner,
+  ]);
+  const suspendSettings = useCallback(() => {
+    s.releaseKnowledgeModelRead(knowledgeOwner);
+    s.releaseOrganizationRead(organizationOwner);
+  }, [s.releaseKnowledgeModelRead, knowledgeOwner, s.releaseOrganizationRead, organizationOwner]);
+  useForegroundRead(readSettings, suspendSettings, {
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: suspendSettings,
+  });
 
-  // Derived active objects strictly from store editors to avoid desync
-  const effectiveAgentId =
-    s.editorAgentId && s.editorAgentId !== "__new__"
-      ? s.editorAgentId
-      : (s.agents.find((a) => a.id !== "__new__")?.id ?? "");
+  const compare =
+    purpose === "aux"
+      ? organizationDirty(s.organizationEditor, "allocation", ["knowledge_organize"])
+      : knowledgeModelDirty(s.knowledgeModelEditor, "budget");
 
-  const auxRoleModels = useMemo<Record<string, string | null | undefined>>(
-    () => ({
-      knowledge_organize:
-        s.knowledgeModelEditor?.source.model_name || s.organizationEditor?.source.model_name,
-    }),
-    [s.organizationEditor?.source.model_name, s.knowledgeModelEditor?.source.model_name],
-  );
-
-  const [modelCapacities, setModelCapacities] = useState<Record<string, number | null>>({});
-
-  useEffect(() => {
-    if (!active) return;
-    let current = true;
-    const isCurrent = () => {
-      const state = useSuperstringStore.getState();
-      const agentId =
-        state.editorAgentId && state.editorAgentId !== "__new__"
-          ? state.editorAgentId
-          : (state.agents.find((item) => item.id !== "__new__")?.id ?? "");
-      return current && agentId === effectiveAgentId;
-    };
-    const targetModels = Array.from(
-      new Set(
-        (purpose === "aux" ? [auxRoleModels.knowledge_organize] : []).filter(
-          (m): m is string => typeof m === "string" && m.length > 0,
-        ),
-      ),
-    );
-
-    for (const m of targetModels) {
-      void s.apiClient
-        .getModelCapacity(m)
-        .then((val) => {
-          if (isCurrent()) {
-            setModelCapacities((prev) => ({ ...prev, [m]: val.context_length }));
-          }
-        })
-        .catch(() => {
-          if (isCurrent()) {
-            setModelCapacities((prev) => ({ ...prev, [m]: null }));
-          }
-        });
-    }
-    return () => {
-      current = false;
-    };
-  }, [active, purpose, effectiveAgentId, s.apiClient, auxRoleModels]);
+  const knowledgeModel =
+    s.knowledgeModelEditor?.source.model_name || s.organizationEditor?.source.model_name;
 
   const invalidInputsFor = (prefix: string) =>
     Object.fromEntries(
@@ -163,7 +137,7 @@ export function ModelPurposes({
                 tooltip={<Trans i18nKey="hints.complete.return" />}
                 variant="outline"
                 size="sm"
-                onClick={returnFromContextAllocation}
+                onClick={s.returnFromContextAllocation}
                 className="h-auto min-h-8 whitespace-normal text-foreground flex items-center gap-1.5"
               >
                 <ArrowLeft className="size-4" />
@@ -203,7 +177,7 @@ export function ModelPurposes({
             tooltip={<Trans i18nKey="hints.complete.return" />}
             variant="ghost"
             size="sm"
-            onClick={returnFromContextAllocation}
+            onClick={s.returnFromContextAllocation}
           >
             <ArrowLeft className="size-4" />
             {t("schemes.allocation.returnTo", {
@@ -212,14 +186,98 @@ export function ModelPurposes({
           </Button>
         </div>
       )}
-      {!embedded && s.error && (
+      {(purpose === "reading" || embedded) && s.sharedError && (
         <p role="alert" className="px-4 py-2 text-sm text-destructive">
-          {translateNotice(s.error)}
+          {translateNotice(s.sharedError)}
         </p>
       )}
-      {!embedded && s.feedback && (
+      {(purpose === "aux" ? s.organizationError : s.error) && (
+        <p role="alert" className="px-4 py-2 text-sm text-destructive">
+          {translateNotice(purpose === "aux" ? s.organizationError! : s.error!)}
+        </p>
+      )}
+      {purpose === "aux" && (s.organizationEditor || s.organizationError) && (
+        <div className="px-4 py-2">
+          <Button
+            variant="outline"
+            disabled={s.settingsSaving || s.knowledgeModelLoading || s.organizationLoading}
+            tooltip={t("hints.library.knowledge.refreshSettings")}
+            onClick={() => {
+              if (purpose === "aux") void s.loadOrganization(true);
+              else void s.loadKnowledgeModel(true);
+            }}
+          >
+            {t("capabilities.resources.refreshBaseline")}
+          </Button>
+        </div>
+      )}
+      {compare && (
+        <section
+          aria-label={t("materials.savedBaseline")}
+          className="space-y-2 border-y bg-muted/20 px-4 py-3 text-sm"
+        >
+          <h2 className="font-medium">
+            {t("materials.savedBaseline")} ·{" "}
+            {t("common.revision", {
+              "0":
+                purpose === "aux"
+                  ? s.organizationEditor?.source.revision
+                  : s.knowledgeModelEditor?.source.revision,
+            })}
+          </h2>
+          {purpose === "aux" ? (
+            (() => {
+              const profile = s.organizationEditor?.source.auxiliary_allocation?.knowledge_organize;
+              const draft = s.organizationEditor?.auxiliaryAllocation?.knowledge_organize;
+              const limit = (value: number | null | undefined) =>
+                value === undefined
+                  ? t("schemes.allocation.aux.inherit")
+                  : value === null
+                    ? t("materials.noHardLimit")
+                    : String(value);
+              return profile ? (
+                <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-[auto_1fr]">
+                  {draft?.mode !== profile.mode && (
+                    <>
+                      <dt>{t("schemes.allocation.aux.mode")}</dt>
+                      <dd>
+                        {t(
+                          profile.mode === "auto"
+                            ? "schemes.allocation.aux.modeAuto"
+                            : "schemes.allocation.aux.modeFixed",
+                        )}
+                      </dd>
+                    </>
+                  )}
+                  {draft?.input_limit !== profile.input_limit && (
+                    <>
+                      <dt>{t("schemes.allocation.aux.inputLimit")}</dt>
+                      <dd>{limit(profile.input_limit)}</dd>
+                    </>
+                  )}
+                  {draft?.output_reserved !== profile.output_reserved && (
+                    <>
+                      <dt>{t("schemes.allocation.aux.outputReserved")}</dt>
+                      <dd>{limit(profile.output_reserved)}</dd>
+                    </>
+                  )}
+                </dl>
+              ) : (
+                <p>{t("schemes.allocation.aux.inherit")}</p>
+              );
+            })()
+          ) : (
+            <p>
+              {t("schemes.allocation.reading.defaultBytesLabel")}:{" "}
+              {s.knowledgeModelEditor?.source.context_budget} Bytes
+            </p>
+          )}
+        </section>
+      )}
+      {compare && <h2 className="px-4 pt-3 text-sm font-medium">{t("materials.localDraft")}</h2>}
+      {(purpose === "aux" ? s.legacyFeedback : s.feedback) && (
         <p role="status" className="px-4 py-2 text-xs text-muted-foreground">
-          {translateNotice(s.feedback)}
+          {translateNotice(purpose === "aux" ? s.legacyFeedback : s.feedback)}
         </p>
       )}
 
@@ -228,12 +286,18 @@ export function ModelPurposes({
         value={purpose}
         onValueChange={(val) => {
           if (useSuperstringStore.getState().editorLoading) return;
-          openContextAllocation({ purpose: val as AllocationPurpose });
+          s.openContextAllocation({ purpose: val as AllocationPurpose });
         }}
-        className="flex min-h-0 min-w-0 flex-1 flex-col gap-0"
+        className={
+          embedded ? "flex min-w-0 flex-col gap-0" : "flex min-h-0 min-w-0 flex-1 flex-col gap-0"
+        }
       >
         <aside className="shrink-0 pb-[24px]">
-          <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">
+          <TabsList
+            presentation="workspace"
+            flow="scroll"
+            className="w-fit max-w-full justify-start"
+          >
             <TabsTrigger
               value="reading"
               className="flex h-auto min-h-9 w-full min-w-0 shrink-0 items-center justify-start gap-2 whitespace-normal px-3 py-2 text-xs font-medium text-foreground"
@@ -256,12 +320,16 @@ export function ModelPurposes({
         </aside>
 
         {/* Main Content Area */}
-        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-[28px]" data-workspace-scroll>
+        <div
+          className={
+            embedded ? "min-w-0 pb-[28px]" : "min-h-0 min-w-0 flex-1 overflow-y-auto pb-[28px]"
+          }
+          data-workspace-scroll
+        >
           {/* PURPOSE: READING BUDGETS (GLOBAL SCOPE) */}
           {purpose === "reading" && (
             <div className="w-full min-w-0 space-y-6">
               <ContextAllocationReading
-                scope="global"
                 knowledgeGlobalBudget={s.knowledgeModelEditor?.contextBudget}
                 invalidInputs={
                   "global:knowledge" in s.allocationInvalidInputs
@@ -318,14 +386,7 @@ export function ModelPurposes({
                   role,
                   <AllocationModelCapacity
                     key={role}
-                    model={auxRoleModels[role]}
-                    capacity={
-                      auxRoleModels[role]
-                        ? auxRoleModels[role]! in modelCapacities
-                          ? modelCapacities[auxRoleModels[role]!]
-                          : null
-                        : null
-                    }
+                    model={knowledgeModel}
                     active={active && purpose === "aux"}
                   />,
                 ]),

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import type { AgentKnowledgeReadSettings } from "../../../shared/contracts/knowledge";
+import { resolveMemoryReadSettings } from "../../../shared/contracts/memory";
 import {
   type ExecutionModules,
   executionPolicy,
@@ -935,7 +936,7 @@ function CapabilityList({
       if (row.upper.read === "memory") {
         const agent = agents.find((item) => item.id === agentId);
         if (!agent) return "unread";
-        return agent.p5_config.retrieval_mode === "off" ? "off" : "on";
+        return resolveMemoryReadSettings(agent.p5_config).enabled ? "on" : "off";
       }
       // 知识查询按该 Agent 已保存的读取设置：读不到＝未知（不是 off），行内可重试。
       if (!knowledge.data) return "unread";
@@ -1278,6 +1279,7 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
     void load();
   }, [load]);
   const [choice, setChoice] = useState<string | null>(null);
+  const selectionOpener = useRef<HTMLElement | null>(null);
   // 常挂载确认弹窗在关闭动画期间仍会渲染：目标方案取最近一次选择。
   const lastChoice = useRef<string | null>(null);
   if (choice) lastChoice.current = choice;
@@ -1299,7 +1301,10 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
           onChange={(e) => {
             const next = e.target.value;
             if (next === baseId) patch(undefined);
-            else setChoice(next);
+            else {
+              selectionOpener.current = e.currentTarget;
+              setChoice(next);
+            }
           }}
         >
           {!schemes.some((row) => row.id === baseId) && (
@@ -1345,7 +1350,11 @@ function BaseSchemeSection({ editor }: { editor: QqGroupConfigEditor }) {
           if (!open) setChoice(null);
         }}
       >
-        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+        <DialogContent
+          returnFocusRef={selectionOpener}
+          scrollMode="surface"
+          className="max-h-[85dvh]  sm:max-w-lg"
+        >
           <DialogHeader>
             <DialogTitle>
               {t("schemes.qq.groupConfig.scheme.confirmTitle", {
@@ -1400,6 +1409,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
       error: s.error,
       feedback: s.feedback,
       qqBindings: s.qqBindings,
+      bindingSchemeConfirmationId: s.qqInputs.bindingSchemeConfirmationId,
       qqBindingsLoaded: s.qqBindingsLoaded,
       qqGroupConfigBindingId: s.qqGroupConfigBindingId,
       qqGroupConfigEditor: s.qqGroupConfigEditor,
@@ -1711,7 +1721,11 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
             >
               <div className="flex min-w-0 flex-col items-stretch gap-[24px]">
                 <div className="min-w-0 w-full">
-                  <TabsList className="h-auto group-data-horizontal/tabs:h-auto w-full max-w-full flex-wrap justify-start gap-1 rounded-lg border border-border bg-muted p-1 [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal [&_[role=tab]]:rounded-lg [&_[role=tab]]:px-3 [&_[role=tab]]:text-[13px]">
+                  <TabsList
+                    presentation="workspace"
+                    flow="wrap"
+                    className="w-full max-w-full justify-start gap-1"
+                  >
                     {QQ_SCHEME_SECTIONS.map((section) => (
                       <TabsTrigger
                         key={section.id}
@@ -2397,7 +2411,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           if (!open) setPreview(false);
         }}
       >
-        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+        <DialogContent scrollMode="surface" className="max-h-[85dvh]  sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{t("schemes.qq.groupConfig.previewTitle")}</DialogTitle>
             <DialogDescription>{t("schemes.qq.groupConfig.previewNote")}</DialogDescription>
@@ -2453,7 +2467,7 @@ export function QqGroupConfigPage({ active = true }: { active?: boolean } = {}) 
           </Button>
         </div>
       </AlertDialog>
-      {adminEditorOpen && visibleEditor && !isPrivate && (
+      {adminEditorOpen && visibleEditor && !isPrivate && !state.bindingSchemeConfirmationId && (
         <BindingEditor
           conversation={{
             account_id: visibleEditor.source.binding.account_id,

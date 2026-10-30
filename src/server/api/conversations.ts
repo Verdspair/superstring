@@ -7,17 +7,23 @@ import {
   ConversationMemoryReadModeUpdateSchema,
 } from "../../shared/contracts/conversation";
 import type { QqConversationScope, QqMessageFact } from "../../shared/contracts/qq-message";
-import { visibleConversation, visibleConversationMetadata } from "../agent/conversation-access";
+import {
+  visibleConversation,
+  visibleConversationMetadata,
+  visibleConversationMetadataMany,
+  visibleConversations,
+} from "../agent/conversation-access";
 import {
   loadQqOutboundMessageFacts,
   projectQqMessageFacts,
 } from "../channels/onebot11/message-projection";
 import {
-  type ConversationChange,
+  type ConversationDirty,
   publishConversationChange,
-  subscribeConversationChanges,
+  subscribeConversationChangeBatches,
 } from "../conversation/conversation-changes";
 import { projectConversationEvents } from "../conversation/conversation-view";
+import { ownerScope } from "../conversation/evidence-scope";
 import { toOrmHandle } from "../db/connection";
 import { ConversationAvatarRepository } from "../db/conversation-avatar-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
@@ -25,14 +31,13 @@ import { saveQqCustomName } from "../db/qq-group-name-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { AppError } from "../errors";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
-import { ownerScope } from "../services/qq-media-sources";
 import {
   createQqMemberNameSource,
   pruneQqMemberCurrentNames,
   type QqMemberNameCandidate,
 } from "../services/qq-member-sources";
 import { conversationAvatarRoutes } from "./conversation-avatars";
-import { createSseResponse } from "./sse";
+import { createSseResponse, type SseWriter } from "./sse";
 import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
 
 const principal = { userId: DEFAULT_USER_ID };
@@ -73,6 +78,8 @@ export function conversationRoutes(
   const router = new Hono();
   const repository = new ConversationEventRepository(db);
   const avatars = new ConversationAvatarRepository(db);
+  // Legacy/source import reconciliation is an explicit bootstrap boundary, never a GET prefix.
+  repository.reconcileSources(principal.userId);
   // T13 Step6：事实投影走统一 EvidenceStore 形状（只读复用现有连接，不新开数据库句柄）。
   const factStore: EvidenceStore = toOrmHandle(db);
   router.use("*", async (c, next) => {
@@ -90,101 +97,119 @@ export function conversationRoutes(
     const sourceId = rawSourceId === undefined ? undefined : parseUuidParam(rawSourceId);
     const cursor = pageCursor(c.req.query("cursor"));
     const limit = pageNumber(c.req.query("limit"), 50, 1);
-    repository.discover(principal.userId);
-    // Existing/new Web sessions receive canonical identity before the first client send.
-    if (channel === "web" && sourceId) repository.ensureWeb(sourceId, principal.userId);
-    if (channel === "onebot11" && sourceId) {
-      const ownBinding = db
-        .query(`SELECT 1 FROM qq_bindings b JOIN agents a ON a.id=b.agent_id
-          WHERE b.id=?`)
-        .get(sourceId);
-      if (ownBinding) repository.ensureOneBot(sourceId);
-    }
-    const result = repository.list({ userId: principal.userId, channel, sourceId, cursor, limit });
+    const page = repository.directoryPage({
+      userId: principal.userId,
+      channel,
+      sourceId,
+      cursor,
+      limit,
+    });
+    const visible = visibleConversations(
+      db,
+      repository,
+      page.ids,
+      principal,
+      options.includeShared,
+    );
+    const avatarMetadata = avatars.metadataMany([...visible.values()].map((item) => item.id));
     return c.json({
-      ...result,
-      items: result.items.flatMap((item) => {
-        const visible = visibleConversation(
-          db,
-          repository,
-          item.id,
-          principal,
-          options.includeShared,
-        );
-        return visible ? [{ ...visible, avatar: avatars.metadata(visible.id) }] : [];
+      nextCursor: page.nextCursor,
+      items: page.ids.flatMap((id) => {
+        const item = visible.get(id);
+        return item ? [{ ...item, avatar: avatarMetadata.get(item.id) ?? null }] : [];
       }),
     });
   });
   // Metadata-only change stream for directory + timeline. Registered before /:id
   // so "changes" is never captured as a conversation id; each notification still
   // passes the ordinary conversation read guard without projecting display fields.
+  type ChangeStream = { writer: SseWriter; pending: Map<string, ConversationDirty> };
+  const streams = new Set<ChangeStream>();
+  let stopChanges: (() => void) | undefined;
+  let scheduled = false;
+  const flushChanges = () => {
+    scheduled = false;
+    const ready = [...streams].filter(
+      (stream) => stream.writer.writable && stream.pending.size > 0,
+    );
+    if (!ready.length) return;
+    const ids = [
+      ...new Set(
+        ready.flatMap((stream) =>
+          [...stream.pending.values()].map((change) => change.conversationId),
+        ),
+      ),
+    ];
+    // No await between the live subject guard and enqueue, including after transport backpressure.
+    const views = visibleConversationMetadataMany(
+      db,
+      repository,
+      ids,
+      principal,
+      options.includeShared,
+    );
+    for (const stream of ready) {
+      const projected = new Map<string, { event: string; data: Record<string, unknown> }>();
+      for (const change of stream.pending.values()) {
+        const view = views.get(change.conversationId);
+        if (!view) continue;
+        projected.set(`${view.id}\u0000${change.kind}`, {
+          event:
+            change.kind === "activity" ? "conversation_activity_changed" : "conversation_changed",
+          data: {
+            conversationId: view.id,
+            seq: view.lastSeq,
+            bindingEpoch: view.bindingEpoch,
+            ...(change.kind === "activity" ? { activity: "span" } : {}),
+          },
+        });
+      }
+      if (stream.writer.trySendBatch([...projected.values()])) stream.pending.clear();
+    }
+  };
+  const scheduleChanges = () => {
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(flushChanges);
+  };
   router.get("/changes", (c) => {
     let stopped = false;
-    let wake: (() => void) | undefined;
-    // One entry per conversation and kind: a burst keeps content and activity separate.
-    const pending = new Map<string, ConversationChange>();
-    const notify = () => {
-      const ready = wake;
-      wake = undefined;
-      ready?.();
-    };
-    const unsubscribe = subscribeConversationChanges(db, (change) => {
-      if (stopped) return;
-      // The authorized history projection owns root identity and epoch/seq.
-      const view = visibleConversationMetadata(
-        db,
-        repository,
-        change.conversationId,
-        principal,
-        options.includeShared,
-      );
-      if (view) {
-        pending.set(`${view.id}\u0000${change.kind}`, {
-          ...change,
-          conversationId: view.id,
-          seq: view.lastSeq,
-          bindingEpoch: view.bindingEpoch,
-        });
-        notify();
-      }
-    });
+    let finish: (() => void) | undefined;
+    let ownStream: ChangeStream | undefined;
     return createSseResponse(
       {
         requestSignal: c.req.raw.signal,
+        onWritable: scheduleChanges,
         onDisconnect: () => {
           stopped = true;
-          unsubscribe();
-          pending.clear();
-          notify();
+          if (ownStream) {
+            streams.delete(ownStream);
+            ownStream.pending.clear();
+          }
+          if (!streams.size) {
+            stopChanges?.();
+            stopChanges = undefined;
+          }
+          finish?.();
         },
       },
-      async (stream) => {
-        // First connect and every reconnect: clients run one authoritative refresh.
-        await stream.send("ready", { ready: true });
-        while (!stopped) {
-          const next = pending.entries().next();
-          if (next.done) {
-            await new Promise<void>((resolve) => {
-              wake = resolve;
-            });
-            continue;
-          }
-          const [key, change] = next.value;
-          pending.delete(key);
-          if (change.kind === "activity")
-            await stream.send("conversation_activity_changed", {
-              conversationId: change.conversationId,
-              seq: change.seq,
-              bindingEpoch: change.bindingEpoch,
-              activity: change.activity,
-            });
-          else
-            await stream.send("conversation_changed", {
-              conversationId: change.conversationId,
-              seq: change.seq,
-              bindingEpoch: change.bindingEpoch,
-            });
-        }
+      async (writer) => {
+        if (stopped) return;
+        ownStream = { writer, pending: new Map() };
+        streams.add(ownStream);
+        if (!stopChanges)
+          stopChanges = subscribeConversationChangeBatches(db, (changes) => {
+            for (const stream of streams)
+              for (const change of changes)
+                stream.pending.set(`${change.conversationId}\u0000${change.kind}`, change);
+            scheduleChanges();
+          });
+        await writer.send("ready", { ready: true });
+        scheduleChanges();
+        if (!stopped)
+          await new Promise<void>((resolve) => {
+            finish = resolve;
+          });
       },
     );
   });
@@ -202,17 +227,32 @@ export function conversationRoutes(
   });
   router.get("/:id/memory-read-mode", (c) => {
     const id = parseUuidParam(c.req.param("id"));
-    const conversation = visibleConversation(db, repository, id, principal, options.includeShared);
+    const conversation = visibleConversationMetadata(
+      db,
+      repository,
+      id,
+      principal,
+      options.includeShared,
+    );
     if (!conversation) return c.json(conversationNotFound, 404);
-    const mode = repository.memoryReadMode(id, principal.userId);
+    const activation = repository.activeHistoryIdentity(id, principal.userId);
+    const mode = activation ? repository.memoryReadMode(activation.id, principal.userId) : null;
     if (!mode) return c.json(conversationNotFound, 404);
-    return c.json({ mode: mode.mode, revision: mode.revision });
+    return c.json({ conversation_id: activation!.id, mode: mode.mode, revision: mode.revision });
   });
   router.put("/:id/memory-read-mode", async (c) => {
     const id = parseUuidParam(c.req.param("id"));
-    const conversation = visibleConversation(db, repository, id, principal, options.includeShared);
+    const conversation = visibleConversationMetadata(
+      db,
+      repository,
+      id,
+      principal,
+      options.includeShared,
+    );
     if (!conversation) return c.json(conversationNotFound, 404);
     const body = parseBody(ConversationMemoryReadModeUpdateSchema, await readJsonBody(c.req.raw));
+    if (!visibleConversationMetadata(db, repository, id, principal, options.includeShared))
+      return c.json(conversationNotFound, 404);
     const result = repository.setMemoryReadMode(
       id,
       principal.userId,
@@ -222,7 +262,7 @@ export function conversationRoutes(
     if (!result) return c.json(conversationNotFound, 404);
     if (result.kind === "conflict")
       throw new AppError("CONFIG_VERSION_CONFLICT", "会话记忆读取模式已变化，请刷新后重试", 409);
-    return c.json({ mode: result.mode, revision: result.revision });
+    return c.json({ conversation_id: id, mode: result.mode, revision: result.revision });
   });
   // 0053 QQ 群显示备注：null / trim 空串恢复群默认名；只对 QQ 群开放，Web 会话沿用
   // 既有改名入口，私聊一律 404（不新增错误码）。
@@ -233,6 +273,8 @@ export function conversationRoutes(
       return c.json(conversationNotFound, 404);
     const parsed = ConversationGroupNamePatchSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationFailed();
+    if (!visibleConversationMetadata(db, repository, id, principal, options.includeShared))
+      return c.json(conversationNotFound, 404);
     const binding = db
       .query("SELECT account_id, peer_id FROM qq_bindings WHERE id=?")
       .get(conversation.sourceId) as { account_id: string; peer_id: string } | null;
@@ -247,7 +289,13 @@ export function conversationRoutes(
   });
   router.get("/:id/status", (c) => {
     const id = parseUuidParam(c.req.param("id"));
-    const conversation = visibleConversation(db, repository, id, principal, options.includeShared);
+    const conversation = visibleConversationMetadata(
+      db,
+      repository,
+      id,
+      principal,
+      options.includeShared,
+    );
     if (!conversation) return c.json(conversationNotFound, 404);
     const current = repository.historyRows(id).at(-1)!;
     const wakes = db
@@ -292,7 +340,7 @@ export function conversationRoutes(
       unknownDeliveries,
       lastActivityAt: current.updated_at,
       connectionPhase:
-        conversation.channel === "web" ? "ready" : (options.connectionPhase?.() ?? "unavailable"),
+        current.channel === "web" ? "ready" : (options.connectionPhase?.() ?? "unavailable"),
       now: new Date().toISOString(),
     });
   });

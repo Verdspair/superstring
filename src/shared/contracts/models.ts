@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { LocalModelStatusSchema, nonBlankString, RetrievalModeSchema, rawString } from "./common";
 import { AgentAuxiliaryAllocationSchema, ContextAllocationSchema } from "./context-allocation";
+import { MemoryReadSettingsSchema } from "./memory-read-settings";
 
 /**
  * Model catalogue and context-budget (P5) contracts. Pure `zod` only.
@@ -99,6 +100,7 @@ export const P5ConfigSchema = z
     summary_max_tokens: z.number().int().min(1).max(1048576).default(4096),
     // Absent/null inherits the compression cap, preserving pre-existing turn snapshots.
     summary_read_max_tokens: z.number().int().min(1).max(1048576).nullable().optional(),
+    memory_read: MemoryReadSettingsSchema.optional(),
     retrieval_mode: RetrievalModeSchema.default("standard"),
     retrieval_presets: RetrievalPresetsSchema.default(DEFAULT_RETRIEVAL_PRESETS),
     // Budget includes capacity probes and auxiliary model calls.

@@ -389,7 +389,7 @@ function timingSource(
   const journal = new ConversationEventRepository(h.business.db);
   const conversation = journal.ensureOneBot(id)!;
   const runtime = runtimeFromAgent(getAgentRow(h.business.orm, DEFAULT_AGENT_ID)!);
-  runtime.p5_config.retrieval_mode = "off";
+  runtime.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
   runtime.p5_config.compression_enabled = false;
   return new BotContextSource({
     ...h.business,

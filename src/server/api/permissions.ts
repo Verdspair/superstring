@@ -15,7 +15,7 @@ import {
   PermissionsResponseSchema,
   PermissionUpdateSchema,
 } from "../../shared/contracts/permissions";
-import type { BuiltInAction } from "../agent/built-in-actions";
+import type { ToolDefinition } from "../../shared/contracts/tool-directory";
 import type { AgentTaskService } from "../agent/task-service";
 import type { PermissionService } from "../permissions/service";
 import { managementErrors, managementGuard } from "./management";
@@ -42,7 +42,7 @@ const taskNotFound = { error: { code: "TASK_NOT_FOUND", message: "任务不存�
 
 export function permissionRoutes(
   service: PermissionService,
-  actions: () => readonly BuiltInAction[],
+  actions: () => readonly ToolDefinition[],
   tasks?: AgentTaskService,
 ): Hono {
   const router = new Hono();

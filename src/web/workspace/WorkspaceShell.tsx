@@ -199,7 +199,12 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           </div>
         </header>
         {mobile && (
-          <SheetContent side="left" showCloseButton={false} className="w-[200px] p-0">
+          <SheetContent
+            scrollMode="none"
+            side="left"
+            showCloseButton={false}
+            className="w-[200px] p-0"
+          >
             <SheetHeader className="sr-only">
               <SheetTitle>{t("workspace.conversations_and_navigation")}</SheetTitle>
               <SheetDescription>

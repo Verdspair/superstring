@@ -4,10 +4,8 @@ import {
   IsoTimestampSchema,
   MemoryEntryStatusSchema,
   MemoryJobStatusSchema,
-  type RetrievalMode,
   UuidSchema,
 } from "./common";
-import type { RetrievalPreset, RetrievalPresets } from "./models";
 import { MemorySummarySchema } from "./summary";
 
 /**
@@ -118,13 +116,89 @@ export const MemoryAccessMetadataSchema = z.strictObject({
     }),
   ),
   origin_complete: z.boolean(),
-  source_validity: z.literal("not_evaluated"),
-  runtime_eligibility: z.literal("not_evaluated"),
-  raw_preview: z.literal("not_evaluated"),
+  source_validity: z.enum(["valid", "invalid", "unknown"]),
+  runtime_eligibility: z.enum(["available", "unavailable", "unknown"]),
+  raw_preview: z.enum(["available", "unavailable", "unknown"]),
 });
 export type MemoryAccessMetadata = z.infer<typeof MemoryAccessMetadataSchema>;
 
+export interface MemoryManagementQuery {
+  offset?: number;
+  limit?: number;
+  view?: "owned" | "received" | "all";
+  origin_conversation_id?: string;
+  conversation_id?: string;
+  visibility?: "session_private" | "agent_shared" | "public" | "unclassified";
+  scope_key?: string;
+  search?: string;
+  status?: "active" | "suppressed" | "replaced" | "invalid";
+}
+export const MemoryManagementEntrySchema = MemorySummarySchema.extend({
+  owner_agent_id: UuidSchema,
+  ...MemoryAccessMetadataSchema.shape,
+});
+export type MemoryManagementEntry = z.infer<typeof MemoryManagementEntrySchema>;
+export const MemoryManagementListSchema = z.strictObject({
+  total: z.number().int().nonnegative(),
+  items: z.array(MemoryManagementEntrySchema),
+});
+export type MemoryManagementList = z.infer<typeof MemoryManagementListSchema>;
+
+export const MemoryReadablePageSchema = z.strictObject({
+  id: UuidSchema,
+  owner_agent_id: UuidSchema,
+  reader_agent_id: UuidSchema,
+  conversation_id: UuidSchema,
+  name: z.string(),
+  summary: z.string(),
+  tags: z.array(z.string()),
+  content_origin: z.enum(["derived", "manual_correction"]),
+  revision: z.string(),
+  text: z.string(),
+  offset: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  nextOffset: z.number().int().nonnegative().nullable(),
+});
+export type MemoryReadablePage = z.infer<typeof MemoryReadablePageSchema>;
+export const MemorySourcePreviewItemSchema = z.strictObject({
+  source_key: z.string().nullable(),
+  channel: z.enum(["web", "onebot11", "unknown"]),
+  state: z.enum(["available", "unavailable", "unknown"]),
+  reason: z.string().nullable(),
+  conversation_id: UuidSchema.nullable(),
+  revision: z.string().nullable(),
+  expires_at: z.string().nullable(),
+  participant: z.string().nullable(),
+  occurred_at: z.string().nullable(),
+});
+export const MemorySourcePreviewListSchema = z.strictObject({
+  memory_id: UuidSchema,
+  entry_revision: z.string(),
+  source_validity: z.enum(["valid", "invalid", "unknown"]),
+  raw_preview: z.enum(["available", "unavailable", "unknown"]),
+  checked_sources: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  nextOffset: z.number().int().nonnegative().nullable(),
+  items: z.array(MemorySourcePreviewItemSchema),
+});
+export type MemorySourcePreviewList = z.infer<typeof MemorySourcePreviewListSchema>;
+export const MemorySourcePreviewPageSchema = z.strictObject({
+  memory_id: UuidSchema,
+  source_key: z.string(),
+  conversation_id: UuidSchema,
+  revision: z.string(),
+  expires_at: z.string().nullable(),
+  content_origin: z.literal("original"),
+  corrected: z.boolean(),
+  text: z.string(),
+  offset: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  nextOffset: z.number().int().nonnegative().nullable(),
+});
+export type MemorySourcePreviewPage = z.infer<typeof MemorySourcePreviewPageSchema>;
+
 export const MemoryVisibilityUpdateSchema = z.strictObject({
+  revalidate_publication: z.boolean().optional(),
   expected_revision: z.number().int().positive(),
   visibility: z.enum(["session_private", "agent_shared", "public"]),
   recipient_agent_ids: z.array(UuidSchema).refine((ids) => new Set(ids).size === ids.length),
@@ -201,42 +275,8 @@ export const EntriesListSchema = z.strictObject({
 
 export type EntriesList = z.infer<typeof EntriesListSchema>;
 
-/**
- * Effective memory read policy (ADR0019 §8.11): the single pure mapping from the
- * stored P5 retrieval mode to what the active tool path actually does. The raw
- * stored identity is never rewritten here; retired legacy full modes fold to the
- * broad bounded catalog with explicit reads (never an automatic full scan or
- * body fill) and their legacy batch/model/prompt fields stay stored but
- * inactive; `off` short-circuits before any access while keeping the
- * conservative preset for its read-only bounds. Pure and cache-free: every
- * consumer calls it with its own frozen snapshot, no mutable policy state.
- */
-export interface MemoryEffectiveReadPolicy {
-  readonly storedMode: RetrievalMode;
-  readonly effectiveMode: "off" | "conservative" | "standard" | "broad";
-  readonly presetName: "conservative" | "standard" | "broad";
-  readonly legacyFieldsInactive: boolean;
-  readonly preset: RetrievalPreset;
-}
-
-export function resolveMemoryReadPolicy(
-  mode: RetrievalMode,
-  presets: RetrievalPresets,
-): MemoryEffectiveReadPolicy {
-  const presetName =
-    mode === "conservative" || mode === "standard" || mode === "broad"
-      ? mode
-      : mode === "off"
-        ? "conservative"
-        : "broad";
-  return {
-    storedMode: mode,
-    effectiveMode: mode === "off" ? "off" : presetName,
-    presetName,
-    legacyFieldsInactive: mode === "full_catalog" || mode === "full_body",
-    preset: presets[presetName],
-  };
-}
+export type { MemoryReadSettings, ResolvedMemoryReadSettings } from "./memory-read-settings";
+export { MemoryReadSettingsSchema, resolveMemoryReadSettings } from "./memory-read-settings";
 
 export const MemoryScopeViewSchema = z.strictObject({
   scope_key: z.string(),

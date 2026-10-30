@@ -4,10 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSettingsResponse } from "../../src/shared/contracts/qq";
 import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { selectLocale, translate } from "../../src/web/i18n";
-import {
-  KnowledgeToolSettings,
-  MemoryReadingRules,
-} from "../../src/web/screens/assistants/ResourceRules";
+import { AgentMaterials } from "../../src/web/screens/assistants/AgentMaterials";
+
+const KnowledgeToolSettings = AgentMaterials;
+
 import { OwnerIdentity } from "../../src/web/screens/connections/owner-identity";
 import { QqConnectionTab } from "../../src/web/screens/connections/qq-app-management";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
@@ -63,28 +63,25 @@ async function isolated(view: ReactNode) {
 }
 
 describe("admin store render isolation", () => {
-  it("keeps memory reading isolated but updates a relevant editable prompt", async () => {
-    await isolated(<MemoryReadingRules />);
-    const candidateInput = screen.getByLabelText("每次查询候选条数上限");
-    fireEvent.change(candidateInput, { target: { value: "25" } });
-    expect(
-      store.getState().pageEditor?.draft.p5_config.retrieval_presets.standard.candidate_limit,
-    ).toBe(25);
-    act(() => {
-      store
-        .getState()
-        .patchPageAgent("memory-tools", { memory_retrieval_prompt: "Focused retrieval" });
-    });
-    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("Focused retrieval");
+  it("keeps materials isolated while updating its active memory allowance", async () => {
+    await isolated(<AgentMaterials />);
+    fireEvent.change(screen.getByLabelText("记忆工具读取额度"), { target: { value: "1024" } });
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read?.max_bytes).toBe(1024);
+    const raw = store.getState().pageEditor?.agent.memory_retrieval_prompt;
+    act(() =>
+      store.getState().patchPageAgent("memory-tools", { memory_retrieval_prompt: "retired" }),
+    );
+    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe(raw);
   });
 
   it("keeps knowledge reading isolated after its actual API load", async () => {
     await isolated(<KnowledgeToolSettings />);
     const editor = store.getState().knowledgeReadEditor;
     expect(editor).not.toBeNull();
-    const before = screen.getAllByRole("checkbox")[0].getAttribute("aria-checked");
-    fireEvent.click(screen.getAllByRole("checkbox")[0]);
-    expect(screen.getAllByRole("checkbox")[0].getAttribute("aria-checked")).not.toBe(before);
+    const checkboxes = screen.getAllByRole("checkbox");
+    const before = checkboxes[1].getAttribute("aria-checked");
+    fireEvent.click(checkboxes[1]);
+    expect(checkboxes[1].getAttribute("aria-checked")).not.toBe(before);
     expect(store.getState().knowledgeReadEditor?.draft.enabled).toBe(!editor?.draft.enabled);
   });
 

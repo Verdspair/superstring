@@ -295,6 +295,7 @@ function Application() {
             }}
           >
             <SheetContent
+              scrollMode="body"
               side="right"
               showCloseButton
               className="flex h-full w-full flex-col gap-0 p-0 sm:max-w-xl md:max-w-2xl"
@@ -316,7 +317,7 @@ function Application() {
                   {t("library.language.color.and.desktop.behavior.changes.apply.immediately")}
                 </SheetDescription>
               </SheetHeader>
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div data-slot="sheet-body" className="min-h-0 min-w-0 flex-1 overflow-y-auto">
                 <Suspense fallback={<Waiting />}>
                   <Preferences active={isPreferences} />
                   <WorkspaceReady active={isPreferences} />

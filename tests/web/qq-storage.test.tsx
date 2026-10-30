@@ -619,3 +619,174 @@ describe("QQ storage leaf navigation and feedback", () => {
     expect(screen.getByText(translate("connections.storage.manage.retentionNote"))).toBeTruthy();
   });
 });
+
+describe("Connection writes and managed account ownership", () => {
+  const settings: QqSettingsResponse = {
+    enabled: true,
+    account_id: "100",
+    judgement_model_name: null,
+    transport: { endpoint: "ws://old", has_token: true },
+    revision: 3,
+  };
+  const readyStatus = {
+    apply: "ready" as const,
+    process: "running" as const,
+    ownership: "owned" as const,
+    phase: "waiting_scan" as const,
+    core_ready: false,
+    network_apply: "pending" as const,
+    transport_phase: "idle" as const,
+    diagnostic_code: null,
+  };
+  const prepare = async (overrides: Partial<typeof api> = {}) => {
+    const readStatus = vi.fn(async () => readyStatus);
+    const list = vi.fn(async () => ({ accounts: [{ account_id: "100", display_name: null }] }));
+    const fake = client({
+      getQqManagedStatus: readStatus,
+      getQqManagedConfig: async () => ({
+        revision: "managed",
+        config: { version: 1, enabled: true },
+      }),
+      getQqManagedResources: async () => ({
+        revision: "runtime",
+        status: "ready",
+        root: "C:/synthetic",
+        diagnostic_code: null,
+      }),
+      listQqManagedAccounts: list,
+      ...overrides,
+    });
+    store.getState().resetForTests(fake);
+    store.setState({
+      qqSettings: settings,
+      qqInputs: {
+        ...store.getState().qqInputs,
+        storage: { source: storageSettings, days: "30" },
+        connection: {
+          source: settings,
+          accountId: "200",
+          endpoint: "ws://draft",
+          token: "unsaved-token",
+        },
+      },
+    });
+    await Promise.all([
+      store.getState().loadQqManaged(),
+      store.getState().loadQqManagedResources(),
+    ]);
+    const owner = {};
+    await store.getState().acquireQqManagedAccounts(owner);
+    return { fake, readStatus, list, owner };
+  };
+
+  it("keeps first-step connection persistence and storage baseline when transport fails, while revalidating managed accounts", async () => {
+    const { readStatus, list, owner } = await prepare({
+      updateQqSettings: async () => ({ ...settings, account_id: "200", revision: 4 }),
+      updateQqTransport: async () => {
+        throw new Error("transport conflict 409");
+      },
+    });
+    expect(
+      await store.getState().saveQqSurface({ account_id: "200", endpoint: "ws://new" }, 3),
+    ).toBe(false);
+    await act(async () => {});
+    expect(store.getState().qqSettings?.account_id).toBe("200");
+    expect(store.getState().qqSettings?.revision).toBe(4);
+    expect(store.getState().qqInputs.storage).toEqual({
+      source: { ...storageSettings, revision: 4 },
+      days: "30",
+    });
+    expect(store.getState().qqInputs.connection?.token).toBe("unsaved-token");
+    expect(store.getState().error).toBe("transport conflict 409");
+    expect(readStatus).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenCalledTimes(2);
+    store.getState().releaseQqManagedAccounts(owner);
+  });
+
+  it("does not turn persisted connection success into failure when managed revalidation fails", async () => {
+    let failStatus = false;
+    const getStatus = vi.fn(async () => {
+      if (failStatus) throw new Error("status unavailable");
+      return readyStatus;
+    });
+    const { owner } = await prepare({
+      getQqManagedStatus: getStatus,
+      updateQqSettings: async () => ({ ...settings, account_id: "200", revision: 4 }),
+    });
+    failStatus = true;
+    expect(await store.getState().saveQqSurface({ account_id: "200" }, 3)).toBe(true);
+    expect(store.getState().qqSettings?.revision).toBe(4);
+    expect(store.getState().qqManagedError).toBe("status unavailable");
+    expect(store.getState().qqManagedAccountsLoaded).toBe(false);
+    expect(store.getState().qqInputs.storage?.days).toBe("30");
+    store.getState().releaseQqManagedAccounts(owner);
+  });
+
+  it("does no managed work for unchanged connection fields, an empty patch or retention-only saves", async () => {
+    const { readStatus, list, owner } = await prepare({
+      updateQqSettings: async () => ({ ...settings, revision: 4 }),
+    });
+    expect(await store.getState().saveQqSurface({ account_id: "100" }, 3)).toBe(true);
+    expect(await store.getState().saveQqSurface({})).toBe(true);
+    expect(await store.getState().saveQqStorageSettings()).toBe(true);
+    expect(readStatus).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+    store.getState().releaseQqManagedAccounts(owner);
+  });
+
+  it.each(["loaded", "error"] as const)(
+    "restores the same immutable %s account snapshot after an unchanged CAS failure",
+    async (snapshot) => {
+      const { readStatus, list, owner } = await prepare({
+        updateQqSettings: async () => {
+          throw new Error("settings conflict 409");
+        },
+      });
+      if (snapshot === "error") {
+        list.mockRejectedValueOnce(new Error("accounts unavailable before save"));
+        await store.getState().loadQqManagedAccounts();
+      }
+      const previous = store.getState();
+      const expectedCalls = snapshot === "error" ? 2 : 1;
+      expect(await store.getState().saveQqSurface({ account_id: "200" }, 3)).toBe(false);
+      await act(async () => {});
+      expect(store.getState().qqManagedAccounts).toBe(previous.qqManagedAccounts);
+      expect(store.getState().qqManagedAccountsLoaded).toBe(previous.qqManagedAccountsLoaded);
+      expect(store.getState().qqManagedAccountsError).toBe(previous.qqManagedAccountsError);
+      expect(store.getState().qqManagedAccountsAvailability).toBe("available");
+      expect(readStatus).toHaveBeenCalledTimes(1);
+      expect(list).toHaveBeenCalledTimes(expectedCalls);
+      expect(store.getState().error).toBe("settings conflict 409");
+      store.getState().releaseQqManagedAccounts(owner);
+    },
+  );
+
+  it("does not restore the old account snapshot when the last consumer leaves during CAS", async () => {
+    const write = Promise.withResolvers<QqSettingsResponse>();
+    const { owner, list } = await prepare({ updateQqSettings: () => write.promise });
+    const pending = store.getState().saveQqSurface({ account_id: "200" }, 3);
+    store.getState().releaseQqManagedAccounts(owner);
+    write.reject(new Error("settings conflict 409"));
+    expect(await pending).toBe(false);
+    expect(store.getState().qqManagedAccounts).toEqual([]);
+    expect(store.getState().qqManagedAccountsLoaded).toBe(false);
+    expect(store.getState().qqManagedAccountsError).toBeNull();
+    expect(store.getState().qqManagedAccountsAvailability).toBe("unknown");
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains a CAS failure and local drafts without rereading unchanged managed status", async () => {
+    const { readStatus, owner } = await prepare({
+      updateQqSettings: async () => {
+        throw new Error("settings conflict 409");
+      },
+    });
+    expect(await store.getState().saveQqSurface({ account_id: "200" }, 3)).toBe(false);
+    await act(async () => {});
+    expect(readStatus).toHaveBeenCalledTimes(1);
+    expect(store.getState().error).toBe("settings conflict 409");
+    expect(store.getState().qqInputs.storage?.days).toBe("30");
+    expect(store.getState().qqInputs.connection?.accountId).toBe("200");
+    store.getState().releaseQqManagedAccounts(owner);
+  });
+});

@@ -1,22 +1,24 @@
 import type { Database } from "bun:sqlite";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { ConversationSummaryFacts } from "../agent/conversation-compression";
+import type {
+  BotEvidenceScope,
+  ConversationEvidenceScope,
+  WebEvidenceScope,
+} from "../conversation/evidence-scope";
+import { evidenceScopeExists, inTimeline } from "../conversation/evidence-scope";
+import { toOrmHandle } from "../db/connection";
 import { bodyRevision } from "../db/conversation-event-repository";
+import { conversationCorrections } from "../db/memory-content-repository";
 import { qqSummaryModelFacts, readQqConversationSummary } from "../db/qq-summary-repository";
 import { DEFAULT_USER_ID, type Orm } from "../db/repositories";
-import { memoryRevision } from "../services/memory-revision";
+import { AppError } from "../errors";
 import {
   qqMessageFactConsumableCap,
   qqMessageFactSourceRevision,
   visibleFactState,
 } from "../services/qq-message-fact-sources";
 import { isObservationExpired } from "../services/qq-retention";
-import type {
-  BotEvidenceScope,
-  ConversationEvidenceScope,
-  WebEvidenceScope,
-} from "./conversation-evidence";
-import { evidenceScopeExists } from "./conversation-evidence";
 export type EvidenceDomain = "history" | "summary";
 export interface EvidenceStore {
   db: Database;
@@ -100,51 +102,25 @@ function linkedTurn(db: Database, agent: string, link: Link): Turn | null {
     ? t
     : null;
 }
-interface Correction {
-  id: string;
-  body: string;
-  revision: string;
-  source_ids: string[];
-}
-function corrections(db: Database, agent: string, ids: string[]): Correction[] | null {
+type Correction = ReturnType<typeof conversationCorrections>[number];
+function corrections(db: Database, scope: WebEvidenceScope, ids: string[]): Correction[] | null {
   if (!ids.length) return [];
-  const rows = db
-    .query(`SELECT id,${bounded("name")} AS name,${bounded("summary")} AS summary,
-    ${bounded("tags")} AS tags,${bounded("body")} AS body,status,${bounded("config_snapshot")} AS configSnapshot
-    FROM memory_entries m WHERE m.agent_id=? AND m.user_id=? AND m.status IN ('active','suppressed')
-    AND CASE WHEN json_valid(m.config_snapshot) THEN json_type(m.config_snapshot,'$.content_correction.replaces')='text' ELSE 0 END
-    AND EXISTS(SELECT 1 FROM memory_sources l WHERE l.memory_id=m.id AND l.turn_id IN (${ids.map(() => "?").join(",")}))
-    ORDER BY m.created_at DESC,m.id LIMIT ?`)
-    .all(agent, DEFAULT_USER_ID, ...ids, CORRECTIONS + 1) as Array<
-    Parameters<typeof memoryRevision>[0]
-  >;
-  if (rows.length > CORRECTIONS) return null;
-  const result: Correction[] = [];
-  for (const row of rows) {
-    if (Object.values(row).some((v) => v === null)) return null;
-    const metadata = parse(row.configSnapshot) as { correction_retired?: unknown } | null;
-    if (!metadata) return null;
-    if (metadata.correction_retired === true) continue;
-    if (row.status !== "active") return null;
-    const links = db
-      .query(
-        "SELECT turn_id,user_message_id,assistant_message_id,sequence_no FROM memory_sources WHERE memory_id=? ORDER BY turn_id LIMIT ?",
-      )
-      .all(row.id, LINKS + 1) as Link[];
-    // Never expose raw, rejected claims because one of a correction's parents disappeared.
-    if (!links.length || links.length > LINKS || links.some((l) => !linkedTurn(db, agent, l)))
-      return null;
-    result.push({
-      id: row.id,
-      body: row.body,
-      revision: memoryRevision(row),
-      source_ids: links.filter((l) => ids.includes(l.turn_id)).map((l) => l.turn_id),
-    });
+  try {
+    const result = conversationCorrections(
+      toOrmHandle(db).orm,
+      scope.agentId,
+      scope.sessionId,
+      ids,
+    );
+    return result.length <= CORRECTIONS && Buffer.byteLength(JSON.stringify(result)) <= BYTES
+      ? result
+      : null;
+  } catch (error) {
+    if (error instanceof AppError && error.code === "CONTEXT_SOURCE_INVALID") return null;
+    throw error;
   }
-  return Buffer.byteLength(JSON.stringify(result)) <= BYTES ? result : null;
 }
-const correctionSources = (items: Correction[]): SourceRef[] =>
-  items.map((c) => ({ kind: "memory", id: c.id, revision: c.revision }));
+const correctionSources = (items: Correction[]): SourceRef[] => items.map((item) => item.source);
 const turnSource = (t: Turn): SourceRef => ({ kind: "web_turn", id: t.id, revision: t.revision });
 function webHistory(db: Database, scope: WebEvidenceScope, id: string): StoredEvidence | null {
   const m = db
@@ -161,7 +137,7 @@ function webHistory(db: Database, scope: WebEvidenceScope, id: string): StoredEv
   const t = turn(db, scope.agentId, m.turn_id);
   if (!t || t.sessionId !== scope.sessionId) return null;
   // With retrieval disabled the raw message is served: corrections are neither read nor attached.
-  const fixes = scope.retrievalEnabled ? corrections(db, scope.agentId, [t.id]) : [];
+  const fixes = scope.retrievalEnabled ? corrections(db, scope, [t.id]) : [];
   if (!fixes) return null;
   // The raw message is not a usable fact once corrected. Return the constraints instead,
   // so every independently read page is safe even when a long correction spans pages.
@@ -203,7 +179,7 @@ function webSummary(db: Database, scope: WebEvidenceScope, id: string): StoredEv
   const fixes = scope.retrievalEnabled
     ? corrections(
         db,
-        scope.agentId,
+        scope,
         links.map((l) => l.turn_id),
       )
     : [];
@@ -240,172 +216,7 @@ function webSummary(db: Database, scope: WebEvidenceScope, id: string): StoredEv
  * must sit in this conversation's journal with a live inbound/outbound source. Exported
  * for reuse — projection must not build a second, wider read path.
  */
-export function inTimeline(
-  db: Database,
-  scope: BotEvidenceScope,
-  kind: string,
-  id: string,
-  now?: string,
-): boolean {
-  const direct = db.query(`SELECT 1 FROM conversation_events e
-    WHERE e.conversation_id=? AND e.source_kind=? AND e.source_id=?
-      AND e.kind IN ('inbound','outbound') AND (e.source_kind<>'qq_send' OR EXISTS(
-        SELECT 1 FROM qq_send_log l WHERE l.id=e.source_id AND l.outcome='sent')) LIMIT 1`);
-  if (direct.get(scope.conversationId, kind, id)) return true;
-  if (kind === "qq_observation" && direct.get(scope.conversationId, "qq_event", id)) return true;
-  const secondary = db
-    .query(`SELECT 1 FROM conversation_events e WHERE e.conversation_id=? AND
-    e.kind IN ('inbound','outbound') AND (e.source_kind<>'qq_send' OR EXISTS(
-      SELECT 1 FROM qq_send_log l WHERE l.id=e.source_id AND l.outcome='sent')) AND
-    ((e.source_id=? AND (e.source_kind=? OR (?='qq_observation' AND e.source_kind='qq_event'))) OR
-    EXISTS(SELECT 1 FROM json_each(CASE WHEN length(e.sources)<=65536 AND json_valid(e.sources)
-      THEN e.sources ELSE '[]' END) s WHERE s.type='object'
-      AND json_extract(s.value,'$.kind')=? AND json_extract(s.value,'$.id')=?)) LIMIT 1`)
-    .get(scope.conversationId, id, kind, kind, kind, id);
-  if (secondary) return true;
-  if (kind !== "qq_speech" || !evidenceScopeExists(db, scope)) return false;
 
-  // A confirmed send and its legacy speech share one exact identity. This path
-  // proves their existing delivery ownership; it does not create journal evidence.
-  const links = db
-    .query(`SELECT i.id AS intentId,i.conversation_id AS conversationId,
-    ${bounded("i.target")} AS target,i.status AS intentStatus,i.expires_at AS intentExpiry,
-    l.outcome,l.account_id AS sendAccount,l.conversation_kind AS sendKind,
-    l.peer_id AS sendPeer,l.agent_id AS sendAgent,l.kind AS sendSpeechKind,l.expires_at AS sendExpiry,
-    s.account_id AS speechAccount,s.conversation_kind AS speechKind,
-    s.peer_id AS speechPeer,s.agent_id AS speechAgent,s.kind AS speechPath,s.expires_at AS speechExpiry,
-    ${bounded("t.body")} AS body,t.expires_at AS bodyExpiry,i.speech_kind AS intentPath
-    FROM outbound_intents i JOIN qq_send_log l ON l.id=i.legacy_send_id
-    JOIN qq_speech_log s ON s.id=l.id JOIN qq_speech_text t ON t.speech_id=s.id
-    WHERE i.legacy_send_id=? LIMIT 2`)
-    .all(id) as {
-    intentId: string;
-    conversationId: string;
-    target: string | null;
-    intentStatus: string;
-    intentExpiry: string;
-    outcome: string;
-    sendAccount: string;
-    sendKind: string;
-    sendPeer: string;
-    sendAgent: string;
-    sendSpeechKind: string;
-    sendExpiry: string;
-    speechAccount: string;
-    speechKind: string;
-    speechPeer: string;
-    speechAgent: string;
-    speechPath: string;
-    speechExpiry: string;
-    body: string | null;
-    bodyExpiry: string;
-    intentPath: string;
-  }[];
-  if (links.length !== 1) return false;
-  const link = links[0];
-  if (
-    !link ||
-    link.conversationId !== scope.conversationId ||
-    link.intentStatus !== "confirmed" ||
-    link.outcome !== "sent" ||
-    !link.body ||
-    link.sendAccount !== scope.accountId ||
-    link.sendKind !== scope.conversationKind ||
-    link.sendPeer !== scope.peerId ||
-    link.sendAgent !== scope.agentId ||
-    link.speechAccount !== scope.accountId ||
-    link.speechKind !== scope.conversationKind ||
-    link.speechPeer !== scope.peerId ||
-    link.speechAgent !== scope.agentId ||
-    link.intentPath !== link.sendSpeechKind ||
-    link.intentPath !== link.speechPath ||
-    !expiry(now ?? new Date().toISOString(), [
-      link.intentExpiry,
-      link.sendExpiry,
-      link.speechExpiry,
-      link.bodyExpiry,
-    ])
-  )
-    return false;
-  const target = parse(link.target) as Record<string, unknown> | null;
-  if (
-    !target ||
-    typeof target !== "object" ||
-    Array.isArray(target) ||
-    [
-      "accountId",
-      "conversationKind",
-      "peerId",
-      "agentId",
-      "bindingId",
-      "bindingEpoch",
-      "authorityRevision",
-    ].some((key) => target[key] !== scope[key as keyof BotEvidenceScope])
-  )
-    return false;
-  const journal = db
-    .query(`SELECT 1 FROM conversation_events
-    WHERE conversation_id=? AND kind='delivery' AND source_kind='outbound_intent' AND source_id=? LIMIT 1`)
-    .get(scope.conversationId, link.intentId);
-  if (!journal) return false;
-  const parts = db
-    .query(`SELECT ordinal,kind,status,platform_message_id AS platformId,
-    attempted_at AS attemptedAt,finished_at AS finishedAt,${bounded("payload")} AS payload
-    FROM outbound_parts WHERE intent_id=? ORDER BY ordinal LIMIT ?`)
-    .all(link.intentId, LINKS + 1) as {
-    ordinal: number;
-    kind: string;
-    status: string;
-    platformId: string | null;
-    attemptedAt: string | null;
-    finishedAt: string | null;
-    payload: string | null;
-  }[];
-  const receipts = db
-    .query(`SELECT part_index AS ordinal,part_kind AS kind,result,
-    platform_message_id AS platformId,sticker_id AS stickerId
-    FROM qq_send_part WHERE send_id=? ORDER BY part_index LIMIT ?`)
-    .all(id, LINKS + 1) as {
-    ordinal: number;
-    kind: string;
-    result: string;
-    platformId: string | null;
-    stickerId: string | null;
-  }[];
-  if (!parts.length || parts.length > LINKS || receipts.length !== parts.length) return false;
-  const texts: string[] = [];
-  const platformIds = new Set<string>();
-  for (const [index, part] of parts.entries()) {
-    const receipt = receipts[index];
-    if (
-      !receipt ||
-      part.ordinal !== index ||
-      receipt.ordinal !== part.ordinal ||
-      receipt.kind !== part.kind ||
-      receipt.result !== "confirmed" ||
-      part.status !== "confirmed" ||
-      !part.platformId ||
-      receipt.platformId !== part.platformId ||
-      platformIds.has(part.platformId) ||
-      part.attemptedAt === null ||
-      part.finishedAt === null ||
-      !Number.isFinite(Date.parse(part.attemptedAt)) ||
-      !Number.isFinite(Date.parse(part.finishedAt))
-    )
-      return false;
-    platformIds.add(part.platformId);
-    const payload = parse(part.payload) as Record<string, unknown> | null;
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
-    if (part.kind === "text") {
-      if (typeof payload.text !== "string" || receipt.stickerId !== null) return false;
-      texts.push(payload.text);
-    } else if (part.kind === "sticker") {
-      if (typeof payload.stickerId !== "string" || payload.stickerId !== receipt.stickerId)
-        return false;
-    } else return false;
-  }
-  return texts.length > 0 && texts.join("\n") === link.body;
-}
 function qqBody(
   db: Database,
   scope: BotEvidenceScope,

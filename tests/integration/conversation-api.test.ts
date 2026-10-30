@@ -8,6 +8,7 @@ import { handleError } from "../../src/server/api/error-handler";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
+import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import {
@@ -17,11 +18,13 @@ import {
   deleteMessage,
   nowIso,
   prepareTurn,
+  renameSession,
   saveCompletedAssistantMessage,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { WakeRepository } from "../../src/server/db/wake-repository";
+import { createQqBinding } from "../../src/server/services/qq-binding-contract";
 import {
   ConversationEventsSchema,
   ConversationListSchema,
@@ -75,7 +78,7 @@ describe("canonical conversation read APIs", () => {
   });
 
   it("discovers empty Web and shared sources, paginates their canonical IDs and reflects source edits", async () => {
-    const { app, business, session } = setup(true);
+    const { app, business, session, journal } = setup(true);
     const another = createSession(business.orm, "never opened", { modelName: "fixture" });
     const scheme = createQqScheme(business.orm, { name: "group fixture" });
     const bindingId = crypto.randomUUID();
@@ -92,6 +95,7 @@ describe("canonical conversation read APIs", () => {
         updatedAt: nowIso(),
       })
       .run();
+    journal.ensureOneBotActivation(bindingId);
     const pages = [];
     let cursor: string | null = null;
     do {
@@ -112,14 +116,13 @@ describe("canonical conversation read APIs", () => {
       { id: DEFAULT_AGENT_ID, label: group.participants[0].label, role: "agent" },
     ]);
     expect((await app.request(`/v2/conversations/${group.id}/events`)).status).toBe(200);
-    business.db
-      .query("UPDATE sessions SET title='renamed',updated_at='2099-01-01T00:00:00.000Z' WHERE id=?")
-      .run(another.id);
+    renameSession(business.orm, another.id, "renamed");
     const updated = ConversationListSchema.parse(
       await (await app.request("/v2/conversations")).json(),
     );
-    expect(updated.items[0]).toMatchObject({ sourceId: another.id, title: "renamed" });
-    expect(updated.items[0].id).toBe(pages.find((item) => item.sourceId === another.id)!.id);
+    const renamed = updated.items.find((item) => item.sourceId === another.id)!;
+    expect(renamed.title).toBe("renamed");
+    expect(renamed.id).toBe(pages.find((item) => item.sourceId === another.id)!.id);
     expect(business.db.query("SELECT COUNT(*) AS n FROM agent_runs").get()).toEqual({ n: 0 });
   });
 
@@ -340,31 +343,23 @@ describe("canonical conversation read APIs", () => {
   it("discovers an empty private binding as canonical direct and the group as shared without any agent activity", async () => {
     const { app, business } = setup(true);
     const scheme = createQqScheme(business.orm, { name: "directory fixture" });
-    const now = nowIso();
     const privateId = crypto.randomUUID();
     const groupId = crypto.randomUUID();
     const bindings = [
-      { id: privateId, conversationKind: "private", peerId: "40001" },
-      { id: groupId, conversationKind: "group", peerId: "50001" },
+      { id: privateId, kind: "private", peerId: "40001" },
+      { id: groupId, kind: "group", peerId: "50001" },
     ] as const;
-    for (const binding of bindings)
-      business.orm
-        .insert(schema.qqBindings)
-        .values({
-          id: binding.id,
-          accountId: "10001",
-          conversationKind: binding.conversationKind,
-          peerId: binding.peerId,
-          agentId: DEFAULT_AGENT_ID,
-          schemeId: scheme.id,
-          paused: 0,
-          shareWebMemory: 0,
-          revision: 1,
-          authorityRevision: 1,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .run();
+    for (const binding of bindings) {
+      const created = createQqBinding({
+        ...binding,
+        accountId: "10001",
+        agentId: DEFAULT_AGENT_ID,
+        schemeId: scheme.id,
+        paused: false,
+      });
+      if (created.kind !== "saved") throw new Error("Binding fixture was not created");
+      insertQqBinding(business.orm, created.binding);
+    }
     const bySourceId = async (sourceId: string) =>
       ConversationListSchema.parse(
         await (await app.request(`/v2/conversations?channel=onebot11&sourceId=${sourceId}`)).json(),

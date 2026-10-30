@@ -4,12 +4,10 @@ import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { QqConversationScope } from "../../shared/contracts/qq-message";
 import type { ContextPrincipal } from "../agent/context-access";
+import { evidenceScopeExists, inTimeline, ownerScope } from "../conversation/evidence-scope";
 import { mediaReadTaskIdentityKey } from "../db/qq-media-task-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
-import { evidenceScopeExists } from "../modules/conversation-evidence";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
-import { inTimeline } from "../modules/conversation-evidence-store";
-import { ownerScope } from "./qq-media-sources";
 
 function isDate(value: string): boolean {
   return !Number.isNaN(Date.parse(value));

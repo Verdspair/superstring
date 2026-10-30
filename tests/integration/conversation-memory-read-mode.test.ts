@@ -27,28 +27,44 @@ describe("conversation memory read mode management", () => {
       const app = appFor(business.db);
       const initial = await app.request(`http://local/${ca.id}/memory-read-mode`);
       expect(initial.status).toBe(200);
-      expect(await initial.json()).toEqual({ mode: "current_conversation", revision: 1 });
+      expect(await initial.json()).toEqual({
+        conversation_id: ca.id,
+        mode: "current_conversation",
+        revision: 1,
+      });
       const saved = await app.request(`http://local/${ca.id}/memory-read-mode`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ mode: "agent_shared", expected_revision: 1 }),
       });
       expect(saved.status).toBe(200);
-      expect(await saved.json()).toEqual({ mode: "agent_shared", revision: 2 });
+      expect(await saved.json()).toEqual({
+        conversation_id: ca.id,
+        mode: "agent_shared",
+        revision: 2,
+      });
       const noOp = await app.request(`http://local/${ca.id}/memory-read-mode`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ mode: "agent_shared", expected_revision: 2 }),
       });
       expect(noOp.status).toBe(200);
-      expect(await noOp.json()).toEqual({ mode: "agent_shared", revision: 2 });
+      expect(await noOp.json()).toEqual({
+        conversation_id: ca.id,
+        mode: "agent_shared",
+        revision: 2,
+      });
       const back = await app.request(`http://local/${ca.id}/memory-read-mode`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ mode: "current_conversation", expected_revision: 2 }),
       });
       expect(back.status).toBe(200);
-      expect(await back.json()).toEqual({ mode: "current_conversation", revision: 3 });
+      expect(await back.json()).toEqual({
+        conversation_id: ca.id,
+        mode: "current_conversation",
+        revision: 3,
+      });
       const oldExpected = await app.request(`http://local/${ca.id}/memory-read-mode`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -56,7 +72,11 @@ describe("conversation memory read mode management", () => {
       });
       expect(oldExpected.status).toBe(409);
       const other = await app.request(`http://local/${cb.id}/memory-read-mode`);
-      expect(await other.json()).toEqual({ mode: "current_conversation", revision: 1 });
+      expect(await other.json()).toEqual({
+        conversation_id: cb.id,
+        mode: "current_conversation",
+        revision: 1,
+      });
     } finally {
       business.close();
     }

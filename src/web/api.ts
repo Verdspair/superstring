@@ -8,8 +8,6 @@ import {
   type CreateModelProviderRequest,
   type DeleteAgentsResponse,
   DeleteAgentsResponseSchema,
-  type EntriesList,
-  EntriesListSchema,
   ErrorEnvelopeSchema,
   LocalModelCatalogResponseSchema,
   LocalModelEncodingsResponseSchema,
@@ -22,9 +20,15 @@ import {
   MemoryEntryResponseSchema,
   type MemoryJobView,
   MemoryJobViewSchema,
+  type MemoryManagementList,
+  MemoryManagementListSchema,
+  type MemoryManagementQuery,
+  MemoryReadablePageSchema,
   MemoryScopeViewSchema,
   type MemorySessionOption,
   MemorySessionOptionSchema,
+  MemorySourcePreviewListSchema,
+  MemorySourcePreviewPageSchema,
   type MemoryVisibilityResponse,
   MemoryVisibilityResponseSchema,
   type MemoryVisibilityUpdate,
@@ -438,22 +442,26 @@ export const api = {
       InspectedContextSchema,
       { signal, cache: "no-store" },
     ),
-  getOrganizationSettings: () => requestJson("/organization/settings", OrganizationSettingsSchema),
+  getOrganizationSettings: (signal?: AbortSignal) =>
+    requestJson("/organization/settings", OrganizationSettingsSchema, { signal }),
   saveOrganizationSettings: (body: OrganizationSettingsUpdate) =>
     requestJson("/organization/settings", OrganizationSettingsSchema, json("PUT", body)),
-  getAgentKnowledgeRead: (id: string) =>
-    requestJson(`/agents/${id}/knowledge-read-settings`, AgentKnowledgeReadSettingsSchema),
+  getAgentKnowledgeRead: (id: string, signal?: AbortSignal) =>
+    requestJson(`/agents/${id}/knowledge-read-settings`, AgentKnowledgeReadSettingsSchema, {
+      signal,
+    }),
   saveAgentKnowledgeRead: (id: string, body: AgentKnowledgeReadUpdate) =>
     requestJson(
       `/agents/${id}/knowledge-read-settings`,
       AgentKnowledgeReadSettingsSchema,
       json("PUT", body),
     ),
-  getKnowledgeSettings: () => requestJson("/knowledge/settings", KnowledgeSettingsSchema),
+  getKnowledgeSettings: (signal?: AbortSignal) =>
+    requestJson("/knowledge/settings", KnowledgeSettingsSchema, { signal }),
   saveKnowledgeSettings: (body: KnowledgeSettingsUpdate) =>
     requestJson("/knowledge/settings", KnowledgeSettingsSchema, json("PUT", body)),
-  listKnowledgeCategories: () =>
-    requestJson("/knowledge/categories", KnowledgeCategorySchema.array()),
+  listKnowledgeCategories: (signal?: AbortSignal) =>
+    requestJson("/knowledge/categories", KnowledgeCategorySchema.array(), { signal }),
   createKnowledgeCategory: (name: string) =>
     requestJson("/knowledge/categories", KnowledgeCategorySchema, json("POST", { name })),
   renameKnowledgeCategory: (id: string, name: string, expected_revision: number) =>
@@ -485,8 +493,8 @@ export const api = {
       cache: "no-store",
     });
   },
-  getKnowledgeDocument: (id: string) =>
-    requestJson(`/knowledge/documents/${id}`, KnowledgeDocumentDetailSchema),
+  getKnowledgeDocument: (id: string, signal?: AbortSignal) =>
+    requestJson(`/knowledge/documents/${id}`, KnowledgeDocumentDetailSchema, { signal }),
   importKnowledgeText: (body: KnowledgeImport) =>
     requestJson("/knowledge/documents", KnowledgeDocumentDetailSchema, json("POST", body)),
   importKnowledgeFile(file: File, categoryId: string, name: string) {
@@ -528,8 +536,8 @@ export const api = {
     );
     if (!response.ok) throw await responseError(response);
   },
-  listAgentKnowledge: (id: string) =>
-    requestJson(`/agents/${id}/knowledge`, AgentKnowledgeSchema.array()),
+  listAgentKnowledge: (id: string, signal?: AbortSignal) =>
+    requestJson(`/agents/${id}/knowledge`, AgentKnowledgeSchema.array(), { signal }),
   getBrowserStateConfig(): Promise<BrowserStateConfig> {
     return requestJson("/browser-state/config", BrowserStateConfigSchema);
   },
@@ -626,10 +634,11 @@ export const api = {
       json("PUT", body),
     );
   },
-  getModelCapacity(model: string): Promise<ModelCapacityResponse> {
+  getModelCapacity(model: string, signal?: AbortSignal): Promise<ModelCapacityResponse> {
     return requestJson(
       `/models/capacity?model=${encodeURIComponent(model)}`,
       ModelCapacityResponseSchema,
+      { signal },
     );
   },
   // ---- 接入管理（P7-d）：MCP 登记、技能目录、工具授权、任务与执行配置 ----
@@ -756,25 +765,93 @@ export const api = {
     agentId: string,
     offset = 0,
     limit = 100,
-    filters: { scope_key?: string; search?: string; status?: string } = {},
+    filters: MemoryManagementQuery = {},
     signal?: AbortSignal,
-  ): Promise<EntriesList> {
+  ): Promise<MemoryManagementList> {
     const query = new URLSearchParams({ offset: String(offset), limit: String(limit) });
     for (const [key, value] of Object.entries(filters))
       if (value !== undefined) query.set(key, value);
     return requestJson(
       `/agents/${agentId}/memory/entries?${query}`,
-      EntriesListSchema,
+      MemoryManagementListSchema,
       signal ? { signal } : undefined,
     );
   },
-  getMemoryEntry(agentId: string, memoryId: string): Promise<MemoryEntryResponse> {
-    return requestJson(`/agents/${agentId}/memory/entries/${memoryId}`, MemoryEntryResponseSchema);
+  getMemoryEntry(
+    agentId: string,
+    memoryId: string,
+    signal?: AbortSignal,
+  ): Promise<MemoryEntryResponse> {
+    return requestJson(`/agents/${agentId}/memory/entries/${memoryId}`, MemoryEntryResponseSchema, {
+      signal,
+    });
   },
-  getMemoryContent(agentId: string, memoryId: string): Promise<MemoryContentResponse> {
+  getMemoryContent(
+    agentId: string,
+    memoryId: string,
+    signal?: AbortSignal,
+  ): Promise<MemoryContentResponse> {
     return requestJson(
       `/agents/${agentId}/memory/entries/${memoryId}/content`,
       MemoryContentResponseSchema,
+      { signal },
+    );
+  },
+  readMemoryEntry(
+    agentId: string,
+    memoryId: string,
+    conversationId: string,
+    offset = 0,
+    revision?: string,
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({
+      conversation_id: conversationId,
+      offset: String(offset),
+      limit: "4096",
+    });
+    if (revision) query.set("revision", revision);
+    return requestJson(
+      `/agents/${agentId}/memory/entries/${memoryId}/read?${query}`,
+      MemoryReadablePageSchema,
+      { signal },
+    );
+  },
+  listMemorySources(
+    agentId: string,
+    memoryId: string,
+    conversationId?: string,
+    offset = 0,
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({ offset: String(offset), limit: "20" });
+    if (conversationId) query.set("conversation_id", conversationId);
+    return requestJson(
+      `/agents/${agentId}/memory/entries/${memoryId}/sources?${query}`,
+      MemorySourcePreviewListSchema,
+      { signal },
+    );
+  },
+  previewMemorySource(
+    agentId: string,
+    memoryId: string,
+    sourceKey: string,
+    revision: string,
+    conversationId?: string,
+    offset = 0,
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({
+      source_key: sourceKey,
+      revision,
+      offset: String(offset),
+      limit: "4096",
+    });
+    if (conversationId) query.set("conversation_id", conversationId);
+    return requestJson(
+      `/agents/${agentId}/memory/entries/${memoryId}/source-preview?${query}`,
+      MemorySourcePreviewPageSchema,
+      { signal },
     );
   },
   correctMemory(
@@ -792,9 +869,10 @@ export const api = {
     agentId: string,
     memoryId: string,
     signal?: AbortSignal,
+    conversationId?: string,
   ): Promise<MemoryAccessMetadata> {
     return requestJson(
-      `/agents/${encodeURIComponent(agentId)}/memory/entries/${encodeURIComponent(memoryId)}/access-metadata`,
+      `/agents/${encodeURIComponent(agentId)}/memory/entries/${encodeURIComponent(memoryId)}/access-metadata${conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ""}`,
       MemoryAccessMetadataSchema,
       signal ? { signal } : undefined,
     );

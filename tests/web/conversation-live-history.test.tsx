@@ -17,6 +17,7 @@ beforeEach(() => {
   originalVisibilityDesc =
     Object.getOwnPropertyDescriptor(Document.prototype, "visibilityState") ??
     Object.getOwnPropertyDescriptor(document, "visibilityState");
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 
 afterEach(() => {
@@ -1008,4 +1009,185 @@ describe("conversation-live-history: dual-channel and progressive tail append", 
     unmount();
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it.each(["source", "sources"])(
+    "uses the earliest %s cap across multiple media records while disabled",
+    async (firstCap) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-29T00:00:00Z"));
+      const cap = (delay: number) => new Date(Date.now() + delay).toISOString();
+      const expiring: ConversationEventView = {
+        ...sampleEvent(1),
+        source: {
+          kind: "qq_event",
+          id: "event-1",
+          revision: "1",
+          expiresAt: cap(firstCap === "source" ? 1000 : 5000),
+        },
+        sources: [
+          { kind: "qq_observation", id: "body-1", revision: "1", expiresAt: cap(5000) },
+          {
+            kind: "qq_media",
+            id: "image-1",
+            revision: "1",
+            expiresAt: cap(firstCap === "sources" ? 1000 : 5000),
+          },
+        ],
+        media: [
+          { id: "image-1", kind: "image", description: "image text", availability: "available" },
+          {
+            id: "sticker-1",
+            kind: "sticker",
+            description: "sticker text",
+            availability: "available",
+          },
+        ],
+      };
+      const later: ConversationEventView = {
+        ...sampleEvent(2),
+        source: { kind: "qq_event", id: "event-2", revision: "1", expiresAt: cap(3000) },
+      };
+      const read = vi.fn<SuperstringApi["getConversationEvents"]>().mockResolvedValue({
+        items: [expiring, later, sampleEvent(3)],
+        nextSeq: 3,
+        hasMore: false,
+      });
+      setupApi({ getConversationEvents: read });
+      const beforeChange = vi.fn();
+      const { result, rerender, unmount } = renderHook(
+        ({ enabled }) => useConversationEvents("conv-1", beforeChange, { enabled }),
+        { initialProps: { enabled: true } },
+      );
+      await act(async () => {});
+      const stable = result.current.items[2];
+      const laterRow = result.current.items[1];
+      rerender({ enabled: false });
+      beforeChange.mockClear();
+      expect(vi.getTimerCount()).toBe(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(result.current.items[0]).toMatchObject({
+        seq: 1,
+        source: expiring.source,
+        sources: expiring.sources,
+        participant: expiring.participant,
+        text: null,
+        contentState: "expired",
+        media: [
+          { id: "image-1", description: null, availability: "unavailable" },
+          { id: "sticker-1", description: null, availability: "unavailable" },
+        ],
+        qqMessageFacts: [],
+      });
+      expect(result.current.items[1]).toBe(laterRow);
+      expect(result.current.items[2]).toBe(stable);
+      expect(beforeChange).toHaveBeenCalledTimes(1);
+      expect(beforeChange).toHaveBeenLastCalledWith("refresh", result.current.items);
+      expect(vi.getTimerCount()).toBe(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(result.current.items[1]).toMatchObject({ text: null, contentState: "expired" });
+      expect(result.current.items[2]).toBe(stable);
+      expect(beforeChange).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(read).toHaveBeenCalledTimes(1);
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(["id", "api", "agent", "binding"])(
+    "cancels the old expiry and transport across a %s ABA scope change",
+    async (change) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-29T00:00:00Z"));
+      const base = Date.now();
+      const expiring = (text: string, delay: number): ConversationEventView => ({
+        ...sampleEvent(1, text),
+        source: {
+          kind: "qq_event",
+          id: "event-1",
+          revision: "1",
+          expiresAt: new Date(base + delay).toISOString(),
+        },
+      });
+      const read = vi
+        .fn<SuperstringApi["getConversationEvents"]>()
+        .mockResolvedValueOnce({ items: [expiring("old-owner", 1000)], nextSeq: 1, hasMore: false })
+        .mockReturnValueOnce(new Promise(() => {}))
+        .mockResolvedValue({
+          items: [expiring("current-owner", 4000)],
+          nextSeq: 1,
+          hasMore: false,
+        });
+      setupApi({ getConversationEvents: read });
+      useSuperstringStore.setState({
+        summaryById: {
+          "conv-1": { id: "conv-1", agentId: "agent-1", bindingEpoch: 1 } as never,
+          "conv-2": { id: "conv-2", agentId: "agent-1", bindingEpoch: 1 } as never,
+        },
+      });
+      const originalApi = useSuperstringStore.getState().apiClient;
+      const alternateApi: SuperstringApi = { ...originalApi, getConversationEvents: read };
+      const beforeChange = vi.fn();
+      const { result, rerender, unmount } = renderHook(
+        ({ id }) => useConversationEvents(id, beforeChange),
+        { initialProps: { id: "conv-1" } },
+      );
+      await act(async () => {});
+      expect(result.current.items[0]?.text).toBe("old-owner");
+      expect(vi.getTimerCount()).toBe(1);
+      act(() => {
+        void result.current.refresh();
+      });
+      const oldSignal = read.mock.calls[1]?.[2];
+      expect(oldSignal?.aborted).toBe(false);
+      const switchScope = (alternate: boolean) => {
+        if (change === "id") rerender({ id: alternate ? "conv-2" : "conv-1" });
+        else if (change === "api") {
+          useSuperstringStore.setState({ apiClient: alternate ? alternateApi : originalApi });
+        } else {
+          const state = useSuperstringStore.getState();
+          useSuperstringStore.setState({
+            summaryById: {
+              ...state.summaryById,
+              "conv-1": {
+                ...state.summaryById["conv-1"],
+                agentId: change === "agent" && alternate ? "agent-2" : "agent-1",
+                bindingEpoch: change === "binding" && alternate ? 2 : 1,
+              },
+            },
+          });
+        }
+      };
+      await act(async () => {
+        switchScope(true);
+      });
+      expect(oldSignal?.aborted).toBe(true);
+      expect(result.current.items[0]?.text).toBe("current-owner");
+      await act(async () => {
+        switchScope(false);
+      });
+      expect(read).toHaveBeenCalledTimes(4);
+      expect(result.current.items[0]?.text).toBe("current-owner");
+      expect(vi.getTimerCount()).toBe(1);
+      beforeChange.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(beforeChange).not.toHaveBeenCalled();
+      expect(result.current.items[0]?.text).toBe("current-owner");
+      expect(read).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(result.current.items[0]).toMatchObject({ text: null, contentState: "expired" });
+      expect(beforeChange).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 });

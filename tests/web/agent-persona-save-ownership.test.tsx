@@ -2,6 +2,7 @@ import { act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentResponseSchema, PersonaResponseSchema } from "../../src/shared/contracts";
 import { api } from "../../src/web/api";
+import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const agentAId = "11111111-1111-4111-8111-111111111111";
@@ -84,8 +85,8 @@ function setupStore(savePersonaMock: (id: string, body: unknown) => Promise<type
   });
 }
 
-describe("savePersona ownership regression", () => {
-  it("preserves agent B state when a deferred savePersona for agent A resolves after switching", async () => {
+describe("page persona save ownership regression", () => {
+  it("locks navigation and preserves replacement Agent B when page persona save for Agent A resolves", async () => {
     let releaseSaveA!: (value: typeof personaA) => void;
     const saveGate = new Promise<typeof personaA>((resolve) => {
       releaseSaveA = resolve;
@@ -111,23 +112,30 @@ describe("savePersona ownership regression", () => {
     expect(store.getState().editorAgentId).toBe(agentA.id);
     expect(store.getState().persona?.agent_id).toBe(agentA.id);
 
-    const saveOutcome = store.getState().savePersona({
-      core_identity: "Agent A updated identity",
-      persona_intensity: 90,
-    });
+    store.getState().patchPagePersona("identity", { core_identity: "Agent A updated identity" });
+    const saveOutcome = store.getState().saveSettingsPage("identity");
     await startedPromise;
 
     await act(async () => {
-      await store.getState().editAgent(agentB.id);
+      // Real navigation is locked; simulate another owner's already-replaced editor.
+      expect(await store.getState().editAgent(agentB.id)).toBe(false);
+      store.setState({
+        editorAgentId: agentB.id,
+        pageEditor: newPageEditor(agentB, personaB),
+        persona: personaB,
+      });
     });
     expect(store.getState().editorAgentId).toBe(agentB.id);
     expect(store.getState().persona?.agent_id).toBe(agentB.id);
     expect(store.getState().pageEditor?.agent.id).toBe(agentB.id);
 
     await act(async () => {
-      store.getState().patchDraft({ description: "Agent B pending draft" });
+      const editor = store.getState().pageEditor!;
+      store.setState({
+        pageEditor: { ...editor, draft: { ...editor.draft, description: "Agent B pending draft" } },
+      });
     });
-    expect(store.getState().dirty).toBe(true);
+    expect(store.getState().settingsTaskDirty("identity")).toBe(true);
     const editorBeforeResponse = store.getState().pageEditor;
 
     releaseSaveA({
@@ -139,11 +147,11 @@ describe("savePersona ownership regression", () => {
     expect(store.getState().editorAgentId).toBe(agentB.id);
     expect(store.getState().persona?.agent_id).toBe(agentB.id);
     expect(store.getState().pageEditor).toBe(editorBeforeResponse);
-    expect(store.getState().editorDraft?.description).toBe("Agent B pending draft");
-    expect(store.getState().dirty).toBe(true);
+    expect(store.getState().pageEditor?.draft.description).toBe("Agent B pending draft");
+    expect(store.getState().settingsTaskDirty("identity")).toBe(true);
   });
 
-  it("suppresses stale UI error when a deferred savePersona for agent A fails after switching", async () => {
+  it("suppresses stale UI error when page persona save for Agent A fails after editor replacement", async () => {
     let rejectSaveA!: (reason: unknown) => void;
     const saveGate = new Promise<typeof personaA>((_, reject) => {
       rejectSaveA = reject;
@@ -168,14 +176,18 @@ describe("savePersona ownership regression", () => {
     });
     expect(store.getState().editorAgentId).toBe(agentA.id);
 
-    const saveOutcome = store.getState().savePersona({
-      core_identity: "Agent A will fail",
-      persona_intensity: 60,
-    });
+    store.getState().patchPagePersona("identity", { core_identity: "Agent A will fail" });
+    const saveOutcome = store.getState().saveSettingsPage("identity");
     await startedPromise;
 
     await act(async () => {
-      await store.getState().editAgent(agentB.id);
+      // Real navigation is locked; simulate another owner's already-replaced editor.
+      expect(await store.getState().editAgent(agentB.id)).toBe(false);
+      store.setState({
+        editorAgentId: agentB.id,
+        pageEditor: newPageEditor(agentB, personaB),
+        persona: personaB,
+      });
     });
     expect(store.getState().editorAgentId).toBe(agentB.id);
     expect(store.getState().error).toBeNull();
@@ -188,7 +200,7 @@ describe("savePersona ownership regression", () => {
     expect(store.getState().error).toBeNull();
   });
 
-  it("preserves newer dirty draft when savePersona resolves for the same agent", async () => {
+  it("preserves the foreign-page dirty draft and locks edits when expression persona save resolves", async () => {
     let releaseSaveA!: (value: typeof personaA) => void;
     const saveGate = new Promise<typeof personaA>((resolve) => {
       releaseSaveA = resolve;
@@ -213,18 +225,16 @@ describe("savePersona ownership regression", () => {
     });
     expect(store.getState().editorAgentId).toBe(agentA.id);
 
-    const saveOutcome = store.getState().savePersona({
-      persona_intensity: 85,
-    });
+    store.getState().patchPageAgent("expression", { persona_intensity: 85 });
+    store.getState().patchPageAgent("basic", { description: "Agent A newer foreign-page draft" });
+    const saveOutcome = store.getState().saveSettingsPage("expression");
     await startedPromise;
 
     await act(async () => {
-      store.getState().patchDraft({ description: "Agent A newer draft edited during save" });
+      store.getState().patchPageAgent("basic", { description: "blocked in-flight edit" });
     });
-    expect(store.getState().dirty).toBe(true);
-    expect(store.getState().editorDraft?.description).toBe(
-      "Agent A newer draft edited during save",
-    );
+    expect(store.getState().settingsTaskDirty("identity")).toBe(true);
+    expect(store.getState().pageEditor?.draft.description).toBe("Agent A newer foreign-page draft");
 
     releaseSaveA({
       ...personaA,
@@ -232,10 +242,46 @@ describe("savePersona ownership regression", () => {
     const success = await saveOutcome;
     expect(success).toBe(true);
 
-    expect(store.getState().editorAgentId).toBe(agentA.id);
-    expect(store.getState().editorDraft?.description).toBe(
-      "Agent A newer draft edited during save",
+    expect(savePersonaMock).toHaveBeenCalledWith(
+      agentA.id,
+      expect.objectContaining({ persona_intensity: 85 }),
     );
-    expect(store.getState().dirty).toBe(true);
+    expect(store.getState().pageEditor?.agent.persona_intensity).toBe(85);
+    expect(store.getState().editorAgentId).toBe(agentA.id);
+    expect(store.getState().pageEditor?.draft.description).toBe("Agent A newer foreign-page draft");
+    expect(store.getState().settingsTaskDirty("identity")).toBe(true);
   });
+  it.each(["api", "route"] as const)(
+    "rejects a stale persona result after same-Agent %s replacement",
+    async (kind) => {
+      let release!: (value: typeof personaA) => void;
+      const gate = new Promise<typeof personaA>((resolve) => {
+        release = resolve;
+      });
+      const savePersonaMock = vi.fn(() => gate);
+      setupStore(savePersonaMock);
+      await store.getState().editAgent(agentA.id);
+      store.getState().patchPagePersona("identity", { core_identity: "submitted identity" });
+      const outcome = store.getState().saveSettingsPage("identity");
+      expect(savePersonaMock).toHaveBeenCalledWith(
+        agentA.id,
+        expect.objectContaining({
+          core_identity: "submitted identity",
+          communication_style: personaA.communication_style,
+        }),
+      );
+      expect(await store.getState().saveSettingsPage("identity")).toBe(false);
+      expect(savePersonaMock).toHaveBeenCalledTimes(1);
+      const editor = store.getState().pageEditor;
+      store.setState(kind === "api" ? { apiClient: { ...api } } : { settingsRoute: "context" });
+      store.setState({ error: "new owner notice" });
+      release({ ...personaA, core_identity: "submitted identity" });
+      expect(await outcome).toBe(false);
+      expect(store.getState().pageEditor).toBe(editor);
+      expect(store.getState().pageEditor?.persona.core_identity).toBe(personaA.core_identity);
+      expect(store.getState().pageEditor?.personaDraft.core_identity).toBe("submitted identity");
+      expect(store.getState().error).toBe("new owner notice");
+      expect(store.getState().settingsSaving).toBe(false);
+    },
+  );
 });

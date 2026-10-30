@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import type { MemoryEntryRow } from "../db/memory-repository";
 import type { Orm } from "../db/repositories";
@@ -23,62 +23,4 @@ export function turnSources(orm: Orm, ids: readonly string[]): SourceRef[] {
 /** Long-term memory is its own durable source; it does not inherit the raw QQ text lifetime. */
 export function memoryEntrySources(_orm: Orm, rows: readonly MemoryEntryRow[]): SourceRef[] {
   return rows.map((row) => ({ kind: "memory", id: row.id, revision: memoryRevision(row) }));
-}
-
-/** Candidate snapshots keep the grant token so revoke/regrant cannot authorize old snapshots. */
-export function selectionSources(
-  orm: Orm,
-  candidates: readonly Record<string, unknown>[],
-  agentId?: string,
-): SourceRef[] {
-  const refs: SourceRef[] = [];
-  const memoryIds = candidates
-    .filter((item) => item.source_type === "memory")
-    .map((item) => String(item.id));
-  if (memoryIds.length > 0) {
-    const rows = orm
-      .select()
-      .from(schema.memoryEntries)
-      .where(inArray(schema.memoryEntries.id, memoryIds))
-      .all();
-    refs.push(...memoryEntrySources(orm, rows));
-  }
-  const documents = new Set<string>();
-  for (const candidate of candidates) {
-    // KnowledgeContext candidates contain contentBlocks: [{id, source_type, sources:[document]}].
-    const blocks = Array.isArray(candidate.sources) ? candidate.sources : [];
-    for (const block of blocks) {
-      if (typeof block !== "object" || block === null) continue;
-      const sources = Array.isArray(block.sources) ? block.sources : [];
-      for (const source of sources) {
-        if (source.type !== "document") continue;
-        refs.push({
-          kind: "knowledge_document",
-          id: source.document_id,
-          revision: String(source.version),
-        });
-        documents.add(source.document_id);
-      }
-    }
-  }
-  if (agentId)
-    for (const documentId of documents) {
-      const grant = orm
-        .select()
-        .from(schema.knowledgeGrants)
-        .where(
-          and(
-            eq(schema.knowledgeGrants.documentId, documentId),
-            eq(schema.knowledgeGrants.agentId, agentId),
-          ),
-        )
-        .get();
-      if (grant)
-        refs.push({
-          kind: "knowledge_grant",
-          id: JSON.stringify([documentId, agentId]),
-          revision: grant.token,
-        });
-    }
-  return [...new Map(refs.map((ref) => [`${ref.kind}:${ref.id}`, ref])).values()];
 }

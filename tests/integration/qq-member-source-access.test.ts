@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { sourceAccess } from "../../src/server/agent/context-access";
 import { loadQqMessageFact } from "../../src/server/channels/onebot11/message-projection";
+import { inTimeline } from "../../src/server/conversation/evidence-scope";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { recordObservation } from "../../src/server/db/qq-observation-intake";
 import {
@@ -10,7 +11,6 @@ import {
   nowIso,
 } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
-import { inTimeline } from "../../src/server/modules/conversation-evidence-store";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import {
   createQqMemberNameSource,

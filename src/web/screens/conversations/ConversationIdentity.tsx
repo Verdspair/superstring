@@ -156,12 +156,15 @@ export function ConversationIdentity({
                 <Info />
               </Button>
             </SheetTrigger>
-            <SheetContent>
+            <SheetContent scrollMode="body">
               <SheetHeader>
                 <SheetTitle>{t("workspace.conversation_details")}</SheetTitle>
                 <SheetDescription>{conversation.title}</SheetDescription>
               </SheetHeader>
-              <div className="space-y-6 overflow-auto px-5 pb-5 text-sm">
+              <div
+                data-slot="sheet-body"
+                className="min-h-0 min-w-0 flex-1 space-y-6 overflow-auto p-4 text-sm"
+              >
                 <ConversationAvatarButton
                   key={conversation.id}
                   conversation={conversation}

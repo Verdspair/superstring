@@ -226,7 +226,7 @@ export interface ConversationInput {
     input: { context: RenderedContext; outputId: string; signal: AbortSignal },
   ) => Promise<PreparedGeneration | undefined>;
   /**
-   * 规格 §4.1 早提交：每个目标生成完成即提交该目标（不等批次内其它目标或整批 settled）。
+   * 早提交：每个目标生成完成即提交该目标（不等批次内其它目标或整批 settled）。
    * 宿主在**原 host 事务**里写该目标的 outbox intent；runtime 不在此重复评分/重构上下文。
    * `meta` 带该目标本轮 ordinal 与提交时刻；返回 false＝宿主拒绝（未提交），true/void＝已提交。
    * 缺省＝无早提交，整批在 commitOutputs 一次结算。仅 prepared 输出会调用。
@@ -1332,7 +1332,7 @@ export class AgentRuntime {
               "AGENT_ACTION_UNAVAILABLE",
               "Terminal budget recovery cannot invoke tools",
             );
-          // 一批调用（0.4.0 P2）：先整体校验再执行——任何一条不可用就整批拒绝，
+          // 一批调用：先整体校验再执行——任何一条不可用就整批拒绝，
           // 不留"执行了一半"的状态。只读的并行，有副作用的串行且保持模型给的顺序。
           const planned = decision.calls.map((call) => {
             const descriptor = availableActions.find((action) => action.name === call.name);
@@ -1800,7 +1800,7 @@ export class AgentRuntime {
             try {
               const generated = await this.generateTarget(active, input, plan, batchSignal);
               slots[plan.ordinal] = generated;
-              // 规格 §4.1 早提交：本目标生成完成即提交，不等兄弟；宿主按目标写自己的 outbox intent。
+              // 早提交：本目标生成完成即提交，不等兄弟；宿主按目标写自己的 outbox intent。
               await this.commitPrepared(
                 active,
                 input,

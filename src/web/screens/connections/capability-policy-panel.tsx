@@ -49,7 +49,7 @@ export function CapabilityPolicyPanel({
     <section className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h3 className="flex items-center gap-2 font-semibold">
+          <h3 className="workspace-card-title flex items-center gap-2">
             <SlidersHorizontal className="size-4 text-primary" />
             {t("connections.execution.switches")}
           </h3>

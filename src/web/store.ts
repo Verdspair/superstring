@@ -12,6 +12,7 @@ import { createKnowledgeActions } from "./features/knowledge/actions";
 import { createKnowledgeModelActions } from "./features/knowledge/model-actions";
 import { createOrganizationActions } from "./features/knowledge/organization-actions";
 import { createKnowledgeReadActions } from "./features/knowledge/read-actions";
+import { cancelKnowledgeSettingsRead } from "./features/knowledge/settings-read";
 import { createMemoryActions } from "./features/memory/actions";
 import {
   createQqAccessActions,
@@ -36,7 +37,6 @@ export type {
   LoadStatus,
   Page,
   PendingNavigation,
-  SectionKey,
   SettingsView,
   SuperstringState,
 } from "./state/types";
@@ -80,17 +80,33 @@ export const useSuperstringStore = create<SuperstringState>()((set, get) => {
         get().memoryVisibilitySaving
       )
         return;
+      get().cancelMemoryDetailRead();
       get().discardMemoryCorrection();
       get().clearMemoryMetadata();
+      set({
+        memoryReadSelection: null,
+        memoryReadable: null,
+        memorySources: null,
+        memoryReadableOffset: 0,
+        memorySourceOffset: 0,
+        memorySourcePosition: null,
+        memoryReadError: null,
+      });
       set({ memoryEntryDetail: null });
     },
-    resetForTests: (client = api, effects = {}) =>
+    resetForTests: (client = api, effects = {}) => {
+      get().cancelMemoryDetailRead();
+      get().cancelKnowledgeRead();
+      get().cancelKnowledgeModelRead();
+      get().cancelKnowledgeLibraryRead();
+      cancelKnowledgeSettingsRead(get);
       set({
         ...initial,
         qqManagedLifecycleId: get().qqManagedLifecycleId + 1,
         qqInputs: emptyQqInputs(),
         apiClient: client,
         effects: { ...defaultEffects, ...effects },
-      }),
+      });
+    },
   };
 });

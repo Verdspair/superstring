@@ -1,4 +1,4 @@
-import { act, cleanup, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSettingsResponse, QqStatusResponse } from "../../src/shared/contracts/qq";
 import type {
@@ -64,6 +64,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("QQ Managed Component settings and actions lifecycle", () => {
@@ -864,6 +865,38 @@ describe("QQ managed ready status mapping, explicit actions, and QR lifecycle fe
   });
 });
 
+describe("QQ managed resources error projection", () => {
+  it("shows the failed read, retries the real resource action, and distinguishes missing", async () => {
+    const missing: QqManagedResourceSnapshot = {
+      revision: "missing-revision",
+      status: "missing",
+      root: null,
+      diagnostic_code: "runtime_not_selected",
+    };
+    const getResources = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("HTTP 503 resource unavailable"))
+      .mockResolvedValueOnce(missing);
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        getQqManagedResources: getResources,
+        listQqManagedAccounts: async () => ({ accounts: [] }),
+        getQqSettings: async () => mockQqSettings,
+        getQqStatus: async () => ({ connection: mockQqConnection }),
+      },
+    });
+    render(<QqConnectionTab />);
+    await act(async () => {});
+    expect(screen.getByText("HTTP 503 resource unavailable")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: translate("capabilities.retry") }));
+    await act(async () => {});
+    expect(getResources).toHaveBeenCalledTimes(2);
+    expect(store.getState().qqManagedResources).toEqual(missing);
+    expect(store.getState().qqManagedResourceError).toBeNull();
+  });
+});
+
 describe("QQ managed resources, accounts discovery and quick-login lifecycle", () => {
   const mockResourceSnapshot: QqManagedResourceSnapshot = {
     revision: "rev-resource-001",
@@ -871,6 +904,21 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
     root: "C:\\tools\\napcat",
     diagnostic_code: null,
   };
+
+  const ownedStatus: QqManagedStatus = {
+    apply: "ready",
+    process: "running",
+    ownership: "owned",
+    phase: "waiting_scan",
+    core_ready: false,
+    network_apply: "pending",
+    transport_phase: "idle",
+    diagnostic_code: null,
+  };
+  async function readAccountsPrerequisites() {
+    await store.getState().loadQqManaged();
+    await store.getState().loadQqManagedResources();
+  }
 
   const mockAccounts: QqManagedAccounts = {
     accounts: [
@@ -890,9 +938,12 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
         ...store.getState().apiClient,
         getQqManagedResources: getResources,
         listQqManagedAccounts: listAccounts,
+        getQqManagedConfig: async () => savedManagedConfig,
+        getQqManagedStatus: async () => ownedStatus,
       },
     });
 
+    await store.getState().loadQqManaged();
     await store.getState().loadQqManagedResources();
     expect(getResources).toHaveBeenCalledTimes(1);
     expect(store.getState().qqManagedResources).toEqual(mockResourceSnapshot);
@@ -1025,19 +1076,29 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
         .fn()
         .mockReturnValueOnce(oldRead.promise)
         .mockReturnValueOnce(freshRead.promise);
-      const client = { ...store.getState().apiClient, listQqManagedAccounts: listAccounts };
+      const client = {
+        ...store.getState().apiClient,
+        listQqManagedAccounts: listAccounts,
+        getQqManagedConfig: async () => savedManagedConfig,
+        getQqManagedStatus: async () => ownedStatus,
+        getQqManagedResources: async () => mockResourceSnapshot,
+      };
       store.getState().resetForTests(client);
+      await readAccountsPrerequisites();
       const oldLoads = [
         store.getState().loadQqManagedAccounts(),
         store.getState().loadQqManagedAccounts(),
       ];
+      await act(async () => {});
       expect(listAccounts).toHaveBeenCalledTimes(1);
 
       store.getState().resetForTests(client);
+      await readAccountsPrerequisites();
       const freshLoads = [
         store.getState().loadQqManagedAccounts(),
         store.getState().loadQqManagedAccounts(),
       ];
+      await act(async () => {});
       expect(listAccounts).toHaveBeenCalledTimes(2);
       if (outcome === "success") oldRead.resolve(mockAccounts);
       else oldRead.reject(new Error("old accounts failure"));
@@ -1064,6 +1125,28 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
       });
     },
   );
+
+  async function discoverQuickLoginAccounts(preserveNegativeInput = false) {
+    const previous = store.getState();
+    store.setState({
+      apiClient: {
+        ...previous.apiClient,
+        getQqManagedConfig: async () => savedManagedConfig,
+        getQqManagedStatus: async () => ownedStatus,
+        getQqManagedResources: async () => mockResourceSnapshot,
+        listQqManagedAccounts: async () => mockAccounts,
+      },
+    });
+    await readAccountsPrerequisites();
+    await store.getState().loadQqManagedAccounts();
+    if (preserveNegativeInput)
+      store.setState({
+        qqManagedStatus: previous.qqManagedStatus,
+        qqManagedResources: previous.qqManagedResources,
+        qqManagedAccounts: previous.qqManagedAccounts,
+        qqManagedAccountsLoaded: previous.qqManagedAccountsLoaded,
+      });
+  }
 
   it("saves the changed account through settings CAS before quick-login with the saved revision", async () => {
     const settingsPut = deferred<QqSettingsResponse>();
@@ -1117,6 +1200,7 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
       qqManagedStatus: { ...waitingConfirm, phase: "waiting_scan" },
     });
 
+    await discoverQuickLoginAccounts();
     const login = store.getState().quickLoginQqManaged("20002");
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(updateSettings).toHaveBeenCalledWith({ account_id: "20002", expected_revision: 5 });
@@ -1185,6 +1269,7 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
       },
     });
 
+    await discoverQuickLoginAccounts();
     expect(await store.getState().quickLoginQqManaged("20002")).toBe(false);
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(updateSettings).toHaveBeenCalledWith({ account_id: "20002", expected_revision: 5 });
@@ -1233,6 +1318,7 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
       },
     });
 
+    await discoverQuickLoginAccounts();
     const success = await store.getState().quickLoginQqManaged("10001");
     expect(success).toBe(true);
     expect(quickLoginSpy).toHaveBeenCalledWith({
@@ -1305,6 +1391,7 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
             },
     });
 
+    await discoverQuickLoginAccounts(true);
     expect(await store.getState().quickLoginQqManaged("10001")).toBe(false);
     expect(quickLoginSpy).not.toHaveBeenCalled();
   });
@@ -1329,7 +1416,597 @@ describe("QQ managed resources, accounts discovery and quick-login lifecycle", (
       },
     });
 
+    await discoverQuickLoginAccounts();
     expect(await store.getState().quickLoginQqManaged("10001")).toBe(false);
     expect(quickLoginSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("QQ accounts shared read eligibility and cancellation", () => {
+  const owned: QqManagedStatus = {
+    apply: "ready",
+    process: "running",
+    ownership: "owned",
+    phase: "waiting_scan",
+    core_ready: false,
+    network_apply: "pending",
+    transport_phase: "idle",
+    diagnostic_code: null,
+  };
+  const readyResources: QqManagedResourceSnapshot = {
+    revision: "accounts-runtime",
+    status: "ready",
+    root: "C:/synthetic-runtime",
+    diagnostic_code: null,
+  };
+  const accounts: QqManagedAccounts = {
+    accounts: [{ account_id: "10001", display_name: "Synthetic" }],
+  };
+  const bind = (overrides: Partial<typeof api> = {}) => {
+    const client = {
+      ...store.getState().apiClient,
+      getQqManagedStatus: async () => owned,
+      getQqManagedConfig: async () => savedManagedConfig,
+      getQqManagedResources: async () => readyResources,
+      listQqManagedAccounts: vi.fn(async () => accounts),
+      ...overrides,
+    };
+    store.getState().resetForTests(client);
+    store.setState({ qqSettings: mockQqSettings, qqConnection: mockQqConnection });
+    return client;
+  };
+  const prerequisites = async () => {
+    await Promise.all([
+      store.getState().loadQqManaged(),
+      store.getState().loadQqManagedResources(),
+    ]);
+  };
+
+  it.each([
+    ["blocked", mockManagedStatus, savedManagedConfig, readyResources],
+    ["ready but unowned", { ...owned, ownership: "none" }, savedManagedConfig, readyResources],
+    ["external", { ...owned, ownership: "external" }, savedManagedConfig, readyResources],
+    ["disabled", { ...owned, process: "disabled" }, savedManagedConfig, readyResources],
+    [
+      "starting",
+      { ...owned, process: "starting", phase: "starting" },
+      savedManagedConfig,
+      readyResources,
+    ],
+    [
+      "challenge has no credential",
+      { ...owned, phase: "challenge" },
+      savedManagedConfig,
+      readyResources,
+    ],
+    ["saved off", owned, mockManagedConfig, readyResources],
+    [
+      "missing resources",
+      owned,
+      savedManagedConfig,
+      { ...readyResources, status: "missing", root: null },
+    ],
+  ] as const)(
+    "does zero accounts network work for %s without treating it as an empty list",
+    async (_label, status, config, resources) => {
+      const list = vi.fn(async () => accounts);
+      bind({
+        getQqManagedStatus: async () => status,
+        getQqManagedConfig: async () => config,
+        getQqManagedResources: async () => resources,
+        listQqManagedAccounts: list,
+      });
+      await store.getState().loadQqManagedAccounts();
+      expect(store.getState().qqManagedAccountsAvailability).toBe("unknown");
+      await prerequisites();
+      await store.getState().loadQqManagedAccounts();
+      expect(list).not.toHaveBeenCalled();
+      expect(store.getState()).toMatchObject({
+        qqManagedAccountsAvailability: "unavailable",
+        qqManagedAccountsLoaded: false,
+        qqManagedAccountsError: null,
+      });
+    },
+  );
+
+  it("uses one network read for concurrent consumers and aborts only after the last release", async () => {
+    const response = deferred<QqManagedAccounts>();
+    let signal: AbortSignal | undefined;
+    const list = vi.fn((input?: AbortSignal) => {
+      signal = input;
+      return response.promise;
+    });
+    bind({ listQqManagedAccounts: list });
+    await prerequisites();
+    const first = {},
+      second = {};
+    const reads = [
+      store.getState().acquireQqManagedAccounts(first),
+      store.getState().acquireQqManagedAccounts(second),
+    ];
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(false);
+    store.getState().releaseQqManagedAccounts(first);
+    expect(signal?.aborted).toBe(false);
+    store.getState().releaseQqManagedAccounts(second);
+    expect(signal?.aborted).toBe(true);
+    await Promise.all(reads);
+    response.resolve(accounts);
+    await act(async () => {});
+    expect(store.getState()).toMatchObject({
+      qqManagedAccountsLoaded: false,
+      qqManagedAccountsLoading: false,
+      qqManagedAccountsError: null,
+    });
+  });
+
+  it.each(["success", "failure"] as const)(
+    "discards an off/on ABA late %s, then reads the recovered owner",
+    async (outcome) => {
+      const old = deferred<QqManagedAccounts>();
+      let signal: AbortSignal | undefined;
+      let status = owned;
+      const list = vi
+        .fn()
+        .mockImplementationOnce((input?: AbortSignal) => {
+          signal = input;
+          return old.promise;
+        })
+        .mockResolvedValue(accounts);
+      bind({ listQqManagedAccounts: list, getQqManagedStatus: async () => status });
+      await prerequisites();
+      const owner = {};
+      const pending = store.getState().acquireQqManagedAccounts(owner);
+      await act(async () => {});
+      status = { ...owned, ownership: "none", process: "stopped", phase: "stopped" };
+      await store.getState().refreshQqManaged();
+      expect(signal?.aborted).toBe(true);
+      expect(store.getState().qqManagedAccountsAvailability).toBe("unavailable");
+      status = owned;
+      await store.getState().refreshQqManaged();
+      await act(async () => {});
+      if (outcome === "success")
+        old.resolve({ accounts: [{ account_id: "99999", display_name: "Old" }] });
+      else old.reject(new Error("old accounts failure"));
+      await pending;
+      await act(async () => {});
+      expect(list).toHaveBeenCalledTimes(2);
+      expect(store.getState()).toMatchObject({
+        qqManagedAccounts: accounts.accounts,
+        qqManagedAccountsLoaded: true,
+        qqManagedAccountsError: null,
+      });
+      store.getState().releaseQqManagedAccounts(owner);
+    },
+  );
+
+  it.each(["API", "lifecycle"] as const)(
+    "aborts the old %s consumer and rejects a late adapter result",
+    async (boundary) => {
+      const old = deferred<QqManagedAccounts>();
+      let signal: AbortSignal | undefined;
+      const list = vi.fn((input?: AbortSignal) => {
+        signal = input;
+        return old.promise;
+      });
+      const client = bind({ listQqManagedAccounts: list });
+      await prerequisites();
+      const owner = {};
+      const pending = store.getState().acquireQqManagedAccounts(owner);
+      await act(async () => {});
+      if (boundary === "API")
+        store.setState({ apiClient: { ...client, listQqManagedAccounts: async () => accounts } });
+      else store.getState().resetForTests(client);
+      store.getState().releaseQqManagedAccounts(owner);
+      expect(signal?.aborted).toBe(true);
+      old.resolve({ accounts: [{ account_id: "99999", display_name: "stale" }] });
+      await pending;
+      await act(async () => {});
+      expect(store.getState()).toMatchObject({
+        qqManagedAccountsLoaded: false,
+        qqManagedAccountsLoading: false,
+        qqManagedAccountsError: null,
+      });
+    },
+  );
+
+  it("keeps active=false silent, refreshes current eligibility once, and preserves unsaved drafts", async () => {
+    let status: QqManagedStatus = {
+      ...owned,
+      ownership: "none",
+      process: "stopped",
+      phase: "stopped",
+    };
+    const getStatus = vi.fn(async () => status);
+    const list = vi.fn(async () => accounts);
+    bind({ getQqManagedStatus: getStatus, listQqManagedAccounts: list });
+    const view = render(<QqConnectionTab active={false} />);
+    await act(async () => {});
+    expect(getStatus).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    view.rerender(<QqConnectionTab active />);
+    await act(async () => {});
+    expect(list).not.toHaveBeenCalled();
+    store.getState().patchQqManagedDraft(false);
+    store.getState().patchQqManagedResourceDraft("D:/unsaved-runtime");
+    const draft = store.getState().qqInputs.managedResources?.root;
+    status = owned;
+    fireEvent.click(screen.getByRole("button", { name: translate("connections.refreshState") }));
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(store.getState().qqInputs.managed?.enabled).toBe(false);
+    expect(store.getState().qqInputs.managedResources?.root).toBe(draft);
+    view.rerender(<QqConnectionTab active={false} />);
+    await act(async () => {});
+    expect(store.getState().qqManagedAccountsLoaded).toBe(false);
+  });
+
+  it("invalidates discovered accounts during managed config writes and recovers only after current status", async () => {
+    const write = deferred<QqManagedConfigSnapshot>();
+    let status = owned;
+    const list = vi.fn(async () => accounts);
+    bind({
+      listQqManagedAccounts: list,
+      updateQqManagedConfig: async () => write.promise,
+      getQqManagedStatus: async () => status,
+    });
+    await prerequisites();
+    const owner = {};
+    await store.getState().acquireQqManagedAccounts(owner);
+    expect(list).toHaveBeenCalledTimes(1);
+    store.getState().patchQqManagedDraft(false);
+    const save = store.getState().saveQqManagedConfig();
+    expect(store.getState().qqManagedAccountsLoaded).toBe(false);
+    status = { ...owned, ownership: "none", process: "stopped", phase: "stopped" };
+    write.resolve(mockManagedConfig);
+    expect(await save).toBe(true);
+    expect(store.getState().qqManagedAccountsAvailability).toBe("unavailable");
+    expect(list).toHaveBeenCalledTimes(1);
+    status = owned;
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        getQqManagedConfig: async () => savedManagedConfig,
+      },
+    });
+    await prerequisites();
+    const nextOwner = {};
+    await store.getState().acquireQqManagedAccounts(nextOwner);
+    expect(list).toHaveBeenCalledTimes(2);
+    store.getState().releaseQqManagedAccounts(nextOwner);
+    store.getState().releaseQqManagedAccounts(owner);
+  });
+
+  it("preserves quick-login CAS-first ordering while rediscovering the changed connection owner", async () => {
+    const order: string[] = [];
+    const login = vi.fn(async () => {
+      order.push("quick-login");
+      return { ...owned, phase: "waiting_confirm" as const };
+    });
+    const readStatus = vi.fn(async () => {
+      order.push("status");
+      return owned;
+    });
+    const list = vi.fn(async () => {
+      order.push("accounts");
+      return { accounts: [{ account_id: "20002", display_name: null }] };
+    });
+    const put = vi.fn(async () => {
+      order.push("settings");
+      return { ...mockQqSettings, account_id: "20002", revision: 6 };
+    });
+    bind({
+      getQqManagedStatus: readStatus,
+      listQqManagedAccounts: list,
+      updateQqSettings: put,
+      quickLoginQqManaged: login,
+    });
+    await prerequisites();
+    await store.getState().loadQqManagedAccounts();
+    store.setState({
+      qqInputs: {
+        ...store.getState().qqInputs,
+        connection: {
+          source: mockQqSettings,
+          accountId: "20002",
+          endpoint: "ws://unsaved",
+          token: "unsaved-token",
+        },
+      },
+    });
+    order.length = 0;
+    expect(await store.getState().quickLoginQqManaged("20002")).toBe(true);
+    expect(order).toEqual(["settings", "status", "accounts", "quick-login"]);
+    expect(login).toHaveBeenCalledWith({ account_id: "20002", expected_settings_revision: 6 });
+    expect(store.getState().qqInputs.connection?.endpoint).toBe("ws://unsaved");
+    expect(store.getState().qqInputs.connection?.token).toBe("unsaved-token");
+  });
+
+  it("waits for shared pending account rediscovery after CAS without another GET or early login", async () => {
+    const rediscovery = deferred<QqManagedAccounts>();
+    const selectedAccounts: QqManagedAccounts = {
+      accounts: [{ account_id: "20002", display_name: null }],
+    };
+    const order: string[] = [];
+    const list = vi
+      .fn(async () => {
+        order.push("accounts:explicit-after-login");
+        return selectedAccounts;
+      })
+      .mockImplementationOnce(async () => {
+        order.push("accounts:initial");
+        return selectedAccounts;
+      })
+      .mockImplementationOnce(() => {
+        order.push("accounts:after-CAS");
+        return rediscovery.promise;
+      });
+    const login = vi.fn(async () => {
+      const status = store.getState().qqManagedStatus;
+      order.push(`POST:${status?.apply === "ready" ? status.phase : "blocked"}`);
+      return { ...owned, phase: "waiting_confirm" as const };
+    });
+    bind({
+      listQqManagedAccounts: list,
+      updateQqSettings: async () => {
+        order.push("CAS");
+        return { ...mockQqSettings, account_id: "20002", revision: 6 };
+      },
+      quickLoginQqManaged: login,
+    });
+    await prerequisites();
+    const owner = {};
+    await store.getState().acquireQqManagedAccounts(owner);
+    store.setState({
+      qqInputs: {
+        ...store.getState().qqInputs,
+        connection: { source: mockQqSettings, accountId: "20002", endpoint: "", token: "" },
+      },
+    });
+    let settled = false;
+    const pendingLogin = store
+      .getState()
+      .quickLoginQqManaged("20002")
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await act(async () => {});
+    expect(store.getState().qqSettings?.revision).toBe(6);
+    expect(store.getState().qqManagedAccountsLoading).toBe(true);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(login).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+    expect(order).toEqual(["accounts:initial", "CAS", "accounts:after-CAS"]);
+    rediscovery.resolve(selectedAccounts);
+    expect(await pendingLogin).toBe(true);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(login).toHaveBeenCalledExactlyOnceWith({
+      account_id: "20002",
+      expected_settings_revision: 6,
+    });
+    expect(order).toEqual(["accounts:initial", "CAS", "accounts:after-CAS", "POST:waiting_scan"]);
+    expect(store.getState()).toMatchObject({
+      qqManagedStatus: { phase: "waiting_confirm" },
+      qqManagedAccounts: [],
+      qqManagedAccountsLoaded: false,
+      qqManagedAccountsLoading: false,
+      qqManagedAccountsAvailability: "available",
+      qqManagedAccountsError: null,
+    });
+    await store.getState().loadQqManagedAccounts();
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(order.at(-1)).toBe("accounts:explicit-after-login");
+    expect(store.getState().qqManagedAccountsLoaded).toBe(true);
+    store.getState().releaseQqManagedAccounts(owner);
+  });
+
+  it("keeps a failed quick login visible and recovers discovery through current status before retry", async () => {
+    const list = vi.fn(async () => ({
+      accounts: [{ account_id: "10001", display_name: null }],
+    }));
+    const login = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("HTTP 503 quick login unavailable"))
+      .mockResolvedValueOnce({ ...owned, phase: "waiting_confirm" as const });
+    bind({ listQqManagedAccounts: list, quickLoginQqManaged: login });
+    await prerequisites();
+    const owner = {};
+    await store.getState().acquireQqManagedAccounts(owner);
+    expect(await store.getState().quickLoginQqManaged("10001")).toBe(false);
+    expect(store.getState().qqManagedError).toBe("HTTP 503 quick login unavailable");
+    expect(store.getState().qqManagedAccountsLoaded).toBe(false);
+    expect(store.getState().qqManagedAccountsLoading).toBe(false);
+    expect(list).toHaveBeenCalledTimes(1);
+    await store.getState().refreshQqManaged();
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(await store.getState().quickLoginQqManaged("10001")).toBe(true);
+    expect(login).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(store.getState().qqManagedStatus).toMatchObject({ phase: "waiting_confirm" });
+    expect(store.getState().qqManagedAccountsLoaded).toBe(false);
+    expect(store.getState().qqManagedError).toBeNull();
+    store.getState().releaseQqManagedAccounts(owner);
+  });
+
+  it.each(["choice", "API", "lifecycle"] as const)(
+    "rejects %s replacement while account CAS is pending",
+    async (replacement) => {
+      const write = deferred<QqSettingsResponse>();
+      const login = vi.fn();
+      const client = bind({
+        listQqManagedAccounts: async () => ({
+          accounts: [{ account_id: "20002", display_name: null }],
+        }),
+        updateQqSettings: () => write.promise,
+        quickLoginQqManaged: login,
+      });
+      await prerequisites();
+      await store.getState().loadQqManagedAccounts();
+      store.setState({
+        qqInputs: {
+          ...store.getState().qqInputs,
+          connection: {
+            source: mockQqSettings,
+            accountId: "20002",
+            endpoint: "",
+            token: "",
+          },
+        },
+      });
+      const pending = store.getState().quickLoginQqManaged("20002");
+      if (replacement === "choice")
+        store.setState({
+          qqInputs: {
+            ...store.getState().qqInputs,
+            connection: { ...store.getState().qqInputs.connection!, accountId: "30003" },
+          },
+        });
+      else if (replacement === "API") store.setState({ apiClient: { ...client } });
+      else store.getState().resetForTests(client);
+      write.resolve({ ...mockQqSettings, account_id: "20002", revision: 6 });
+      expect(await pending).toBe(false);
+      expect(login).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not call quick-login or pretend success when rediscovery after CAS fails", async () => {
+    const login = vi.fn();
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({ accounts: [{ account_id: "20002", display_name: null }] })
+      .mockRejectedValueOnce(new Error("HTTP 503 after account CAS"));
+    bind({
+      listQqManagedAccounts: list,
+      updateQqSettings: async () => ({ ...mockQqSettings, account_id: "20002", revision: 6 }),
+      quickLoginQqManaged: login,
+    });
+    await prerequisites();
+    await store.getState().loadQqManagedAccounts();
+    store.setState({
+      qqInputs: {
+        ...store.getState().qqInputs,
+        connection: {
+          source: mockQqSettings,
+          accountId: "20002",
+          endpoint: "",
+          token: "",
+        },
+      },
+    });
+    expect(await store.getState().quickLoginQqManaged("20002")).toBe(false);
+    expect(login).not.toHaveBeenCalled();
+    expect(store.getState().qqSettings?.revision).toBe(6);
+    expect(store.getState().qqManagedAccountsError).toBe("HTTP 503 after account CAS");
+  });
+
+  it("rejects quick login using account discovery from a replaced API", async () => {
+    const quickLogin = vi.fn();
+    bind({ quickLoginQqManaged: quickLogin });
+    await prerequisites();
+    await store.getState().loadQqManagedAccounts();
+    store.setState({ apiClient: { ...store.getState().apiClient } });
+    expect(await store.getState().quickLoginQqManaged("10001")).toBe(false);
+    expect(quickLogin).not.toHaveBeenCalled();
+  });
+
+  it("reconciles retry status and a saved resource path through the same account owner", async () => {
+    const list = vi.fn(async () => accounts);
+    const retry = vi.fn(async () => owned);
+    const saveResources = vi.fn(async () => ({
+      ...readyResources,
+      revision: "resource-after-save",
+      root: "D:/next-runtime",
+    }));
+    bind({
+      listQqManagedAccounts: list,
+      retryQqManaged: retry,
+      updateQqManagedResources: saveResources,
+    });
+    await prerequisites();
+    const owner = {};
+    await store.getState().acquireQqManagedAccounts(owner);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(await store.getState().retryQqManaged()).toBe(true);
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(2);
+    store.getState().patchQqManagedResourceDraft("D:/next-runtime");
+    expect(await store.getState().saveQqManagedResources()).toBe(true);
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(store.getState().qqInputs.managedResources).toBeNull();
+    store.getState().releaseQqManagedAccounts(owner);
+  });
+
+  it("renders real query failure, retries independently, and never starts a managed write", async () => {
+    const list = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("HTTP 503 accounts unavailable"))
+      .mockResolvedValue({ accounts: [] });
+    const retryManaged = vi.fn();
+    const client = bind({ listQqManagedAccounts: list, retryQqManaged: retryManaged });
+    render(<QqConnectionTab />);
+    await act(async () => {});
+    expect(screen.getByRole("alert").textContent).toContain("HTTP 503 accounts unavailable");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: translate("connections.managed.quickLogin.refreshAccounts"),
+      }),
+    );
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(retryManaged).not.toHaveBeenCalled();
+    expect(store.getState().qqManagedAccountsLoaded).toBe(true);
+    expect(
+      screen.getByText(translate("connections.managed.quickLogin.emptyAccounts")),
+    ).toBeTruthy();
+    expect(client).toBe(store.getState().apiClient);
+  });
+
+  it("aborts on task leave and hidden, revalidates once on return, and ignores blur", async () => {
+    const responses = [
+      deferred<QqManagedAccounts>(),
+      deferred<QqManagedAccounts>(),
+      deferred<QqManagedAccounts>(),
+    ];
+    const signals: AbortSignal[] = [];
+    const list = vi.fn((signal?: AbortSignal) => {
+      if (signal) signals.push(signal);
+      return responses[signals.length - 1].promise;
+    });
+    bind({ listQqManagedAccounts: list });
+    const view = render(<QqConnectionTab />);
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(1);
+    fireEvent(window, new Event("blur"));
+    fireEvent(window, new Event("focus"));
+    expect(signals[0].aborted).toBe(false);
+    view.rerender(<QqConnectionTab task="events" />);
+    await act(async () => {});
+    expect(signals[0].aborted).toBe(true);
+    view.rerender(<QqConnectionTab task="connection" />);
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(2);
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    fireEvent(document, new Event("visibilitychange"));
+    expect(signals[1].aborted).toBe(true);
+    hidden.mockReturnValue(false);
+    visibility.mockReturnValue("visible");
+    fireEvent(document, new Event("visibilitychange"));
+    await act(async () => {});
+    expect(list).toHaveBeenCalledTimes(3);
+    responses[0].resolve({ accounts: [{ account_id: "99999", display_name: "old" }] });
+    responses[1].reject(new Error("hidden old failure"));
+    responses[2].resolve(accounts);
+    await act(async () => {});
+    expect(store.getState()).toMatchObject({
+      qqManagedAccounts: accounts.accounts,
+      qqManagedAccountsError: null,
+    });
+    hidden.mockRestore();
+    visibility.mockRestore();
   });
 });

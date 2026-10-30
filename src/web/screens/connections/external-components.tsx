@@ -123,7 +123,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
           <p className="text-xs text-muted-foreground">{t("library.loading")}</p>
         )}
         {mcpErrorDisplay && (
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
             <p role="alert" className="text-xs text-destructive">
               {mcpErrorDisplay}
             </p>
@@ -155,7 +155,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
                   key={server.config.id}
                   className="space-y-2 rounded-lg bg-muted/20 p-3 text-xs"
                 >
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -179,7 +179,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
                   )}
 
                   {toolError && !toolData && (
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                       <p role="alert" className="text-xs text-destructive">
                         {toolError}
                       </p>
@@ -254,7 +254,7 @@ export function ExternalIntegrationsCard({ active = true }: { active?: boolean }
           <p className="text-xs text-muted-foreground">{t("library.loading")}</p>
         )}
         {skillError && (
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
             <p role="alert" className="text-xs text-destructive">
               {skillError}
             </p>

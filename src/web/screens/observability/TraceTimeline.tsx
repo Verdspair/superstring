@@ -179,7 +179,7 @@ export function TraceTimeline({
           {t("observability.timeRange", { "0": milliseconds(layout.duration) })}
         </span>
       </div>
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea contentSizing="intrinsic" className="min-h-0 flex-1">
         <section
           aria-label={t("observability.parentAndChildTiming")}
           className="min-w-[42rem] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"

@@ -3,6 +3,7 @@ import {
   type ConversationChange,
   subscribeConversationChanges,
 } from "../../src/server/conversation/conversation-changes";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { createSession, DEFAULT_AGENT_ID, DEFAULT_USER_ID } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { RuntimeTelemetry } from "../../src/server/observability/runtime-telemetry";
@@ -34,6 +35,11 @@ function fixture() {
     bindingEpoch = 1,
   ) => {
     const sourceId = sessionId ?? createSession(h.orm, label, { modelName: "fixture" }).id;
+    if (closedAt === null) {
+      const canonical = new ConversationEventRepository(h.db).ensureWeb(sourceId, userId);
+      if (!canonical) throw new Error("missing canonical trace fixture");
+      return { id: canonical.id, sourceId };
+    }
     const id = crypto.randomUUID();
     h.db
       .query(

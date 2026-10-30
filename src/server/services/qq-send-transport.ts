@@ -116,14 +116,6 @@ export function qqReplySegments(
   return legacyTextSegments(payload.text, legacyRecipient);
 }
 
-/** Text-only public entry retained for existing callers and historical projection. */
-export function qqTextSegments(
-  payload: QqTextPart,
-  legacyRecipient: string | null = null,
-): OneBotSendRequest["message"] {
-  return qqReplySegments(payload, legacyRecipient);
-}
-
 export function qqStickerFileReference(orm: Orm, store: QqStickerStore): QqStickerFileReference {
   return (stickerId) => {
     const asset = readQqStickerAsset(orm, stickerId);

@@ -27,6 +27,8 @@ it("preserves external descriptions literally without converting them into instr
     capability: "mcp.example",
     effect: "read",
     sandboxCallable: true,
+    invocation: "action" as const,
+    scope: "conversation" as const,
     origin: "mcp",
     globalEnabled: true,
     functionId: null,
@@ -52,4 +54,41 @@ it("rejects malformed directory entries instead of inventing availability", asyn
   );
   globalThis.fetch = Object.assign(fetcher, { preconnect: originalFetch.preconnect });
   await expect(api.getToolDirectory()).rejects.toThrow();
+});
+
+it("round trips host terminal metadata and rejects a legacy row missing supported scope", async () => {
+  const terminal = {
+    name: "reply.sticker",
+    description: "Contribute sticker",
+    parameters: {},
+    capability: "conversation.reply",
+    effect: "write",
+    sandboxCallable: false,
+    invocation: "host-terminal",
+    scope: "qq-conversation",
+    origin: "system",
+    globalEnabled: false,
+    functionId: "qq-reply",
+    resource: null,
+    revision: "reply-v1",
+    approvalRequired: false,
+    directories: [],
+  };
+  const { scope: _scope, ...missing } = terminal;
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ tools: [terminal] }), {
+        headers: { "content-type": "application/json" },
+      }),
+    )
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ tools: [missing] }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  globalThis.fetch = Object.assign(fetcher, { preconnect: originalFetch.preconnect });
+  expect(await api.getToolDirectory()).toEqual({ tools: [terminal] });
+  await expect(api.getToolDirectory()).rejects.toThrow();
+  expect(fetcher.mock.calls.every((call) => call[1]?.cache === "no-store")).toBe(true);
 });

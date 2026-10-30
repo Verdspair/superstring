@@ -1,5 +1,5 @@
 import { Cpu, Save, Undo2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { ConfirmDialog } from "@/components/confirmation";
@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { InputSuggestions } from "@/components/ui/input-suggestions";
 import { dirtyPages } from "@/features/agents/page-drafts";
 import { translateNotice } from "@/i18n";
+import { useForegroundRead } from "@/services/use-foreground-read";
 import type { AgentDraft } from "@/state/types";
 import { useSuperstringStore } from "@/store";
 
@@ -22,7 +23,11 @@ export function AgentModelPurpose({
 } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
+      api: state.apiClient,
       pageEditor: state.pageEditor,
+      acquireOrganizationRead: state.acquireOrganizationRead,
+      releaseOrganizationRead: state.releaseOrganizationRead,
+      organizationLoading: state.organizationLoading,
       loadOrganization: state.loadOrganization,
       organizationEditor: state.organizationEditor,
       modelNames: state.modelNames,
@@ -39,16 +44,42 @@ export function AgentModelPurpose({
   );
   const { t } = useTranslation();
   const [confirmDefault, setConfirmDefault] = useState(false);
-  const applyTarget = useRef<string | null>(null);
+  const applyTarget = useRef<{
+    api: typeof s.api;
+    agentId: string;
+    token: object;
+    model: string;
+  } | null>(null);
+
+  const token = s.pageEditor?.token;
+  const organizationOwner = useMemo(() => ({ api: s.api }), [s.api]);
+  const loadDefault = useCallback(() => {
+    const current = useSuperstringStore.getState();
+    if (current.apiClient !== s.api || current.pageEditor?.token !== token) return;
+    void s.acquireOrganizationRead(organizationOwner);
+  }, [s.api, token, s.acquireOrganizationRead, organizationOwner]);
+  const releaseDefault = useCallback(
+    () => s.releaseOrganizationRead(organizationOwner),
+    [s.releaseOrganizationRead, organizationOwner],
+  );
+  useForegroundRead(loadDefault, releaseDefault, {
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: releaseDefault,
+  });
 
   useEffect(() => {
-    if (active) void s.loadOrganization();
-  }, [active, s.loadOrganization]);
-
+    const target = applyTarget.current;
+    if (target && (target.api !== s.api || target.token !== token)) {
+      applyTarget.current = null;
+      setConfirmDefault(false);
+    }
+  }, [s.api, token]);
   const editor = s.pageEditor;
   if (!editor) return null;
 
-  const defaultModel = s.organizationEditor?.modelName;
+  const defaultModel = !s.organizationLoading ? s.organizationEditor?.source.model_name : null;
   const alreadyDefault =
     !!defaultModel &&
     [
@@ -89,7 +120,7 @@ export function AgentModelPurpose({
       >
         {modelFields.map(([key, label]) => {
           return (
-            <div key={key} className={embedded ? "py-2 px-0" : "p-4 sm:p-5"}>
+            <div key={key} className={embedded ? "py-2 px-0" : "settings-content-padding"}>
               <Field label={label} tooltip={t("hints.agent.fieldModelName")}>
                 <InputSuggestions
                   suggestions={modelSuggestions}
@@ -106,7 +137,7 @@ export function AgentModelPurpose({
           );
         })}
 
-        <div className={embedded ? "py-2 px-0" : "p-4 sm:p-5"}>
+        <div className={embedded ? "py-2 px-0" : "settings-content-padding"}>
           <Field label="library.temperature" tooltip={t("hints.agent.fieldTemperature")}>
             <Input
               type="number"
@@ -122,8 +153,8 @@ export function AgentModelPurpose({
         <div
           className={
             embedded
-              ? "space-y-4 rounded-[10px] border border-border bg-muted/15 p-4 sm:p-5 mt-2"
-              : "space-y-4 bg-muted/15 p-4 sm:p-5"
+              ? "space-y-4 rounded-[10px] border border-border bg-muted/15 settings-content-padding mt-2"
+              : "space-y-4 bg-muted/15 settings-content-padding"
           }
         >
           <div className="flex flex-wrap items-center gap-2">
@@ -134,7 +165,13 @@ export function AgentModelPurpose({
               tooltip={t("hints.agent.defaults")}
               disabledReason={t("hints.agent.defaultsDisabled")}
               onClick={() => {
-                applyTarget.current = defaultModel ?? null;
+                if (!defaultModel) return;
+                applyTarget.current = {
+                  api: s.api,
+                  agentId: editor.agent.id,
+                  token: editor.token,
+                  model: defaultModel,
+                };
                 setConfirmDefault(true);
               }}
             >
@@ -186,13 +223,22 @@ export function AgentModelPurpose({
         open={confirmDefault && Boolean(defaultModel)}
         message={t("library.models.apply.confirm", {
           "0": editor.agent.name,
-          "1": defaultModel ?? applyTarget.current ?? t("library.unset"),
+          "1": applyTarget.current?.model ?? defaultModel ?? t("library.unset"),
         })}
         onCancel={() => setConfirmDefault(false)}
         onConfirm={() => {
-          const target = defaultModel ?? applyTarget.current;
-          if (!target) return;
-          return s.applyDefaultModelToAgent(target).then((ok) => {
+          const target = applyTarget.current;
+          const current = useSuperstringStore.getState();
+          if (
+            !target ||
+            current.apiClient !== target.api ||
+            current.pageEditor?.token !== target.token ||
+            current.editorAgentId !== target.agentId
+          ) {
+            setConfirmDefault(false);
+            return;
+          }
+          return s.applyDefaultModelToAgent(target.model).then((ok) => {
             if (ok) setConfirmDefault(false);
           });
         }}

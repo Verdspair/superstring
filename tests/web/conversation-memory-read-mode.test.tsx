@@ -93,12 +93,14 @@ beforeEach(() => {
     getConversationEvents: vi.fn().mockResolvedValue({ items: [], nextSeq: 1, hasMore: false }),
     getConversationMemoryReadMode: vi.fn().mockImplementation(async (id: string) => {
       const entry = serverModes.get(id);
-      return entry ? { ...entry } : { mode: "current_conversation", revision: 1 };
+      return entry
+        ? { ...entry, conversation_id: id }
+        : { conversation_id: id, mode: "current_conversation", revision: 1 };
     }),
     saveConversationMemoryReadMode: vi.fn().mockImplementation(async (id, body) => {
       const updated = { mode: body.mode, revision: body.expected_revision + 1 };
       serverModes.set(id, updated);
-      return { ...updated };
+      return { ...updated, conversation_id: id };
     }),
   });
 
@@ -235,6 +237,7 @@ describe("conversation memory read mode UI and store integration", () => {
 
     // Backend updated to rev 2
     vi.mocked(store.getState().apiClient.getConversationMemoryReadMode).mockResolvedValueOnce({
+      conversation_id: convId1,
       mode: "current_conversation",
       revision: 2,
     });
@@ -265,7 +268,11 @@ describe("conversation memory read mode UI and store integration", () => {
   });
 
   it("discards late read response after switching conversation without overwriting current baseline or draft", async () => {
-    const pending = deferred<{ mode: "current_conversation"; revision: 1 }>();
+    const pending = deferred<{
+      conversation_id: string;
+      mode: "current_conversation";
+      revision: 1;
+    }>();
     vi.mocked(store.getState().apiClient.getConversationMemoryReadMode).mockReturnValue(
       pending.promise,
     );
@@ -279,6 +286,7 @@ describe("conversation memory read mode UI and store integration", () => {
         currentConversationId: convId2,
         memoryReadModeBaseline: {
           id: convId2,
+          canonicalId: convId2,
           mode: "agent_shared",
           revision: 5,
           api: store.getState().apiClient,
@@ -289,7 +297,7 @@ describe("conversation memory read mode UI and store integration", () => {
 
     // ConvId1 read resolves late
     act(() => {
-      pending.resolve({ mode: "current_conversation", revision: 1 });
+      pending.resolve({ conversation_id: convId1, mode: "current_conversation", revision: 1 });
     });
     await readPromise;
 
@@ -474,6 +482,7 @@ describe("conversation memory read mode UI and store integration", () => {
 
     // Click retry with successful load
     vi.mocked(store.getState().apiClient.getConversationMemoryReadMode).mockResolvedValueOnce({
+      conversation_id: convId1,
       mode: "agent_shared",
       revision: 2,
     });
@@ -514,6 +523,7 @@ describe("conversation memory read mode UI and store integration", () => {
 
     // Remote changes to agent_shared on server
     vi.mocked(store.getState().apiClient.getConversationMemoryReadMode).mockResolvedValueOnce({
+      conversation_id: convId1,
       mode: "agent_shared",
       revision: 4,
     });
@@ -547,6 +557,7 @@ describe("conversation memory read mode UI and store integration", () => {
     const newApiClient = {
       ...api,
       getConversationMemoryReadMode: vi.fn().mockResolvedValue({
+        conversation_id: convId1,
         mode: "agent_shared" as const,
         revision: 9,
       }),

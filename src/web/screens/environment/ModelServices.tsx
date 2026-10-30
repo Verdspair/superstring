@@ -250,7 +250,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
   const modelIdSuggestions = uniqueProviderModelIds.map((id) => ({ value: id }));
 
   return (
-    <section className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]">
+    <section className="workspace-page flex h-full min-h-0 flex-col">
       <WorkspacePageHeader
         location={t("brand.workspace", { "0": t("models.title") })}
         title={t("models.title")}
@@ -388,7 +388,8 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
         }}
       >
         <SheetContent
-          className="w-full overflow-y-auto sm:max-w-2xl"
+          scrollMode="surface"
+          className="w-full  sm:max-w-2xl"
           onKeyDown={(event) => {
             // An unsaved local credential draft must close through this Sheet's discard guard.
             if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k")
@@ -421,14 +422,20 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                     onChange={(e) => setEditor({ ...editor, baseUrl: e.target.value })}
                   />
                 </Field>
-                <Field label="models.apiKey" tooltip={t("hints.fieldExtra.providerKey")}>
+                <Field
+                  label="models.apiKey"
+                  info="models.keyInputHint"
+                  tooltip={t("hints.fieldExtra.providerKey")}
+                >
                   <Input
                     type="password"
                     autoComplete="new-password"
                     value={editor.apiKey}
                     disabled={saving}
                     placeholder={t(
-                      editor.source?.has_api_key ? "models.keyStored" : "models.keyMissing",
+                      editor.source?.has_api_key
+                        ? "models.keyStoredPlaceholder"
+                        : "models.keyMissing",
                     )}
                     onChange={(e) => setEditor({ ...editor, apiKey: e.target.value })}
                   />
@@ -452,7 +459,7 @@ export function ModelServices({ active = true }: { active?: boolean } = {}) {
                 </div>
                 {editor.models.map((model) => (
                   <div key={model.key} className="space-y-3 rounded-md border p-4">
-                    <div className="grid grid-cols-[minmax(0,1fr)_6rem_auto] items-end gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
+                    <div className="grid min-w-0 grid-cols-1 items-end gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
                       <Field label="models.modelId" tooltip={t("hints.fieldExtra.providerModel")}>
                         <InputSuggestions
                           value={model.name}

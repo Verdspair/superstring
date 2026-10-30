@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { inputUnits } from "../../src/server/agent/context-engine";
 import type { ModelRequest } from "../../src/server/agent/model-port";
-import type { QqGroupCapabilityGuard } from "../../src/server/permissions/qq-group-capabilities";
+import { QqGroupCapabilityGuard } from "../../src/server/permissions/qq-group-capabilities";
 import { PermissionService } from "../../src/server/permissions/service";
 import {
   createWebActions,
@@ -136,6 +136,7 @@ function extractDisclosedMediaId(request: ModelRequest): string {
 }
 
 function extractActionObservations(request: ModelRequest): Array<{
+  readonly id: string;
   readonly name: string;
   readonly value: unknown;
   readonly sources: readonly {
@@ -145,6 +146,7 @@ function extractActionObservations(request: ModelRequest): Array<{
   }[];
 }> {
   const observations: Array<{
+    readonly id: string;
     readonly name: string;
     readonly value: unknown;
     readonly sources: readonly {
@@ -160,6 +162,7 @@ function extractActionObservations(request: ModelRequest): Array<{
         const data = JSON.parse(part.text) as {
           readonly kind?: string;
           readonly value?: {
+            readonly id?: string;
             readonly name?: string;
             readonly value?: unknown;
             readonly sources?: readonly {
@@ -169,8 +172,13 @@ function extractActionObservations(request: ModelRequest): Array<{
             }[];
           };
         };
-        if (data.kind === "action_observation" && typeof data.value?.name === "string") {
+        if (
+          data.kind === "action_observation" &&
+          typeof data.value?.name === "string" &&
+          typeof data.value.id === "string"
+        ) {
           observations.push({
+            id: data.value.id,
             name: data.value.name,
             value: data.value.value,
             sources: data.value.sources ?? [],
@@ -182,7 +190,24 @@ function extractActionObservations(request: ModelRequest): Array<{
   return observations;
 }
 
-function assertPositiveObservations(request: ModelRequest): void {
+function assertPositiveObservations(
+  h: ReturnType<typeof createOneBotHarness>,
+  web: ReturnType<typeof createWebFixture>,
+  request: ModelRequest,
+): void {
+  if (!request.runId || !request.owner) throw new Error("Missing actual mixed-action run identity");
+  const run = h.runs.getRun(request.runId);
+  if (!run) throw new Error("Missing mixed-action run snapshot");
+  expect(run.owner).toEqual(request.owner);
+  expect(run.owner.kind).toBe("conversation");
+  expect(run.owner.id).toBe(h.conversationId);
+  const decisions = run.steps.filter((step) => step.phase === "next");
+  expect(decisions).toHaveLength(3);
+  const snapshot = h.runs.getContext(decisions[2]!.context);
+  if (!snapshot) throw new Error("Missing final mixed-action decision context");
+  expect(snapshot.status).toBe("exact");
+  expect(snapshot.messages).toEqual([...request.messages]);
+
   const round2Obs = extractActionObservations(request).filter((o) => o.name !== "media.list");
   const names = round2Obs.map((o) => o.name).sort();
   expect(names).toEqual(["media.describe", "sticker.search", "web.fetch", "web.fetch"]);
@@ -191,16 +216,43 @@ function assertPositiveObservations(request: ModelRequest): void {
   const mediaObs = round2Obs.find((o) => o.name === "media.describe");
   expect(mediaObs).toBeDefined();
 
-  // web.fetch observation guard: assert real full sources if available, preserving denial refs
+  // Tie the disclosed batch to this run's real action-result identities, not another run's refs.
+  const observationIds = new Set(round2Obs.map((observation) => observation.id));
+  const results = h.runs
+    .listEvents(run.runId)
+    .filter((event) => event.type === "action_result" && observationIds.has(event.observationId));
+  expect(results.map((event) => (event.type === "action_result" ? event.name : "")).sort()).toEqual(
+    names,
+  );
+  expect(results).toHaveLength(4);
+
+  const webAction = web.externalActions().find((action) => action.description.name === "web.fetch");
+  if (!webAction?.permission) throw new Error("Missing actual web.fetch permission requirement");
+  const permission = web.permissions.source(webAction.permission, run.owner);
+  expect(permission.id).toBe(WEB_PERMISSION_RESOURCE);
+  expect(permission.revision).toMatch(/^[0-9a-f]{64}$/);
+  const guard = new QqGroupCapabilityGuard(h.orm);
+  const capabilities = guard.sources(run.owner, "web");
+  expect(capabilities).toHaveLength(1);
+  expect(JSON.parse(capabilities[0]!.id)).toEqual([h.bindingId, run.owner.agentId, "web"]);
+  expect(capabilities[0]!.revision).toMatch(/^\d+$/);
+  const retainedWebAuthority = snapshot.sources.filter(
+    (source) =>
+      (source.kind === "tool_permission" && source.id === permission.id) ||
+      (source.kind === "qq_group_capability" && source.id === capabilities[0]!.id),
+  );
+  expect(retainedWebAuthority).toHaveLength(2);
+  expect(retainedWebAuthority).toContainEqual(permission);
+  expect(retainedWebAuthority).toContainEqual(capabilities[0]);
+  expect(web.permissions.sourceAccess(permission, run.owner)).toBe("available");
+  expect(guard.sourceAccess(capabilities[0]!, run.owner)).toBe("available");
+
   const webObsList = round2Obs.filter((o) => o.name === "web.fetch");
   expect(webObsList).toHaveLength(2);
   for (const webObs of webObsList) {
     expect(webObs.value).toBeDefined();
-    expect(webObs.sources.map((source) => source.kind).sort()).toEqual([
-      "qq_group_capability",
-      "tool_permission",
-    ]);
-    expect(webObs.sources.every((source) => source.revision.length > 0)).toBe(true);
+    expect(webObs.sources.some((source) => source.kind === "tool_permission")).toBe(false);
+    expect(webObs.sources.some((source) => source.kind === "qq_group_capability")).toBe(false);
   }
 
   // sticker.search fixture guard: fixture returns status "disabled" with 0 refs (no approved collection).
@@ -293,9 +345,9 @@ describe("OneBot mixed four-action budget regression and low-load control", () =
     expect(h.sent).toHaveLength(0);
     expect(h.outbox.list({})).toHaveLength(0);
 
-    // Guard exact 4 observation names, disabled fixture status, and full sources
+    // Guard model business observations and this decision snapshot's full authority.
     expect(seen).toHaveLength(3);
-    assertPositiveObservations(seen[2]);
+    assertPositiveObservations(h, web, seen[2]);
   });
 
   for (const scenario of NEAR_CAPACITY_SCENARIOS) {
@@ -389,8 +441,8 @@ describe("OneBot mixed four-action budget regression and low-load control", () =
         expect(h.sent).toHaveLength(0);
         expect(h.outbox.list({})).toHaveLength(0);
 
-        // Guard exact 4 observation names, disabled fixture status, and full sources
-        assertPositiveObservations(seen[2]);
+        // Guard model business observations and this decision snapshot's full authority.
+        assertPositiveObservations(h, web, seen[2]);
       } else {
         // 15k estimated budget refusal: current estimated budget cannot fit limit 60313
         // Honest fatal error BEFORE media WRITE: CONTEXT_BUDGET_EXCEEDED

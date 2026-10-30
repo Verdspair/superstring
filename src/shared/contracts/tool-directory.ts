@@ -1,4 +1,26 @@
 import { z } from "zod";
+import type { SharedActionDescription } from "./agent-action-descriptions";
+import type { PermissionRequirement } from "./permissions";
+
+export interface ToolDefinition {
+  description: SharedActionDescription;
+  permission?: PermissionRequirement;
+  sandboxCallable?: boolean;
+}
+
+export interface ToolDescriptor extends Omit<SharedActionDescription, "effect"> {
+  readonly effect: "read" | "write";
+  readonly sandboxCallable: boolean;
+}
+
+export function describeTool(action: ToolDefinition): ToolDescriptor {
+  const effect = action.description.effect ?? "write";
+  return Object.freeze({
+    ...action.description,
+    effect,
+    sandboxCallable: effect === "read" && action.sandboxCallable !== false,
+  });
+}
 
 export const SystemFunctionIdSchema = z.enum([
   "memory-query",
@@ -8,8 +30,14 @@ export const SystemFunctionIdSchema = z.enum([
   "execution-limits",
   "session-history-summary",
   "qq-members",
+  "qq-reply",
 ]);
 export type SystemFunctionId = z.infer<typeof SystemFunctionIdSchema>;
+
+export const ToolDirectoryInvocationSchema = z.enum(["action", "host-terminal"]);
+export const ToolDirectoryScopeSchema = z.enum(["conversation", "qq-conversation", "qq-group"]);
+export type ToolDirectoryInvocation = z.infer<typeof ToolDirectoryInvocationSchema>;
+export type ToolDirectoryScope = z.infer<typeof ToolDirectoryScopeSchema>;
 
 export const ToolDirectoryEntrySchema = z.strictObject({
   name: z.string().min(1),
@@ -19,6 +47,8 @@ export const ToolDirectoryEntrySchema = z.strictObject({
   effect: z.enum(["read", "write"]),
   sandboxCallable: z.boolean(),
   origin: z.enum(["system", "mcp"]),
+  invocation: ToolDirectoryInvocationSchema,
+  scope: ToolDirectoryScopeSchema,
   globalEnabled: z.boolean(),
   functionId: SystemFunctionIdSchema.nullable(),
   resource: z.string().nullable(),

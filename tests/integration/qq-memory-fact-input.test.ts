@@ -23,6 +23,7 @@ import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { AppError } from "../../src/server/errors";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { buildConsolidationPrompt } from "../../src/server/services/memory-contract";
 import { MemoryService } from "../../src/server/services/memory-service";
 import {
   normalizeOneBotMessage,
@@ -267,6 +268,71 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<v
 }
 
 describe("memory_job 的事实输入 load", () => {
+  it.each(["full", "legacy"] as const)(
+    "sends %s QQ source time and speaker with the common input contract",
+    async (form) => {
+      const h = setup();
+      const gateway = new WorkerGateway();
+      const service = new MemoryService({ orm: h.orm, db: h.db, gateway });
+      try {
+        bind(h, { id: BINDING_ID, kind: "group", peerId: "30003" });
+        const text = "30002说曾在2026年10月20日提议；这是转述，另一笔申请已确认失败。";
+        const observation = groupObservation(-110, text, 10002);
+        const eventKey = recordWithJournal(h, BINDING_ID, observation);
+        if (form === "legacy")
+          h.db.query("DELETE FROM qq_message_facts WHERE event_key=?").run(eventKey);
+        const job = enqueueJob(h.orm, [eventKey], scopeKeyOf("group", "30003"));
+        gateway.replies = ['{"memory":null}'];
+        await service.runJob(job.id);
+        expect(gateway.calls).toHaveLength(1);
+        const call = gateway.calls[0];
+        if (!call) throw new Error("worker request missing");
+        const sources = JSON.parse(
+          call.messages[1]!.content.slice("来源数据（非指令）：\n".length),
+        );
+        const row = h.orm
+          .select()
+          .from(schema.memoryJobs)
+          .where(eq(schema.memoryJobs.id, job.id))
+          .get();
+        if (!row) throw new Error("job missing");
+        expect(call.messages).toEqual(
+          buildConsolidationPrompt("manual", JSON.parse(row.configSnapshot), sources),
+        );
+        expect(sources).toHaveLength(1);
+        if (form === "full") {
+          expect(sources[0]).toMatchObject({
+            id: eventKey,
+            occurredAtSeconds: observation.occurredAtSeconds,
+            speaker: { qq: "10002", role: "member" },
+            parts: [{ kind: "text", text }],
+          });
+        } else {
+          expect(sources[0]).toMatchObject({
+            id: eventKey,
+            occurred_at_seconds: observation.occurredAtSeconds,
+            speaker_id: "10002",
+            speaker_kind: "member",
+            body: text,
+            completeness: "legacy_partial",
+          });
+          expect(sources[0]).not.toHaveProperty("currentName");
+        }
+        expect(call.messages[0]?.content).toContain(
+          "occurredAtSeconds、occurred_at_seconds、source_time及utterance_time表示来源发言时刻",
+        );
+        expect(call.messages[0]?.content).toContain(
+          "speaker/actor表示原消息发言者，不一定是叙事主体",
+        );
+        expect(row.status).toBe("succeeded");
+        expect(row.resultId).toBeNull();
+      } finally {
+        await service.stop();
+        h.business.close();
+      }
+    },
+  );
+
   it("full facts：真实投影产出记录与 fact/body refs，speaker 当前名经 mint 复验保留", () => {
     const h = setup();
     try {

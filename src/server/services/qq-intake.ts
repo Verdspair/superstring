@@ -586,13 +586,7 @@ export class QqIntakeRuntime {
           .catch(() => this.#options.onEvent?.({ kind: "follow_up_failed" }));
       }
     }
-    void handleQqRecordedMessage(
-      this.#options.orm,
-      { observation, nowSeconds: this.#now() },
-      this.#options.conversationIngress
-        ? { dispatch: () => ({ kind: "not_scheduled" as const, reason: "conversation_ingress" }) }
-        : {},
-    )
+    void handleQqRecordedMessage(this.#options.orm, { observation, nowSeconds: this.#now() })
       .then((result) => {
         this.#options.onEvent?.({
           kind: "follow_up",

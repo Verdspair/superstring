@@ -38,7 +38,6 @@ const content: MemoryContentResponse = {
   status: "active",
   corrected: false,
   retired: false,
-  source_messages: [],
 };
 
 beforeEach(() => {
@@ -46,6 +45,7 @@ beforeEach(() => {
   store.getState().resetForTests({
     ...api,
     getMemoryContent: vi.fn().mockResolvedValue(content),
+    getMemoryAccessMetadata: vi.fn(),
     correctMemory: vi.fn().mockResolvedValue({
       ...content,
       content: {
@@ -60,7 +60,6 @@ beforeEach(() => {
   store.setState({
     page: "settings",
     settingsView: "agents",
-    activeSection: "B",
     editorAgentId: agent,
     memoryEntryDetail: detail,
   });
@@ -83,6 +82,8 @@ describe("memory correction UI and navigation", () => {
     expect(store.getState().dirty).toBe(true);
     expect(store.getState().memoryCorrectionDirty).toBe(false);
     expect(store.getState().memoryEntryDetail?.body).toBe("新正文");
+    expect(store.getState().memoryMetadataBaseline).toBeNull();
+    expect(store.getState().apiClient.getMemoryAccessMetadata).not.toHaveBeenCalled();
   });
   it("preserves draft on conflict and keeps navigation open", async () => {
     store.setState({
@@ -107,6 +108,7 @@ describe("memory correction UI and navigation", () => {
     await store.getState().confirmSaveAndContinue();
     expect(store.getState().page).toBe("chat");
     expect(store.getState().memoryCorrectionDraft).toBeNull();
+    expect(store.getState().apiClient.getMemoryAccessMetadata).not.toHaveBeenCalled();
     store.setState({ page: "settings", settingsView: "agents", memoryEntryDetail: detail });
     await edit();
     const save = vi.spyOn(store.getState().apiClient, "correctMemory").mockClear();
@@ -145,6 +147,7 @@ describe("memory correction UI and navigation", () => {
       },
     });
     const pending = store.getState().loadMemoryEntryDetail("other");
+    expect(store.getState().memoryEntryDetail?.id).toBe(id);
     await edit();
     done({ ...detail, id: "other" });
     await pending;

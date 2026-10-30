@@ -100,7 +100,7 @@ export function Field({
         )}
         {help}
         {labelAside && (
-          <span className="ml-auto text-[11.5px] font-normal text-[var(--text-tertiary)] tabular-nums">
+          <span className="ml-auto min-w-0 max-w-full break-words text-[12.5px] font-normal text-[var(--text-tertiary)] tabular-nums">
             {labelAside}
           </span>
         )}

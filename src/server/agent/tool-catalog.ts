@@ -1,23 +1,12 @@
+import { describeTool, type ToolDescriptor } from "../../shared/contracts/tool-directory";
 import type { ActionDescription } from "./agent-specs";
 import type { BuiltInAction } from "./built-in-actions";
 
-export interface ToolDescriptor extends Omit<ActionDescription, "effect"> {
-  readonly effect: "read" | "write";
-  readonly sandboxCallable: boolean;
-}
 export interface ToolCatalog {
   get(name: string): ToolDescriptor | undefined;
   resolve(name: string): BuiltInAction | undefined;
   sandboxable(): readonly ToolDescriptor[];
   advertised(names?: readonly string[]): readonly ActionDescription[];
-}
-export function describeTool(action: BuiltInAction): ToolDescriptor {
-  const effect = action.description.effect ?? "write";
-  return Object.freeze({
-    ...action.description,
-    effect,
-    sandboxCallable: effect === "read" && action.sandboxCallable !== false,
-  });
 }
 export function createToolCatalog(actions: readonly BuiltInAction[]): ToolCatalog {
   const byName = new Map<string, { action: BuiltInAction; descriptor: ToolDescriptor }>();

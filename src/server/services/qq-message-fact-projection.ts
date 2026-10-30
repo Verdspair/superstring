@@ -26,15 +26,14 @@ import type {
   QqMessagePart,
 } from "../../shared/contracts/qq-message";
 import type { QqReplyTargetState } from "../channels/onebot11/reply-context";
+import type { BotEvidenceScope } from "../conversation/evidence-scope";
+import { evidenceScopeExists, inTimeline } from "../conversation/evidence-scope";
 import { bodyRevision } from "../db/conversation-event-repository";
 import { readQqMemberNames } from "../db/qq-member-repository";
 import type { QqMessageFactRow } from "../db/qq-message-repository";
 import { nowIso, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
-import type { BotEvidenceScope } from "../modules/conversation-evidence";
-import { evidenceScopeExists } from "../modules/conversation-evidence";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
-import { inTimeline } from "../modules/conversation-evidence-store";
 import {
   type QqMessageFactVisibleState,
   qqMessageFactSourceRevision,

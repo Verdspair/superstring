@@ -10,11 +10,10 @@ import { toOrmHandle } from "../../src/server/db/connection";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { recordQqSend } from "../../src/server/db/qq-send-repository";
 import {
-  createSession,
   DEFAULT_AGENT_ID,
+  DEFAULT_USER_ID,
+  ensureDefaults,
   nowIso,
-  prepareTurn,
-  saveCompletedAssistantMessage,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import {
@@ -65,15 +64,69 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
     }
     oldDb.exec("PRAGMA user_version=38");
     const handle = toOrmHandle(oldDb);
-    const session = createSession(handle.orm, "升级保留样例", { modelName: "fixture" });
-    const prepared = prepareTurn(handle.orm, session.id, "完整原始提问", "stable-request");
-    if (!prepared.generationToken) throw new Error("Missing fixture generation lease");
-    saveCompletedAssistantMessage(
-      handle.orm,
+    ensureDefaults(handle.orm, "fixture");
+    const session = { id: crypto.randomUUID() };
+    const turnId = crypto.randomUUID();
+    const sourceAt = nowIso();
+    const sessionConfig = {
+      agent_id: DEFAULT_AGENT_ID,
+      name: "历史助手",
+      system_prompt: "私人提示词哨兵：仅供合成升级测试",
+      additional_instructions: "保留历史附加指令",
+      model_name: "fixture-model",
+      temperature: 0.7,
+      memory_consolidation_model_name: "fixture-organizer",
+      memory_consolidation_prompt: "整理历史记忆",
+      memory_consolidation_additional_instructions: "私人整理指令哨兵",
+      memory_retrieval_model_name: "fixture-retriever",
+      memory_retrieval_prompt: "检索历史记忆",
+      context_compression_model_name: "fixture-compressor",
+      p5_config: { context_window: 16384, max_output_tokens: 2048, recent_turns: 7 },
+      resolved_model_capacities: { "fixture-model": 16384 },
+      mode: "chat",
+      config_version: 1,
+      persona_intensity: 60,
+    };
+    const sessionSnapshot = JSON.stringify(sessionConfig);
+    const turnSnapshot = JSON.stringify({
+      ...sessionConfig,
+      additional_instructions: "本轮私人指令哨兵",
+      p5_config: { context_window: 32768, max_output_tokens: 4096, recent_turns: 9 },
+      resolved_model_capacities: { "fixture-model": 32768, "fixture-compressor": 16384 },
+    });
+    // The frozen v38 source schema predates canonical conversations (0040).
+    // Seed that exact source shape instead of invoking today's source producer.
+    oldDb
+      .query(`INSERT INTO sessions(id,user_id,agent_id,title,client_request_id,
+      agent_config_snapshot,next_sequence_no,created_at,updated_at)
+      VALUES(?,?,?,'升级保留样例','upgrade-session',?,3,?,?)`)
+      .run(session.id, DEFAULT_USER_ID, DEFAULT_AGENT_ID, sessionSnapshot, sourceAt, sourceAt);
+    oldDb
+      .query(`INSERT INTO turns(id,session_id,client_request_id,runtime_config_snapshot,
+      context_valid,source_valid,generation_status,created_at)
+      VALUES(?,?,'stable-request',?,1,1,'completed',?)`)
+      .run(turnId, session.id, turnSnapshot, sourceAt);
+    const message = oldDb.query(`INSERT INTO messages(id,session_id,turn_id,sequence_no,role,
+      content,status,client_request_id,created_at,completed_at) VALUES(?,?,?,?,?,?,'completed','stable-request',?,?)`);
+    message.run(
+      crypto.randomUUID(),
       session.id,
+      turnId,
+      1,
+      "user",
+      "完整原始提问",
+      sourceAt,
+      sourceAt,
+    );
+    message.run(
+      crypto.randomUUID(),
+      session.id,
+      turnId,
+      2,
+      "assistant",
       "完整原始回答",
-      "stable-request",
-      prepared.generationToken,
+      sourceAt,
+      sourceAt,
     );
     // Seed the v38 shape directly; today's repository writes columns added after v38.
     const documentId = crypto.randomUUID();
@@ -177,6 +230,16 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
       oldDb.query("UPDATE qq_bindings SET agent_id='agent-b' WHERE id=?").run(bindingId);
     }
 
+    expect(
+      oldDb.query("SELECT agent_config_snapshot FROM sessions WHERE id=?").get(session.id),
+    ).toEqual({
+      agent_config_snapshot: sessionSnapshot,
+    });
+    expect(oldDb.query("SELECT runtime_config_snapshot FROM turns WHERE id=?").get(turnId)).toEqual(
+      {
+        runtime_config_snapshot: turnSnapshot,
+      },
+    );
     // Select only baseline columns when comparing: new columns are additive, not lost facts.
     const fixtureDb = oldDb;
     const baseline = (
@@ -193,6 +256,11 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
       return {
         name,
         sql,
+        originalRows: fixtureDb
+          .query(sql)
+          .all()
+          .map((row) => JSON.stringify(row))
+          .sort(),
         rows: fixtureDb
           .query(sql)
           .all()
@@ -209,6 +277,20 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
     oldDb.close();
     oldDb = undefined;
     copyFileSync(original, backup);
+    const backupDb = new Database(backup, { readonly: true });
+    try {
+      for (const table of baseline)
+        expect({
+          table: table.name,
+          rows: backupDb
+            .query(table.sql)
+            .all()
+            .map((row) => JSON.stringify(row))
+            .sort(),
+        }).toEqual({ table: table.name, rows: table.originalRows });
+    } finally {
+      backupDb.close();
+    }
     copyFileSync(backup, upgraded);
     const beforeHash = digest(backup);
     next = openBusinessDb({ path: upgraded });
@@ -303,6 +385,15 @@ function verifyUpgrade(initiallyBoundToB: boolean) {
     const restoredDb = new Database(restored, { readonly: true });
     try {
       expect(restoredDb.query("PRAGMA user_version").get()).toEqual({ user_version: 38 });
+      for (const table of baseline)
+        expect({
+          table: table.name,
+          rows: restoredDb
+            .query(table.sql)
+            .all()
+            .map((row) => JSON.stringify(row))
+            .sort(),
+        }).toEqual({ table: table.name, rows: table.originalRows });
     } finally {
       restoredDb.close();
     }

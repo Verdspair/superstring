@@ -1,4 +1,4 @@
-// 回归（ingress-observation-repair，2026-10-16）：本群差异随基础方案变化后，生效节奏可能不再
+// 回归：本群差异随基础方案变化后，生效节奏可能不再
 // 满足 B<A 契约；回复机会的调度失败不得回滚已收到的观察，也不得把存储失败误报成 duplicate。
 import { afterEach, describe, expect, it } from "bun:test";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";

@@ -8,6 +8,7 @@ import { Dialog as SheetPrimitive } from "radix-ui";
 import type * as React from "react";
 import { Button } from "@/components/ui/button";
 import { isDesktopHost } from "@/desktop-host";
+import { useOverlayReturnFocus } from "./use-overlay-return-focus";
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />;
@@ -46,12 +47,18 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
+  scrollMode = "body",
   style,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
+  onBlurCapture,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
   showCloseButton?: boolean;
+  scrollMode?: "surface" | "body" | "none";
 }) {
+  const focusHandlers = useOverlayReturnFocus({ onOpenAutoFocus, onCloseAutoFocus, onBlurCapture });
   // The desktop host keeps the native caption (WCO window buttons) above the
   // page. Top-reaching sheets keep their background full height and reserve the
   // scaled caption height inside, so the panel close never lands under the
@@ -68,14 +75,19 @@ function SheetContent({
       <SheetPrimitive.Content
         data-slot="sheet-content"
         data-side={side}
+        data-scroll-mode={scrollMode}
         data-caption-inset={captionStyle ? "true" : undefined}
         style={{ ...style, ...captionStyle }}
         className={cn(
           "fixed z-50 flex flex-col gap-4 bg-popover bg-clip-padding text-sm text-popover-foreground border-border duration-[var(--motion-slow)] ease-[var(--ease-standard)] data-closed:duration-[var(--motion-base)] data-closed:ease-[var(--ease-exit)] data-[side=bottom]:inset-x-0 data-[side=bottom]:bottom-0 data-[side=bottom]:h-auto data-[side=bottom]:border-t data-[side=left]:inset-y-0 data-[side=left]:left-0 data-[side=left]:h-full data-[side=left]:border-r data-[side=right]:inset-y-0 data-[side=right]:right-0 data-[side=right]:h-full data-[side=right]:border-l data-[side=top]:inset-x-0 data-[side=top]:top-0 data-[side=top]:h-auto data-[side=top]:border-b data-open:animate-in data-open:fade-in-0 data-[side=bottom]:data-open:slide-in-from-bottom-10 data-[side=left]:data-open:slide-in-from-left-10 data-[side=right]:data-open:slide-in-from-right-10 data-[side=top]:data-open:slide-in-from-top-10 data-closed:animate-out data-closed:fade-out-0 data-[side=bottom]:data-closed:slide-out-to-bottom-10 data-[side=left]:data-closed:slide-out-to-left-10 data-[side=right]:data-closed:slide-out-to-right-10 data-[side=top]:data-closed:slide-out-to-top-10",
           (side === "left" || side === "right") && "w-full sm:max-w-sm",
+          "min-h-0 min-w-0 max-h-dvh",
+          scrollMode === "surface" && "overflow-y-auto [&>*]:shrink-0",
+          scrollMode === "body" && "overflow-hidden",
           className,
         )}
         {...props}
+        {...focusHandlers}
       >
         {children}
         {showCloseButton && (
@@ -103,7 +115,7 @@ function SheetHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="sheet-header"
-      className={cn("flex flex-col gap-0.5 p-4", className)}
+      className={cn("min-w-0 shrink-0 flex flex-col gap-0.5 p-4 pr-12", className)}
       {...props}
     />
   );
@@ -113,7 +125,10 @@ function SheetFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="sheet-footer"
-      className={cn("mt-auto flex flex-col gap-2 p-4", className)}
+      className={cn(
+        "mt-auto min-w-0 max-w-full shrink-0 flex flex-col flex-wrap gap-2 p-4",
+        className,
+      )}
       {...props}
     />
   );
@@ -123,7 +138,10 @@ function SheetTitle({ className, ...props }: React.ComponentProps<typeof SheetPr
   return (
     <SheetPrimitive.Title
       data-slot="sheet-title"
-      className={cn("font-heading workspace-dialog-title text-foreground", className)}
+      className={cn(
+        "min-w-0 break-words font-heading workspace-dialog-title text-foreground",
+        className,
+      )}
       {...props}
     />
   );

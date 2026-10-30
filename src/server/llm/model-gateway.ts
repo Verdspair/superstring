@@ -256,7 +256,7 @@ function reportResolvedModel(callback: ((model: string) => void) | undefined, mo
 }
 
 /**
- * 原生工具调用 → invoke 决策（issue #10；0.4.0 P2 起支持**一批**调用）。
+ * 原生工具调用 → invoke 决策（issue #10；支持**一批**调用）。
  *
  * 一次回复仍只算一个决策，但决策可以是"这批工具一起叫"：只读的会并行执行、有副作用的按顺序串行
  * （谁来定，见 `ActionDescription.effect`）。多调用**不再被丢掉**——丢掉等于模型以为自己查过了。

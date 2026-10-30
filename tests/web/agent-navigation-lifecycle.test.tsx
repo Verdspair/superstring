@@ -129,6 +129,7 @@ describe("Assistant workspace create regression", () => {
     expect(createAgent.mock.calls[0]?.[0]).toMatchObject({ name: "新建助手" });
     expect(store.getState().editorAgentId).toBe(createdId);
     expect(store.getState().editorDraft?.name).toBe("新建助手");
+    expect(store.getState().editorDraft).toEqual(store.getState().pageEditor?.draft);
     expect(store.getState().feedback).toContain("已创建 Agent");
     expect(store.getState().pageEditor).not.toBeNull();
     expect(screen.queryByText("选择一个 Agent 以开始编辑。")).toBeNull();
@@ -171,8 +172,8 @@ describe("Assistant workspace create regression", () => {
     });
     expect(store.getState().editorAgentId).toBe("__new__");
     await act(async () => {
-      store.getState().patchDraft({ name: "新建助手" });
-      await store.getState().saveCurrentSection();
+      store.getState().patchNewAgentDraft({ name: "新建助手" });
+      await store.getState().createAgent();
     });
     expect(store.getState().editorAgentId).toBe(createdId);
     expect(getPersona).toHaveBeenCalledTimes(1);
@@ -232,11 +233,11 @@ describe("Assistant workspace create regression", () => {
       await store.getState().editAgent("__new__");
     });
     await act(async () => {
-      store.getState().patchDraft({ name: "新建助手" });
+      store.getState().patchNewAgentDraft({ name: "新建助手" });
     });
     const outcome = store
       .getState()
-      .saveCurrentSection()
+      .createAgent()
       .then(
         (value) => ({ ok: true as const, value }),
         (error: unknown) => ({ ok: false as const, error }),
@@ -251,7 +252,9 @@ describe("Assistant workspace create regression", () => {
       expect(store.getState().pageEditor?.agent.id).toBe(agent.id);
     } else {
       await act(async () => {
-        store.getState().patchDraft({ description: "用户继续输入" });
+        store.setState((state) => ({
+          editorDraft: { ...state.editorDraft!, description: "用户继续输入" },
+        }));
       });
       expect(store.getState().editorDraft?.description).toBe("用户继续输入");
     }
@@ -303,8 +306,8 @@ describe("Assistant workspace create regression", () => {
       await store.getState().editAgent("__new__");
     });
     await act(async () => {
-      store.getState().patchDraft({ name: "新建助手" });
-      await store.getState().saveCurrentSection();
+      store.getState().patchNewAgentDraft({ name: "新建助手" });
+      await store.getState().createAgent();
     });
     expect(store.getState().editorAgentId).toBe(createdId);
     expect(store.getState().agents[0]?.id).toBe(createdId);
@@ -325,7 +328,7 @@ describe("Assistant workspace create regression", () => {
       await store.getState().editAgent("__new__");
     });
     await act(async () => {
-      store.getState().patchDraft({ name: "再次新建" });
+      store.getState().patchNewAgentDraft({ name: "再次新建" });
     });
     let releaseSecond!: () => void;
     const secondGate = new Promise<void>((resolve) => {
@@ -343,14 +346,16 @@ describe("Assistant workspace create regression", () => {
     });
     const outcome = store
       .getState()
-      .saveCurrentSection()
+      .createAgent()
       .then(
         (value) => ({ ok: true as const, value }),
         (error: unknown) => ({ ok: false as const, error }),
       );
     await secondStartedPromise;
     await act(async () => {
-      store.getState().patchDraft({ description: "等待期间继续输入" });
+      store.setState((state) => ({
+        editorDraft: { ...state.editorDraft!, description: "等待期间继续输入" },
+      }));
     });
     releaseSecond();
     const settled = await outcome;
@@ -407,14 +412,17 @@ describe("Agent create ownership", () => {
   it("creates once when Create is submitted twice before the response settles", async () => {
     const { createAgent, release } = setupPendingCreate();
     await store.getState().editAgent("__new__");
-    store.getState().patchDraft({ name: "新建助手" });
+    store.getState().patchNewAgentDraft({ name: "新建助手" });
 
-    const first = store.getState().saveCurrentSection();
+    const first = store.getState().createAgent();
     expect(store.getState().settingsSaving).toBe(true);
     expect(navigationBusy(store.getState())).toBe(true);
     // 第二次提交落在同一在途锁上，不再发第二个 POST。
-    expect(await store.getState().saveCurrentSection()).toBe(false);
+    expect(await store.getState().createAgent()).toBe(false);
     expect(createAgent).toHaveBeenCalledTimes(1);
+    const draftAtSubmit = store.getState().editorDraft;
+    store.getState().patchNewAgentDraft({ name: "blocked edit" });
+    expect(store.getState().editorDraft).toBe(draftAtSubmit);
     // 写入期间导航被同一把锁拒绝：不会先离开、再被迟到的创建结果拉回。
     store.getState().requestPageNavigation("chat", "hub");
     expect(store.getState().page).toBe("settings");
@@ -434,11 +442,11 @@ describe("Agent create ownership", () => {
   it("a late create response does not overwrite a newer page, draft, or feedback", async () => {
     const { createAgent, getPersona, release } = setupPendingCreate();
     await store.getState().editAgent("__new__");
-    store.getState().patchDraft({ name: "新建助手" });
+    store.getState().patchNewAgentDraft({ name: "新建助手" });
     const submitDraft = store.getState().editorDraft;
     if (!submitDraft) throw new Error("new draft missing");
 
-    const outcome = store.getState().saveCurrentSection();
+    const outcome = store.getState().createAgent();
     expect(createAgent).toHaveBeenCalledTimes(1);
     // 响应到达前另一所有者已切到新页面与新草稿；落库只能并入目录。
     const newerDraft = { ...submitDraft, description: "新页面的草稿" };
@@ -462,6 +470,55 @@ describe("Agent create ownership", () => {
     expect(state.feedback).toBe("新页面提示");
     expect(state.settingsSaving).toBe(false);
     expect(state.agents.some((item) => item.id === createdId)).toBe(true);
+    expect(getPersona).not.toHaveBeenCalled();
+  });
+  it("rejects a failed create, releases its lock and retries the same dirty draft once", async () => {
+    const createAgent = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("create unavailable"))
+      .mockResolvedValueOnce(createdAgent());
+    setup({ createAgent, getPersona: vi.fn(async (id: string) => ({ ...persona, agent_id: id })) });
+    await store.getState().editAgent("__new__");
+    store
+      .getState()
+      .patchNewAgentDraft({ name: "新建助手", additional_instructions: "private draft" });
+    const draft = store.getState().editorDraft;
+    expect(await store.getState().createAgent()).toBe(false);
+    expect(store.getState().editorDraft).toBe(draft);
+    expect(store.getState().dirty).toBe(true);
+    expect(store.getState().error).toBe("create unavailable");
+    expect(store.getState().settingsSaving).toBe(false);
+    expect(store.getState().settingsSaveOwner).toBeNull();
+    expect(await store.getState().createAgent()).toBe(true);
+    expect(createAgent).toHaveBeenCalledTimes(2);
+    expect(createAgent.mock.calls[0][0]).toEqual(createAgent.mock.calls[1][0]);
+    expect(createAgent.mock.calls[0][0]).toMatchObject({
+      persona: {},
+      additional_instructions: "private draft",
+    });
+    expect(store.getState().error).toBeNull();
+  });
+
+  it("does not admit an old API create into the replacement directory or release its new lock", async () => {
+    const { release, getPersona } = setupPendingCreate();
+    await store.getState().editAgent("__new__");
+    store.getState().patchNewAgentDraft({ name: "新建助手" });
+    const outcome = store.getState().createAgent();
+    const replacementOwner = {};
+    const directory = [agent];
+    store.setState({
+      apiClient: { ...api },
+      agents: directory,
+      settingsSaveOwner: replacementOwner,
+      settingsSaving: true,
+      feedback: "replacement",
+    });
+    release();
+    expect(await outcome).toBe(true);
+    expect(store.getState().agents).toBe(directory);
+    expect(store.getState().settingsSaveOwner).toBe(replacementOwner);
+    expect(store.getState().settingsSaving).toBe(true);
+    expect(store.getState().feedback).toBe("replacement");
     expect(getPersona).not.toHaveBeenCalled();
   });
 });

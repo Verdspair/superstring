@@ -101,7 +101,7 @@ it("validates each stored source group at most once for each reader and model pr
   const captured = captureQqTask(binding, "reply");
   if (captured.kind !== "captured") throw new Error("synthetic scope missing");
   const runtime = runtimeFromAgent(agent);
-  runtime.p5_config.retrieval_mode = "off";
+  runtime.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
   runtime.p5_config.recent_turns = 1;
   runtime.p5_config.summary_read_max_tokens = allowance;
   const counter = await loadTextTokenCounter("cl100k_base");

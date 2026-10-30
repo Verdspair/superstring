@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { AgentResponseSchema } from "../../src/shared/contracts";
+import { AgentResponseSchema, PersonaResponseSchema } from "../../src/shared/contracts";
 import { toDraft } from "../../src/web/features/agents/draft";
 import {
-  buildSectionPayload,
-  mergeSavedSection,
-} from "../../src/web/features/agents/section-rules";
+  acceptPageAgent,
+  newPageEditor,
+  pageAgentPayload,
+} from "../../src/web/features/agents/page-drafts";
 import { createOptimisticMessages } from "../../src/web/features/chat/message-rules";
 
 const NOW = "2026-09-17T12:00:00.000Z";
@@ -23,7 +24,7 @@ function fixtures() {
   const draft = structuredClone(toDraft(saved));
   draft.name = "draft";
   draft.memory_retrieval_prompt = "draft retrieval";
-  draft.p5_config.retrieval_mode = "broad";
+  draft.p5_config.memory_read = { enabled: false, max_bytes: 2048 };
   draft.p5_config.context_window = 8192;
   return { saved, draft };
 }
@@ -35,61 +36,73 @@ function freeze<T>(value: T): T {
   return value;
 }
 
-describe("分区纯规则", () => {
-  it("A只提交基本字段与版本，不提交B/C/D", () => {
+describe("当前页面纯规则", () => {
+  const persona = () =>
+    PersonaResponseSchema.parse({
+      id: "p",
+      agent_id: "agent",
+      core_identity: "",
+      communication_style: "",
+      interaction_boundaries: "",
+      example_dialogues: "",
+      advanced_instructions: "",
+      created_at: NOW,
+      updated_at: NOW,
+    });
+  it("basic only submits its fields and version, not models/context/persona", () => {
     const { saved, draft } = fixtures();
-    const payload = buildSectionPayload("A", freeze(draft), freeze(saved));
-    expect(Object.keys(payload).sort()).toEqual(
-      [
-        "name",
-        "description",
-        "additional_instructions",
-        "model_name",
-        "temperature",
-        "is_active",
-        "expected_version",
-      ].sort(),
+    const editor = newPageEditor(saved, persona());
+    editor.draft = draft;
+    expect(Object.keys(pageAgentPayload(editor, "basic")).sort()).toEqual(
+      ["name", "description", "is_active", "expected_version"].sort(),
     );
-    expect(payload).toMatchObject({ name: "draft", expected_version: 4 });
+    expect(pageAgentPayload(editor, "basic")).toMatchObject({ name: "draft", expected_version: 4 });
   });
-  it("B只更新检索预算，保留服务端上下文配置且不修改输入", () => {
+  it("memory submits its active settings with saved context/raw values and never mutates inputs", () => {
     const { saved, draft } = fixtures();
     const before = structuredClone({ saved, draft });
-    const payload = buildSectionPayload("B", freeze(draft), freeze(saved));
-    expect(payload.p5_config?.retrieval_mode).toBe("broad");
-    expect(payload.p5_config?.context_window).toBe(saved.p5_config.context_window);
+    const editor = newPageEditor(saved, persona());
+    editor.draft = freeze(draft);
+    expect(pageAgentPayload(editor, "memory-tools").p5_config).toMatchObject({
+      memory_read: { enabled: false, max_bytes: 2048 },
+      context_window: saved.p5_config.context_window,
+      retrieval_presets: saved.p5_config.retrieval_presets,
+    });
     expect({ saved, draft }).toEqual(before);
   });
-  it("C只更新上下文，保留服务端检索配置", () => {
+  it("context submits only context and saved historical retrieval fields", () => {
     const { saved, draft } = fixtures();
-    const payload = buildSectionPayload("C", freeze(draft), freeze(saved));
+    const editor = newPageEditor(saved, persona());
+    editor.draft = freeze(draft);
+    const payload = pageAgentPayload(editor, "context");
     expect(payload.p5_config?.context_window).toBe(8192);
     expect(payload.p5_config?.retrieval_mode).toBe(saved.p5_config.retrieval_mode);
     expect(payload.p5_config?.retrieval_presets).toEqual(saved.p5_config.retrieval_presets);
+    expect(payload.p5_config?.memory_read).toEqual(saved.p5_config.memory_read);
   });
-  it.each(["A", "B", "C"] as const)("%s保存合并只覆盖所属分区与配置版本", (section) => {
-    const { saved, draft } = fixtures();
-    saved.config_version = 5;
-    const before = structuredClone(draft);
-    const result = mergeSavedSection(section, freeze(draft), freeze(saved), false);
-    expect(result.config_version).toBe(5);
-    expect(result.name).toBe(section === "A" ? "saved" : "draft");
-    expect(result.memory_retrieval_prompt).toBe(
-      section === "B" ? saved.memory_retrieval_prompt : "draft retrieval",
-    );
-    expect(result.p5_config.context_window).toBe(
-      section === "C" ? saved.p5_config.context_window : 8192,
-    );
-    expect(result.p5_config.retrieval_mode).toBe(
-      section === "B" ? saved.p5_config.retrieval_mode : "broad",
-    );
-    expect(draft).toEqual(before);
-  });
-  it("创建成功或空草稿完整采用服务端结果", () => {
-    const { saved, draft } = fixtures();
-    expect(mergeSavedSection("A", draft, saved, true)).toEqual(toDraft(saved));
-    expect(mergeSavedSection("B", null, saved, false)).toEqual(toDraft(saved));
-  });
+  it.each(["basic", "memory-tools", "context"] as const)(
+    "%s acceptance updates only its fields and version",
+    (page) => {
+      const { saved, draft } = fixtures();
+      const editor = newPageEditor(saved, persona());
+      editor.draft = freeze(draft);
+      const before = structuredClone(draft);
+      const accepted = acceptPageAgent(editor, page, { ...saved, config_version: 5 });
+      expect(accepted.agent.config_version).toBe(5);
+      expect(accepted.draft.config_version).toBe(5);
+      expect(accepted.draft.name).toBe(page === "basic" ? saved.name : "draft");
+      // Retired raw prompt is not owned by active reading settings.
+      expect(accepted.draft.memory_retrieval_prompt).toBe("draft retrieval");
+      expect(accepted.draft.p5_config.context_window).toBe(
+        page === "context" ? saved.p5_config.context_window : 8192,
+      );
+      expect(accepted.draft.p5_config.memory_read).toEqual(
+        page === "memory-tools" ? saved.p5_config.memory_read : { enabled: false, max_bytes: 2048 },
+      );
+      expect(accepted.draft.p5_config.retrieval_mode).toBe(saved.p5_config.retrieval_mode);
+      expect(draft).toEqual(before);
+    },
+  );
 });
 
 describe("消息纯规则", () => {

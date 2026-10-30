@@ -33,7 +33,7 @@ export interface RenderedContext {
   /** Optional exact-encoding text projection; `units` remains the legacy byte estimate. */
   tokenMeasure?: ContextTokenMeasure;
   /**
-   * T09 Step7：图片输入计量。无图 = `{state:"estimated", images:0, pixels:0}`（精确的 0）；
+   * 图片输入计量。无图 = `{state:"estimated", images:0, pixels:0}`（精确的 0）；
    * 有图且没有可核实的模型估算配置 = `unknown`（未知不是 0，也不是"还能装几张"的依据）。
    */
   visionCost: VisionCost;
@@ -120,6 +120,25 @@ function dataMessage(kind: string, value: unknown): ModelMessage {
   return textMessage("user", JSON.stringify({ kind, trust: "data_only", value }));
 }
 
+const INTERNAL_AUTHORITY_SOURCE_KINDS = new Set([
+  "memory_access",
+  "knowledge_grant",
+  "tool_permission",
+  "qq_group_capability",
+  "execution_module",
+]);
+
+/** Keep authority on the original observation; only its model-facing copy omits these refs. */
+export function actionObservationMessage(observation: ActionObservation): ModelMessage {
+  const sources = observation.sources.filter(
+    (source) => !INTERNAL_AUTHORITY_SOURCE_KINDS.has(source.kind),
+  );
+  return dataMessage(
+    "action_observation",
+    sources.length === observation.sources.length ? observation : { ...observation, sources },
+  );
+}
+
 /** Deterministic rendering only. Choosing an action or reply belongs to the Agent. */
 export class ContextEngine {
   renderOutput(
@@ -190,8 +209,7 @@ export class ContextEngine {
         throw new Error("Conversation history cannot add system instructions");
       messages.push(message);
     }
-    for (const observation of observations)
-      messages.push(dataMessage("action_observation", observation));
+    for (const observation of observations) messages.push(actionObservationMessage(observation));
     for (const message of material.pending ?? []) {
       if (message.role === "system")
         throw new Error("Conversation input cannot add system instructions");
@@ -220,7 +238,7 @@ export function inputUnits(messages: readonly ModelMessage[]): number {
 }
 
 /**
- * T09 Step7：图片输入的计量状态。
+ * 图片输入的计量状态。
  * - 无图：`estimated` 且 images/pixels 精确为 0（文字估算原样，不加任何图片成本）。
  * - 有图：本侧没有可核实的"这张图值多少 token"的模型估算配置 → `unknown`（不是 0）。
  *   pixels 只汇总持久元数据里的宽高（准备尺寸的安全边界值），不是模型 attention 额度。

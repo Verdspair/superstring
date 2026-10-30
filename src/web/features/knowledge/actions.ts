@@ -3,14 +3,19 @@ import {
   KnowledgeImportSchema,
   KnowledgeSettingsUpdateSchema,
 } from "../../../shared/contracts/knowledge";
+import { ApiError } from "../../api";
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
 import type { StoreGet, StoreSet } from "../../state/types";
+import { acceptKnowledgeSettings, readKnowledgeSettings } from "./settings-read";
 import {
   type KnowledgeEditor,
   type KnowledgeListFilters,
   type KnowledgeState,
+  knowledgeFieldConflict,
+  knowledgeGrantIdsEqual,
   knowledgeListQuery,
+  knowledgeSettingsConflictScope,
   knowledgeSettingsDirty,
   latestKnowledgeSettings,
 } from "./types";
@@ -20,6 +25,8 @@ export function createKnowledgeActions(
   get: StoreGet,
 ): Pick<
   KnowledgeState,
+  | "resumeKnowledgeLibraryRead"
+  | "cancelKnowledgeLibraryRead"
   | "loadKnowledge"
   | "loadKnowledgePage"
   | "requestKnowledgeEditor"
@@ -36,6 +43,10 @@ export function createKnowledgeActions(
   let listRead = 0;
   let listAbort: AbortController | null = null;
   let saveToken = 0;
+  let editorAbort: AbortController | null = null;
+  let editorTarget: import("./types").KnowledgeTarget | null = null;
+  let editorApi: ReturnType<StoreGet>["apiClient"] | null = null;
+  let suspended = false;
   /** 后台预热的在途记录：来源 api、过滤条件与承诺，供前台接管同一次首页读取。 */
   let warmInflight: {
     api: ReturnType<StoreGet>["apiClient"];
@@ -76,8 +87,8 @@ export function createKnowledgeActions(
           knowledgeListQuery(filters, cursors[cursors.length - 1] ?? null),
           controller.signal,
         ),
-        api.listKnowledgeCategories(),
-        api.getKnowledgeSettings(),
+        api.listKnowledgeCategories(controller.signal),
+        readKnowledgeSettings(get, { signal: controller.signal }),
       ]);
       // 同源校验：切换 api 后的迟到响应不写回旧客户端的数据。
       if (id !== listRead || viewChanged() || get().apiClient !== api) return false;
@@ -90,21 +101,178 @@ export function createKnowledgeActions(
         knowledgeDocuments: page.items,
         knowledgeLoaded: true,
         // 后台预热与静默刷新成功不清理无关的全局 error。
-        ...(background || quiet ? {} : { error: null }),
+        ...(background || quiet ? {} : { knowledgeLibraryError: null }),
       });
       return true;
     } catch (error) {
       if (id !== listRead || controller.signal.aborted || viewChanged() || get().apiClient !== api)
         return false;
       // 预热与静默刷新失败静默降级：不占用全局 error，前台显式读取时自然重取并提示。
-      if (!background && !quiet) set({ error: errorText(error) });
+      if (!background && !quiet) set({ knowledgeLibraryError: errorText(error) });
       return false;
     } finally {
-      if (!quiet && id === listRead) set({ knowledgeLoading: false });
+      controller.abort();
+      if (!quiet && id === listRead && get().apiClient === api) set({ knowledgeLoading: false });
       if (listAbort === controller) listAbort = null;
     }
   };
   return {
+    resumeKnowledgeLibraryRead: async () => {
+      if (get().knowledgeBusy) return false;
+      const resume = suspended;
+      suspended = false;
+      const api = get().apiClient;
+      const editor = get().knowledgeEditor;
+      const target = editorApi === api ? editorTarget : null;
+      if (editorApi && editorApi !== api) {
+        editorTarget = null;
+        set({ knowledgeEditor: null, knowledgeDirty: false });
+      }
+      const list = get().loadKnowledge(undefined, { quiet: true });
+      if (!resume || !target || target.kind === "none") return list;
+      if (!editor) {
+        const reopened = await get().openKnowledgeEditor(target);
+        await list;
+        return reopened;
+      }
+      if (editor.kind !== "document" && editor.kind !== "grants" && editor.kind !== "settings")
+        return list;
+      const id = get().knowledgeReadId;
+      const dirty = get().knowledgeDirty;
+      const controller = new AbortController();
+      editorAbort?.abort();
+      editorAbort = controller;
+      const matches = () =>
+        get().apiClient === api &&
+        get().knowledgeReadId === id &&
+        get().knowledgeEditor === editor &&
+        !controller.signal.aborted;
+      try {
+        if (editor.kind === "settings") {
+          const source = await readKnowledgeSettings(get, { signal: controller.signal });
+          if (matches()) {
+            const conflict =
+              dirty &&
+              knowledgeFieldConflict(
+                editor.source.auto_enabled,
+                editor.auto_enabled,
+                source.auto_enabled,
+              );
+            set({
+              knowledgeSettings: source,
+              ...(conflict
+                ? {
+                    knowledgeLibraryError: msg(
+                      "知识库远端内容已更改；本地草稿保留，未自动推进保存版本。请刷新并核对后重试。",
+                    ),
+                  }
+                : {
+                    knowledgeEditor: {
+                      ...editor,
+                      source,
+                      auto_enabled:
+                        dirty && editor.auto_enabled !== editor.source.auto_enabled
+                          ? editor.auto_enabled
+                          : source.auto_enabled,
+                      model_name: source.model_name ?? "",
+                    },
+                  }),
+            });
+          }
+        } else {
+          const source = await api.getKnowledgeDocument(editor.source.id, controller.signal);
+          if (matches()) {
+            if (editor.kind === "grants") {
+              const idsDirty =
+                dirty && !knowledgeGrantIdsEqual(editor.agent_ids, editor.source.agent_ids);
+              const conflict =
+                (idsDirty &&
+                  !knowledgeGrantIdsEqual(source.agent_ids, editor.source.agent_ids) &&
+                  !knowledgeGrantIdsEqual(source.agent_ids, editor.agent_ids)) ||
+                (dirty &&
+                  knowledgeFieldConflict(
+                    editor.source.visibility,
+                    editor.visibility,
+                    source.visibility,
+                  ));
+              set(
+                conflict
+                  ? {
+                      knowledgeLibraryError: msg(
+                        "知识库远端内容已更改；本地草稿保留，未自动推进保存版本。请刷新并核对后重试。",
+                      ),
+                    }
+                  : {
+                      knowledgeEditor: {
+                        ...editor,
+                        source,
+                        agent_ids: idsDirty ? editor.agent_ids : [...source.agent_ids],
+                        visibility:
+                          dirty && editor.visibility !== editor.source.visibility
+                            ? editor.visibility
+                            : source.visibility,
+                      },
+                    },
+              );
+            } else {
+              const fields = ["name", "category_id", "original_text", "content_mode"] as const;
+              const conflict =
+                dirty &&
+                fields.some((key) =>
+                  knowledgeFieldConflict(editor.source[key], editor[key], source[key]),
+                );
+              set(
+                conflict
+                  ? {
+                      knowledgeLibraryError: msg(
+                        "知识库远端内容已更改；本地草稿保留，未自动推进保存版本。请刷新并核对后重试。",
+                      ),
+                    }
+                  : {
+                      knowledgeEditor: {
+                        ...editor,
+                        source,
+                        name:
+                          dirty && editor.name !== editor.source.name ? editor.name : source.name,
+                        category_id:
+                          dirty && editor.category_id !== editor.source.category_id
+                            ? editor.category_id
+                            : source.category_id,
+                        original_text:
+                          dirty && editor.original_text !== editor.source.original_text
+                            ? editor.original_text
+                            : source.original_text,
+                        content_mode:
+                          dirty && editor.content_mode !== editor.source.content_mode
+                            ? editor.content_mode
+                            : source.content_mode,
+                      },
+                    },
+              );
+            }
+          }
+        }
+      } catch (error) {
+        if (matches()) set({ knowledgeLibraryError: errorText(error) });
+      } finally {
+        controller.abort();
+        if (editorAbort === controller) editorAbort = null;
+      }
+      return list;
+    },
+    cancelKnowledgeLibraryRead: () => {
+      suspended = true;
+      listRead++;
+      listAbort?.abort();
+      listAbort = null;
+      warmInflight = null;
+      editorAbort?.abort();
+      editorAbort = null;
+      set({
+        ...(get().knowledgeBusy ? {} : { knowledgeReadId: get().knowledgeReadId + 1 }),
+        knowledgeLoading: false,
+      });
+    },
     loadKnowledge: async (filters, options) => {
       const api = get().apiClient;
       if (options?.background) {
@@ -170,12 +338,21 @@ export function createKnowledgeActions(
     },
     openKnowledgeEditor: async (target) => {
       if (guard()) return false;
+      const api = get().apiClient;
+      suspended = false;
+      editorTarget = target;
+      editorApi = api;
+      editorAbort?.abort();
+      const controller = new AbortController();
+      editorAbort = controller;
       const id = get().knowledgeReadId + 1;
-      set({ knowledgeReadId: id, knowledgeLoading: true, error: null });
+      const matches = () =>
+        get().apiClient === api && get().knowledgeReadId === id && !controller.signal.aborted;
+      set({ knowledgeReadId: id, knowledgeLoading: true, knowledgeLibraryError: null });
       try {
         let editor: KnowledgeEditor | null = null;
         if (target.kind === "document" || target.kind === "grants") {
-          const source = await get().apiClient.getKnowledgeDocument(target.id);
+          const source = await api.getKnowledgeDocument(target.id, controller.signal);
           editor =
             target.kind === "document"
               ? {
@@ -193,7 +370,7 @@ export function createKnowledgeActions(
                   visibility: source.visibility ?? null,
                 };
         } else if (target.kind === "settings") {
-          const source = await get().apiClient.getKnowledgeSettings();
+          const source = await readKnowledgeSettings(get, { signal: controller.signal });
           // 资料设置只维护自动整理；预算归系统能力→知识查询的全局分组，不在此保留第二份副本。
           editor = {
             kind: "settings",
@@ -221,14 +398,16 @@ export function createKnowledgeActions(
             agent_id: get().agents[0]?.id ?? "",
             granted: true,
           };
-        if (get().knowledgeReadId !== id || get().knowledgeDirty) return false;
+        if (!matches() || get().knowledgeDirty) return false;
         set({ knowledgeEditor: editor, knowledgeDirty: false });
         return true;
       } catch (error) {
-        if (get().knowledgeReadId === id) set({ error: errorText(error) });
+        if (matches()) set({ knowledgeLibraryError: errorText(error) });
         return false;
       } finally {
-        if (get().knowledgeReadId === id) set({ knowledgeLoading: false });
+        if (matches()) set({ knowledgeLoading: false });
+        controller.abort();
+        if (editorAbort === controller) editorAbort = null;
       }
     },
     updateKnowledgeEditor: (editor) => {
@@ -243,6 +422,9 @@ export function createKnowledgeActions(
     },
     discardKnowledgeEditor: () => {
       if (get().knowledgeBusy) return;
+      editorTarget = null;
+      editorAbort?.abort();
+      editorAbort = null;
       set({
         knowledgeEditor: null,
         knowledgeDirty: false,
@@ -271,7 +453,7 @@ export function createKnowledgeActions(
         return get().knowledgeEditor === expectedEditor;
       };
 
-      set({ knowledgeBusy: true, error: null });
+      set({ knowledgeBusy: true, knowledgeLibraryError: null });
       try {
         const api = capturedApi;
         if (editor.kind === "import") {
@@ -320,20 +502,28 @@ export function createKnowledgeActions(
               get().knowledgeModelEditor?.source,
               settingsEditor.source,
             ]) ?? settingsEditor.source;
+          const autoDirty = settingsEditor.auto_enabled !== settingsEditor.source.auto_enabled;
+          const conflict = knowledgeFieldConflict(
+            settingsEditor.source.auto_enabled,
+            settingsEditor.auto_enabled,
+            baseline.auto_enabled,
+          );
           const parsed = KnowledgeSettingsUpdateSchema.safeParse({
-            expected_revision: baseline.revision,
-            auto_enabled: settingsEditor.auto_enabled,
+            expected_revision: conflict ? settingsEditor.source.revision : baseline.revision,
+            auto_enabled: autoDirty ? settingsEditor.auto_enabled : baseline.auto_enabled,
             model_name: baseline.model_name,
             context_budget: baseline.context_budget,
           });
           if (!parsed.success) throw new Error(msg("上下文预算必须为正整数。"));
           const saved = await api.saveKnowledgeSettings(parsed.data);
+          acceptKnowledgeSettings(get, api, saved);
 
           if (!isCurrentTarget()) {
             return false;
           }
 
           const modelEditor = get().knowledgeModelEditor;
+          const modelConflict = modelEditor && knowledgeSettingsConflictScope(modelEditor, saved);
           const keepSettingsOpen = knowledgeSettingsDirty({ ...get(), knowledgeDirty: false });
 
           if (keepSettingsOpen) {
@@ -342,29 +532,46 @@ export function createKnowledgeActions(
 
           set({
             knowledgeSettings: saved,
-            ...(keepSettingsOpen ? { knowledgeEditor: expectedEditor } : {}),
-            ...(modelEditor
+            ...(get().knowledgeReadEditor
               ? {
-                  knowledgeModelEditor: {
-                    ...modelEditor,
-                    source: saved,
-                    modelName:
-                      modelEditor.modelName !== modelEditor.source.model_name
-                        ? modelEditor.modelName
-                        : saved.model_name,
-                    autoEnabled:
-                      modelEditor.autoEnabled !== undefined &&
-                      modelEditor.autoEnabled !== modelEditor.source.auto_enabled
-                        ? modelEditor.autoEnabled
-                        : saved.auto_enabled,
-                    contextBudget:
-                      modelEditor.contextBudget !== undefined &&
-                      modelEditor.contextBudget !== modelEditor.source.context_budget
-                        ? modelEditor.contextBudget
-                        : saved.context_budget,
+                  knowledgeReadEditor: {
+                    ...get().knowledgeReadEditor!,
+                    globalBudget: saved.context_budget,
                   },
                 }
               : {}),
+            ...(keepSettingsOpen ? { knowledgeEditor: expectedEditor } : {}),
+            ...(modelEditor && modelConflict
+              ? {
+                  knowledgeModelError: {
+                    ...get().knowledgeModelError,
+                    [modelConflict === "both" ? "shared" : modelConflict!]: msg(
+                      "知识库远端内容已更改；本地草稿保留，未自动推进保存版本。请刷新并核对后重试。",
+                    ),
+                  },
+                }
+              : modelEditor
+                ? {
+                    knowledgeModelEditor: {
+                      ...modelEditor,
+                      source: saved,
+                      modelName:
+                        modelEditor.modelName !== modelEditor.source.model_name
+                          ? modelEditor.modelName
+                          : saved.model_name,
+                      autoEnabled:
+                        modelEditor.autoEnabled !== undefined &&
+                        modelEditor.autoEnabled !== modelEditor.source.auto_enabled
+                          ? modelEditor.autoEnabled
+                          : saved.auto_enabled,
+                      contextBudget:
+                        modelEditor.contextBudget !== undefined &&
+                        modelEditor.contextBudget !== modelEditor.source.context_budget
+                          ? modelEditor.contextBudget
+                          : saved.context_budget,
+                    },
+                  }
+                : {}),
           });
         } else if (editor.kind === "batch") {
           if (!editor.agent_id || !editor.documents.length)
@@ -405,7 +612,14 @@ export function createKnowledgeActions(
         return true;
       } catch (error) {
         if (isCurrentTarget()) {
-          set({ error: errorText(error) });
+          set({
+            knowledgeLibraryError:
+              error instanceof ApiError && error.code === "KNOWLEDGE_REVISION_CONFLICT"
+                ? msg(
+                    "知识库远端内容已更改；本地草稿保留，未自动推进保存版本。请刷新并核对后重试。",
+                  )
+                : errorText(error),
+          });
         }
         return false;
       } finally {
@@ -420,41 +634,52 @@ export function createKnowledgeActions(
     },
     deleteKnowledgeItem: async (kind, id, revision, moveTo) => {
       if (guard() || get().knowledgeLoading) return false;
-      set({ knowledgeBusy: true, error: null });
+      const api = get().apiClient;
+      const readId = get().knowledgeReadId;
+      const token = ++saveToken;
+      const matches = () =>
+        get().apiClient === api && get().knowledgeReadId === readId && saveToken === token;
+      set({ knowledgeBusy: true, knowledgeLibraryError: null });
       try {
-        if (kind === "document") await get().apiClient.deleteKnowledgeDocument(id, revision);
-        else await get().apiClient.deleteKnowledgeCategory(id, revision, moveTo);
-        // 删除的正是当前过滤的分类时，过滤回到全部，否则刷新会继续按已删分类取空页。
+        if (kind === "document") await api.deleteKnowledgeDocument(id, revision);
+        else await api.deleteKnowledgeCategory(id, revision, moveTo);
+        if (!matches()) return false;
         if (kind === "category" && get().knowledgeFilters.category === id)
           set({ knowledgeFilters: { ...get().knowledgeFilters, category: "all" } });
         set({ knowledgeBusy: false, knowledgeEditor: null });
         await get().loadKnowledge();
-        return true;
+        return matches();
       } catch (error) {
-        set({ error: errorText(error) });
+        if (matches()) set({ knowledgeLibraryError: errorText(error) });
         return false;
       } finally {
-        set({ knowledgeBusy: false });
+        if (matches()) set({ knowledgeBusy: false });
       }
     },
     setKnowledgeMode: async (id, mode) => {
       if (guard() || get().knowledgeLoading) return false;
-      const document = get().knowledgeDocuments.find((d) => d.id === id);
+      const document = get().knowledgeDocuments.find((item) => item.id === id);
       if (!document) return false;
-      set({ knowledgeBusy: true, error: null });
+      const api = get().apiClient;
+      const readId = get().knowledgeReadId;
+      const token = ++saveToken;
+      const matches = () =>
+        get().apiClient === api && get().knowledgeReadId === readId && saveToken === token;
+      set({ knowledgeBusy: true, knowledgeLibraryError: null });
       try {
-        await get().apiClient.updateKnowledgeDocument(id, {
+        await api.updateKnowledgeDocument(id, {
           expected_revision: document.revision,
           content_mode: mode,
         });
+        if (!matches()) return false;
         set({ knowledgeBusy: false, knowledgeEditor: null });
         await get().loadKnowledge();
-        return true;
+        return matches();
       } catch (error) {
-        set({ error: errorText(error) });
+        if (matches()) set({ knowledgeLibraryError: errorText(error) });
         return false;
       } finally {
-        set({ knowledgeBusy: false });
+        if (matches()) set({ knowledgeBusy: false });
       }
     },
   };

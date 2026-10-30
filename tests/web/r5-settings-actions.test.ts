@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { P5ConfigSchema } from "../../src/shared/contracts";
 import type { SuperstringApi } from "../../src/web/api";
 import { useSuperstringStore } from "../../src/web/store";
+import { summaryFixture } from "./helpers/chat-fixture";
 
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_ID = "22222222-2222-4222-8222-222222222222";
@@ -140,4 +141,103 @@ describe("R5 设置页动作", () => {
       "批量删除完成：成功 1 个，失败 1 个。 Agent 已被会话使用",
     );
   });
+});
+
+describe("directory action API ownership", () => {
+  it.each([
+    ["rename", "resolve"],
+    ["rename", "reject"],
+    ["delete", "resolve"],
+    ["delete", "reject"],
+  ] as const)("late %s %s cannot publish into a replacement API", async (action, result) => {
+    const gate = Promise.withResolvers<Awaited<ReturnType<SuperstringApi["renameSession"]>>>();
+    const renameSession = vi.fn().mockReturnValue(gate.promise);
+    const deleteSession = vi.fn().mockImplementation(() => gate.promise.then(() => undefined));
+    const row = summaryFixture("session-a", { title: "Original" });
+    useSuperstringStore.setState({
+      apiClient: fakeClient({ renameSession, deleteSession }),
+      summaryById: { [row.id]: row },
+      directoryIds: [row.id],
+      sessionConversationIds: { [row.sourceId]: row.id },
+      currentConversationId: row.id,
+    });
+    const pending =
+      action === "rename"
+        ? useSuperstringStore.getState().renameSession(row.sourceId, "Renamed")
+        : useSuperstringStore.getState().deleteSessionById(row.sourceId);
+    const replacement = { ...row, title: "Replacement API" };
+    useSuperstringStore.setState({
+      apiClient: fakeClient(),
+      summaryById: { [row.id]: replacement },
+      directoryIds: [row.id],
+      error: "new owner error",
+      feedback: "new owner feedback",
+    });
+    if (result === "reject") gate.reject(new Error("old API failure"));
+    else
+      gate.resolve({
+        id: row.sourceId,
+        title: "Old result",
+        updated_at: "2026-10-01T00:00:00Z",
+      } as Awaited<ReturnType<SuperstringApi["renameSession"]>>);
+    expect(await pending).toBe(false);
+    expect(useSuperstringStore.getState().summaryById[row.id]).toBe(replacement);
+    expect(useSuperstringStore.getState().directoryIds).toEqual([row.id]);
+    expect(useSuperstringStore.getState().currentConversationId).toBe(row.id);
+    expect(useSuperstringStore.getState().error).toBe("new owner error");
+    expect(useSuperstringStore.getState().feedback).toBe("new owner feedback");
+  });
+
+  it("normal rename and delete act only on the requested non-current row", async () => {
+    const first = summaryFixture("session-a", { title: "A" });
+    const second = summaryFixture("session-b", { title: "B" });
+    const renameSession = vi
+      .fn()
+      .mockResolvedValue({ title: "Renamed", updated_at: "2026-10-01T00:00:00Z" });
+    const deleteSession = vi.fn().mockResolvedValue(undefined);
+    useSuperstringStore.setState({
+      apiClient: fakeClient({ renameSession, deleteSession }),
+      summaryById: { [first.id]: first, [second.id]: second },
+      directoryIds: [first.id, second.id],
+      sessionConversationIds: { [first.sourceId]: first.id, [second.sourceId]: second.id },
+      currentConversationId: second.id,
+    });
+    expect(await useSuperstringStore.getState().renameSession(first.sourceId, "Renamed")).toBe(
+      true,
+    );
+    expect(renameSession).toHaveBeenCalledWith(first.sourceId, "Renamed");
+    expect(useSuperstringStore.getState().summaryById[second.id]).toBe(second);
+    expect(await useSuperstringStore.getState().deleteSessionById(first.sourceId)).toBe(true);
+    expect(deleteSession).toHaveBeenCalledWith(first.sourceId);
+    expect(useSuperstringStore.getState().currentConversationId).toBe(second.id);
+    expect(useSuperstringStore.getState().directoryIds).toEqual([second.id]);
+  });
+});
+
+it("independent directory rename targets may complete in either order on the same API", async () => {
+  const first = summaryFixture("session-a", { title: "A" });
+  const second = summaryFixture("session-b", { title: "B" });
+  const a = Promise.withResolvers<Awaited<ReturnType<SuperstringApi["renameSession"]>>>();
+  const b = Promise.withResolvers<Awaited<ReturnType<SuperstringApi["renameSession"]>>>();
+  const renameSession = vi.fn((id: string) => (id === first.sourceId ? a.promise : b.promise));
+  useSuperstringStore.setState({
+    apiClient: fakeClient({ renameSession }),
+    summaryById: { [first.id]: first, [second.id]: second },
+    directoryIds: [first.id, second.id],
+    sessionConversationIds: { [first.sourceId]: first.id, [second.sourceId]: second.id },
+  });
+  const firstSave = useSuperstringStore.getState().renameSession(first.sourceId, "First renamed");
+  const secondSave = useSuperstringStore
+    .getState()
+    .renameSession(second.sourceId, "Second renamed");
+  b.resolve({ title: "Second renamed", updated_at: "2026-10-01T00:00:00Z" } as Awaited<
+    ReturnType<SuperstringApi["renameSession"]>
+  >);
+  expect(await secondSave).toBe(true);
+  a.resolve({ title: "First renamed", updated_at: "2026-10-01T00:00:00Z" } as Awaited<
+    ReturnType<SuperstringApi["renameSession"]>
+  >);
+  expect(await firstSave).toBe(true);
+  expect(useSuperstringStore.getState().summaryById[first.id].title).toBe("First renamed");
+  expect(useSuperstringStore.getState().summaryById[second.id].title).toBe("Second renamed");
 });

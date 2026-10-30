@@ -1,6 +1,6 @@
 import { cn } from "cn";
 import { FolderPlus, ImagePlus, RefreshCw, SlidersHorizontal, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { AlertDialog, ConfirmDialog } from "@/components/confirmation";
@@ -29,6 +29,7 @@ import {
 import { useQqInput } from "@/features/qq/use-qq-input";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 
 export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
@@ -60,6 +61,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
     })),
   );
   const { t, i18n } = useTranslation();
+  const searchHintId = useId();
   const [search, setSearch] = useState(""),
     [collection, setCollection] = useState("all"),
     [enabled, setEnabled] = useState("all"),
@@ -79,9 +81,22 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
     [batchCollection, setBatchCollection] = useQqInput("stickerBatchCollection"),
     [batchTag, setBatchTag] = useQqInput("stickerBatchTag");
 
+  const saveLifetime = useRef<object | null>(null);
   useEffect(() => {
+    saveLifetime.current = active ? {} : null;
     if (active) void s.loadQqStickers();
+    return () => {
+      saveLifetime.current = null;
+    };
   }, [active, s.loadQqStickers]);
+
+  const saveEditor = (enableAfterSave = false) => {
+    const lifetime = saveLifetime.current;
+    return s.saveQqStickerEditor({
+      enableAfterSave,
+      isCurrent: () => lifetime !== null && saveLifetime.current === lifetime,
+    });
+  };
 
   const editor = s.qqStickerEditor,
     dirty = qqStickerEditorDirty(editor);
@@ -130,10 +145,18 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
         <Input
           className="min-w-48 flex-1"
           aria-label={t("library.search.assets")}
-          placeholder={t("library.search.names.descriptions.or.tags")}
+          placeholder={t("library.search.assets")}
+          aria-describedby={searchHintId}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <WorkspaceHelp
+          title={t("library.search.assets")}
+          description={t("library.assetSearchHint")}
+        />
+        <span id={searchHintId} className="sr-only">
+          {t("library.assetSearchHint")}
+        </span>
         <NativeSelect
           aria-label={t("library.asset.collection")}
           value={collection}
@@ -271,7 +294,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
             className="overflow-hidden border-border/80 bg-card py-0 transition-all hover:border-border"
           >
             <CardContent className="p-0">
-              <div className="relative bg-muted/50 dark:bg-muted/30">
+              <div className="relative bg-muted/50 dark:bg-muted/30 [&>[data-slot=tooltip-trigger]]:w-full">
                 <Button
                   tooltip={<Trans i18nKey="hints.complete.stickerOpen" />}
                   variant="ghost"
@@ -335,7 +358,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
           if (!value) open(null);
         }}
       >
-        <SheetContent className="flex h-full w-full flex-col p-0 sm:max-w-3xl">
+        <SheetContent scrollMode="body" className="flex h-full w-full flex-col p-0 sm:max-w-3xl">
           <SheetHeader className="border-b border-border/60 px-6 py-4">
             <SheetTitle>{editor?.name}</SheetTitle>
             <SheetDescription>
@@ -344,7 +367,12 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
           </SheetHeader>
           {editor && (
             <>
-              <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-6">
+              <div data-slot="sheet-body" className="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
+                {s.error && (
+                  <p role="alert" className="text-sm text-destructive">
+                    {translateNotice(s.error)}
+                  </p>
+                )}
                 {/* 预览与即时启用状态 */}
                 <div className="flex flex-col sm:flex-row items-center gap-5 rounded-xl border border-border/70 bg-muted/40 p-4">
                   <div className="flex size-36 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-background p-2">
@@ -576,7 +604,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
                   <Button
                     disabled={s.qqStickerSaving}
                     tooltip={t("hints.library.sticker.saveDescription")}
-                    onClick={() => void s.saveQqStickerEditor()}
+                    onClick={() => void saveEditor()}
                   >
                     {t("library.save.description")}
                   </Button>
@@ -584,7 +612,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
                     <Button
                       disabled={s.qqStickerSaving}
                       tooltip={t("hints.library.sticker.saveAndEnable")}
-                      onClick={() => void s.saveQqStickerEditor({ enableAfterSave: true })}
+                      onClick={() => void saveEditor(true)}
                     >
                       {t("library.save.and.enable")}
                     </Button>
@@ -598,7 +626,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
 
       {/* 导入对话框 */}
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
-        <DialogContent>
+        <DialogContent scrollMode="surface">
           <DialogTitle>{t("library.import.a.sticker")}</DialogTitle>
           <DialogDescription>
             {t("library.supported.images.and.animations.are.imported.disabled.they.can")}
@@ -625,7 +653,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
 
       {/* 集合管理对话框 */}
       <Dialog open={collectionsOpen} onOpenChange={setCollectionsOpen}>
-        <DialogContent>
+        <DialogContent scrollMode="surface">
           <DialogTitle>{t("library.manage.collections")}</DialogTitle>
           <DialogDescription>
             {t("library.collections.can.be.reused.by.multiple.conversation.schemes")}
@@ -765,7 +793,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
 
       {/* 批量编辑对话框 */}
       <Dialog open={batchOpen} onOpenChange={setBatchOpen}>
-        <DialogContent>
+        <DialogContent scrollMode="surface">
           <DialogTitle>
             {t("library.bulk.edit.value.assets", { "0": s.qqStickerSelection.length })}
           </DialogTitle>
@@ -921,7 +949,7 @@ export function StickerLibrary({ active = true }: { active?: boolean } = {}) {
             disabled={s.qqStickerSaving}
             tooltip={t("hints.library.sticker.saveContinue")}
             onClick={() =>
-              void s.saveQqStickerEditor().then((ok) => {
+              void saveEditor().then((ok) => {
                 if (ok) proceed();
               })
             }

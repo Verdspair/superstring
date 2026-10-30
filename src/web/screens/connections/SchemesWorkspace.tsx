@@ -148,7 +148,7 @@ export function SchemeDirectory({ active = true }: { active?: boolean } = {}) {
     });
 
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label={t("workspace.schemes")}>
+    <section className="min-w-0" aria-label={t("workspace.schemes")}>
       <div className="flex flex-wrap items-center gap-3 border-b px-4 py-4 sm:gap-4">
         <div className="relative min-w-0 basis-full sm:basis-64 sm:flex-1">
           <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
@@ -218,7 +218,7 @@ export function SchemeDirectory({ active = true }: { active?: boolean } = {}) {
           </Button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto py-[24px]" data-workspace-scroll>
+      <div className="py-[24px]">
         {apps.map((app) => {
           const allRows = schemeRowsOf(s, app);
           const visibleRows = visibleOf(app);
@@ -316,7 +316,7 @@ export function SchemeDirectory({ active = true }: { active?: boolean } = {}) {
           if (!open && !busy) closeNaming();
         }}
       >
-        <DialogContent>
+        <DialogContent scrollMode="surface">
           <DialogHeader>
             <DialogTitle>{t("connections.newScheme")}</DialogTitle>
             <DialogDescription>
@@ -431,8 +431,8 @@ function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean })
     if (!schemeId) return;
     s.requestQqSchemeNavigation(schemeId, next === "bindings" ? "bindings" : "settings");
   };
-  return (
-    <section className="flex h-full min-h-0 w-full flex-col" aria-label={t(app.nameKey)}>
+  const pageHeader = (
+    <>
       <WorkspacePageHeader
         location={t(app.nameKey)}
         title={s.qqSchemeEditor?.name ?? t("schemes.currentScheme")}
@@ -452,7 +452,7 @@ function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean })
       />
       <header className="mb-6 shrink-0 space-y-4">
         <Tabs value={view} onValueChange={switchView} className="min-w-0">
-          <TabsList className="w-full justify-start gap-[4px] group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-[36px] [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-1 [&_[role=tab]]:whitespace-normal sm:w-auto sm:[&_[role=tab]]:flex-none">
+          <TabsList presentation="compact" flow="wrap" className="w-full justify-start sm:w-auto">
             <TabsTrigger value="settings" disabled={busy || !schemeId}>
               {t("schemes.bindings.viewSettings")}
             </TabsTrigger>
@@ -490,18 +490,28 @@ function SchemeDetail({ app, active }: { app: SchemeAppEntry; active: boolean })
           </span>
         )}
       </header>
+    </>
+  );
+  return (
+    <section className="flex h-full min-h-0 w-full flex-col" aria-label={t(app.nameKey)}>
       <div
         hidden={view !== "settings" && !!schemeId}
         className="min-h-0 flex-1 overflow-hidden [&[hidden]]:hidden"
       >
-        <SchemeStudio active={active && view === "settings"} breadcrumb={false} embedded />
+        <SchemeStudio
+          active={active && view === "settings"}
+          breadcrumb={false}
+          embedded
+          pageHeader={view === "settings" || !schemeId ? pageHeader : undefined}
+        />
       </div>
       {view === "bindings" && schemeId && (
         <div
-          className="min-h-0 flex-1 overflow-y-auto px-4 py-6"
+          className="min-h-0 flex-1 overflow-y-auto py-6"
           data-workspace-scroll
           data-scheme-view="bindings"
         >
+          {pageHeader}
           <SchemeBindingsView schemeId={schemeId} active={active} />
         </div>
       )}
@@ -552,7 +562,11 @@ function QqSettingsPane({ active, route }: { active: boolean; route: SettingsRou
         }}
         className="mb-4 min-w-0"
       >
-        <TabsList className="w-full max-w-full justify-start gap-1 rounded-[10px] border border-border bg-muted p-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:h-auto [&_[role=tab]]:min-w-0 [&_[role=tab]]:flex-1 [&_[role=tab]]:whitespace-normal [&_[role=tab]]:px-3 [&_[role=tab]]:text-[13px] sm:w-auto sm:[&_[role=tab]]:flex-none">
+        <TabsList
+          presentation="workspace"
+          flow="wrap"
+          className="w-full max-w-full justify-start gap-1 sm:w-auto"
+        >
           {CONNECTION_TASK_ROUTES.map((entry) => (
             <TabsTrigger key={entry.task} value={entry.task} disabled={busy}>
               {t(entry.label)}
@@ -612,46 +626,9 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
   const app = SCHEME_CATALOG[0];
   return (
     <section
-      className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
+      className="workspace-page flex h-full min-h-0 flex-col"
       aria-label={t("workspace.schemes")}
     >
-      {activePane === "list" && (
-        <>
-          <WorkspacePageHeader
-            location={t("brand.workspace", { "0": t("workspace.schemes") })}
-            title={t("workspace.schemes")}
-            description={t("schemes.subtitle")}
-          />
-          <fieldset className="mb-6 flex min-w-0 flex-wrap items-center gap-2">
-            <legend className="mb-2 text-sm font-medium">{t("schemes.qq.name")}</legend>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => openSettingsRoute("scheme-bindings")}
-            >
-              <MessagesSquare />
-              {t("schemes.workspace.bindings")}
-            </Button>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => openSettingsRoute("qq-connection")}
-            >
-              <Plug />
-              {t("schemes.qq.connectionTitle")}
-            </Button>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => openSettingsRoute("qq-storage")}
-            >
-              <Database />
-              {t("connections.dataRetention")}
-            </Button>
-            <WorkspaceHelp title={t("schemes.qq.name")} description={t("schemes.qq.scopeNote")} />
-          </fieldset>
-        </>
-      )}
       {activePane === "bindings" && (
         <WorkspacePageHeader
           location={t("schemes.qq.name")}
@@ -686,9 +663,43 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
       {renderedPanes.has("list") && (
         <div
           hidden={activePane !== "list"}
-          className="flex min-h-0 flex-1 flex-col [&[hidden]]:hidden"
+          className="min-h-0 flex-1 overflow-y-auto [&[hidden]]:hidden"
+          data-workspace-scroll
           data-qq-retained-scroll="schemes"
         >
+          <WorkspacePageHeader
+            location={t("brand.workspace", { "0": t("workspace.schemes") })}
+            title={t("workspace.schemes")}
+            description={t("schemes.subtitle")}
+          />
+          <fieldset className="mb-6 flex min-w-0 flex-wrap items-center gap-2">
+            <legend className="mb-2 text-sm font-medium">{t("schemes.qq.name")}</legend>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => openSettingsRoute("scheme-bindings")}
+            >
+              <MessagesSquare />
+              {t("schemes.workspace.bindings")}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => openSettingsRoute("qq-connection")}
+            >
+              <Plug />
+              {t("schemes.qq.connectionTitle")}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => openSettingsRoute("qq-storage")}
+            >
+              <Database />
+              {t("connections.dataRetention")}
+            </Button>
+            <WorkspaceHelp title={t("schemes.qq.name")} description={t("schemes.qq.scopeNote")} />
+          </fieldset>
           <SchemeDirectory active={active && activePane === "list"} />
         </div>
       )}
@@ -708,7 +719,7 @@ export function SchemesWorkspace({ active = true }: { active?: boolean } = {}) {
           className="flex min-h-0 flex-1 flex-col [&[hidden]]:hidden"
           data-qq-retained-scroll="groups"
         >
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6" data-workspace-scroll>
+          <div className="min-h-0 flex-1 overflow-y-auto py-6" data-workspace-scroll>
             <SchemeBindingsView picker active={active && activePane === "bindings"} />
           </div>
         </div>

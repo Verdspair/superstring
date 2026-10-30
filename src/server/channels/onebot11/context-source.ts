@@ -10,7 +10,7 @@ import {
 import type { ModelMessage, RunOwner } from "../../../shared/contracts/agent-run";
 import { MODEL_LAYER_ERROR_CODES } from "../../../shared/contracts/errors";
 import type { Evidence, SourceRef } from "../../../shared/contracts/evidence";
-import { resolveMemoryReadPolicy } from "../../../shared/contracts/memory";
+import { resolveMemoryReadSettings } from "../../../shared/contracts/memory";
 import { qqEffectiveReplyPrompt } from "../../../shared/contracts/qq";
 import type {
   QqEffectiveMediaPolicy,
@@ -51,6 +51,7 @@ import {
 import type { CompressionRecord } from "../../agent/conversation-compression";
 import type { ModelContextBudget } from "../../agent/model-port";
 import { ReservationLedger } from "../../agent/reservation-ledger";
+import { ownerScope } from "../../conversation/evidence-scope";
 import { readMemoryCandidate } from "../../db/context-repository";
 import type { ConversationEventRepository } from "../../db/conversation-event-repository";
 import { contextDumps } from "../../db/json-text";
@@ -117,7 +118,6 @@ import {
   qqPhaseTier,
   qqSelectContext,
 } from "../../services/qq-context-contract";
-import { ownerScope } from "../../services/qq-media-sources";
 import {
   createQqTimeFormatter,
   renderQqMessageFacts,
@@ -800,7 +800,7 @@ export class BotContextSource {
     // 本群停用系统能力后不安装对应模块：模型可见目录里没有它，调用点也过不去
     // （ADR0019 §13.3 D）。历史原文（history）不属能力停用面，照旧安装。
     if (
-      o.runtime.p5_config.retrieval_mode !== "off" &&
+      resolveMemoryReadSettings(o.runtime.p5_config).enabled &&
       this.guard.allowed(this.owner, "memory_read")
     ) {
       const memory = this.memory;
@@ -2094,9 +2094,9 @@ ${intent.trim()}`,
       sources.filter((source) => !carriers.has(key(source)) || common.has(key(source))),
     );
   }
-  /** P2 修复：真实调用 owner（ActionContext.owner，conversation 域）——registry 登记/查询同 owner。 */
+  /** 真实调用 owner（ActionContext.owner，conversation 域）——registry 登记/查询同 owner。 */
   private runOwner?: RunOwner;
-  /** P2/S19 桥：locateHistory 铸造合法 history Evidence（JSON tuple id + conversation sources）。 */
+  /** locateHistory 铸造合法 history Evidence（JSON tuple id + conversation sources）。 */
   private locateHistory?: (platformMessageId: string, context: ActionContext) => Evidence | null;
   /** 运行标识（runConversation 构造后、首次 read 前调用恰一次）：媒体投影与登记按真实 run。 */
   bindRun(context: ActionContext): void {
@@ -2105,7 +2105,7 @@ ${intent.trim()}`,
       this.budgetFeedbackBatchEligible = false;
       this.runId = context.runId;
     }
-    // P2：capture 真实调用 owner——registry（registerEvidence/history.read）必须以同一
+    // capture 真实调用 owner——registry（registerEvidence/history.read）必须以同一
     // (owner, runId) 登记+查询，否则同 run 读 miss。来源域读取（SourceRef 末验）仍按
     // this.owner（qq_binding）——不放宽授权/存储边界，不跨 run。
     this.runOwner = context.owner;
@@ -2406,12 +2406,8 @@ ${intent.trim()}`,
     // 记忆额度只约束记忆；历史与已存摘要是独立的有界工具，由拟合时的真实上下文剩余额度约束，
     // 不能因为记忆检索关闭（额度 0）被一并禁掉。
     if (kind !== "memory") return Number.MAX_SAFE_INTEGER;
-    const policy = resolveMemoryReadPolicy(
-      runtime.p5_config.retrieval_mode,
-      runtime.p5_config.retrieval_presets,
-    );
-    if (policy.effectiveMode === "off") return 0;
-    return policy.preset.max_tokens;
+    const settings = resolveMemoryReadSettings(runtime.p5_config);
+    return settings.enabled ? settings.maxBytes : 0;
   }
   readonly prepareModelContext?: (
     model: string,
@@ -4749,7 +4745,6 @@ ${intent.trim()}`,
         name === "memory.query"
           ? await this.memory.query({
               ...common,
-              mode: o.runtime.p5_config.retrieval_mode,
               conversationId: o.conversationId,
               scopes: qqMemoryScopeKeyset(o.snapshot.access).read,
             })

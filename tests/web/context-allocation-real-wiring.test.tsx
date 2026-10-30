@@ -19,10 +19,25 @@ import {
 } from "../../src/shared/contracts/qq-group-config";
 import { ApiError, type api } from "../../src/web/api";
 import { DesignSystemProvider } from "../../src/web/design-system/Providers";
-import {
-  resetContextAllocationTarget,
-  setContextAllocationTarget,
-} from "../../src/web/features/context-allocation";
+
+const resetContextAllocationTarget = () =>
+  store.setState({
+    contextAllocationTarget: {
+      purpose: "assistant",
+      agentId: null,
+      schemeId: null,
+      bindingId: null,
+      returnRoute: null,
+      returnLabel: null,
+    },
+  });
+const setContextAllocationTarget = (
+  target: Partial<import("../../src/web/features/context-allocation").ContextAllocationTarget>,
+) =>
+  store.setState((state) => ({
+    contextAllocationTarget: { ...state.contextAllocationTarget, ...target },
+  }));
+
 import { qqGroupConfigEditorFrom } from "../../src/web/features/qq/group-config-state";
 import { selectLocale } from "../../src/web/i18n";
 import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
@@ -367,7 +382,7 @@ describe("统一上下文分配真实接线", () => {
     expect(screen.getByRole("alert").textContent).toContain("CONFIG_VERSION_CONFLICT");
   });
 
-  it("记忆读取预算：改档 max_tokens 进 pageEditor，保存走 context 白名单——基线补齐非预算键，外来改动与提示词草稿不发送", async () => {
+  it("记忆工具读取额度：single memory_read进材料草稿，保存保持旧raw与context基线，外来模型/context草稿不发送", async () => {
     const updateAgent = vi.fn(async (_id: string, body: Record<string, unknown>) => {
       const patch = { ...body };
       delete patch.expected_version;
@@ -376,8 +391,7 @@ describe("统一上下文分配真实接线", () => {
     const client = setupHarness({ updateAgent });
     await renderAssistantWorkspace("memory-tools");
 
-    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "broad" } });
-    fireEvent.change(screen.getByTestId("reading-preset-max-tokens-broad"), {
+    fireEvent.change(screen.getByLabelText("记忆工具读取额度"), {
       target: { value: "10000" },
     });
     // 外来脏稿：models 页的模型草稿与 context 页的轮数草稿——materials 任务保存不得夹带。
@@ -400,8 +414,9 @@ describe("统一上下文分配真实接线", () => {
     expect(client.updateAgent).toHaveBeenCalledTimes(1);
     const payload = vi.mocked(client.updateAgent).mock.calls[0][1] as Record<string, unknown>;
     const p5 = payload.p5_config as Record<string, unknown>;
+    expect(p5.memory_read).toEqual({ enabled: true, max_bytes: 10000 });
     expect(p5.retrieval_presets).toMatchObject({
-      broad: expect.objectContaining({ max_tokens: 10000, candidate_limit: 40 }),
+      broad: expect.objectContaining({ max_tokens: 4000, candidate_limit: 40 }),
       standard: expect.objectContaining({ max_tokens: 2000, max_entries: 10 }),
       conservative: expect.objectContaining({ max_tokens: 1000, max_entries: 5 }),
     });
@@ -561,7 +576,7 @@ describe("统一上下文分配真实接线", () => {
       store.setState({
         allocationInvalidInputs: {
           ...store.getState().allocationInvalidInputs,
-          [`agent:${AGENT_ID}:reading:memory:standard`]: "-1",
+          [`agent:${AGENT_ID}:reading:memory:bytes`]: "-1",
         },
       });
     });
@@ -571,9 +586,7 @@ describe("统一上下文分配真实接线", () => {
     await act(async () => {
       renderView(<AssistantWorkspace active={true} />);
     });
-    expect(
-      (screen.getByTestId("reading-preset-max-tokens-standard") as HTMLInputElement).value,
-    ).toBe("-1");
+    expect((screen.getByLabelText("记忆工具读取额度") as HTMLInputElement).value).toBe("-1");
     // 工作区内嵌模式下只留工具栏保存：点击被非法原文拦截，不发请求
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "保存 Agent" }));
@@ -583,7 +596,7 @@ describe("统一上下文分配真实接线", () => {
     // 完整映射在主 store：两个域的原文同时可见；保存入口不再发请求。
     const invalid = store.getState().allocationInvalidInputs;
     expect(invalid[`agent:${AGENT_ID}:aux:memory_consolidate_input_limit`]).toBe("-50");
-    expect(invalid[`agent:${AGENT_ID}:reading:memory:standard`]).toBe("-1");
+    expect(invalid[`agent:${AGENT_ID}:reading:memory:bytes`]).toBe("-1");
     expect(client.updateAgent).not.toHaveBeenCalled();
   });
 });

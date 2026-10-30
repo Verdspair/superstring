@@ -3,7 +3,8 @@
 //
 // 断言只用 i18n 稳定键（qq.conversation.remove*）与 store 状态，不做样式类或文案快照。
 
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
 import type { QqBindingResponse, QqConversationListItem } from "../../src/shared/contracts/qq";
@@ -11,6 +12,7 @@ import { QqBindingResponseSchema } from "../../src/shared/contracts/qq";
 import { api, type SuperstringApi } from "../../src/web/api";
 import { emptyWebConversation } from "../../src/web/features/chat/conversation-state";
 import { selectLocale } from "../../src/web/i18n";
+import { i18n } from "../../src/web/i18n/runtime";
 import { ConversationIndex } from "../../src/web/screens/conversations/ConversationIndex";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { render } from "./helpers/render-with-providers";
@@ -287,4 +289,117 @@ it("QQ 私聊与群行共用同一个移除菜单与既有确认弹窗，解绑�
   const webItems = openMenu("网页会话");
   expect(webItems.map((el) => el.textContent)).toContain("删除会话");
   expect(webItems.map((el) => el.textContent)).not.toContain("移除会话");
+});
+
+it.each(["private", "group"] as const)(
+  "QQ %s unbind cancellation restores exact source and never switches the selected Web row",
+  async (kind) => {
+    const remove = vi.fn();
+    reset({ deleteQqBinding: remove });
+    const target = bindingOf(TARGET, "private", "40004");
+    const other = bindingOf(OTHER, "group", "30003");
+    const { web, privateRow, groupRow } = seedDirectory(target, other, "web-1");
+    render(<ConversationIndex />);
+    const item = kind === "private" ? privateRow : groupRow;
+    const trigger = screen.getByRole("button", {
+      name: i18n.t("workspace.conversation_actions", { "0": item.title }),
+    });
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("menuitem", { name: "移除会话" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    expect(store.getState().currentConversationId).toBe(web.id);
+    expect(remove).not.toHaveBeenCalled();
+    expect(store.getState().qqBindings).toHaveLength(2);
+  },
+);
+
+it.each(["private", "group"] as const)(
+  "successful same-owner QQ %s unbind keeps the original header destination",
+  async (kind) => {
+    const gate = Promise.withResolvers<void>();
+    const remove = vi.fn().mockReturnValue(gate.promise);
+    reset({ deleteQqBinding: remove });
+    const target = bindingOf(TARGET, "private", "40004");
+    const other = bindingOf(OTHER, "group", "30003");
+    const { web, privateRow, groupRow } = seedDirectory(target, other, "web-1");
+    render(<ConversationIndex />);
+    const item = kind === "private" ? privateRow : groupRow;
+    const header = screen.getByRole("heading", { name: "对话", hidden: true });
+    const focus = vi.spyOn(header, "focus");
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: i18n.t("workspace.conversation_actions", { "0": item.title }),
+      }),
+    );
+    await userEvent.click(screen.getByRole("menuitem", { name: "移除会话" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "移除会话" }));
+    await act(async () => gate.resolve());
+    await waitFor(() => expect(focus).toHaveBeenCalledTimes(1));
+    expect(document.activeElement).toBe(header);
+    expect(store.getState().summaryById[item.id]).toBeUndefined();
+    expect(store.getState().currentConversationId).toBe(web.id);
+    expect(remove).toHaveBeenCalledWith(kind === "private" ? TARGET : OTHER, 5);
+  },
+);
+
+it("old QQ unbind false completion cannot focus a replacement API directory header", async () => {
+  const gate = Promise.withResolvers<void>();
+  reset({ deleteQqBinding: vi.fn().mockReturnValue(gate.promise) });
+  const target = bindingOf(TARGET, "private", "40004");
+  const other = bindingOf(OTHER, "group", "30003");
+  const { privateRow } = seedDirectory(target, other, "web-1");
+  render(<ConversationIndex />);
+  const focus = vi.spyOn(screen.getByRole("heading", { name: "对话", hidden: true }), "focus");
+  await userEvent.click(
+    screen.getByRole("button", {
+      name: i18n.t("workspace.conversation_actions", { "0": privateRow.title }),
+    }),
+  );
+  await userEvent.click(screen.getByRole("menuitem", { name: "移除会话" }));
+  await userEvent.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", { name: "移除会话" }),
+  );
+  await act(async () =>
+    store.setState({
+      apiClient: { ...store.getState().apiClient },
+      summaryById: {},
+      directoryIds: [],
+    }),
+  );
+  await act(async () => gate.resolve());
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(focus).not.toHaveBeenCalled();
+});
+
+it("external QQ summary disappearance with its binding still present does not count as this pending unbind success", async () => {
+  const gate = Promise.withResolvers<void>();
+  reset({ deleteQqBinding: vi.fn().mockReturnValue(gate.promise) });
+  const target = bindingOf(TARGET, "private", "40004");
+  const other = bindingOf(OTHER, "group", "30003");
+  const { privateRow } = seedDirectory(target, other, "web-1");
+  render(<ConversationIndex />);
+  const focus = vi.spyOn(screen.getByRole("heading", { name: "对话", hidden: true }), "focus");
+  await userEvent.click(
+    screen.getByRole("button", {
+      name: i18n.t("workspace.conversation_actions", { "0": privateRow.title }),
+    }),
+  );
+  await userEvent.click(screen.getByRole("menuitem", { name: "移除会话" }));
+  await userEvent.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", { name: "移除会话" }),
+  );
+  await act(async () =>
+    store.setState((state) => ({
+      summaryById: Object.fromEntries(
+        Object.entries(state.summaryById).filter(([id]) => id !== privateRow.id),
+      ),
+      directoryIds: state.directoryIds.filter((id) => id !== privateRow.id),
+    })),
+  );
+  await act(async () => gate.resolve());
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(focus).not.toHaveBeenCalled();
 });

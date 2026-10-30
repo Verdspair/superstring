@@ -38,6 +38,10 @@ it("command search finds pages with the keyboard and restores focus on dismissal
   trigger.focus();
   await userEvent.keyboard("{Control>}k{/Control}");
   const input = screen.getByRole("combobox");
+  const group = input.closest('[data-slot="input-group"][role="group"]');
+  expect(group).not.toBeNull();
+  expect(input.getAttribute("data-slot")).toBe("command-input");
+  expect(document.activeElement).toBe(input);
   await userEvent.type(input, "身份与行为");
   expect(screen.getByRole("option", { name: "身份与行为" })).toBeTruthy();
   await userEvent.keyboard("{Enter}");

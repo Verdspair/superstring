@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { estimateMessages } from "../../src/server/agent/conversation-context";
+import { estimateMessages } from "../../src/server/modules/memory-query";
 import { checkQqModelCapacity } from "../../src/server/services/qq-capacity-preflight";
 
 const input = {

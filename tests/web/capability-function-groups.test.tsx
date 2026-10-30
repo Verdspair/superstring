@@ -59,6 +59,24 @@ const permissionsFixture: PermissionsResponse = {
 
 const toolFixture: ToolDirectoryResponse = {
   tools: [
+    ...["reply.text", "reply.sticker"].map((name) => ({
+      name,
+      description: "QQ terminal contribution",
+      parameters: {},
+      capability: "conversation.reply",
+      effect: "write" as const,
+      sandboxCallable: false,
+      invocation: "host-terminal" as const,
+      scope: "qq-conversation" as const,
+      origin: "system" as const,
+      globalEnabled: true,
+      functionId: "qq-reply" as const,
+      resource: null,
+      revision: "terminal-v1",
+      approvalRequired: false,
+      directories: [],
+    })),
+
     {
       name: "memory.query",
       description: "Search memory",
@@ -66,6 +84,8 @@ const toolFixture: ToolDirectoryResponse = {
       capability: "memory",
       effect: "read",
       sandboxCallable: true,
+      invocation: "action" as const,
+      scope: "conversation" as const,
       origin: "system",
       globalEnabled: true,
       functionId: "memory-query",
@@ -81,6 +101,8 @@ const toolFixture: ToolDirectoryResponse = {
       capability: "memory",
       effect: "read",
       sandboxCallable: true,
+      invocation: "action" as const,
+      scope: "conversation" as const,
       origin: "system",
       globalEnabled: false,
       functionId: "memory-query",
@@ -96,6 +118,8 @@ const toolFixture: ToolDirectoryResponse = {
       capability: "web",
       effect: "read",
       sandboxCallable: true,
+      invocation: "action" as const,
+      scope: "conversation" as const,
       origin: "system",
       globalEnabled: true,
       functionId: "web-access",
@@ -111,6 +135,8 @@ const toolFixture: ToolDirectoryResponse = {
       capability: "mcp.search-server",
       effect: "read",
       sandboxCallable: true,
+      invocation: "action" as const,
+      scope: "conversation" as const,
       origin: "mcp",
       globalEnabled: true,
       functionId: null,
@@ -284,7 +310,13 @@ describe("5 Function Groups in Capabilities Workspace", () => {
     // 展开后组件与运行时动作可见；技能/工具行仍可各自打开定义。
     expect(await screen.findByText("reply.text")).toBeTruthy();
     expect(screen.getByText("reply.sticker")).toBeTruthy();
-    expect(screen.getByText("运行时动作")).toBeTruthy();
+    expect(screen.getAllByText("reply.text")).toHaveLength(1);
+    expect(screen.getAllByText("reply.sticker")).toHaveLength(1);
+    const toolButton = within(li).getByRole("button", { name: /reply\.text/ });
+    expect(toolButton.textContent).toContain("宿主提交");
+    fireEvent.click(toolButton);
+    expect(store.getState().componentTarget).toMatchObject({ kind: "tool", id: "reply.text" });
+    expect(within(li).getByText("工具 (2)")).toBeTruthy();
     const skillButton = await screen.findByRole("button", { name: /system-qq-reply/ });
     fireEvent.click(skillButton);
     expect(store.getState().componentTarget).toMatchObject({

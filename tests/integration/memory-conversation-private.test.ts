@@ -169,7 +169,6 @@ function fixture() {
       conversationId: conversationId(sessionId),
       owner: owner(sessionId),
       scopes: null,
-      mode: "standard",
       query: "",
       budget: 65536,
     });

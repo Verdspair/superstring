@@ -168,7 +168,9 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
             <Tabs value={view} onValueChange={switchView} className="min-w-0 max-w-full">
               <TabsList
                 aria-label={t("workspace.conversation_view")}
-                className="h-auto group-data-horizontal/tabs:h-auto w-fit max-w-full justify-start flex-wrap gap-[6px] rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:rounded-[6px] [&_[role=tab]]:shrink-0 [&_[role=tab]]:flex-none [&_[role=tab]]:border-0 [&_[role=tab][data-state=active]]:border [&_[role=tab][data-state=active]]:border-border [&_[role=tab][data-state=active]]:bg-card [&_[role=tab][data-state=active]]:font-semibold [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px] [&_[role=tab]]:font-medium"
+                presentation="workspace"
+                flow="wrap"
+                className="w-fit max-w-full justify-start"
               >
                 <TabsTrigger value="messages">{t("workspace.message_history")}</TabsTrigger>
                 <TabsTrigger value="activity">{t("workspace.runtime_observability")}</TabsTrigger>
@@ -278,7 +280,7 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
                 maxSize="420px"
                 groupResizeBehavior="preserve-pixel-size"
               >
-                <ConversationIndex />
+                <ConversationIndex active={active} />
               </ResizablePanel>
             )}
             {!mobile && !hideDirectory && (
@@ -295,14 +297,19 @@ export function ConversationWorkspace({ active = true }: { active?: boolean } = 
         </div>
       </div>
       {mobile && (
-        <SheetContent side="left" className="w-[min(22rem,100vw-2rem)] p-0" showCloseButton={false}>
+        <SheetContent
+          scrollMode="none"
+          side="left"
+          className="w-[min(22rem,100vw-2rem)] p-0"
+          showCloseButton={false}
+        >
           <SheetHeader className="sr-only">
             <SheetTitle>{t("workspace.conversation_index")}</SheetTitle>
             <SheetDescription>
               {t("workspace.search_select_or_create_a_conversation")}
             </SheetDescription>
           </SheetHeader>
-          <ConversationIndex onSelected={() => setDirectory(false)} />
+          <ConversationIndex active={active && directory} onSelected={() => setDirectory(false)} />
           <SheetClose asChild>
             <Button
               variant="outline"

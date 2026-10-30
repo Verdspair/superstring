@@ -12,6 +12,7 @@ import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import type { CompressionRecord } from "../../src/server/agent/conversation-compression";
 import { BotContextSource } from "../../src/server/channels/onebot11/context-source";
+import { inTimeline } from "../../src/server/conversation/evidence-scope";
 import { OutboundDelivery } from "../../src/server/conversation/outbound-delivery";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
@@ -40,7 +41,6 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import {
   evidenceHash,
-  inTimeline,
   loadConversationEvidence,
   storedPackages,
 } from "../../src/server/modules/conversation-evidence-store";

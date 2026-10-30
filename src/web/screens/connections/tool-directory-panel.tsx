@@ -1,5 +1,5 @@
 import { RefreshCw, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ToolDirectoryEntry } from "../../../shared/contracts/tool-directory";
 import { CatalogItem } from "../../components/catalog-item";
@@ -18,16 +18,20 @@ import { grantDraftOf } from "../../features/access/permission-draft";
 import { useToolDirectoryResource } from "../../services/connection-resources";
 import { useSuperstringStore } from "../../store";
 import { CAPABILITY_CATALOG, TOOL_HUMAN_LABELS } from "../../workspace/capability-catalog";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { ToolGrantsPanel } from "./tool-grants-panel";
 
 export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
+  const searchHelpId = useId();
   const api = useSuperstringStore((s) => s.apiClient);
   const editor = useSuperstringStore((s) => s.permissionEditor);
   const saving = useSuperstringStore((s) => s.permissionSaving);
   const loadPermissions = useSuperstringStore((s) => s.loadPermissionSettings);
   const target = useSuperstringStore((s) => s.componentTarget);
-  const openRoute = useSuperstringStore((s) => s.openSettingsRoute);
+  const openRoute = useSuperstringStore((s) => s.openWorkspaceTarget);
+  const returnTarget = useSuperstringStore((s) => s.returnWorkspaceTarget);
+  const hasReturn = useSuperstringStore((s) => s.workspaceReturns.length > 0);
   const { data, loading, error: readError, refresh } = useToolDirectoryResource(api, active);
   const tools = data?.tools ?? [];
   const [error, setError] = useState("");
@@ -65,6 +69,7 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
     .slice()
     .sort((a, b) => Number(b.globalEnabled) - Number(a.globalEnabled));
   const authorisation = (tool: ToolDirectoryEntry) => {
+    if (tool.invocation === "host-terminal") return t("connections.tools.hostTerminalHint");
     if (!tool.resource) return t("connections.components.scopeBound");
     if (!editor) return t("capabilities.state.unread");
     const draft =
@@ -82,12 +87,16 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
   };
   const closeDetail = () => {
     setDetail(null);
+    if (hasReturn) {
+      returnTarget();
+      return;
+    }
     if (useSuperstringStore.getState().componentTarget?.kind === "tool")
       useSuperstringStore.setState({ componentTarget: null });
   };
   return (
-    <div className="w-full space-y-5 px-4 py-6">
-      <div className="flex items-start justify-between gap-4">
+    <div className="w-full min-w-0 space-y-5 py-6">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-4">
         <div className="space-y-1">
           <h2 className="workspace-section-title">{t("connections.tools.title")}</h2>
           <p className="text-sm text-muted-foreground">{t("connections.tools.description")}</p>
@@ -105,16 +114,26 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
           {t("connections.common.refresh")}
         </Button>
       </div>
-      <div className="flex items-center gap-3">
-        <div className="relative w-full max-w-md">
-          <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
-          <Input
-            className="pl-9"
-            aria-label={t("connections.tools.search")}
-            placeholder={t("connections.tools.search")}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
+        <div className="flex w-full max-w-md items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
+            <Input
+              className="pl-9"
+              aria-label={t("connections.tools.search")}
+              aria-describedby={searchHelpId}
+              placeholder={t("connections.tools.searchPlaceholder")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <WorkspaceHelp
+            title={t("connections.tools.searchPlaceholder")}
+            description={t("connections.tools.directorySearchHelp")}
           />
+          <span id={searchHelpId} className="sr-only">
+            {t("connections.tools.directorySearchHelp")}
+          </span>
         </div>
         <NativeSelect
           className="w-auto"
@@ -167,6 +186,14 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
                               : "connections.grants.effectWrite",
                           )}
                         </span>
+                        <span className="text-xs text-muted-foreground">
+                          {t(`connections.tools.scope.${tool.scope}`)}
+                        </span>
+                        {tool.invocation === "host-terminal" && (
+                          <span className="text-xs text-muted-foreground">
+                            {t("connections.tools.hostTerminal")}
+                          </span>
+                        )}
                         <span className="text-xs text-muted-foreground">
                           {t(
                             tool.globalEnabled
@@ -253,7 +280,7 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
           if (!open) closeDetail();
         }}
       >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
+        <SheetContent scrollMode="surface" className="w-full  sm:max-w-2xl">
           <SheetHeader className="border-b">
             <SheetTitle>{detail?.name}</SheetTitle>
             <SheetDescription>
@@ -276,11 +303,34 @@ export function ToolDirectoryPanel({ active = true }: { active?: boolean } = {})
                 )}
               </p>
               <dl className="grid grid-cols-2 gap-3 text-sm">
+                <dt>{t("connections.tools.scope")}</dt>
+                <dd>{t(`connections.tools.scope.${detail.scope}`)}</dd>
+                <dt>{t("connections.tools.invocation")}</dt>
+                <dd>
+                  {t(
+                    detail.invocation === "host-terminal"
+                      ? "connections.tools.hostTerminal"
+                      : "connections.tools.executable",
+                  )}
+                </dd>
+                <dt>{t("connections.tools.sandbox")}</dt>
+                <dd>
+                  {t(
+                    detail.sandboxCallable
+                      ? "connections.tools.sandboxSupported"
+                      : "connections.tools.sandboxUnsupported",
+                  )}
+                </dd>
                 <dt>{t("connections.components.capability")}</dt>
                 <dd className="font-mono text-xs">{detail.capability}</dd>
                 <dt>{t("connections.components.revision")}</dt>
                 <dd className="break-all font-mono text-xs">{detail.revision ?? "—"}</dd>
               </dl>
+              {detail.invocation === "host-terminal" && (
+                <p className="text-xs text-muted-foreground">
+                  {t("connections.tools.hostTerminalHint")}
+                </p>
+              )}
               <h3 className="text-sm font-medium">{t("connections.components.parameters")}</h3>
               <pre className="overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-xs">
                 {JSON.stringify(detail.parameters, null, 2)}

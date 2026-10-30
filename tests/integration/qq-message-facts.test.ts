@@ -1,4 +1,4 @@
-// T03：入站事实、双昵称快照和出站身份（计划 2026-10-02 T03；规格 §3/§4/§13）。
+// 入站事实、双昵称快照和出站身份。
 //
 // 覆盖：recordObservation 同事务写 facts、幂等与 backfill 补齐、member 目录双名字与
 // presence 语义、projectQqMessageFacts 的 scope/expiry/unavailable、出站身份快照与

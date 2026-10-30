@@ -4,7 +4,7 @@
 // 60 秒自动清扫照常运行，且不删除消息、记忆等用户内容（用户内容不设 TTL）。
 
 import { RefreshCw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { UUID_REGEX } from "../../../shared/contracts/common";
 import type {
@@ -112,6 +112,7 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
   const [preview, setPreview] = useState<{
+    api: typeof api;
     request: RuntimeStorageCleanupRequest;
     result: RuntimeStorageCleanupResult;
   } | null>(null);
@@ -125,6 +126,8 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
   const pending = useRef<ReadTask | null>(null);
   const writeToken = useRef(0);
   const busyRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A replacement API must get a distinct focus source so closing its predecessor cannot restore the old opener.
+  const previewOpener = useMemo(() => ({ current: null as HTMLElement | null }), [api]);
 
   const summary = useLiveResource(
     useCallback((signal: AbortSignal) => api.getRuntimeStorage(signal), [api]),
@@ -184,13 +187,19 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
   // 再执行新的 load()；task identity 守卫配合 startRead 同步 abort 阻断迟到响应。
   useForegroundRead(load, clear, { paused: !active, onSuspend: cancel });
 
-  // 迟到响应不允许落在别的类别页：离开面板后作废仍未完成的手动清理。
-  useEffect(
-    () => () => {
+  // API 身份替换与卸载均作废旧操作；新身份不继承旧预览、忙态或返回目标。
+  useEffect(() => {
+    busyRef.current = false;
+    setBusy(false);
+    previewRef.current = null;
+    setPreview(null);
+    setOutcome(null);
+    setActionError("");
+    return () => {
       writeToken.current += 1;
-    },
-    [],
-  );
+      previewOpener.current = null;
+    };
+  }, [previewOpener]);
 
   const resetTrail = () => {
     trail.current = [null];
@@ -258,8 +267,9 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
     );
   };
 
-  const beginPreview = async (request: RuntimeStorageCleanupRequest) => {
-    if (busyRef.current) return;
+  const beginPreview = async (request: RuntimeStorageCleanupRequest, opener: HTMLElement) => {
+    if (busyRef.current || useSuperstringStore.getState().apiClient !== api) return;
+    previewOpener.current = opener;
     busyRef.current = true;
     const token = ++writeToken.current;
     setBusy(true);
@@ -267,14 +277,15 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
     setOutcome(null);
     try {
       const result = await api.previewRuntimeStorageCleanup(request);
-      if (writeToken.current !== token) return;
-      const value = { request, result };
+      if (writeToken.current !== token || useSuperstringStore.getState().apiClient !== api) return;
+      const value = { api, request, result };
       previewRef.current = value;
       setPreview(value);
     } catch (cause) {
-      if (writeToken.current === token) setActionError(errorText(cause));
+      if (writeToken.current === token && useSuperstringStore.getState().apiClient === api)
+        setActionError(errorText(cause));
     } finally {
-      if (writeToken.current === token) {
+      if (writeToken.current === token && useSuperstringStore.getState().apiClient === api) {
         busyRef.current = false;
         setBusy(false);
       }
@@ -284,26 +295,32 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
   // 确认执行的是预览时保存的目标快照，而不是此刻的勾选；取消不产生任何写入。
   const confirmCleanup = async () => {
     const snapshot = preview ?? previewRef.current;
-    if (!snapshot || busyRef.current) return;
+    if (
+      !snapshot ||
+      snapshot.api !== api ||
+      useSuperstringStore.getState().apiClient !== api ||
+      busyRef.current
+    )
+      return;
     busyRef.current = true;
     const token = ++writeToken.current;
     setBusy(true);
     setActionError("");
     try {
       const result = await api.runRuntimeStorageCleanup(snapshot.request);
-      if (writeToken.current !== token) return;
+      if (writeToken.current !== token || useSuperstringStore.getState().apiClient !== api) return;
       setOutcome({ category: snapshot.request.category, result });
       setPreview(null);
       setSelected([]);
       summary.refresh();
       load();
     } catch (cause) {
-      if (writeToken.current === token) {
+      if (writeToken.current === token && useSuperstringStore.getState().apiClient === api) {
         setPreview(null);
         setActionError(errorText(cause));
       }
     } finally {
-      if (writeToken.current === token) {
+      if (writeToken.current === token && useSuperstringStore.getState().apiClient === api) {
         busyRef.current = false;
         setBusy(false);
       }
@@ -444,7 +461,9 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
         >
           <TabsList
             aria-label={t(`${P}.categoryLabel`)}
-            className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal"
+            presentation="compact"
+            flow="wrap"
+            className="max-w-full gap-1"
           >
             {CATEGORIES.map((value) => (
               <Tooltip key={value}>
@@ -465,7 +484,9 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
         >
           <TabsList
             aria-label={t(`${P}.statusLabel`)}
-            className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal"
+            presentation="compact"
+            flow="wrap"
+            className="max-w-full gap-1"
           >
             {STATUS_FILTERS.map((value) => (
               <Tooltip key={value}>
@@ -525,7 +546,9 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
               : t("hints.investigation.storage.noSelection")
           }
           tooltip={t("hints.investigation.storage.cleanSelected")}
-          onClick={() => void beginPreview({ category, ids: [...selected] })}
+          onClick={(event) =>
+            void beginPreview({ category, ids: [...selected] }, event.currentTarget)
+          }
         >
           <Trash2 />
           {t(`${P}.cleanSelected`)}
@@ -535,7 +558,7 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
           disabled={busy}
           disabledReason={t("hints.investigation.storage.busy")}
           tooltip={t("hints.investigation.storage.cleanCategory")}
-          onClick={() => void beginPreview({ category })}
+          onClick={(event) => void beginPreview({ category }, event.currentTarget)}
         >
           <Trash2 />
           {t(`${P}.cleanCategory`)}
@@ -684,6 +707,8 @@ export function RuntimeStoragePanel({ active = true }: { active?: boolean } = {}
         </>
       )}
       <ConfirmDialog
+        invocationOwner={api}
+        returnFocusRef={previewOpener}
         open={preview !== null}
         message={
           showPreview

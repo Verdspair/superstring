@@ -102,7 +102,7 @@ function setup(input: { watermarkTrigger: number }) {
   const row = getAgentRow(h.orm, DEFAULT_AGENT_ID);
   if (!row) throw new Error("agent");
   const runtime = runtimeFromAgent(row);
-  runtime.p5_config.retrieval_mode = "off";
+  runtime.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
   const journal = new ConversationEventRepository(h.db),
     outbox = new OutboundIntentRepository(h.db);
   const conversation = journal.ensureOneBot(binding.id);

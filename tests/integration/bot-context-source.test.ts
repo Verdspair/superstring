@@ -145,6 +145,7 @@ function setup(
   runtime.p5_config.max_output_tokens = 4096;
   runtime.p5_config.summary_max_tokens = 4096;
   runtime.p5_config.allocation = { mode: "fixed" };
+  delete runtime.p5_config.memory_read;
   runtime.p5_config.retrieval_mode = input.mode ?? "off";
   const journal = new ConversationEventRepository(h.db),
     outbox = new OutboundIntentRepository(h.db);

@@ -2,9 +2,13 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { ConversationHost } from "../../src/server/agent/conversation-host";
+import type { ModelRequest } from "../../src/server/agent/model-port";
 import { createOneBotConversationRuntime } from "../../src/server/channels/onebot11/create-runtime";
 import * as schema from "../../src/server/db/schema";
+import { SYSTEM_TOOL_DEFINITIONS } from "../../src/server/modules/tool-definitions";
+import { projectToolDirectory } from "../../src/server/permissions/tool-directory";
 import { QqStickerStore } from "../../src/server/services/qq-sticker-store";
+import { ExecutionPolicySchema } from "../../src/shared/contracts/permissions";
 import { decideInvoke, rawText, say } from "../harness/model";
 import { closeHarnesses, createOneBotHarness } from "../harness/onebot";
 
@@ -299,4 +303,56 @@ describe("OneBotHost quote and mention authorization", () => {
       { type: "text", data: { text: "模型生成的引用答复" } },
     ]);
   });
+});
+
+it("matches actual QQ model terminal declarations to the complete directory without bypassing host targets", async () => {
+  const rows = projectToolDirectory(SYSTEM_TOOL_DEFINITIONS, [], ExecutionPolicySchema.parse({}));
+  const requests: ModelRequest[] = [];
+  const h = createOneBotHarness({
+    model: {
+      async complete(request) {
+        requests.push(request);
+        return JSON.stringify({
+          kind: "invoke",
+          calls: [
+            {
+              name: "reply.text",
+              arguments: {
+                outputs: [{ kind: "inline", targetId: "20002", text: "合法回复" }],
+              },
+            },
+          ],
+        });
+      },
+    },
+  });
+  h.receive({ id: "-5001", speaker: "20002", text: "请回复", addressed: true });
+  await h.activate("direct_reply");
+  for (const name of ["reply.text", "reply.sticker"]) {
+    const declared = requests[0]?.tools?.find((tool) => tool.name === name);
+    const row = rows.find((tool) => tool.name === name);
+    expect(declared).toBeDefined();
+    expect(declared).toEqual({
+      name: row!.name,
+      description: row!.description,
+      parameters: row!.parameters,
+    });
+    expect(row?.resource).toBeNull();
+    expect(row?.sandboxCallable).toBe(false);
+  }
+  await h.deliver();
+  expect(h.sent).toHaveLength(1);
+  const denied = createOneBotHarness({
+    model: [
+      decideInvoke("reply.text", {
+        outputs: [{ kind: "inline", targetId: "not-authorized", text: "不能发送" }],
+      }),
+    ],
+  });
+  denied.receive({ id: "-5002", speaker: "20002", text: "请回复", addressed: true });
+  await expect(denied.activate("direct_reply")).rejects.toMatchObject({
+    code: "AGENT_OUTPUT_INVALID",
+  });
+  expect(denied.sent).toHaveLength(0);
+  expect(denied.outbox.list({ conversationId: denied.conversationId })).toHaveLength(0);
 });

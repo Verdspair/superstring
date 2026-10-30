@@ -10,9 +10,11 @@ import { i18n } from "../../src/web/i18n/runtime";
 import { CapabilitiesWorkspace } from "../../src/web/screens/connections/CapabilitiesWorkspace";
 import { ModelServices } from "../../src/web/screens/environment/ModelServices";
 import { TaskLedger } from "../../src/web/screens/runs/task-ledger";
+import { hasUnsavedDrafts } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { activeSpace, openSpace } from "../../src/web/workspace/navigation";
 import { summaryFixture } from "./helpers/chat-fixture";
+import { setupLibrary } from "./helpers/library-fixture";
 import { render } from "./helpers/render-with-providers";
 
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -184,6 +186,129 @@ describe("model entry routing", () => {
     store.getState().openSettingsRoute("management");
     expect(store.getState().settingsRoute).toBe("models");
     expect(activeSpace(store.getState())).toBe("models");
+  });
+
+  it.each(["models", "external-api", "management", "knowledge-model"] as const)(
+    "guards both directions across Agent and real model-services alias %s",
+    (route) => {
+      setupLibrary();
+      store.setState({ settingsRoute: "basic" });
+      store.getState().patchPageAgent("basic", { name: "agent draft" });
+      const modelRoute = route === "external-api" ? route : "models";
+      store.getState().openSettingsRoute(route);
+      expect(store.getState()).toMatchObject({
+        settingsRoute: "basic",
+        navigationConfirmOpen: true,
+        pendingNavigation: { kind: "page", settingsRoute: modelRoute },
+      });
+      store.getState().cancelPendingNavigation();
+      store.setState({ settingsRoute: route });
+      store.getState().openAgentSettings();
+      expect(store.getState()).toMatchObject({
+        settingsRoute: route,
+        settingsView: "workspace",
+        navigationConfirmOpen: true,
+        pendingNavigation: { kind: "page", settingsView: "agents" },
+      });
+      store.getState().cancelPendingNavigation();
+      expect(store.getState().pageEditor?.draft.name).toBe("agent draft");
+    },
+  );
+
+  it.each(["organization", "knowledge-model", "permission", "invalid-input"] as const)(
+    "retained clean pageEditor cannot hide %s dirty state at either model boundary",
+    async (owner) => {
+      const client = setupLibrary({ getPermissions: vi.fn().mockResolvedValue(permissions) });
+      if (owner === "organization") {
+        await store.getState().loadOrganization();
+        store.getState().patchOrganization("organization draft");
+      } else if (owner === "knowledge-model") {
+        await store.getState().loadKnowledgeModel();
+        store.getState().patchKnowledgeModel("knowledge draft");
+      } else if (owner === "permission") {
+        await store.getState().loadPermissionSettings();
+        store.getState().patchExecutionSettings({ research: true });
+      } else {
+        store.setState({ allocationInvalidInputs: { "global:knowledge": "invalid" } });
+      }
+      const retainedEditor = store.getState().pageEditor;
+      expect(retainedEditor).not.toBeNull();
+      expect(hasUnsavedDrafts(store.getState())).toBe(true);
+      store.getState().openSettingsRoute("management");
+      expect(store.getState().settingsRoute).toBe("basic");
+      expect(store.getState().pendingNavigation).toMatchObject({ settingsRoute: "models" });
+      store.getState().cancelPendingNavigation();
+      store.setState({ settingsRoute: "models" });
+      store.getState().openSettingsRoute("context");
+      expect(store.getState().settingsRoute).toBe("models");
+      expect(store.getState().pendingNavigation).toMatchObject({ settingsRoute: "context" });
+      store.getState().cancelPendingNavigation();
+      expect(store.getState().pageEditor).toBe(retainedEditor);
+      expect(hasUnsavedDrafts(store.getState())).toBe(true);
+      expect(client.updateKnowledgeDocument).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["knowledge", "long-memory"] as const)(
+    "content %s to models is a real departure, not an Agent-only return",
+    async (content) => {
+      const client = setupLibrary();
+      store.getState().patchPageAgent("basic", { name: "retained Agent draft" });
+      store.setState({
+        settingsView: content === "knowledge" ? "knowledge" : "workspace",
+        settingsRoute: "long-memory",
+        knowledgeDirty: true,
+      });
+      store.getState().openSettingsRoute("knowledge-model");
+      const pending = store.getState().pendingNavigation;
+      expect(pending).toMatchObject({ kind: "page", settingsRoute: "models" });
+      store.getState().cancelPendingNavigation();
+      expect(store.getState().pageEditor?.draft.name).toBe("retained Agent draft");
+      expect(store.getState().knowledgeDirty).toBe(true);
+      store.getState().openSettingsRoute("knowledge-model");
+      await store.getState().confirmDiscardAndContinue();
+      expect(activeSpace(store.getState())).toBe("models");
+      expect(store.getState().pageEditor?.draft.name).not.toBe("retained Agent draft");
+      expect(store.getState().knowledgeDirty).toBe(false);
+      expect(client.updateKnowledgeDocument).not.toHaveBeenCalled();
+    },
+  );
+
+  it("model departure keeps successful global baselines and retries only the failed owner", async () => {
+    const saveKnowledgeSettings = vi.fn(
+      async (body: Parameters<typeof api.saveKnowledgeSettings>[0]) => ({
+        ...body,
+        revision: body.expected_revision + 1,
+      }),
+    );
+    const saveOrganizationSettings = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("organization conflict"))
+      .mockImplementation(async (body: Parameters<typeof api.saveOrganizationSettings>[0]) => ({
+        ...body,
+        revision: body.expected_revision + 1,
+      }));
+    setupLibrary({ saveKnowledgeSettings, saveOrganizationSettings });
+    await store.getState().loadKnowledgeModel();
+    await store.getState().loadOrganization();
+    store.getState().patchKnowledgeModel("saved knowledge model");
+    store.getState().patchOrganization("organization retry");
+    store.setState({ settingsRoute: "models" });
+    store.getState().openSettingsRoute("context");
+    const pending = store.getState().pendingNavigation;
+    await store.getState().confirmSaveAndContinue();
+    expect(store.getState().settingsRoute).toBe("models");
+    expect(store.getState().pendingNavigation).toBe(pending);
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    expect(store.getState().knowledgeModelEditor?.source.model_name).toBe("saved knowledge model");
+    expect(store.getState().organizationEditor?.modelName).toBe("organization retry");
+    expect(saveKnowledgeSettings).toHaveBeenCalledTimes(1);
+    expect(saveOrganizationSettings).toHaveBeenCalledTimes(1);
+    await store.getState().confirmSaveAndContinue();
+    expect(store.getState().settingsRoute).toBe("context");
+    expect(store.getState().pendingNavigation).toBeNull();
+    expect(saveKnowledgeSettings).toHaveBeenCalledTimes(1);
+    expect(saveOrganizationSettings).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the sidebar entry on the external API route while still landing in the models space", () => {
@@ -448,4 +573,116 @@ describe("execution capability task direct link", () => {
       pendingNavigation: null,
     });
   });
+});
+
+describe("complete settings destinations", () => {
+  it.each([
+    "capabilities",
+    "schemes",
+    "library",
+    "models",
+    "connections",
+    "preferences",
+    "conversations",
+  ] as const)("guards an existing Agent draft when leaving for %s", async (space) => {
+    setupLibrary();
+    store.setState({ settingsRoute: "identity" });
+    store.getState().patchPageAgent("basic", { name: "unsaved name" });
+    openSpace(space);
+    const pending = store.getState().pendingNavigation;
+    expect(pending?.kind).toBe("page");
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    expect(store.getState().settingsRoute).toBe("identity");
+    expect(activeSpace(store.getState())).toBe("assistants");
+    store.getState().cancelPendingNavigation();
+    expect(store.getState().pageEditor?.draft.name).toBe("unsaved name");
+    openSpace(space);
+    expect(store.getState().pendingNavigation).toEqual(pending);
+    await store.getState().confirmDiscardAndContinue();
+    expect(activeSpace(store.getState())).toBe(space);
+    expect(hasUnsavedDrafts(store.getState())).toBe(false);
+  });
+
+  it.each([
+    ["external-api", "management"],
+    ["models", "knowledge-model"],
+    ["scheme-library", "qq-app-schemes"],
+    ["scheme-bindings", "qq-app-groups"],
+    ["memory-tools", "knowledge-tools"],
+    ["identity", "expression"],
+  ] as const)("retains drafts without a guard for the same destination %s → %s", (from, to) => {
+    setupLibrary();
+    store.setState({ settingsRoute: from });
+    store.getState().patchPageAgent("basic", { name: "retained" });
+    store.getState().openSettingsRoute(to);
+    expect(store.getState().pendingNavigation).toBeNull();
+    expect(store.getState().navigationConfirmOpen).toBe(false);
+    expect(store.getState().settingsRoute).toBe(from);
+    expect(store.getState().pageEditor?.draft.name).toBe("retained");
+  });
+
+  it("does not treat the same page or explicit route as a dirty departure", () => {
+    setupLibrary();
+    store.setState({ settingsRoute: "identity", memoryCorrectionDirty: true });
+    store.getState().patchPageAgent("basic", { name: "retained" });
+    store.getState().requestPageNavigation("settings", "workspace");
+    store.getState().openSettingsRoute("identity");
+    store.getState().openWorkspaceTarget("identity");
+    expect(store.getState().pendingNavigation).toBeNull();
+    expect(store.getState().navigationConfirmOpen).toBe(false);
+    expect(store.getState().pageEditor?.draft.name).toBe("retained");
+    expect(store.getState().memoryCorrectionDirty).toBe(true);
+  });
+
+  it("keeps the exact target queued after a knowledge save failure", async () => {
+    setupLibrary({ saveAgentKnowledgeRead: vi.fn().mockRejectedValue(new Error("conflict")) });
+    store.setState({ settingsRoute: "memory-tools" });
+    await store.getState().loadKnowledgeRead();
+    store.getState().patchKnowledgeRead({ enabled: false });
+    store.getState().openSettingsRoute("management");
+    const pending = store.getState().pendingNavigation;
+    await store.getState().confirmSaveAndContinue();
+    expect(store.getState().pendingNavigation).toBe(pending);
+    expect(store.getState().settingsRoute).toBe("memory-tools");
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    expect(store.getState().knowledgeReadEditor?.draft.enabled).toBe(false);
+    expect(pending).toMatchObject({ settingsRoute: "models" });
+  });
+});
+
+it("conversation selection inside the chat container cannot bypass retained non-QQ drafts", async () => {
+  setupLibrary();
+  const getConversation = vi.fn();
+  store.setState({ apiClient: { ...store.getState().apiClient, getConversation } });
+  store.setState({ page: "chat", settingsView: "hub", currentConversationId: CONVERSATION_ID });
+  store.getState().patchPageAgent("basic", { name: "retained Agent draft" });
+  await store.getState().requestConversationNavigation(OTHER_CONVERSATION_ID);
+  expect(store.getState().pendingNavigation).toMatchObject({
+    kind: "page",
+    page: "chat",
+    conversationId: OTHER_CONVERSATION_ID,
+    conversationView: "messages",
+    conversationScope: "current",
+  });
+  expect(getConversation).not.toHaveBeenCalled();
+  store.getState().cancelPendingNavigation();
+  expect(store.getState().currentConversationId).toBe(CONVERSATION_ID);
+  expect(store.getState().pageEditor?.draft.name).toBe("retained Agent draft");
+});
+
+it("Agent management and task routes retain unselected drafts while real workspace departure guards", () => {
+  setupLibrary();
+  store.setState({ settingsRoute: "basic" });
+  store.getState().patchPageAgent("models", { model_name: "unselected model" });
+  store.getState().openSettingsRoute("expression");
+  expect(store.getState().navigationConfirmOpen).toBe(false);
+  store.getState().openAgentSettings();
+  expect(store.getState().settingsView).toBe("agents");
+  expect(store.getState().navigationConfirmOpen).toBe(false);
+  store.getState().openSettingsRoute("context");
+  expect(store.getState().navigationConfirmOpen).toBe(false);
+  expect(store.getState().pageEditor?.draft.model_name).toBe("unselected model");
+  openSpace("capabilities");
+  expect(store.getState().navigationConfirmOpen).toBe(true);
+  expect(store.getState().settingsRoute).toBe("context");
 });

@@ -24,6 +24,21 @@ import { readQqScheme } from "./qq-scheme-repository";
 import { newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
+/** updatedAt is the persisted sticker source revision as well as its display time. */
+function nextAssetRevision(previous: string): string {
+  const match = /^(.*\.)(\d{3,6})Z$/.exec(previous);
+  const prefix = match?.[1],
+    fraction = match?.[2];
+  if (!prefix || !fraction || !Number.isFinite(Date.parse(previous)))
+    fail("DATABASE_UNAVAILABLE", "素材修订时间无效", 503);
+  const canonical = `${prefix}${fraction.padEnd(6, "0")}Z`;
+  const now = nowIso();
+  if (now > canonical) return now;
+  const micros = Number(fraction.padEnd(6, "0")) + 1;
+  if (micros < 1_000_000) return `${prefix}${String(micros).padStart(6, "0")}Z`;
+  return `${new Date(Date.parse(previous.slice(0, 19) + "Z") + 1000).toISOString().slice(0, 19)}.000000Z`;
+}
+
 const NameSchema = z.string().trim().min(1).max(200);
 const OptionalTextSchema = z.string().max(2000).nullable();
 const TagsSchema = z.array(z.string().trim().min(1).max(40)).max(50);
@@ -369,7 +384,7 @@ export function editQqSticker(orm: Orm, id: string, input: QqStickerAssetEdit): 
   }
   orm
     .update(schema.qqStickerAssets)
-    .set({ name, description, tags, usageNote, updatedAt: nowIso() })
+    .set({ name, description, tags, usageNote, updatedAt: nextAssetRevision(current.updatedAt) })
     .where(eq(schema.qqStickerAssets.id, id))
     .run();
   return readQqStickerAsset(orm, id) as QqStickerAssetView;
@@ -388,7 +403,7 @@ export function saveQqStickerDraft(orm: Orm, id: string, draft: string): QqStick
   const value = z.string().trim().min(1).max(2000).parse(draft);
   orm
     .update(schema.qqStickerAssets)
-    .set({ descriptionDraft: value, updatedAt: nowIso() })
+    .set({ descriptionDraft: value, updatedAt: nextAssetRevision(current.updatedAt) })
     .where(eq(schema.qqStickerAssets.id, id))
     .run();
   return readQqStickerAsset(orm, id) as QqStickerAssetView;
@@ -410,7 +425,7 @@ export function saveQqStickerTagsDraft(
   if (current === null) fail("MEMORY_NOT_FOUND", "素材不存在", 404);
   orm
     .update(schema.qqStickerAssets)
-    .set({ tagsDraft: serializeTags(tags), updatedAt: nowIso() })
+    .set({ tagsDraft: serializeTags(tags), updatedAt: nextAssetRevision(current.updatedAt) })
     .where(eq(schema.qqStickerAssets.id, id))
     .run();
   return readQqStickerAsset(orm, id) as QqStickerAssetView;
@@ -424,7 +439,7 @@ export function setQqStickerEnabled(orm: Orm, id: string, enabled: boolean): QqS
   if (current.enabled !== next) {
     orm
       .update(schema.qqStickerAssets)
-      .set({ enabled: next, updatedAt: nowIso() })
+      .set({ enabled: next, updatedAt: nextAssetRevision(current.updatedAt) })
       .where(eq(schema.qqStickerAssets.id, id))
       .run();
   }

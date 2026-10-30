@@ -29,6 +29,7 @@ import {
   DEFAULT_USER_ID,
   ensureDefaults,
   getAgentRow,
+  immediate,
   listMessages,
   nowIso,
   prepareTurn,
@@ -719,15 +720,30 @@ describe("conversation evidence hosts", () => {
     let rawDeniedReached = false;
     let grantAbaCompleted = false;
     seedMemoryFromOldTurn(f.h, session.id, id, secret);
-    f.h.orm.transaction(
-      (tx) =>
-        setMemoryVisibility(tx, DEFAULT_AGENT_ID, id, {
-          visibility: "public",
-          recipient_agent_ids: [DEFAULT_AGENT_ID],
-          expected_revision: 1,
-        }),
-      { behavior: "immediate" },
+    immediate(f.h.db, () =>
+      setMemoryVisibility(f.h.orm, DEFAULT_AGENT_ID, id, {
+        visibility: "public",
+        recipient_agent_ids: [DEFAULT_AGENT_ID],
+        expected_revision: 1,
+      }),
     );
+    expect(() =>
+      immediate(f.h.db, () => {
+        setMemoryVisibility(f.h.orm, DEFAULT_AGENT_ID, id, {
+          visibility: "session_private",
+          recipient_agent_ids: [],
+          expected_revision: 2,
+        });
+        throw new Error("synthetic publication rollback");
+      }),
+    ).toThrow("synthetic publication rollback");
+    expect(
+      f.h.orm
+        .select()
+        .from(schema.memoryReadGrants)
+        .where(eq(schema.memoryReadGrants.memoryId, id))
+        .all(),
+    ).toHaveLength(1);
     expect(
       f.journal.setMemoryReadMode(f.conversation.id, DEFAULT_USER_ID, "agent_shared", 1)?.kind,
     ).toBe("saved");
@@ -746,21 +762,18 @@ describe("conversation evidence hosts", () => {
       (input: CompleteInput) => {
         expect(JSON.stringify(lastObservation(input.messages, "memory.read"))).toContain(secret);
         positiveReadReached = true;
-        f.h.orm.transaction(
-          (tx) => {
-            setMemoryVisibility(tx, DEFAULT_AGENT_ID, id, {
-              visibility: "session_private",
-              recipient_agent_ids: [],
-              expected_revision: 2,
-            });
-            setMemoryVisibility(tx, DEFAULT_AGENT_ID, id, {
-              visibility: "public",
-              recipient_agent_ids: [DEFAULT_AGENT_ID],
-              expected_revision: 3,
-            });
-          },
-          { behavior: "immediate" },
-        );
+        immediate(f.h.db, () => {
+          setMemoryVisibility(f.h.orm, DEFAULT_AGENT_ID, id, {
+            visibility: "session_private",
+            recipient_agent_ids: [],
+            expected_revision: 2,
+          });
+          setMemoryVisibility(f.h.orm, DEFAULT_AGENT_ID, id, {
+            visibility: "public",
+            recipient_agent_ids: [DEFAULT_AGENT_ID],
+            expected_revision: 3,
+          });
+        });
         grantAbaCompleted = true;
         return {
           kind: "final",
@@ -812,6 +825,47 @@ describe("conversation evidence hosts", () => {
     expect(gateway.streamCalls.some((call) => JSON.stringify(call.messages).includes(secret))).toBe(
       true,
     );
+
+    const queryObservation = gateway.completeCalls.at(-1)?.messages.flatMap((message) => {
+      if (typeof message.content !== "string") return [];
+      try {
+        const envelope = JSON.parse(message.content);
+        return envelope.kind === "action_observation" && envelope.value.name === "memory.query"
+          ? [envelope.value]
+          : [];
+      } catch {
+        return [];
+      }
+    })[0];
+    expect(queryObservation?.value.items).toHaveLength(1);
+    const runId = events.find((event) => event.runId)?.runId;
+    if (!runId) throw new Error("missing Web run identity");
+    const repository = new AgentRunRepository(business.db);
+    const contexts =
+      repository.getRun(runId)?.steps.map((step) => repository.getContext(step.context)) ?? [];
+    const authority = contexts
+      .flatMap((context) => context?.sources ?? [])
+      .filter((ref) => ref.kind === "memory_access");
+    expect(authority.length).toBeGreaterThan(0);
+    expect(
+      queryObservation.sources.some((ref: { kind: string }) => ref.kind === "memory_access"),
+    ).toBe(false);
+    expect(
+      gateway.streamCalls.every((call) =>
+        call.messages.every((message) => {
+          if (typeof message.content !== "string") return true;
+          try {
+            const envelope = JSON.parse(message.content);
+            return (
+              envelope.kind !== "action_observation" ||
+              !envelope.value.sources.some((ref: { kind: string }) => ref.kind === "memory_access")
+            );
+          } catch {
+            return true;
+          }
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("web host rejects retained memory after mode ABA before streaming or publishing", async () => {
@@ -886,21 +940,18 @@ describe("conversation evidence hosts", () => {
         arguments: { bodyRef: memoryBodyRef(input), offset: 0, limit: 4096 },
       }),
       () => {
-        business.orm.transaction(
-          (tx) => {
-            setMemoryVisibility(tx, DEFAULT_AGENT_ID, memoryId, {
-              visibility: "session_private",
-              recipient_agent_ids: [],
-              expected_revision: 2,
-            });
-            setMemoryVisibility(tx, DEFAULT_AGENT_ID, memoryId, {
-              visibility: "public",
-              recipient_agent_ids: [DEFAULT_AGENT_ID],
-              expected_revision: 3,
-            });
-          },
-          { behavior: "immediate" },
-        );
+        immediate(business.db, () => {
+          setMemoryVisibility(business.orm, DEFAULT_AGENT_ID, memoryId, {
+            visibility: "session_private",
+            recipient_agent_ids: [],
+            expected_revision: 2,
+          });
+          setMemoryVisibility(business.orm, DEFAULT_AGENT_ID, memoryId, {
+            visibility: "public",
+            recipient_agent_ids: [DEFAULT_AGENT_ID],
+            expected_revision: 3,
+          });
+        });
         return finalDecision();
       },
     ];
@@ -1055,5 +1106,106 @@ describe("conversation evidence hosts", () => {
     expect(page.value).toMatchObject({ status: "ok" });
     const text = (page.value as { items: { text: string }[] }).items[0].text;
     expect(text).toBe(body);
+  });
+
+  it("QQ actual memory observations omit authority while retaining the same sources in context and guards", async () => {
+    const gateway = new ScriptedGateway();
+    gateway.loadedContextCapacity = async () => 65536;
+    const f = qqSetup({ mode: "standard", gateway });
+    const body = "A participant reported a tentative plan.";
+    seedQqMemory(f, body);
+    const source = f.buildSource("reply");
+    const repository = new AgentRunRepository(f.h.db);
+    const snapshots: import("../../src/shared/contracts/evidence").SourceRef[][] = [];
+    const checks: import("../../src/shared/contracts/evidence").SourceRef[][] = [];
+    const assertSources = source.assertSources.bind(source);
+    source.assertSources = (refs, ...rest) => {
+      checks.push(structuredClone([...refs]));
+      return assertSources(refs, ...rest);
+    };
+    gateway.decisions = [
+      { kind: "invoke", name: "memory.query", arguments: { query: "" } },
+      (input: CompleteInput) => ({
+        kind: "invoke",
+        name: "memory.read",
+        arguments: { bodyRef: memoryBodyRef(input) },
+      }),
+      {
+        kind: "final",
+        outputs: [
+          { kind: "inline", targetId: "alice", text: "The record describes a tentative plan." },
+        ],
+      },
+    ];
+    const result = await f.agentRuntime.run(
+      {
+        id: "qq-memory-authority-projection",
+        context: "conversation",
+        model: "reply-model",
+        availableActions: source.actions.map((action) => action.description),
+        limits: { steps: 16 },
+      },
+      {
+        owner: {
+          kind: "qq_binding",
+          id: f.binding.id,
+          userId: DEFAULT_USER_ID,
+          agentId: DEFAULT_AGENT_ID,
+        },
+        context: source,
+        actions: source.actions,
+        authorizedTargets: ["alice"],
+        outputMode: "buffered",
+        onContext(context) {
+          snapshots.push(structuredClone(context.sources));
+        },
+        async commitOutputs(outputs) {
+          expect(outputs[0]?.text).toBe("The record describes a tentative plan.");
+          expect(snapshots.at(-1)?.some((ref) => ref.kind === "memory_access")).toBe(true);
+        },
+      },
+    );
+    expect(result.status).toBe("completed");
+    const internal = snapshots.at(-1)?.filter((ref) => ref.kind === "memory_access") ?? [];
+    expect(internal).toHaveLength(1);
+    expect(
+      checks.some((refs) =>
+        refs.some((ref) => ref.id === internal[0].id && ref.revision === internal[0].revision),
+      ),
+    ).toBe(true);
+    for (const call of gateway.completeCalls.slice(1)) {
+      const observations = call.messages.flatMap((message) => {
+        if (typeof message.content !== "string") return [];
+        try {
+          const value = JSON.parse(message.content);
+          return value.kind === "action_observation" ? [value.value] : [];
+        } catch {
+          return [];
+        }
+      });
+      expect(observations.length).toBeGreaterThan(0);
+      expect(
+        observations.every(
+          (observation) =>
+            !(observation.sources ?? []).some(
+              (ref: { kind: string }) => ref.kind === "memory_access",
+            ),
+        ),
+      ).toBe(true);
+    }
+    expect(
+      JSON.stringify(lastObservation(gateway.completeCalls.at(-1)!.messages, "memory.read")),
+    ).toContain(body);
+    const last = repository.getRun(result.runId)?.steps.at(-1);
+    if (!last) throw new Error("missing QQ decision context");
+    expect(repository.getContext(last.context)?.sources).toContainEqual(internal[0]);
+    expect(
+      f.journal.setMemoryReadMode(f.conversation.id, DEFAULT_USER_ID, "agent_shared", 1)?.kind,
+    ).toBe("saved");
+    expect(
+      f.journal.setMemoryReadMode(f.conversation.id, DEFAULT_USER_ID, "current_conversation", 2)
+        ?.kind,
+    ).toBe("saved");
+    expect(() => assertSources(internal)).toThrow();
   });
 });

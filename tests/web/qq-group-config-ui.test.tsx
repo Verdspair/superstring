@@ -1,11 +1,11 @@
 // 本群配置页（真实 store + fake API）：显式钉住、blur 报错、换方案预览、能力事实、409 与返回导航。
 //
-// 页面键文案随后由别的写者补进 locale：断言只看 data-* 标记、DOM 顺序与 store 状态，不依赖文案。
+// 断言只看 data-* 标记、DOM 顺序与 store 状态，不依赖文案。
 
-import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentResponse } from "../../src/shared/contracts/agent";
+import { type AgentResponse, AgentResponseSchema } from "../../src/shared/contracts/agent";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
 import type { AgentKnowledgeReadSettings } from "../../src/shared/contracts/knowledge";
 import {
@@ -81,7 +81,7 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
     media: "媒体提示词",
     compress: "压缩提示词",
   },
-  // 0052：响应契约收紧后两组必填，夹具照完整响应形状造。
+  // 响应契约两组必填，夹具照完整响应形状造。
   message_settings: {
     reply_mode: "one_then_on_demand",
     reply_depth: 2,
@@ -98,7 +98,7 @@ const qqScheme = (overrides: Partial<QqSchemeResponse> = {}): QqSchemeResponse =
   revision: 3,
   created_at: NOW,
   updated_at: NOW,
-  // 0059：两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
+  // 两组响应必填；夹具代表既有已保存方案，防抖按旧列默认显式关（新建默认开）。
   task_limits: { mention_task_limit: 4, ordinary_task_limit: 1 },
   input_anti_spam: { enabled: false, burst_min_messages: 3, burst_window_seconds: 3 },
   ...overrides,
@@ -119,7 +119,7 @@ const qqBinding = (overrides: Partial<QqBindingResponse> = {}): QqBindingRespons
   revision: 4,
   authority_revision: 4,
   attention: { mode: "off", members: [] },
-  // 0059：本会话覆盖两组，全新会话全 null＝跟随方案。
+  // 本会话覆盖两组，全新会话全 null＝跟随方案。
   task_limits: { mention_task_limit: null, ordinary_task_limit: null },
   input_anti_spam: {
     enabled: null,
@@ -366,7 +366,16 @@ it("能力上层事实逐项来自真实来源：授权现状、审批与读取�
   act(() => {
     store.setState({
       agents: [
-        { id: AGENT_ID, name: "群助手", p5_config: { retrieval_mode: "off" } },
+        AgentResponseSchema.parse({
+          id: AGENT_ID,
+          name: "群助手",
+          model_name: "model",
+          persona_intensity: 60,
+          config_version: 1,
+          created_at: "2026-10-28T00:00:00.000Z",
+          updated_at: "2026-10-28T00:00:00.000Z",
+          p5_config: { retrieval_mode: "off" },
+        }),
       ] as unknown as AgentResponse[],
     });
   });
@@ -1286,4 +1295,60 @@ it("inherits timing mode from base scheme, supports group override to quiet_pref
   expect(timingStateSelect).toBeTruthy();
   fireEvent.change(timingStateSelect, { target: { value: "follow" } });
   expect(editorOf()?.overrides.rhythm?.participation_timing).toBeUndefined();
+});
+
+it("本群换方案保持后取消实际预览返回原按钮，保选择且不提交", async () => {
+  const target = qqScheme({ id: TARGET_SCHEME_ID, name: "焦点目标方案", revision: 7 });
+  const view = await renderPage({ listQqSchemes: vi.fn(async () => [qqScheme(), target]) });
+  act(() => store.getState().patchQqGroupOverride("rhythm", "merge_window_seconds", "45"));
+  const select = view.container.querySelector(
+    'select[data-field="scheme.switch"]',
+  ) as HTMLSelectElement;
+  await userEvent.selectOptions(select, TARGET_SCHEME_ID);
+  const switchDialog = await screen.findByRole("dialog");
+  await userEvent.click(switchDialog.querySelector('[data-switch-action="keep"]') as HTMLElement);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  const draft = structuredClone(editorOf()?.overrides);
+  const trigger = screen.getByRole("button", { name: "预览变更" });
+  await userEvent.click(trigger);
+  const preview = await screen.findByRole("dialog");
+  await userEvent.click(within(preview).getByRole("button", { name: "取消" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+  expect(trigger.isConnected).toBe(true);
+  expect(select.value).toBe(TARGET_SCHEME_ID);
+  expect(editorOf()?.overrides).toEqual(draft);
+  expect(view.fake.saveQqGroupConfig).not.toHaveBeenCalled();
+});
+
+it("本群原生方案选择取消重开及keep/reset均回到原选择框且不提交", async () => {
+  const target = qqScheme({ id: TARGET_SCHEME_ID, name: "选择焦点目标", revision: 7 });
+  const view = await renderPage({ listQqSchemes: vi.fn(async () => [qqScheme(), target]) });
+  act(() => store.getState().patchQqGroupOverride("rhythm", "merge_window_seconds", "45"));
+  const select = view.container.querySelector(
+    'select[data-field="scheme.switch"]',
+  ) as HTMLSelectElement;
+  const baseline = structuredClone(editorOf()?.overrides);
+  for (const choice of ["cancel", "escape", "keep", "reset"] as const) {
+    await userEvent.click(select);
+    await userEvent.selectOptions(select, TARGET_SCHEME_ID);
+    const dialog = await screen.findByRole("dialog");
+    if (choice === "escape") await userEvent.keyboard("{Escape}");
+    else if (choice === "cancel")
+      await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    else
+      await userEvent.click(
+        dialog.querySelector(`[data-switch-action="${choice}"]`) as HTMLElement,
+      );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(select));
+    expect(select.isConnected).toBe(true);
+    expect(select.value).toBe(
+      choice === "cancel" || choice === "escape" ? BASE_SCHEME_ID : TARGET_SCHEME_ID,
+    );
+    expect(editorOf()?.source.base_scheme.id).toBe(BASE_SCHEME_ID);
+    expect(editorOf()?.overrides).toEqual(choice === "reset" ? {} : baseline);
+    expect(view.fake.saveQqGroupConfig).not.toHaveBeenCalled();
+    if (choice === "keep") act(() => store.getState().patchQqGroupConfigScheme(undefined));
+  }
 });

@@ -430,7 +430,11 @@ describe("Agent runtime execution traces", () => {
       channel: "web",
       conversationId: f.conversation.id,
     });
-    const unjournaled = createSession(f.h.orm, "unjournaled");
+    const unjournaled = { id: crypto.randomUUID() };
+    f.h.db
+      .query(`INSERT INTO sessions(id,user_id,agent_id,title,client_request_id,agent_config_snapshot,created_at,updated_at)
+      SELECT ?,user_id,agent_id,'unjournaled',?,'{}',?,? FROM sessions WHERE id=?`)
+      .run(unjournaled.id, unjournaled.id, at, at, f.session.id);
     f.h.db
       .query(
         "INSERT INTO turns(id,session_id,client_request_id,runtime_config_snapshot,created_at) VALUES('unjournaled-turn',?,'request','{}',?)",

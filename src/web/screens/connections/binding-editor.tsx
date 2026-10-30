@@ -1,17 +1,13 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import {
   isQqPrivateSelfTarget,
   type QqBindingResponse,
   type QqConversationListItem,
-  type QqSchemeResponse,
   type UpdateQqBindingRequest,
 } from "../../../shared/contracts/qq";
-import {
-  isEmptyQqGroupOverrides,
-  type QqGroupSchemeOverrides,
-} from "../../../shared/contracts/qq-group-config";
+import { isEmptyQqGroupOverrides } from "../../../shared/contracts/qq-group-config";
 import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -33,6 +29,7 @@ import {
   SheetTitle,
 } from "../../components/ui/sheet";
 import { parseAdminMembers } from "../../features/qq/draft-state";
+import { qqGroupSchemeChangeRows } from "../../features/qq/group-config-state";
 import { QQ_SCHEME_FIELD_LABELS, TRIGGER_LABELS } from "../../features/qq/scheme-field-metadata";
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { msg, translateNotice } from "../../i18n";
@@ -42,45 +39,16 @@ import { BindingMemoryControls } from "../library/BindingMemoryControls";
 import { AdminMembersEditor } from "./admin-members-editor";
 import { SchemeFieldCard } from "./scheme-field-shared";
 
-/** 预览值的中性文本：数组按集合去序、装配冗余按百分比，其余 String()。 */
-const schemeChangeValueText = (group: string, name: string, value: unknown): string =>
-  group === "compression" && name === "headroom_ratio" && typeof value === "number"
-    ? `${Number((value * 100).toFixed(2))}%`
-    : Array.isArray(value)
-      ? value.map(String).sort().join("、")
-      : String(value);
-
-/** 换基础方案的逐字段预览：现有本群自定义值 → 目标基础方案值，全部差异都要出现。 */
-function schemeChangeRows(overrides: QqGroupSchemeOverrides, target: QqSchemeResponse) {
-  const targetBag = target as unknown as Record<string, Record<string, unknown> | undefined>;
-  const rows: SchemeChangePreview["rows"] = [];
-  for (const [group, fields] of Object.entries(overrides)) {
-    if (!fields || typeof fields !== "object") continue;
-    for (const [name, value] of Object.entries(fields)) {
-      if (value === undefined) continue;
-      const nextValue = targetBag[group]?.[name];
-      rows.push({
-        key: `${group}.${name}`,
-        label: QQ_SCHEME_FIELD_LABELS[`${group}.${name}`] ?? `${group}.${name}`,
-        current: schemeChangeValueText(group, name, value),
-        next: nextValue === undefined ? "—" : schemeChangeValueText(group, name, nextValue),
-      });
-    }
-  }
-  return rows;
-}
-
 type SchemeChangePatch = {
   agent_id: string;
   scheme_id: string;
   task_limits?: QqBindingResponse["task_limits"];
   input_anti_spam?: QqBindingResponse["input_anti_spam"];
-} & Pick<UpdateQqBindingRequest, "scheme_change">;
+} & Pick<UpdateQqBindingRequest, "scheme_change" | "scheme_change_baseline">;
 
 interface SchemeChangePreview {
-  row: QqBindingResponse;
-  schemeId: string;
   schemeName: string;
+  commit: (decision: "keep" | "reset") => void;
   rows: { key: string; label: string; current: string; next: string }[];
 }
 
@@ -141,12 +109,16 @@ export function BindingEditor({
   onClose,
   onCloseAutoFocus,
   initialSection,
+  navigationConfirmation = false,
+  onSaved,
 }: {
   conversation: QqConversationListItem;
   binding: QqBindingResponse | null;
   onClose: () => void;
   onCloseAutoFocus?: (event: Event) => void;
   initialSection?: "administrators";
+  navigationConfirmation?: boolean;
+  onSaved?: () => void;
 }) {
   const { t } = useTranslation();
   const state = useSuperstringStore(
@@ -166,6 +138,7 @@ export function BindingEditor({
       qqSchemeSaving: s.qqSchemeSaving,
       qqSchemes: s.qqSchemes,
       qqSettings: s.qqSettings,
+      bindingSchemeConfirmationId: s.qqInputs.bindingSchemeConfirmationId,
       requestQqSchemeNavigation: s.requestQqSchemeNavigation,
       updateQqBindingRow: s.updateQqBindingRow,
     })),
@@ -214,95 +187,140 @@ export function BindingEditor({
   const previewView = preview ?? previewRef.current;
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const clearChoice = () =>
-    setChoices((old) => {
-      const next = { ...old };
-      delete next[key];
-      return next;
-    });
-  const commitBinding = (row: QqBindingResponse, patch: SchemeChangePatch) => {
-    void state.updateQqBindingRow(row, patch).then((ok) => {
-      if (ok) clearChoice();
-    });
+  const operationId = useRef(0);
+  const editorIdentity = useRef({ key, api: state.apiClient });
+  editorIdentity.current = { key, api: state.apiClient };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Replacing the binding, API or confirmation owner must invalidate its pending preview work, even when the effect body only changes local state and refs.
+  useEffect(() => {
+    setPreviewBusy(false);
+    return () => {
+      operationId.current += 1;
+    };
+  }, [key, state.apiClient, state.bindingSchemeConfirmationId]);
+  const cancelPreview = () => {
+    operationId.current += 1;
+    setPreview(null);
+    setPreviewBusy(false);
   };
-  const confirmSchemeChange = (schemeChange: "keep" | "reset") => {
-    if (!preview) return;
-    commitBinding(preview.row, {
-      agent_id: preview.row.agent_id,
-      scheme_id: preview.schemeId,
-      scheme_change: schemeChange,
-      ...(choiceTaskLimitsDirty ? { task_limits: choice.task_limits } : {}),
-      ...(choiceInputAntiSpamDirty ? { input_anti_spam: choice.input_anti_spam } : {}),
-    });
+  const closeEditor = () => {
+    cancelPreview();
+    onClose();
+  };
+  const confirmSchemeChange = (decision: "keep" | "reset") => {
+    preview?.commit(decision);
     setPreview(null);
   };
   const save = async () => {
     if (!choice.agentId || !choice.schemeId) return;
-    if (!binding) {
-      void state.bindQqConversation({ conversation, ...choice }).then((ok) => {
-        if (ok) clearChoice();
+    const id = ++operationId.current;
+    const api = state.apiClient;
+    const submittedChoice = useSuperstringStore.getState().qqInputs.choices[key];
+    const ownsChoice = () =>
+      operationId.current === id &&
+      editorIdentity.current.key === key &&
+      editorIdentity.current.api === api &&
+      useSuperstringStore.getState().apiClient === api &&
+      (navigationConfirmation ||
+        useSuperstringStore.getState().qqInputs.bindingSchemeConfirmationId !== key) &&
+      useSuperstringStore.getState().qqInputs.choices[key] === submittedChoice;
+    const clearSubmittedChoice = () => {
+      if (!ownsChoice()) return;
+      setChoices((old) => {
+        if (old[key] !== submittedChoice) return old;
+        const next = { ...old };
+        delete next[key];
+        return next;
       });
+      onSaved?.();
+    };
+    if (!binding) {
+      const ok = await state.bindQqConversation({ conversation, ...choice });
+      if (ok) clearSubmittedChoice();
       return;
     }
     const row = choice.source ?? binding;
-    if (
-      row.kind === "group" &&
-      row.agent_id === choice.agentId &&
-      row.scheme_id !== choice.schemeId
-    ) {
+    const patch: SchemeChangePatch = {
+      agent_id: choice.agentId,
+      scheme_id: choice.schemeId,
+      ...(choiceTaskLimitsDirty ? { task_limits: choice.task_limits } : {}),
+      ...(choiceInputAntiSpamDirty ? { input_anti_spam: choice.input_anti_spam } : {}),
+    };
+    const target = state.qqSchemes.find((item) => item.id === choice.schemeId);
+    const isCurrent = () => {
+      const current = useSuperstringStore.getState();
+      const latest = current.qqBindings.find((item) => item.id === row.id);
+      return (
+        ownsChoice() &&
+        !!latest &&
+        latest.agent_id === row.agent_id &&
+        latest.scheme_id === row.scheme_id &&
+        latest.revision === row.revision &&
+        (!target ||
+          current.qqSchemes.some(
+            (item) => item.id === target.id && item.revision === target.revision,
+          ))
+      );
+    };
+    const commit = async (input: SchemeChangePatch) => {
+      if (!isCurrent()) {
+        if (ownsChoice())
+          setPreviewError(
+            msg("读取配置已被其他操作修改；草稿已保留。请刷新保存基线，核对后再次保存。"),
+          );
+        return;
+      }
+      const ok = await state.updateQqBindingRow(row, input);
+      if (ok) clearSubmittedChoice();
+    };
+    if (row.agent_id === choice.agentId && row.scheme_id !== choice.schemeId) {
+      if (!target) {
+        setPreviewError(msg("操作失败，请重试。"));
+        return;
+      }
       setPreviewBusy(true);
       setPreviewError(null);
       try {
-        const config = await state.apiClient.getQqGroupConfig(row.id);
-        const current = useSuperstringStore.getState();
-        const latest = current.qqBindings.find((item) => item.id === row.id);
-        // 读回的记录必须仍对应正在编辑的这行（绑定身份未变），晚到或错行的答案不进预览。
+        const config = await api.getQqGroupConfig(row.id);
+        if (!ownsChoice()) return;
         if (
+          !isCurrent() ||
           config.binding.id !== row.id ||
           config.binding.agent_id !== row.agent_id ||
           config.binding.scheme_id !== row.scheme_id ||
-          !latest ||
-          latest.agent_id !== row.agent_id ||
-          latest.scheme_id !== row.scheme_id
+          config.binding.revision !== row.revision
         ) {
           setPreviewError(
             msg("读取配置已被其他操作修改；草稿已保留。请刷新保存基线，核对后再次保存。"),
           );
           return;
         }
+        const input = {
+          ...patch,
+          scheme_change_baseline: {
+            config_revision: config.revision,
+            scheme_revision: target.revision,
+          },
+        };
         if (isEmptyQqGroupOverrides(config.overrides)) {
-          commitBinding(row, {
-            agent_id: row.agent_id,
-            scheme_id: choice.schemeId,
-            ...(choiceTaskLimitsDirty ? { task_limits: choice.task_limits } : {}),
-            ...(choiceInputAntiSpamDirty ? { input_anti_spam: choice.input_anti_spam } : {}),
-          });
-          return;
-        }
-        const target = current.qqSchemes.find((item) => item.id === choice.schemeId);
-        if (!target) {
-          setPreviewError(msg("操作失败，请重试。"));
+          await commit(input);
           return;
         }
         setPreview({
-          row,
-          schemeId: choice.schemeId,
           schemeName: target.name,
-          rows: schemeChangeRows(config.overrides, target),
+          rows: qqGroupSchemeChangeRows(config.overrides, target).map((row) => ({
+            ...row,
+            label: QQ_SCHEME_FIELD_LABELS[row.key] ?? row.key,
+          })),
+          commit: (decision) => void commit({ ...input, scheme_change: decision }),
         });
       } catch (error) {
-        setPreviewError(error instanceof Error ? error.message : String(error));
+        if (ownsChoice()) setPreviewError(error instanceof Error ? error.message : String(error));
       } finally {
-        setPreviewBusy(false);
+        if (operationId.current === id) setPreviewBusy(false);
       }
       return;
     }
-    commitBinding(row, {
-      agent_id: choice.agentId,
-      scheme_id: choice.schemeId,
-      ...(choiceTaskLimitsDirty ? { task_limits: choice.task_limits } : {}),
-      ...(choiceInputAntiSpamDirty ? { input_anti_spam: choice.input_anti_spam } : {}),
-    });
+    await commit(patch);
   };
   const attentionValue = binding
     ? (attention[binding.id] ?? {
@@ -311,15 +329,18 @@ export function BindingEditor({
         members: binding.attention.members.join(" "),
       })
     : null;
+  // The navigation handoff uses this same editor; its previous host is not a second visible sheet.
+  if (!navigationConfirmation && state.bindingSchemeConfirmationId === key) return null;
   return (
     <Sheet
       open
       onOpenChange={(open) => {
-        if (!open && !saving) onClose();
+        if (!open && !saving) closeEditor();
       }}
     >
       <SheetContent
-        className="w-full min-w-0 overflow-y-auto sm:max-w-xl"
+        scrollMode="surface"
+        className="w-full min-w-0  sm:max-w-xl"
         onOpenAutoFocus={(event) => {
           if (initialSection === "administrators" && adminSectionRef.current) {
             event.preventDefault();
@@ -379,6 +400,11 @@ export function BindingEditor({
               {translateNotice(state.feedback)}
             </p>
           )}
+          {navigationConfirmation && (
+            <p role="status" className="text-sm text-muted-foreground">
+              {t("schemes.bindings.assignment.navigationConfirmation")}
+            </p>
+          )}
           <SchemeFieldCard
             title={t("schemes.bindings.assignment.title")}
             description="schemes.bindings.assignment.hint"
@@ -386,9 +412,10 @@ export function BindingEditor({
             <Assignment
               agentId={choice.agentId}
               schemeId={choice.schemeId}
-              onChange={(patch) =>
-                setChoices((old) => ({ ...old, [key]: { ...choice, ...patch } }))
-              }
+              onChange={(patch) => {
+                cancelPreview();
+                setChoices((old) => ({ ...old, [key]: { ...choice, ...patch } }));
+              }}
             />
             <p className="text-xs text-muted-foreground">
               {t("schemes.bindings.assignment.saveScope")}
@@ -853,14 +880,13 @@ export function BindingEditor({
                               <div className="space-y-4 pl-3 border-l-2 border-muted/60 sm:pl-4">
                                 <Field
                                   label="connections.attentionList"
+                                  info="connections.qqNumbersSeparatedByCommasOrSpaces"
                                   tooltip={t("connections.softPriorityHint")}
                                 >
                                   <Input
                                     value={attentionValue.members}
                                     disabled={saving || attentionValue.mode === "off"}
-                                    placeholder={t(
-                                      "connections.qqNumbersSeparatedByCommasOrSpaces",
-                                    )}
+                                    placeholder={t("connections.qqNumbersPlaceholder")}
                                     onChange={(e) =>
                                       setAttention((old) => ({
                                         ...old,
@@ -934,7 +960,7 @@ export function BindingEditor({
                     className="h-auto min-h-8 whitespace-normal"
                     tooltip={t("hints.qq.openLongMemory")}
                     onClick={() => {
-                      onClose();
+                      closeEditor();
                       state.openSettingsRoute("long-memory");
                     }}
                   >
@@ -947,10 +973,10 @@ export function BindingEditor({
           <Dialog
             open={preview !== null}
             onOpenChange={(open) => {
-              if (!open) setPreview(null);
+              if (!open) cancelPreview();
             }}
           >
-            <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg rounded-xl">
+            <DialogContent scrollMode="surface" className="max-h-[85dvh]  sm:max-w-lg rounded-xl">
               <DialogHeader>
                 <DialogTitle className="tracking-tight">
                   {t("schemes.qq.groupConfig.scheme.confirmTitle", {
@@ -982,7 +1008,7 @@ export function BindingEditor({
                   size="sm"
                   className="h-8 rounded-lg"
                   tooltip={t("hints.qq.previewCancel")}
-                  onClick={() => setPreview(null)}
+                  onClick={cancelPreview}
                 >
                   {t("connections.cancel")}
                 </Button>

@@ -266,7 +266,7 @@ describe("Four-Task Workspace UI Decoupled Architecture", () => {
     });
 
     // Edit memory candidate limit
-    const candidateInput = screen.getByLabelText("每次查询候选条数上限");
+    const candidateInput = screen.getByLabelText("记忆工具读取额度");
     fireEvent.change(candidateInput, { target: { value: "25" } });
 
     // Edit knowledge read budget
@@ -286,7 +286,7 @@ describe("Four-Task Workspace UI Decoupled Architecture", () => {
     // Both memory rules and knowledge read committed
     expect(updateAgentMock).toHaveBeenCalledTimes(1);
     const callMemory = UpdateAgentRequestSchema.parse(updateAgentMock.mock.calls[0][1]);
-    expect(callMemory.p5_config?.retrieval_presets?.standard?.candidate_limit).toBe(25);
+    expect(callMemory.p5_config?.memory_read?.max_bytes).toBe(25);
 
     expect(saveAgentKnowledgeReadMock).toHaveBeenCalledTimes(1);
     expect(saveAgentKnowledgeReadMock).toHaveBeenCalledWith(A, {
@@ -317,7 +317,7 @@ describe("Four-Task Workspace UI Decoupled Architecture", () => {
     });
 
     // Edit both memory rules and knowledge read
-    const candidateInput = screen.getByLabelText("每次查询候选条数上限");
+    const candidateInput = screen.getByLabelText("记忆工具读取额度");
     fireEvent.change(candidateInput, { target: { value: "28" } });
 
     const budgetInput = screen.getByTestId("reading-knowledge-agent-budget-input");
@@ -332,16 +332,14 @@ describe("Four-Task Workspace UI Decoupled Architecture", () => {
     // Step 1: Memory-tools updateAgent succeeded!
     expect(updateAgentMock).toHaveBeenCalledTimes(1);
     const callPartial = UpdateAgentRequestSchema.parse(updateAgentMock.mock.calls[0][1]);
-    expect(callPartial.p5_config?.retrieval_presets?.standard?.candidate_limit).toBe(28);
+    expect(callPartial.p5_config?.memory_read?.max_bytes).toBe(28);
 
     // Step 2: Knowledge save failed with 409!
     expect(saveAgentKnowledgeReadMock).toHaveBeenCalledTimes(1);
     expect(store.getState().settingsTaskDirty("materials")).toBe(true);
 
     // Memory rules draft is no longer dirty because it was accepted!
-    expect(
-      store.getState().pageEditor?.agent.p5_config.retrieval_presets.standard.candidate_limit,
-    ).toBe(28);
+    expect(store.getState().pageEditor?.agent.p5_config.memory_read?.max_bytes).toBe(28);
     // Knowledge read remains dirty and preserved!
     expect(store.getState().knowledgeReadEditor?.draft.context_budget).toBe(5120);
 
@@ -364,7 +362,7 @@ describe("Four-Task Workspace UI Decoupled Architecture", () => {
     expect(store.getState().settingsTaskDirty("materials")).toBe(false);
   });
 
-  it("tools task: toolbar omits fake save/discard buttons and relies on per-resource permission controls", async () => {
+  it("tools task: toolbar owns task save/discard instead of per-resource writes", async () => {
     render(<AssistantWorkspace active />);
     await act(async () => {});
 
@@ -373,8 +371,8 @@ describe("Four-Task Workspace UI Decoupled Architecture", () => {
     await act(async () => {});
 
     // Toolbar must NOT render Save Agent button when on tools tab
-    expect(screen.queryByRole("button", { name: "保存 Agent" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "放弃修改" })).toBeNull();
+    expect(screen.getByRole("button", { name: "保存 Agent" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "放弃修改" })).toBeTruthy();
   });
 
   it("tab switching preserves drafts across tasks without foreign writes or implicit resets", async () => {

@@ -1,5 +1,5 @@
 import { ArrowRight, Plus } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/button";
 import {
@@ -31,6 +31,7 @@ export function CreateConversation({
   onCloseAutoFocus?: (event: Event) => void;
 }) {
   const { t, i18n } = useTranslation();
+  const nameHintId = useId();
   const agents = useSuperstringStore((s) => s.agents);
   const candidate = useSuperstringStore((s) => s.selectedNewSessionAgentId);
   const setCandidate = useSuperstringStore((s) => s.setNewSessionAgent);
@@ -90,7 +91,11 @@ export function CreateConversation({
           )}
         </DialogTrigger>
       )}
-      <DialogContent showCloseButton={!busy} onCloseAutoFocus={onCloseAutoFocus}>
+      <DialogContent
+        scrollMode="surface"
+        showCloseButton={!busy}
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <DialogHeader>
           <DialogTitle>{t("workspace.start_a_new_conversation")}</DialogTitle>
           <DialogDescription>
@@ -127,7 +132,8 @@ export function CreateConversation({
                 value={name}
                 disabled={busy}
                 onChange={(e) => setName(e.target.value)}
-                placeholder={t("workspace.leave_blank_to_use_the_creation_time")}
+                placeholder={t("workspace.optionalNamePlaceholder")}
+                aria-describedby={nameHintId}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.nativeEvent.isComposing) {
                     e.preventDefault();
@@ -135,7 +141,8 @@ export function CreateConversation({
                   }
                 }}
               />
-              <p className="text-xs text-muted-foreground">
+              <p id={nameHintId} className="text-xs text-muted-foreground">
+                {t("workspace.leave_blank_to_use_the_creation_time")}{" "}
                 {t("workspace.you_can_rename_it_later")}
               </p>
             </div>

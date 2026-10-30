@@ -17,24 +17,31 @@ export class ConversationAvatarRepository {
   constructor(private readonly db: Database) {}
 
   metadata(conversationId: string): ConversationAvatar {
-    const row = this.db
-      .query("SELECT kind,style,seed,revision FROM conversation_avatars WHERE conversation_id=?")
-      .get(conversationId) as
-      | (GeneratedAvatar & { revision: string })
-      | {
-          kind: "uploaded";
-          style: null;
-          seed: null;
-          revision: string;
-        }
-      | null;
-    if (!row) return null;
-    return row.kind === "generated"
-      ? { kind: "generated", style: row.style, seed: row.seed }
-      : {
-          kind: "uploaded",
-          url: `/v2/conversations/${encodeURIComponent(conversationId)}/avatar?revision=${row.revision}`,
-        };
+    return this.metadataMany([conversationId]).get(conversationId) ?? null;
+  }
+
+  metadataMany(conversationIds: readonly string[]): Map<string, ConversationAvatar> {
+    const result = new Map<string, ConversationAvatar>();
+    if (!conversationIds.length) return result;
+    const rows = this.db
+      .query(`SELECT conversation_id,kind,style,seed,revision
+      FROM json_each(?) selected CROSS JOIN conversation_avatars avatar
+      ON avatar.conversation_id=selected.value`)
+      .all(JSON.stringify([...new Set(conversationIds)])) as ({
+      conversation_id: string;
+      revision: string;
+    } & (GeneratedAvatar | { kind: "uploaded"; style: null; seed: null }))[];
+    for (const row of rows)
+      result.set(
+        row.conversation_id,
+        row.kind === "generated"
+          ? { kind: "generated", style: row.style, seed: row.seed }
+          : {
+              kind: "uploaded",
+              url: `/v2/conversations/${encodeURIComponent(row.conversation_id)}/avatar?revision=${row.revision}`,
+            },
+      );
+    return result;
   }
 
   image(conversationId: string): AvatarImage | null {

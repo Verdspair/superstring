@@ -1,351 +1,176 @@
-import { cleanup, fireEvent, screen } from "@testing-library/react";
-import { useState } from "react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RetrievalPresets } from "../../src/shared/contracts/models";
+import { KnowledgeSettingsUpdateSchema } from "../../src/shared/contracts/knowledge";
+import { ApiError, type SuperstringApi } from "../../src/web/api";
+import { DesignSystemProvider } from "../../src/web/design-system/Providers";
+import { selectLocale } from "../../src/web/i18n";
 import { ContextAllocationReading } from "../../src/web/screens/connections/ContextAllocationReading";
-import { render } from "./helpers/render-with-providers";
+import { ModelPurposes } from "../../src/web/screens/environment/ModelPurposes";
+import { useSuperstringStore as store } from "../../src/web/store";
 
-describe("ContextAllocationReading", () => {
-  afterEach(() => {
-    cleanup();
+afterEach(cleanup);
+const labels = {
+  knowledgeGlobalTitle: "Global knowledge",
+  knowledgeGlobalDesc: "Saved default quota",
+  defaultBytesLabel: "Bytes",
+  saveKnowledgeGlobal: "Save quota",
+  refreshBaseline: "Refresh",
+  discardBudget: "Discard",
+  invalidPositiveByte: "Invalid bytes",
+  saving: "Saving",
+};
+const panel = (props: Parameters<typeof ContextAllocationReading>[0]) =>
+  render(<ContextAllocationReading labels={labels} {...props} />, {
+    wrapper: DesignSystemProvider,
   });
+describe("global knowledge quota actual owner", () => {
+  it("edits and saves only the global knowledge value", () => {
+    const change = vi.fn(),
+      save = vi.fn();
+    panel({
+      knowledgeGlobalBudget: 16384,
+      onKnowledgeGlobalBudget: change,
+      onSaveKnowledgeGlobal: save,
+    });
+    fireEvent.change(screen.getByLabelText("Bytes"), { target: { value: "24000" } });
+    expect(change).toHaveBeenLastCalledWith(24000);
+    fireEvent.click(screen.getByRole("button", { name: "Save quota" }));
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("reading-section-memory")).toBeNull();
+    expect(screen.queryByTestId("reading-section-knowledge-agent")).toBeNull();
+  });
+  it("keeps raw invalid input in the domain owner and blocks saving", () => {
+    const invalid = vi.fn(),
+      save = vi.fn(),
+      validity = vi.fn();
+    panel({
+      knowledgeGlobalBudget: 16384,
+      invalidInputs: { knowledgeGlobal: "" },
+      onInvalidInput: invalid,
+      onSaveKnowledgeGlobal: save,
+      onValidityChange: validity,
+    });
+    expect(screen.getByRole("button", { name: "Save quota" })).toHaveProperty("disabled", true);
+    expect(validity).toHaveBeenLastCalledWith({ knowledgeGlobalValid: false });
+    fireEvent.change(screen.getByLabelText("Bytes"), { target: { value: "0" } });
+    expect(invalid).toHaveBeenLastCalledWith("knowledgeGlobal", "0");
+    expect(save).not.toHaveBeenCalled();
+  });
+  it("refresh and discard use their original scoped callbacks", () => {
+    const refresh = vi.fn(),
+      discard = vi.fn();
+    panel({
+      knowledgeGlobalBudget: 8192,
+      onRefreshKnowledgeGlobal: refresh,
+      onDiscardKnowledgeGlobal: discard,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(discard).toHaveBeenCalledTimes(1);
+  });
+  it("unknown budget stays blank and disabled until a valid positive quota is entered", () => {
+    panel({ knowledgeGlobalBudget: null });
+    expect(screen.getByLabelText("Bytes")).toHaveProperty("value", "");
+    expect(screen.getByRole("button", { name: "Save quota" })).toHaveProperty("disabled", true);
+  });
+});
 
-  const initialPresets: RetrievalPresets = {
-    conservative: {
-      candidate_limit: 10,
-      max_entries: 5,
-      max_tokens: 2048,
-      relevance_instruction: "strict",
-    },
-    standard: {
-      candidate_limit: 20,
-      max_entries: 10,
-      max_tokens: 4096,
-      relevance_instruction: "standard",
-    },
-    broad: {
-      candidate_limit: 50,
-      max_entries: 20,
-      max_tokens: 8192,
-      relevance_instruction: "broad",
-    },
+describe("global knowledge quota shared contract and save owner", () => {
+  const workspace = async () => {
+    await selectLocale("zh-CN");
+    const client = {
+      getKnowledgeSettings: vi.fn(async () => ({
+        revision: 3,
+        context_budget: 2097152,
+        model_name: null,
+        auto_enabled: true,
+      })),
+      saveKnowledgeSettings: vi.fn(
+        async (body: Parameters<SuperstringApi["saveKnowledgeSettings"]>[0]) => {
+          const parsed = KnowledgeSettingsUpdateSchema.parse(body);
+          const { expected_revision, ...settings } = parsed;
+          return { ...settings, revision: expected_revision + 1 };
+        },
+      ),
+    } as unknown as SuperstringApi;
+    store.getState().resetForTests(client);
+    store.setState({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: "context-allocation",
+      contextAllocationTarget: { purpose: "reading", agentId: null },
+    });
+    render(<ModelPurposes active />, { wrapper: DesignSystemProvider });
+    await waitFor(() => expect(store.getState().knowledgeModelEditor?.source.revision).toBe(3));
+    return client;
   };
-
-  it("renders memory presets and knowledge budgets with controlled edits", () => {
-    const onPresetBudget = vi.fn();
-    const onKnowledgeGlobalBudget = vi.fn();
-    const onKnowledgeAgentBudget = vi.fn();
-
-    render(
-      <ContextAllocationReading
-        presets={initialPresets}
-        knowledgeGlobalBudget={50000}
-        knowledgeAgentBudget={null}
-        agentName="FinanceBot"
-        onPresetBudget={onPresetBudget}
-        onKnowledgeGlobalBudget={onKnowledgeGlobalBudget}
-        onKnowledgeAgentBudget={onKnowledgeAgentBudget}
-      />,
-    );
-
-    expect(screen.getByTestId("reading-section-memory")).toBeTruthy();
-    expect(screen.getByTestId("reading-section-knowledge-global")).toBeTruthy();
-    expect(screen.getByTestId("reading-section-knowledge-agent")).toBeTruthy();
-
-    // Check conservative preset max_tokens byte input edit
-    const conservativeInput = screen.getByTestId(
-      "reading-preset-max-tokens-conservative",
-    ) as HTMLInputElement;
-    expect(conservativeInput.value).toBe("2048");
-
-    fireEvent.change(conservativeInput, { target: { value: "3000" } });
-    expect(onPresetBudget).toHaveBeenCalledWith("conservative", 3000);
-    expect(onPresetBudget.mock.calls[0][0]).toBe("conservative");
-  });
-
-  it("handles agent knowledge budget inheritance toggle and numeric override", () => {
-    const onKnowledgeAgentBudget = vi.fn();
-
-    render(
-      <ContextAllocationReading
-        knowledgeGlobalBudget={65536}
-        knowledgeAgentBudget={null}
-        onKnowledgeAgentBudget={onKnowledgeAgentBudget}
-      />,
-    );
-
-    // When null, inherit checkbox is checked, and effective value displays global value
-    const inheritCheckbox = screen.getByTestId("reading-knowledge-agent-inherit-checkbox");
-    expect(inheritCheckbox.getAttribute("aria-checked")).toBe("true");
-
-    const effectiveText = screen.getByTestId("reading-knowledge-agent-effective-source");
-    expect(effectiveText.textContent).toContain("65536");
-
-    // Uncheck inherit to override
-    fireEvent.click(inheritCheckbox);
-    expect(onKnowledgeAgentBudget).toHaveBeenCalledWith(65536);
-  });
-
-  it("does not invent a fallback quota when overriding without a known global budget", () => {
-    const onKnowledgeAgentBudget = vi.fn();
-
-    function Host() {
-      const [invalidInputs, setInvalidInputs] = useState<Record<string, string>>({});
-      return (
-        <ContextAllocationReading
-          knowledgeGlobalBudget={null}
-          knowledgeAgentBudget={null}
-          onKnowledgeAgentBudget={onKnowledgeAgentBudget}
-          onSaveKnowledgeAgent={() => {}}
-          invalidInputs={invalidInputs}
-          onInvalidInput={(key, raw) => setInvalidInputs(raw === undefined ? {} : { [key]: raw })}
-        />
-      );
+  it("saves values above one MiB and the largest safe integer without submitting another scope", async () => {
+    const client = await workspace();
+    act(() => store.getState().patchKnowledgeModel("Other model draft"));
+    for (const budget of [2097153, Number.MAX_SAFE_INTEGER]) {
+      fireEvent.change(screen.getByTestId("reading-knowledge-global-budget-input"), {
+        target: { value: String(budget) },
+      });
+      const save = screen.getByTestId("reading-save-knowledge-global-btn");
+      expect(save).toHaveProperty("disabled", false);
+      await act(async () => fireEvent.click(save));
+      expect(client.saveKnowledgeSettings).toHaveBeenLastCalledWith({
+        expected_revision: budget === 2097153 ? 3 : 4,
+        auto_enabled: true,
+        context_budget: budget,
+        model_name: null,
+      });
+      expect(store.getState().knowledgeModelEditor?.source.context_budget).toBe(budget);
+      expect(store.getState().knowledgeModelEditor?.modelName).toBe("Other model draft");
+      expect(save).toHaveProperty("disabled", true);
     }
-    render(<Host />);
-
-    fireEvent.click(screen.getByTestId("reading-knowledge-agent-inherit-checkbox"));
-
-    // No arbitrary 65536 fallback: the override stays empty and no value is emitted.
-    const agentInput = screen.getByTestId(
-      "reading-knowledge-agent-budget-input",
-    ) as HTMLInputElement;
-    expect(agentInput.value).toBe("");
-    expect(onKnowledgeAgentBudget).not.toHaveBeenCalled();
-
-    // The empty override is invalid, so the save stays blocked.
-    const saveBtn = screen.getByTestId("reading-save-knowledge-agent-btn") as HTMLButtonElement;
-    expect(saveBtn.disabled).toBe(true);
   });
-
-  it("validates numeric range 1..1048576, blocks saves and reports invalidity", () => {
-    const onPresetBudget = vi.fn();
-    const onValidityChange = vi.fn();
-    const onSaveMemory = vi.fn();
-
-    render(
-      <ContextAllocationReading
-        presets={initialPresets}
-        knowledgeGlobalBudget={50000}
-        knowledgeAgentBudget={20000}
-        onPresetBudget={onPresetBudget}
-        onValidityChange={onValidityChange}
-        onSaveMemory={onSaveMemory}
-        canSaveMemory={true}
-      />,
-    );
-
-    const standardInput = screen.getByTestId(
-      "reading-preset-max-tokens-standard",
-    ) as HTMLInputElement;
-    fireEvent.change(standardInput, { target: { value: "-10" } });
-
-    expect(onValidityChange).toHaveBeenCalledWith(
-      expect.objectContaining({
-        memoryValid: false,
-      }),
-    );
-
-    const saveMemoryBtn = screen.getByTestId("reading-save-memory-btn") as HTMLButtonElement;
-    expect(saveMemoryBtn.disabled).toBe(true);
+  it("retains invalid raw input and disables saving without changing the valid draft", async () => {
+    const client = await workspace();
+    const input = screen.getByTestId("reading-knowledge-global-budget-input");
+    expect(input).toHaveProperty("value", "2097152");
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    for (const raw of ["9007199254740992", "1.5", "0", ""]) {
+      fireEvent.change(input, { target: { value: raw } });
+      expect(input).toHaveProperty("value", raw);
+      expect(input.getAttribute("aria-invalid")).toBe("true");
+      expect(store.getState().allocationInvalidInputs["global:knowledge"]).toBe(raw);
+      expect(store.getState().knowledgeModelEditor?.contextBudget).toBe(2097152);
+      const save = screen.getByTestId("reading-save-knowledge-global-btn");
+      expect(save).toHaveProperty("disabled", true);
+      await act(async () => fireEvent.click(save));
+      expect(client.saveKnowledgeSettings).not.toHaveBeenCalled();
+    }
   });
-
-  it("reports every invalid raw to the host and clears the entry once valid", () => {
-    const onInvalidInput = vi.fn();
-    const onKnowledgeGlobalBudget = vi.fn();
-
-    render(
-      <ContextAllocationReading
-        knowledgeGlobalBudget={50000}
-        knowledgeAgentBudget={null}
-        onInvalidInput={onInvalidInput}
-        onKnowledgeGlobalBudget={onKnowledgeGlobalBudget}
-      />,
+  it("keeps a large budget draft on conflict and retries against an explicitly refreshed revision", async () => {
+    const client = await workspace();
+    vi.mocked(client.saveKnowledgeSettings).mockRejectedValueOnce(
+      new ApiError(409, "KNOWLEDGE_REVISION_CONFLICT", "conflict"),
     );
-
-    const globalInput = screen.getByTestId(
-      "reading-knowledge-global-budget-input",
-    ) as HTMLInputElement;
-
-    fireEvent.change(globalInput, { target: { value: "abc" } });
-    expect(onInvalidInput).toHaveBeenLastCalledWith("knowledgeGlobal", "abc");
-
-    fireEvent.change(globalInput, { target: { value: "60000" } });
-    expect(onInvalidInput).toHaveBeenLastCalledWith("knowledgeGlobal", undefined);
-    expect(onKnowledgeGlobalBudget).toHaveBeenLastCalledWith(60000);
-  });
-
-  it("shows host-owned invalid raw and blocks save until the invalid key is cleared", () => {
-    const onValidityChange = vi.fn();
-    const onSaveKnowledgeGlobal = vi.fn();
-
-    const { rerender } = render(
-      <ContextAllocationReading
-        knowledgeGlobalBudget={50000}
-        knowledgeAgentBudget={null}
-        invalidInputs={{ knowledgeGlobal: "99999999999" }}
-        onValidityChange={onValidityChange}
-        onSaveKnowledgeGlobal={onSaveKnowledgeGlobal}
-        canSaveKnowledgeGlobal={true}
-      />,
-    );
-
-    const globalInput = screen.getByTestId(
-      "reading-knowledge-global-budget-input",
-    ) as HTMLInputElement;
-    expect(globalInput.value).toBe("99999999999");
-    expect(
-      (screen.getByTestId("reading-save-knowledge-global-btn") as HTMLButtonElement).disabled,
-    ).toBe(true);
-
-    // Host clears the invalid entry after a valid edit; the save unlocks.
-    rerender(
-      <ContextAllocationReading
-        knowledgeGlobalBudget={50000}
-        knowledgeAgentBudget={null}
-        invalidInputs={{}}
-        onValidityChange={onValidityChange}
-        onSaveKnowledgeGlobal={onSaveKnowledgeGlobal}
-        canSaveKnowledgeGlobal={true}
-      />,
-    );
-    expect(
-      (screen.getByTestId("reading-save-knowledge-global-btn") as HTMLButtonElement).disabled,
-    ).toBe(false);
-  });
-
-  it("keeps validity hidden-proof across purpose switches: inherited toggle drops the invalid field", () => {
-    const onInvalidInput = vi.fn();
-    const onKnowledgeAgentBudget = vi.fn();
-
-    render(
-      <ContextAllocationReading
-        knowledgeGlobalBudget={40000}
-        knowledgeAgentBudget={10000}
-        invalidInputs={{ knowledgeAgent: "oops" }}
-        onInvalidInput={onInvalidInput}
-        onKnowledgeAgentBudget={onKnowledgeAgentBudget}
-      />,
-    );
-
-    const inheritCheckbox = screen.getByTestId("reading-knowledge-agent-inherit-checkbox");
-    expect(inheritCheckbox.getAttribute("aria-checked")).toBe("false");
-
-    fireEvent.click(inheritCheckbox);
-    expect(onInvalidInput).toHaveBeenCalledWith("knowledgeAgent", undefined);
-    expect(onKnowledgeAgentBudget).toHaveBeenCalledWith(null);
-  });
-
-  it("unmount remount keeps the host-owned invalid value visible", () => {
-    const onValidityChange = vi.fn();
-
-    const hostInvalid = { "memory:conservative": "2x48" };
-    render(
-      <ContextAllocationReading
-        presets={initialPresets}
-        knowledgeAgentBudget={null}
-        invalidInputs={hostInvalid}
-        onValidityChange={onValidityChange}
-      />,
-    );
-    cleanup();
-
-    render(
-      <ContextAllocationReading
-        presets={initialPresets}
-        knowledgeAgentBudget={null}
-        invalidInputs={hostInvalid}
-        onValidityChange={onValidityChange}
-      />,
-    );
-
-    const conservativeInput = screen.getByTestId(
-      "reading-preset-max-tokens-conservative",
-    ) as HTMLInputElement;
-    expect(conservativeInput.value).toBe("2x48");
-    expect(onValidityChange).toHaveBeenCalledWith(expect.objectContaining({ memoryValid: false }));
-  });
-
-  it("triggers separate save callbacks for memory, global knowledge and agent knowledge", () => {
-    const onSaveMemory = vi.fn();
-    const onSaveKnowledgeGlobal = vi.fn();
-    const onSaveKnowledgeAgent = vi.fn();
-
-    render(
-      <ContextAllocationReading
-        presets={initialPresets}
-        knowledgeGlobalBudget={50000}
-        knowledgeAgentBudget={20000}
-        onSaveMemory={onSaveMemory}
-        onSaveKnowledgeGlobal={onSaveKnowledgeGlobal}
-        onSaveKnowledgeAgent={onSaveKnowledgeAgent}
-        canSaveMemory={true}
-        canSaveKnowledgeGlobal={true}
-        canSaveKnowledgeAgent={true}
-      />,
-    );
-
-    const saveMemoryBtn = screen.getByTestId("reading-save-memory-btn");
-    const saveGlobalBtn = screen.getByTestId("reading-save-knowledge-global-btn");
-    const saveAgentBtn = screen.getByTestId("reading-save-knowledge-agent-btn");
-
-    fireEvent.click(saveMemoryBtn);
-    expect(onSaveMemory).toHaveBeenCalledTimes(1);
-    expect(onSaveKnowledgeGlobal).not.toHaveBeenCalled();
-
-    fireEvent.click(saveGlobalBtn);
-    expect(onSaveKnowledgeGlobal).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(saveAgentBtn);
-    expect(onSaveKnowledgeAgent).toHaveBeenCalledTimes(1);
-  });
-
-  it("renders localized labels from the host-provided map", () => {
-    render(
-      <ContextAllocationReading
-        presets={initialPresets}
-        knowledgeAgentBudget={null}
-        labels={{
-          memoryTitle: "记忆预算",
-          scopeAgent: "助手范围",
-          modeConservative: "保守档",
-          modeConservativeDesc: "最严格匹配",
-          maxBytesLabel: "最大字节",
-          invalidByteRange: "范围无效",
-          followGlobalDefault: "跟随全局",
-        }}
-      />,
-    );
-
-    expect(screen.getByText("记忆预算")).toBeTruthy();
-    expect(screen.getByText("助手范围")).toBeTruthy();
-    expect(screen.getByText("保守档")).toBeTruthy();
-    expect(screen.getByText("最严格匹配")).toBeTruthy();
-    expect(screen.getAllByText("最大字节")).toHaveLength(3);
-    expect(screen.getByText("跟随全局")).toBeTruthy();
-  });
-
-  it("shows the discard button only when the scope discard callback is provided and invokes it", () => {
-    const onDiscardKnowledgeGlobal = vi.fn();
-
-    const { rerender } = render(
-      <ContextAllocationReading
-        knowledgeGlobalBudget={50000}
-        knowledgeAgentBudget={null}
-        onSaveKnowledgeGlobal={vi.fn()}
-      />,
-    );
-    expect(screen.queryByTestId("reading-discard-knowledge-global-btn")).toBeNull();
-
-    rerender(
-      <ContextAllocationReading
-        knowledgeGlobalBudget={50000}
-        knowledgeAgentBudget={null}
-        onSaveKnowledgeGlobal={vi.fn()}
-        onDiscardKnowledgeGlobal={onDiscardKnowledgeGlobal}
-      />,
-    );
-    fireEvent.click(screen.getByTestId("reading-discard-knowledge-global-btn"));
-    expect(onDiscardKnowledgeGlobal).toHaveBeenCalledTimes(1);
+    fireEvent.change(screen.getByTestId("reading-knowledge-global-budget-input"), {
+      target: { value: "2097153" },
+    });
+    await act(async () => fireEvent.click(screen.getByTestId("reading-save-knowledge-global-btn")));
+    expect(store.getState().knowledgeModelEditor?.contextBudget).toBe(2097153);
+    expect(store.getState().knowledgeModelEditor?.source.revision).toBe(3);
+    expect(store.getState().knowledgeModelError.budget).toBeTruthy();
+    vi.mocked(client.getKnowledgeSettings).mockResolvedValue({
+      revision: 4,
+      context_budget: 2097154,
+      model_name: null,
+      auto_enabled: true,
+    });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "刷新保存基线" })));
+    expect(store.getState().knowledgeModelEditor?.contextBudget).toBe(2097153);
+    expect(store.getState().knowledgeModelEditor?.source.revision).toBe(4);
+    await act(async () => fireEvent.click(screen.getByTestId("reading-save-knowledge-global-btn")));
+    expect(client.saveKnowledgeSettings).toHaveBeenCalledTimes(2);
+    expect(client.saveKnowledgeSettings).toHaveBeenLastCalledWith({
+      expected_revision: 4,
+      auto_enabled: true,
+      context_budget: 2097153,
+      model_name: null,
+    });
   });
 });

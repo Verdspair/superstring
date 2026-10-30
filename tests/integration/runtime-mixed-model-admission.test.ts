@@ -58,7 +58,7 @@ const envelope = (content: string) => ({
 
 /**
  * loopback 模型桩：chat/completions 请求一律挂住，直到测试放行——因此“在飞”就是服务端真实收到的
- * 并发。非流式请求按**请求本身**给最小合法 body（QQ 回复档 → terminal speech.reply；Web 决策 →
+ * 并发。非流式请求按**请求本身**给最小合法 body（QQ 回复档 → terminal reply.text；Web 决策 →
  * generate final；后台叶子 → 纯文本），不靠调用序号猜。全局在飞与按服务在飞分别记峰值。
  */
 function providerStub() {
@@ -264,7 +264,7 @@ it("三个入口共用同一 runtime/端口与策略：真实 HTTP 在飞重叠�
 
   const session = createSession(business.orm, "Mixed", { modelName: MODEL });
   // 三入口并发发起：Web /v2/chat（决策 + 生成）、QQ 一次 direct（真实 adapter/scheduler，terminal
-  // speech.reply）、后台叶子（原 completeMessageLeaf）。桩挂住响应，逼出端口真实排队。
+  // reply.text）、后台叶子（原 completeMessageLeaf）。桩挂住响应，逼出端口真实排队。
   const web = Promise.resolve(
     runtime.app.request("/v2/chat", {
       method: "POST",

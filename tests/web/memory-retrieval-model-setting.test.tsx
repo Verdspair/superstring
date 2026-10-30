@@ -81,7 +81,7 @@ describe("memory retrieval model purpose", () => {
     );
   });
 
-  it("saves the selected Agent retrieval model through the models page CAS whitelist only", async () => {
+  it("rejects retired retrieval edits and saves the selected Agent active model through its CAS whitelist only", async () => {
     const updateAgent = vi.fn(async (id: string, body: unknown): Promise<AgentResponse> => {
       expect(id).toBe(selectedAgent.id);
       const patch = body as {
@@ -105,20 +105,22 @@ describe("memory retrieval model purpose", () => {
       .patchPageAgent("models", { memory_retrieval_model_name: "new-retrieval-model" });
 
     expect(store.getState().pageEditor?.draft.memory_retrieval_model_name).toBe(
-      "new-retrieval-model",
+      "saved-retrieval-model",
     );
+    store
+      .getState()
+      .patchPageAgent("models", { memory_consolidation_model_name: "new-organization-model" });
     const saved = await store.getState().saveSettingsPage("models");
     expect(saved, store.getState().error ?? "save failed without an error").toBe(true);
     expect(updateAgent).toHaveBeenCalledExactlyOnceWith(selectedAgent.id, {
       expected_version: 7,
       model_name: "chat-model",
       temperature: 0.7,
-      memory_consolidation_model_name: "organization-model",
-      memory_retrieval_model_name: "new-retrieval-model",
+      memory_consolidation_model_name: "new-organization-model",
       context_compression_model_name: "compression-model",
     });
     expect(store.getState().pageEditor?.agent.memory_retrieval_model_name).toBe(
-      "new-retrieval-model",
+      "saved-retrieval-model",
     );
     expect(
       store.getState().agents.find(({ id }) => id === otherAgent.id)?.memory_retrieval_model_name,

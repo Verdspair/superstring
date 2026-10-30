@@ -1,5 +1,5 @@
 import { BookOpen, Bot, Layers } from "lucide-react";
-import { useEffect, useId } from "react";
+import { useCallback, useEffect, useId, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { SettingsGroup, SettingsRow } from "../../components/settings-group";
@@ -8,24 +8,35 @@ import { InputSuggestions } from "../../components/ui/input-suggestions";
 import { NativeSelect } from "../../components/ui/native-select";
 import { knowledgeModelDirty, organizationDirty } from "../../features/knowledge/types";
 import { translateNotice } from "../../i18n";
+import { useForegroundRead } from "../../services/use-foreground-read";
 import { useSuperstringStore } from "../../store";
 
 export function ModelDefaults({
   active = true,
   scope = "organization",
+  embedded = false,
 }: {
   active?: boolean;
+  embedded?: boolean;
   scope?: "organization" | "knowledge";
 } = {}) {
   const { t } = useTranslation();
   const instanceId = useId();
   const defaultModelId = `${instanceId}-organization-model`;
   const knowledgeModelId = `${instanceId}-knowledge-model`;
+  const defaultModelHintId = `${instanceId}-organization-model-hint`;
+  const knowledgeModelHintId = `${instanceId}-knowledge-model-hint`;
   const state = useSuperstringStore(
     useShallow((state) => ({
+      api: state.apiClient,
+      acquireOrganizationRead: state.acquireOrganizationRead,
+      releaseOrganizationRead: state.releaseOrganizationRead,
+      acquireKnowledgeModelRead: state.acquireKnowledgeModelRead,
+      releaseKnowledgeModelRead: state.releaseKnowledgeModelRead,
       discardOrganization: state.discardOrganization,
       knowledgeModelEditor: state.knowledgeModelEditor,
       knowledgeModelLoading: state.knowledgeModelLoading,
+      knowledgeModelError: state.knowledgeModelError,
       loadKnowledgeModel: state.loadKnowledgeModel,
       loadOrganization: state.loadOrganization,
       modelNames: state.modelNames,
@@ -41,11 +52,38 @@ export function ModelDefaults({
   );
   const { loadOrganization, loadKnowledgeModel, organizationEditor: editor } = state;
   const modelSuggestions = state.modelNames.map((name) => ({ value: name }));
-  useEffect(() => {
-    if (!active) return;
-    if (scope === "organization") void loadOrganization();
-    else void loadKnowledgeModel();
-  }, [active, scope, loadOrganization, loadKnowledgeModel]);
+  const organizationOwner = useMemo(() => ({ api: state.api }), [state.api]);
+  const knowledgeOwner = useMemo(() => ({ api: state.api }), [state.api]);
+  const releaseOrganization = useCallback(
+    () => state.releaseOrganizationRead(organizationOwner),
+    [state.releaseOrganizationRead, organizationOwner],
+  );
+  const load = useCallback(() => {
+    if (useSuperstringStore.getState().apiClient !== state.api) return;
+    if (scope === "organization") void state.acquireOrganizationRead(organizationOwner);
+    else void state.acquireKnowledgeModelRead(knowledgeOwner);
+  }, [
+    scope,
+    state.api,
+    state.acquireOrganizationRead,
+    organizationOwner,
+    state.acquireKnowledgeModelRead,
+    knowledgeOwner,
+  ]);
+  const releaseKnowledge = useCallback(
+    () => state.releaseKnowledgeModelRead(knowledgeOwner),
+    [state.releaseKnowledgeModelRead, knowledgeOwner],
+  );
+  const cancel = useCallback(() => {
+    releaseOrganization();
+    releaseKnowledge();
+  }, [releaseOrganization, releaseKnowledge]);
+  useForegroundRead(load, cancel, {
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: cancel,
+  });
 
   return (
     <div className="w-full space-y-6">
@@ -67,18 +105,24 @@ export function ModelDefaults({
                   </label>
                 }
                 description={t("models.purpose.organization.hint")}
+                controlClassName="sm:flex-1"
               >
                 <InputSuggestions
                   id={defaultModelId}
                   suggestions={modelSuggestions}
                   value={editor.modelName ?? ""}
-                  placeholder={t("models.followDefault")}
+                  placeholder={t("library.unset")}
+                  aria-describedby={defaultModelHintId}
                   disabled={state.settingsSaving || state.organizationLoading}
                   aria-label={t("models.purpose.organization")}
                   onValueChange={(value) => state.patchOrganization(value || null)}
-                  className="w-full sm:w-64 sm:min-w-56"
+                  className="w-full sm:w-full sm:min-w-0"
                 />
               </SettingsRow>
+              <p id={defaultModelHintId} className="px-4 py-2 text-xs text-muted-foreground">
+                {t("models.unsetHint")} {t("library.saved")}:{" "}
+                {editor.source.model_name ?? t("models.followDefault")}
+              </p>
 
               <div className="flex flex-wrap items-center justify-end gap-2 bg-muted/15 px-4 py-3">
                 <Button
@@ -105,7 +149,7 @@ export function ModelDefaults({
           )}
 
           {!editor && (
-            <div className="p-4 sm:p-5">
+            <div className="settings-content-padding">
               <Button
                 variant="outline"
                 tooltip={t("hints.system.retryOrganizationDefault")}
@@ -117,6 +161,16 @@ export function ModelDefaults({
             </div>
           )}
 
+          {state.organizationError && (
+            <Button
+              variant="outline"
+              disabled={state.organizationLoading || state.settingsSaving}
+              tooltip={t("hints.library.knowledge.refreshSettings")}
+              onClick={() => void loadOrganization(true)}
+            >
+              {t("capabilities.resources.refreshBaseline")}
+            </Button>
+          )}
           {state.organizationError && (
             <div
               role="alert"
@@ -143,6 +197,7 @@ export function ModelDefaults({
                 {t("models.knowledgeModel")}
               </label>
             }
+            controlClassName="sm:flex-1"
           >
             <InputSuggestions
               id={knowledgeModelId}
@@ -151,15 +206,25 @@ export function ModelDefaults({
               disabled={
                 !state.knowledgeModelEditor || state.knowledgeModelLoading || state.settingsSaving
               }
-              placeholder={t("models.followDefault")}
+              placeholder={t("models.inheritPlaceholder")}
               aria-label={t("models.knowledgeModel")}
+              aria-describedby={knowledgeModelHintId}
               onValueChange={(value) => state.patchKnowledgeModel(value || null)}
-              className="w-full sm:w-64 sm:min-w-56"
+              className="w-full sm:w-full sm:min-w-0"
             />
           </SettingsRow>
 
+          <p id={knowledgeModelHintId} className="px-4 py-2 text-xs text-muted-foreground">
+            {t("models.knowledgeInheritHint")}
+          </p>
+          {state.knowledgeModelEditor && (
+            <p className="px-4 py-2 text-xs text-muted-foreground">
+              {t("library.saved")}:{" "}
+              {state.knowledgeModelEditor.source.model_name ?? t("models.followDefault")}
+            </p>
+          )}
           {!state.knowledgeModelEditor && (
-            <div className="p-4 sm:p-5">
+            <div className="settings-content-padding">
               <Button
                 variant="outline"
                 tooltip={t("hints.system.retryKnowledgeModel")}
@@ -173,6 +238,28 @@ export function ModelDefaults({
             </div>
           )}
 
+          {!embedded && state.knowledgeModelError.shared && (
+            <p role="alert" className="px-4 py-3 text-sm text-destructive">
+              {translateNotice(state.knowledgeModelError.shared)}
+            </p>
+          )}
+          {(state.knowledgeModelError.model || (!embedded && state.knowledgeModelError.shared)) && (
+            <div className="space-y-2 px-4 py-3">
+              {state.knowledgeModelError.model && (
+                <p role="alert" className="text-sm text-destructive">
+                  {translateNotice(state.knowledgeModelError.model)}
+                </p>
+              )}
+              <Button
+                variant="outline"
+                disabled={state.knowledgeModelLoading || state.settingsSaving}
+                tooltip={t("hints.library.knowledge.refreshSettings")}
+                onClick={() => void loadKnowledgeModel(true)}
+              >
+                {t("capabilities.resources.refreshBaseline")}
+              </Button>
+            </div>
+          )}
           <div className="flex items-center justify-end bg-muted/15 px-4 py-3">
             <Button
               tooltip={t("hints.system.saveKnowledgeModel")}
@@ -263,7 +350,7 @@ export function QqJudgementModel({
       </SettingsRow>
 
       {!state.qqSettings && !managed && (
-        <div className="p-4 sm:p-5">
+        <div className="settings-content-padding">
           <Button
             variant="outline"
             tooltip={t("hints.system.qqJudgementRetry")}

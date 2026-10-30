@@ -479,21 +479,23 @@ describe("QQ Sticker Frequency & Composable Tools UI", () => {
       ...api,
       getToolDirectory: vi.fn().mockResolvedValue({
         tools: [
-          {
-            name: "sticker.search",
-            description: "Search stickers",
+          ...["reply.text", "reply.sticker"].map((name) => ({
+            name,
+            description: "QQ reply",
             parameters: {},
-            capability: "stickers",
-            effect: "read",
-            sandboxCallable: true,
+            capability: "conversation.reply",
+            effect: "write",
+            sandboxCallable: false,
+            invocation: "host-terminal",
+            scope: "qq-conversation",
             origin: "system",
-            globalEnabled: false, // 全局关闭表情
-            functionId: "media-stickers",
+            globalEnabled: name === "reply.text",
+            functionId: "qq-reply",
             resource: null,
-            revision: null,
+            revision: "reply-v1",
             approvalRequired: false,
             directories: [],
-          },
+          })),
         ],
       }),
       listSkills: vi.fn().mockResolvedValue({ skills: [] }),
@@ -512,5 +514,18 @@ describe("QQ Sticker Frequency & Composable Tools UI", () => {
 
     // reply.sticker 旁边应该有 (全局已关闭)
     expect(screen.getByText(/全局已关闭/)).toBeDefined();
+  });
+  it("does not invent QQ terminal rows when the shared directory is empty", async () => {
+    const entry = CAPABILITY_CATALOG.find((item) => item.id === "qq-reply");
+    if (!entry) throw new Error("qq-reply entry missing");
+    store.getState().resetForTests({
+      ...api,
+      getToolDirectory: vi.fn().mockResolvedValue({ tools: [] }),
+      getSkills: vi.fn().mockResolvedValue({ skills: [] }),
+    } as unknown as typeof api);
+    render(<SystemComponents entry={entry} />);
+    await act(async () => {});
+    expect(screen.queryByText("reply.text")).toBeNull();
+    expect(screen.queryByText("reply.sticker")).toBeNull();
   });
 });

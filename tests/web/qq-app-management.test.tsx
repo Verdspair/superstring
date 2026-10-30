@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -514,7 +514,7 @@ describe("QQ connection task lifecycle", () => {
         diagnostic_code: null,
       };
       const managedConfig = {
-        config: { version: 1 as const, enabled: false },
+        config: { version: 1 as const, enabled: true },
         revision: "managed-1",
       };
       const resources = {
@@ -549,6 +549,14 @@ describe("QQ connection task lifecycle", () => {
         updateQqScheme: schemeSave,
         quickLoginQqManaged: quickLogin,
       });
+      await waitFor(() => {
+        expect(store.getState().qqManagedAccountsAvailability).toBe("available");
+        expect(store.getState().qqManagedAccountsLoaded).toBe(true);
+        expect(store.getState().qqManagedAccounts).toEqual([
+          { account_id: "200", display_name: null },
+        ]);
+      });
+      expect(fake.listQqManagedAccounts).toHaveBeenCalled();
       const schemeDraft = qqSchemeEditorFrom(scheme);
       schemeDraft.name = "仍未保存的方案";
       await act(async () =>
@@ -556,7 +564,7 @@ describe("QQ connection task lifecycle", () => {
           qqSchemeEditor: schemeDraft,
           qqInputs: {
             ...store.getState().qqInputs,
-            managed: { source: managedConfig, enabled: true },
+            managed: { source: managedConfig, enabled: false },
             managedResources: { source: resources, root: "C:/other-draft" },
             connection: {
               source: settings,

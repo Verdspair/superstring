@@ -17,8 +17,57 @@ function TooltipProvider({
   );
 }
 
+const TooltipPressContext = React.createContext<{
+  pressed: boolean;
+  begin(event: React.PointerEvent<HTMLElement>): void;
+} | null>(null);
+
 function Tooltip({ ...props }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
-  return <TooltipPrimitive.Root data-slot="tooltip" {...props} />;
+  const [pressed, setPressed] = React.useState(false);
+  const release = React.useRef<(() => void) | null>(null);
+  React.useEffect(() => () => release.current?.(), []);
+  const begin = React.useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (release.current) return;
+    const trigger = event.currentTarget;
+    const document = trigger.ownerDocument;
+    const pointerId = event.pointerId;
+    setPressed(true);
+    const finish = () => {
+      document.removeEventListener("click", finish);
+      document.removeEventListener("click", afterClick, true);
+      document.removeEventListener("pointerup", pointerUp);
+      document.removeEventListener("pointercancel", pointerCancel);
+      document.defaultView?.removeEventListener("blur", finish);
+      if (release.current === finish) release.current = null;
+      setPressed(false);
+    };
+    const afterClick = () => {
+      // A stopped bubble still releases after the original target's click handlers finish.
+      queueMicrotask(() => {
+        if (release.current === finish) finish();
+      });
+    };
+    const pointerUp = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) return;
+      // Releasing outside the trigger cannot activate its original click target.
+      if (event.target instanceof Node && !trigger.contains(event.target)) finish();
+    };
+    const pointerCancel = (event: PointerEvent) => {
+      if (event.pointerId === pointerId) finish();
+    };
+    release.current = finish;
+    document.addEventListener("click", finish);
+    document.addEventListener("click", afterClick, true);
+    document.addEventListener("pointerup", pointerUp);
+    document.addEventListener("pointercancel", pointerCancel);
+    document.defaultView?.addEventListener("blur", finish);
+  }, []);
+  const gesture = React.useMemo(() => ({ pressed, begin }), [pressed, begin]);
+  return (
+    <TooltipPressContext.Provider value={gesture}>
+      <TooltipPrimitive.Root data-slot="tooltip" {...props} />
+    </TooltipPressContext.Provider>
+  );
 }
 
 const TooltipStateSlot = React.forwardRef<HTMLElement, React.ComponentProps<typeof Slot.Root>>(
@@ -32,14 +81,30 @@ const TooltipStateSlot = React.forwardRef<HTMLElement, React.ComponentProps<type
 
 function TooltipTrigger({
   onFocus,
+  onPointerDownCapture,
   preserveTriggerState = false,
   children,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Trigger> & { preserveTriggerState?: boolean }) {
+  const gesture = React.useContext(TooltipPressContext);
+  const content =
+    props.asChild && React.isValidElement<React.HTMLAttributes<HTMLElement>>(children)
+      ? React.cloneElement(children, {
+          // Slot composes child handlers first; register the press before that child can open help.
+          onPointerDownCapture: (event) => {
+            gesture?.begin(event);
+            children.props.onPointerDownCapture?.(event);
+          },
+        })
+      : children;
   return (
     <TooltipPrimitive.Trigger
       data-slot="tooltip-trigger"
       {...props}
+      onPointerDownCapture={(event) => {
+        gesture?.begin(event);
+        onPointerDownCapture?.(event);
+      }}
       onFocus={(event) => {
         onFocus?.(event);
         const surface = event.currentTarget.closest('[role="dialog"], [role="alertdialog"]');
@@ -51,7 +116,7 @@ function TooltipTrigger({
           event.preventDefault();
       }}
     >
-      {preserveTriggerState ? <TooltipStateSlot>{children}</TooltipStateSlot> : children}
+      {preserveTriggerState ? <TooltipStateSlot>{content}</TooltipStateSlot> : content}
     </TooltipPrimitive.Trigger>
   );
 }
@@ -60,8 +125,10 @@ function TooltipContent({
   className,
   sideOffset = 0,
   children,
+  style,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content>) {
+  const gesture = React.useContext(TooltipPressContext);
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
@@ -72,6 +139,8 @@ function TooltipContent({
           className,
         )}
         {...props}
+        data-trigger-press={gesture?.pressed ? "true" : undefined}
+        style={gesture?.pressed ? { ...style, pointerEvents: "none" } : style}
       >
         {children}
         <TooltipPrimitive.Arrow className="z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px] bg-foreground fill-foreground" />

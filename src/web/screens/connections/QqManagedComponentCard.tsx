@@ -13,6 +13,8 @@ import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import { NativeSelect } from "../../components/ui/native-select";
+import type { QqManagedAccountsAvailability } from "../../features/qq/managed-state";
+import { translateNotice } from "../../i18n";
 import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 
 type ReadyStatus = Extract<SharedQqManagedStatus, { apply: "ready" }>;
@@ -37,8 +39,15 @@ export interface QqManagedStatus {
 export interface QqManagedCardProps {
   status: QqManagedStatus;
   resources?: QqManagedResourceSnapshot | null;
+  resourceError?: string | null;
+  onRetryResources?: () => void;
   resourceDraftRoot?: string | null;
   accounts?: QqManagedAccountItem[];
+  accountsAvailability?: QqManagedAccountsAvailability;
+  accountsLoaded?: boolean;
+  accountsLoading?: boolean;
+  accountsError?: string | null;
+  onRetryAccounts?: () => void;
   selectedQuickLoginAccount?: string | null;
   loading?: boolean;
   saving?: boolean;
@@ -91,8 +100,15 @@ const diagnosticLabelKeys: Record<string, string> = {
 export function QqManagedComponentCard({
   status,
   resources,
+  resourceError,
+  onRetryResources,
   resourceDraftRoot,
   accounts,
+  accountsAvailability,
+  accountsLoaded = false,
+  accountsLoading = false,
+  accountsError,
+  onRetryAccounts,
   selectedQuickLoginAccount,
   loading = false,
   saving = false,
@@ -121,12 +137,16 @@ export function QqManagedComponentCard({
       ? status.diagnosticCode
       : "unknown";
 
-  const resourceSetupRequired = !status.runtimeGatePassed || resources?.status !== "ready";
+  const resourceSetupRequired =
+    !!resourceError || !status.runtimeGatePassed || resources?.status !== "ready";
   const showResourceSetup = resourceSetupRequired || resourceExpanded;
   const resourceReadOnly = isBusy || !resources || status.ownership === "external";
   const showQuickLogin =
     accounts &&
     accounts.length > 0 &&
+    accountsLoaded &&
+    accountsAvailability === "available" &&
+    !accountsError &&
     status.ownership !== "external" &&
     (status.phase === "waiting_scan" || status.phase === "stopped");
   const canQuickLogin =
@@ -193,9 +213,13 @@ export function QqManagedComponentCard({
               </span>
               <Badge variant="outline">
                 {t(
-                  resources?.status === "ready"
-                    ? "connections.managed.resources.valid"
-                    : "connections.managed.phase.unconfigured",
+                  resourceError || resources?.status === "invalid"
+                    ? "connections.managed.phase.error"
+                    : !resources
+                      ? "connections.common.loading"
+                      : resources.status === "ready"
+                        ? "connections.managed.resources.valid"
+                        : "connections.managed.phase.unconfigured",
                 )}
               </Badge>
               <WorkspaceHelp
@@ -215,6 +239,22 @@ export function QqManagedComponentCard({
               {t("connections.managed.resources.configure")}
             </Button>
           </div>
+          {resourceError && (
+            <div
+              role="alert"
+              className="mt-3 flex flex-wrap items-center gap-2 text-sm text-destructive"
+            >
+              <span>{translateNotice(resourceError)}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isBusy || !onRetryResources}
+                onClick={onRetryResources}
+              >
+                {t("capabilities.retry")}
+              </Button>
+            </div>
+          )}
           <div
             id={resourcePanelId}
             hidden={!showResourceSetup}
@@ -229,10 +269,15 @@ export function QqManagedComponentCard({
               {t("connections.managed.resources.officialLink")}
               <ExternalLink className="size-3.5" />
             </a>
+            <p id={`${resourcePanelId}-hint`} className="text-xs text-muted-foreground">
+              {t("connections.managed.resources.description")} ·{" "}
+              {t("connections.managed.resources.inputPlaceholder")}
+            </p>
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <Input
                 aria-label={t("connections.managed.resources.title")}
-                placeholder={t("connections.managed.resources.inputPlaceholder")}
+                placeholder={t("connections.managed.resources.shortPlaceholder")}
+                aria-describedby={`${resourcePanelId}-hint`}
                 value={currentPath}
                 disabled={resourceReadOnly}
                 onChange={(event) => handlePathChange(event.target.value)}
@@ -297,12 +342,49 @@ export function QqManagedComponentCard({
         }
       />
 
+      {accountsAvailability && (
+        <SettingsRow
+          label={t("connections.managed.quickLogin.title")}
+          description={
+            accountsError ? (
+              <span role="alert" className="text-destructive">
+                {translateNotice(accountsError)}
+              </span>
+            ) : (
+              <span role="status">
+                {t(
+                  accountsLoading
+                    ? "connections.common.loading"
+                    : accountsAvailability === "unavailable"
+                      ? "connections.managed.quickLogin.unavailable"
+                      : accountsAvailability === "unknown" || !accountsLoaded
+                        ? "connections.managed.quickLogin.notQueried"
+                        : accounts?.length
+                          ? "connections.managed.quickLogin.loaded"
+                          : "connections.managed.quickLogin.emptyAccounts",
+                )}
+              </span>
+            )
+          }
+          action={
+            onRetryAccounts && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isBusy || accountsLoading || accountsAvailability !== "available"}
+                onClick={onRetryAccounts}
+              >
+                <RefreshCw />
+                {t("connections.managed.quickLogin.refreshAccounts")}
+              </Button>
+            )
+          }
+        />
+      )}
+
       {showQuickLogin && onSelectQuickLoginAccount && onExecuteQuickLogin && (
         <div className="border-t border-border px-4 py-3 sm:px-5">
           <div className="flex flex-col gap-2">
-            <span className="text-[13.5px] font-medium text-foreground">
-              {t("connections.managed.quickLogin.title", "本机快捷登录")}
-            </span>
             {!canQuickLogin && (
               <p className="text-sm text-muted-foreground">
                 {t("connections.managed.quickLogin.notReady")}
@@ -320,7 +402,7 @@ export function QqManagedComponentCard({
               <NativeSelect
                 size="sm"
                 value={selectedQuickLoginAccount ?? ""}
-                disabled={isBusy}
+                disabled={isBusy || accountsLoading}
                 onChange={(e) => onSelectQuickLoginAccount(e.target.value)}
                 className="min-w-0 max-w-full flex-1 basis-48 font-mono"
               >
@@ -338,6 +420,7 @@ export function QqManagedComponentCard({
                 size="sm"
                 disabled={
                   isBusy ||
+                  accountsLoading ||
                   !canQuickLogin ||
                   !accounts.some((account) => account.account_id === selectedQuickLoginAccount)
                 }
@@ -353,7 +436,7 @@ export function QqManagedComponentCard({
       )}
 
       {status.phase === "waiting_scan" && (
-        <div className="flex flex-col items-center gap-3 border-t border-border p-4 sm:p-5">
+        <div className="flex flex-col items-center gap-3 border-t border-border settings-content-padding">
           {status.qrPayload ? (
             <>
               {/* High-contrast white background is strictly an optical exception for camera scanning readability */}
@@ -416,7 +499,9 @@ export function QqManagedComponentCard({
         </div>
       )}
       {footer && (
-        <div className="flex flex-wrap items-center justify-end gap-2 p-4 sm:p-5">{footer}</div>
+        <div className="flex flex-wrap items-center justify-end gap-2 settings-content-padding">
+          {footer}
+        </div>
       )}
     </SettingsGroup>
   );

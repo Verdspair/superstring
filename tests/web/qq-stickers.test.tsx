@@ -21,6 +21,47 @@ async function detail() {
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "打开 Smile" })));
 }
 describe("fresh asset library", () => {
+  it.each([
+    [1, 1],
+    [128, 64],
+    [64, 128],
+  ])(
+    "keeps selection and preview opening independent for a %i × %i image",
+    async (width, height) => {
+      setupLibrary({
+        listQqStickerAssets: vi.fn().mockResolvedValue([{ ...sticker, width, height }]),
+      });
+      await page();
+      const select = screen.getByRole("checkbox", { name: "选择 Smile" });
+      const open = screen.getByRole("button", { name: "打开 Smile" });
+      const image = within(open).getByAltText("Smile");
+      expect(image.getAttribute("loading")).toBe("lazy");
+      expect(image.getAttribute("src")).toContain("still=1");
+      expect(open.closest('[data-slot="tooltip-trigger"]')).toBeTruthy();
+      fireEvent.click(select);
+      expect(store.getState().qqStickerSelection).toEqual([S]);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await act(async () => fireEvent.click(open));
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      expect(store.getState().qqStickerSelection).toEqual([S]);
+    },
+  );
+  it("filters loaded assets by description without writing them", async () => {
+    const client = setupLibrary({
+      listQqStickerAssets: vi
+        .fn()
+        .mockResolvedValue([{ ...sticker, description: "rainy day", tags: ["weather"] }]),
+    });
+    await page();
+    const search = screen.getByLabelText("搜索素材");
+    fireEvent.change(search, { target: { value: "rainy" } });
+    expect(screen.getByAltText("Smile")).toBeTruthy();
+    fireEvent.change(search, { target: { value: "no-match" } });
+    expect(screen.queryByAltText("Smile")).toBeNull();
+    expect(client.updateQqStickerAsset).not.toHaveBeenCalled();
+    expect(client.setQqStickerEnabled).not.toHaveBeenCalled();
+    expect(client.setQqStickerCollections).not.toHaveBeenCalled();
+  });
   it("uses a static first frame in the index and full preview in the workbench", async () => {
     await page();
     expect(screen.getByAltText("Smile").getAttribute("src")).toContain("still=1");
@@ -40,12 +81,34 @@ describe("fresh asset library", () => {
     );
     expect(client.setQqStickerEnabled).not.toHaveBeenCalled();
   });
-  it("save-and-enable is explicit and sets membership", async () => {
+  it("save-and-enable is explicit and leaves unchanged content and membership alone", async () => {
     const client = setupLibrary();
     await detail();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存并启用" })));
     expect(client.setQqStickerEnabled).toHaveBeenCalledWith(S, true);
-    expect(client.setQqStickerCollections).toHaveBeenCalledWith(S, { collection_ids: [D] });
+    expect(client.updateQqStickerAsset).not.toHaveBeenCalled();
+    expect(client.setQqStickerCollections).not.toHaveBeenCalled();
+  });
+  it("saves a changed membership without rewriting unchanged content or enabling", async () => {
+    const client = setupLibrary({
+      setQqStickerCollections: vi.fn().mockResolvedValue({ ...sticker, collection_ids: [] }),
+    });
+    await detail();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Reactions" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存说明" })));
+    expect(client.setQqStickerCollections).toHaveBeenCalledWith(S, { collection_ids: [] });
+    expect(client.updateQqStickerAsset).not.toHaveBeenCalled();
+    expect(client.setQqStickerEnabled).not.toHaveBeenCalled();
+    expect(store.getState().qqStickerEditor?.source.collection_ids).toEqual([]);
+    expect(store.getState().qqStickerEditor?.collectionIds).toEqual([]);
+  });
+  it("saving an unchanged asset performs no mutation", async () => {
+    const client = setupLibrary();
+    await detail();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存说明" })));
+    expect(client.updateQqStickerAsset).not.toHaveBeenCalled();
+    expect(client.setQqStickerCollections).not.toHaveBeenCalled();
+    expect(client.setQqStickerEnabled).not.toHaveBeenCalled();
   });
   it("closing protects unsaved asset content and can save before continuing", async () => {
     await detail();

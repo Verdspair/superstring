@@ -12,7 +12,7 @@ import {
   type GeneratedAvatar,
   GeneratedAvatarSchema,
 } from "../../shared/contracts/conversation-avatar";
-import { visibleConversation } from "../agent/conversation-access";
+import { visibleConversationMetadata } from "../agent/conversation-access";
 import {
   type AvatarImage,
   ConversationAvatarRepository,
@@ -55,7 +55,7 @@ export function conversationAvatarRoutes(db: Database, includeShared = false): H
   const journal = new ConversationEventRepository(db);
   const avatars = new ConversationAvatarRepository(db);
   const visible = (id: string) =>
-    visibleConversation(db, journal, id, { userId: DEFAULT_USER_ID }, includeShared);
+    visibleConversationMetadata(db, journal, id, { userId: DEFAULT_USER_ID }, includeShared);
   router.get("/:id/avatar", (c) => {
     const conversation = visible(parseUuidParam(c.req.param("id")));
     if (!conversation) return c.json(notFound, 404);

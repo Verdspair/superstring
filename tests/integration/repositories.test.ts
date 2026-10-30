@@ -12,11 +12,8 @@
 // turn all raise instead of writing.
 // - Deleting a message retires its client_request_id forever.
 
-import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { type BusinessDbHandle, toOrmHandle } from "../../src/server/db/connection";
+import type { BusinessDbHandle } from "../../src/server/db/connection";
 import {
   createSession,
   DEFAULT_AGENT_ID,
@@ -33,34 +30,11 @@ import {
   saveUserMessage,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
+import { openBusinessDb } from "../../src/server/db/schema-gate";
 
-const MIGRATION_SQL = readFileSync(
-  path.join(import.meta.dir, "../../migrations/versions/0001_initial.sql"),
-  "utf8",
-);
-
-/** Fresh migrated in-memory database with foreign keys enforced. */
+/** Current repositories run against the current known business schema. */
 function newHandle(): BusinessDbHandle {
-  const db = new Database(":memory:");
-  db.exec("PRAGMA foreign_keys = ON");
-  db.exec(MIGRATION_SQL);
-  for (const file of [
-    "0002_knowledge.sql",
-    "0003_knowledge_read.sql",
-    "0004_organization.sql",
-    "0005_qq_transport.sql",
-    "0006_qq_memory_sources.sql",
-    "0007_qq_observation_text.sql",
-    "0008_qq_memory_batch.sql",
-    "0009_qq_transport_config.sql",
-    "0010_qq_schemes.sql",
-    "0011_qq_speech_log.sql",
-    "0012_qq_media_notes.sql",
-    "0013_qq_scheme_triggers.sql",
-  ]) {
-    db.exec(readFileSync(path.join(import.meta.dir, "../../migrations/versions", file), "utf8"));
-  }
-  return toOrmHandle(db);
+  return openBusinessDb();
 }
 
 interface Ctx {

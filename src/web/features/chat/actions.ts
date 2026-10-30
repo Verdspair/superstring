@@ -667,8 +667,18 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
       }
       if (get().summaryById[get().sessionConversationIds[id]]?.title === parsed.data.title)
         return true;
+      const api = get().apiClient;
+      const mappedId = get().sessionConversationIds[id];
+      const target = get().summaryById[mappedId];
+      const matches = () =>
+        get().apiClient === api &&
+        get().sessionConversationIds[id] === mappedId &&
+        get().summaryById[mappedId]?.sourceId === target?.sourceId &&
+        get().summaryById[mappedId]?.agentId === target?.agentId &&
+        get().summaryById[mappedId]?.bindingEpoch === target?.bindingEpoch;
       try {
-        const updated = await get().apiClient.renameSession(id, parsed.data.title);
+        const updated = await api.renameSession(id, parsed.data.title);
+        if (!matches()) return false;
         const summary = get().summaryById[get().sessionConversationIds[id]];
         if (summary)
           get().rememberConversation({
@@ -685,7 +695,7 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         }));
         return true;
       } catch (reason) {
-        set({ error: errorText(reason) });
+        if (matches()) set({ error: errorText(reason) });
         return false;
       }
     },
@@ -694,10 +704,18 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         set({ error: msg("生成完成后再刷新或删除会话。") });
         return false;
       }
+      const api = get().apiClient;
+      const id = get().sessionConversationIds[sessionId];
+      const target = get().summaryById[id];
+      const matches = () =>
+        get().apiClient === api &&
+        get().sessionConversationIds[sessionId] === id &&
+        get().summaryById[id]?.sourceId === target?.sourceId &&
+        get().summaryById[id]?.agentId === target?.agentId &&
+        get().summaryById[id]?.bindingEpoch === target?.bindingEpoch;
       try {
-        await get().apiClient.deleteSession(sessionId);
-
-        const id = get().sessionConversationIds[sessionId];
+        await api.deleteSession(sessionId);
+        if (!matches()) return false;
         const wasCurrent = currentSessionId(get()) === sessionId;
         set((state) => {
           const { [sessionId]: _session, ...sessionConversationIds } = state.sessionConversationIds;
@@ -723,7 +741,7 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
             ...(wasCurrent ? { currentConversationId: null } : {}),
           };
         });
-        if (wasCurrent) {
+        if (wasCurrent && get().apiClient === api) {
           const next = get().directoryIds[0];
           persistBrowserState(get().browserStateStorage, "superstring-session", null);
           persistBrowserState(get().browserStateStorage, "superstring-conversation", next ?? null);
@@ -731,7 +749,7 @@ export function createChatActions(set: StoreSet, get: StoreGet): Actions {
         }
         return true;
       } catch (reason) {
-        set({ error: errorText(reason) });
+        if (matches()) set({ error: errorText(reason) });
         return false;
       }
     },

@@ -1,11 +1,11 @@
 import { afterEach, expect, it } from "bun:test";
+import { z } from "zod";
 import { AgentRuntime, type ConversationInput } from "../../src/server/agent/agent-runtime";
 import type { AgentSpec } from "../../src/server/agent/agent-specs";
 import type { ModelPort } from "../../src/server/agent/model-port";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
-import { SPEECH_REPLY_DESCRIPTION } from "../../src/shared/contracts/agent-action-descriptions";
-import { SpeechReplyArgumentsSchema } from "../../src/shared/contracts/agent-output";
+import { InlineOutputDraftSchema } from "../../src/shared/contracts/agent-output";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
 afterEach(() => {
@@ -52,12 +52,22 @@ const direct: Pick<ConversationInput, "owner" | "authorizedTargets" | "outputMod
   },
 };
 
+const terminalArgumentsSchema = z.strictObject({
+  outputs: z.array(InlineOutputDraftSchema).min(1),
+});
+const terminalDescription = {
+  name: "test.terminal",
+  capability: "conversation.reply",
+  effect: "write" as const,
+  description: "Submit inline output to the host.",
+  parameters: z.toJSONSchema(terminalArgumentsSchema),
+};
 const terminalAction = {
-  descriptions: [SPEECH_REPLY_DESCRIPTION],
+  descriptions: [terminalDescription],
   parse: (calls: readonly { name: string; arguments: Record<string, unknown> }[]) => {
-    if (calls.length !== 1 || calls[0]?.name !== SPEECH_REPLY_DESCRIPTION.name)
+    if (calls.length !== 1 || calls[0]?.name !== terminalDescription.name)
       throw new Error("invalid terminal reply contribution");
-    return SpeechReplyArgumentsSchema.parse(calls[0].arguments).outputs;
+    return terminalArgumentsSchema.parse(calls[0].arguments).outputs;
   },
 };
 
@@ -74,7 +84,7 @@ it("preserves an independently selected reply reference through terminal inline 
     async complete() {
       return JSON.stringify({
         kind: "invoke",
-        name: "speech.reply",
+        name: "test.terminal",
         arguments: { outputs: [draft] },
       });
     },
@@ -109,7 +119,7 @@ it("preserves mention-only inline output without deriving a quote or target ment
     async complete() {
       return JSON.stringify({
         kind: "invoke",
-        name: "speech.reply",
+        name: "test.terminal",
         arguments: { outputs: [draft] },
       });
     },

@@ -17,7 +17,7 @@ export function ChatTranscript({
   messages: ChatItem[];
   session: string | null;
   active?: boolean;
-  onDelete: (id: string) => void;
+  onDelete: (id: string, origin: HTMLElement | null) => void;
   hasOlder?: boolean;
   loadingOlder?: boolean;
   onLoadOlder?: () => Promise<void>;
@@ -110,7 +110,7 @@ export function ChatTranscript({
               <TranscriptMessage
                 key={message.id}
                 message={message}
-                onDelete={() => onDelete(message.id)}
+                onDelete={(origin) => onDelete(message.id, origin)}
               />
             ))}
         </div>
@@ -130,7 +130,13 @@ export function ChatTranscript({
     </div>
   );
 }
-function TranscriptMessage({ message, onDelete }: { message: ChatItem; onDelete: () => void }) {
+function TranscriptMessage({
+  message,
+  onDelete,
+}: {
+  message: ChatItem;
+  onDelete: (origin: HTMLElement | null) => void;
+}) {
   const { t, i18n } = useTranslation();
   const user = message.role === "user";
   const actionable = message.status !== "pending" && !message.id.startsWith("optimistic-");

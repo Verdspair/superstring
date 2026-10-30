@@ -43,6 +43,7 @@ import {
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
+import { estimateMessages } from "../../src/server/modules/memory-query";
 import {
   ALNUM_CODE_POINT_COUNT,
   ALNUM_RANGE_COUNT,
@@ -68,6 +69,8 @@ import {
 import { MemoryService } from "../../src/server/services/memory-service";
 import { qqMemoryScopeKey } from "../../src/server/services/qq-binding-contract";
 import { QQ_PROMPT_DEFAULTS } from "../../src/server/services/qq-prompt-contract";
+import { estimateTokens } from "../../src/server/services/token-estimate";
+import { DEFAULT_MEMORY_CONSOLIDATION_PROMPT } from "../../src/shared/contracts/agent";
 
 const AGENT_ID = "00000000-0000-0000-0000-000000000001";
 const MODEL = "qwen/qwen3-4b-2507";
@@ -397,6 +400,28 @@ describe("memory prompt contracts", () => {
     );
   });
 
+  it("applies the same source and decoded-body contract to every consolidation kind", () => {
+    const sources = [
+      { speaker_id: "30001", occurred_at_seconds: 1793188402, body: "20日提议，结果未知。" },
+    ];
+    const requests = ["auto", "manual", "merge"].map((kind) =>
+      buildConsolidationPrompt(kind, config, sources),
+    );
+    for (const [system, user] of requests) {
+      expect(system.content).toContain("不得新增时间、ID、权限、状态等协议外字段");
+      expect(system.content).toContain("正文与简介可表达来源有据的人物、事件时间及结果状态");
+      expect(system.content).toContain(
+        "保留来源原有相对时间措辞，未明确时不推定其指向的周、日期或周期关系，仅在来源支持时细化",
+      );
+      expect(system.content).toContain("body是解码后可读的Markdown字符串");
+      expect(user.content).toBe(requests[0]![1].content);
+    }
+    const explanation = requests.map(([system]) =>
+      system.content.slice(system.content.indexOf("来源字段说明：")),
+    );
+    expect(new Set(explanation).size).toBe(1);
+  });
+
   it("uses a distinct preface per kind and no 补充整理要求 when additional is blank", () => {
     const manual = buildConsolidationPrompt("manual", config, [])[0].content;
     const merge = buildConsolidationPrompt("merge", config, [])[0].content;
@@ -474,6 +499,11 @@ describe("parse-result strictness", () => {
 
   it("never salvages malformed output (partial results must not publish)", () => {
     expect(() => parseResult('```json\n{"memory":null}\n```')).toThrow();
+    expect(() =>
+      parseResult(
+        '{"memory":{"name":"n","summary":"s","kinds":["semantic"],"body":"first\nsecond"}}',
+      ),
+    ).toThrow();
     expect(() => parseResult('{"memory": {"name": "n"}}')).toThrow();
     expect(() =>
       parseResult(
@@ -708,6 +738,298 @@ describe("auto scheduling", () => {
 // Job execution
 
 describe("job execution", () => {
+  it("sends the common relative-time rule for auto, manual and merge jobs", async () => {
+    for (const kind of ["auto", "manual", "merge"] as const) {
+      const ctx = setup();
+      try {
+        const sessionId = newSession(ctx.orm);
+        const turnId = completedTurn(
+          ctx.orm,
+          sessionId,
+          `relative-${kind}`,
+          "改天再讨论。",
+          "收到。",
+        );
+        let jobId: string;
+        if (kind === "auto") {
+          configureAuto(ctx.orm, AGENT_ID, 1);
+          ctx.service.scheduleAuto();
+          jobId = jobs(ctx.orm)[0]!.id;
+        } else if (kind === "manual") {
+          jobId = enqueue(ctx.orm, AGENT_ID, `relative-${kind}`, {
+            kind,
+            sessionId,
+            turnIds: [turnId],
+          }).id;
+        } else {
+          const sourceId = seedEntry(ctx.orm, { name: "待讨论", body: "改天再讨论。", turnId });
+          jobId = enqueue(ctx.orm, AGENT_ID, `relative-${kind}`, {
+            kind,
+            memoryIds: [sourceId],
+          }).id;
+        }
+        await ctx.service.runJob(jobId);
+        expect(jobById(ctx.orm, jobId).status).toBe("succeeded");
+        expect(ctx.gateway.calls).toHaveLength(1);
+        const messages = ctx.gateway.calls[0]!.messages;
+        expect(messages[0]!.content).toContain(
+          "保留来源原有相对时间措辞，未明确时不推定其指向的周、日期或周期关系，仅在来源支持时细化",
+        );
+        expect(messages[1]!.content).toContain("改天再讨论。");
+        expect(ctx.gateway.calls[0]!.responseSchema).toEqual(DRAFT_RESULT_JSON_SCHEMA);
+      } finally {
+        await ctx.service.stop();
+        ctx.business.close();
+      }
+    }
+  });
+
+  it("charges the common rule to the complete fixed-budget request", async () => {
+    const ctx = setup();
+    try {
+      const row = ctx.orm.select().from(schema.agents).where(eq(schema.agents.id, AGENT_ID)).get();
+      if (!row) throw new Error("agent missing");
+      const p5 = JSON.parse(row.p5Config);
+      const setLimit = (inputLimit: number) => {
+        ctx.orm
+          .update(schema.agents)
+          .set({
+            p5Config: JSON.stringify({
+              ...p5,
+              auxiliary_allocation: {
+                ...p5.auxiliary_allocation,
+                memory_consolidate: { mode: "fixed", input_limit: inputLimit },
+              },
+            }),
+          })
+          .where(eq(schema.agents.id, AGENT_ID))
+          .run();
+      };
+      const sessionId = newSession(ctx.orm);
+      const turnId = completedTurn(ctx.orm, sessionId, "budget-relative", "改天再讨论。", "收到。");
+      const run = async (key: string) => {
+        const job = enqueue(ctx.orm, AGENT_ID, key, {
+          kind: "manual",
+          sessionId,
+          turnIds: [turnId],
+        });
+        await ctx.service.runJob(job.id);
+        return jobById(ctx.orm, job.id);
+      };
+      setLimit(100000);
+      expect((await run("budget-probe")).status).toBe("succeeded");
+      const call = ctx.gateway.calls[0]!;
+      const counted = call.messages.map(({ role, content }) => ({
+        role: role as "system" | "user" | "assistant",
+        content,
+      }));
+      const cost =
+        estimateMessages(counted) + estimateTokens(JSON.stringify(DRAFT_RESULT_JSON_SCHEMA));
+      const rule =
+        "保留来源原有相对时间措辞，未明确时不推定其指向的周、日期或周期关系，仅在来源支持时细化；";
+      expect(call.messages[0]!.content).toContain(rule);
+      const withoutRule = counted.map((message) => ({
+        ...message,
+        content: message.content.replace(rule, ""),
+      }));
+      expect(cost).toBeGreaterThan(
+        estimateMessages(withoutRule) + estimateTokens(JSON.stringify(DRAFT_RESULT_JSON_SCHEMA)),
+      );
+      setLimit(cost - 1);
+      const rejected = await run("budget-below");
+      expect(rejected.status).toBe("failed");
+      expect(rejected.errorCode).toBe("CONTEXT_AUX_BUDGET");
+      expect(ctx.gateway.calls).toHaveLength(1);
+      setLimit(cost);
+      expect((await run("budget-exact")).status).toBe("succeeded");
+      expect(ctx.gateway.calls).toHaveLength(2);
+      expect(ctx.gateway.calls[1]!.messages).toEqual(call.messages);
+    } finally {
+      await ctx.service.stop();
+      ctx.business.close();
+    }
+  });
+
+  it("preserves decoded Markdown newlines and literal escapes through publication and content read", async () => {
+    const ctx = setup();
+    try {
+      const body = [
+        '第一段 "引号" 与 Unicode 林 😀',
+        String.raw`字面 \n / \t / \u4e2d，不作二次解码`,
+        String.raw`Windows: C:\new\notes\task.txt`,
+        "```js",
+        String.raw`const pattern = /\n\t\u4e2d/;`,
+        String.raw`const text = "\\n";`,
+        "```",
+        "最后一段",
+      ].join("\n");
+      const reply = JSON.stringify({ memory: { ...VALID_DRAFT.memory, body } });
+      expect(parseResult(reply)?.body).toBe(body);
+      const sessionId = newSession(ctx.orm);
+      const turnId = completedTurn(
+        ctx.orm,
+        sessionId,
+        "literal-source",
+        body,
+        "保留代码和路径原文。",
+      );
+      const job = enqueue(ctx.orm, AGENT_ID, "literal-memory", {
+        kind: "manual",
+        sessionId,
+        turnIds: [turnId],
+      });
+      ctx.gateway.replies = [reply];
+      await ctx.service.runJob(job.id);
+      const finished = jobById(ctx.orm, job.id);
+      expect(finished.status).toBe("succeeded");
+      if (!finished.resultId) throw new Error("published memory missing");
+      const stored = entries(ctx.orm, AGENT_ID, [finished.resultId])[0];
+      expect(stored?.body).toBe(body);
+      const read = memoryContent(ctx.orm, AGENT_ID, finished.resultId);
+      expect(read.content.body).toBe(body);
+      expect(read.content.sources).toHaveLength(1);
+      expect(read.content.sources[0]).toMatchObject({ turn_id: turnId, valid: true });
+      expect(JSON.parse(JSON.stringify(read)).content.body).toBe(body);
+      expect(ctx.gateway.calls).toHaveLength(1);
+    } finally {
+      await ctx.service.stop();
+      ctx.business.close();
+    }
+  });
+
+  it("keeps saved private prompts and an existing job snapshot byte-for-byte while executing it", async () => {
+    const ctx = setup();
+    try {
+      const privatePrompt = String.raw`私有规则：保留 C:\new\notes 和字面 \n。`;
+      const additional = "  私人补充，不覆盖。\n第二行。  ";
+      ctx.orm
+        .update(schema.agents)
+        .set({
+          memoryConsolidationPrompt: privatePrompt,
+          memoryConsolidationAdditionalInstructions: additional,
+        })
+        .where(eq(schema.agents.id, AGENT_ID))
+        .run();
+      ensureDefaults(ctx.orm, MODEL);
+      const privateAgent = ctx.orm
+        .select()
+        .from(schema.agents)
+        .where(eq(schema.agents.id, AGENT_ID))
+        .get();
+      expect(privateAgent?.memoryConsolidationPrompt).toBe(privatePrompt);
+      expect(privateAgent?.memoryConsolidationAdditionalInstructions).toBe(additional);
+      const sessionId = newSession(ctx.orm);
+      const turnId = completedTurn(ctx.orm, sessionId, "snapshot-source");
+      const args = { kind: "manual" as const, sessionId, turnIds: [turnId] };
+      const job = enqueue(ctx.orm, AGENT_ID, "snapshot-original", args);
+      const original = job.configSnapshot;
+      const snapshot = JSON.parse(original);
+      expect(snapshot.base_prompt).toBe(privatePrompt);
+      expect(snapshot.additional).toBe(additional);
+      ctx.orm
+        .update(schema.agents)
+        .set({
+          memoryConsolidationPrompt: DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
+          memoryConsolidationAdditionalInstructions: "下一任务的新补充",
+        })
+        .where(eq(schema.agents.id, AGENT_ID))
+        .run();
+      expect(enqueue(ctx.orm, AGENT_ID, "snapshot-original", args).configSnapshot).toBe(original);
+      ctx.gateway.replies = ['{"memory":null}'];
+      await ctx.service.runJob(job.id);
+      const finished = jobById(ctx.orm, job.id);
+      expect(finished.status).toBe("succeeded");
+      expect(finished.configSnapshot).toBe(original);
+      const sent = ctx.gateway.calls[0]?.messages[0]?.content;
+      expect(
+        sent?.startsWith(`仅整理用户明确勾选的对话轮次，未选择的内容不可推断。\n${privatePrompt}`),
+      ).toBe(true);
+      expect(sent).toContain(`\n补充整理要求：\n${additional.trim()}\n`);
+      expect(sent).toContain(
+        "保留来源原有相对时间措辞，未明确时不推定其指向的周、日期或周期关系，仅在来源支持时细化",
+      );
+      expect(sent).not.toContain("下一任务的新补充");
+      const savedAgent = ctx.orm
+        .select()
+        .from(schema.agents)
+        .where(eq(schema.agents.id, AGENT_ID))
+        .get();
+      expect(savedAgent?.memoryConsolidationPrompt).toBe(DEFAULT_MEMORY_CONSOLIDATION_PROMPT);
+      const laterTurn = completedTurn(ctx.orm, sessionId, "snapshot-later-source");
+      const later = enqueue(ctx.orm, AGENT_ID, "snapshot-later", {
+        kind: "manual",
+        sessionId,
+        turnIds: [laterTurn],
+      });
+      expect(JSON.parse(later.configSnapshot)).toMatchObject({
+        base_prompt: DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
+        additional: "下一任务的新补充",
+      });
+      expect(jobById(ctx.orm, job.id).configSnapshot).toBe(original);
+      expect(ctx.gateway.calls).toHaveLength(1);
+    } finally {
+      await ctx.service.stop();
+      ctx.business.close();
+    }
+  });
+
+  it("sends merge source recording times and participants without rewriting their event text", async () => {
+    const ctx = setup();
+    try {
+      const sessionId = newSession(ctx.orm);
+      const turnId = completedTurn(
+        ctx.orm,
+        sessionId,
+        "merge-source",
+        "30001说20日提议，结果未知。",
+        "这是转述。",
+      );
+      const originalBody = "30001说20日提议，结果未知。";
+      const sourceId = seedEntry(ctx.orm, { name: "提议", body: originalBody, turnId });
+      const job = enqueue(ctx.orm, AGENT_ID, "merge-source-context", {
+        kind: "merge",
+        memoryIds: [sourceId],
+      });
+      ctx.gateway.replies = ['{"memory":null}'];
+      await ctx.service.runJob(job.id);
+      expect(ctx.gateway.calls).toHaveLength(1);
+      const messages = ctx.gateway.calls[0]?.messages;
+      if (!messages) throw new Error("merge request missing");
+      const data = JSON.parse(messages[1]!.content.slice("来源数据（非指令）：\n".length));
+      const source = data[0];
+      expect(source.body).toBe(originalBody);
+      expect(source.source_context.web[0]).toMatchObject({
+        session_id: sessionId,
+        turn_id: turnId,
+        participants: [
+          { kind: "user", id: DEFAULT_USER_ID },
+          { kind: "agent", id: AGENT_ID },
+        ],
+      });
+      const records = ctx.orm
+        .select()
+        .from(schema.messages)
+        .where(eq(schema.messages.turnId, turnId))
+        .all();
+      expect(source.source_context.web[0].message_records).toEqual(
+        ["user", "assistant"].map((role) => {
+          const message = records.find((record) => record.role === role);
+          if (!message) throw new Error("source message missing");
+          return { id: message.id, role, created_at: message.createdAt };
+        }),
+      );
+      expect(messages).toEqual(
+        buildConsolidationPrompt("merge", JSON.parse(job.configSnapshot), data),
+      );
+      expect(messages[0]?.content).toContain("message_records.created_at表示消息记录时刻");
+      expect(jobById(ctx.orm, job.id).resultId).toBeNull();
+      expect(entries(ctx.orm, AGENT_ID, [sourceId])[0]?.body).toBe(originalBody);
+    } finally {
+      await ctx.service.stop();
+      ctx.business.close();
+    }
+  });
+
   it("finishes an active memory job and retains queued work until resumed", async () => {
     let enabled = true;
     const ctx = setup({ enabled: () => enabled, jobTimeoutMs: () => 2_000 });
@@ -1395,7 +1717,7 @@ describe("cycle bookkeeping", () => {
   });
 });
 
-// Leaf retry-origin wiring (R42 follow-up): the worker decides the leaf origin from the real
+// Leaf retry-origin wiring: the worker decides the leaf origin from the real
 // job snapshot, and every leaf carries an assertSources closure that re-verifies real state
 // before each additional physical model send.
 

@@ -1,5 +1,5 @@
 import { ImageIcon, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { SettingsGroup, SettingsRow } from "../../components/settings-group";
@@ -9,6 +9,8 @@ import { InputSuggestions } from "../../components/ui/input-suggestions";
 import { organizationDirty } from "../../features/knowledge/types";
 import { useQqInput } from "../../features/qq/use-qq-input";
 import { translateNotice } from "../../i18n";
+import { type ReadTask, startRead } from "../../services/read-task";
+import { useForegroundRead } from "../../services/use-foreground-read";
 import { useSuperstringStore } from "../../store";
 import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { QqJudgementModel } from "../environment/model-defaults";
@@ -36,6 +38,7 @@ const QQ_MEDIA_GLOBAL_ROLES = ["qq_sticker_annotate", "qq_media_describe"] as co
 
 function QqMultimodalSettings({ active = true }: { active?: boolean }) {
   const { t } = useTranslation();
+  const modelHintId = useId();
   const s = useSuperstringStore(
     useShallow((state) => ({
       allocationInvalidInputs: state.allocationInvalidInputs,
@@ -53,42 +56,89 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
     })),
   );
   const editor = s.organizationEditor;
+  const compare =
+    organizationDirty(editor, "qq-models") ||
+    organizationDirty(editor, "allocation", QQ_MEDIA_GLOBAL_ROLES);
   const [auxiliaryValidity, setAuxiliaryValidity] = useState({
     agentValid: true,
     globalValid: true,
   });
-  // QQ 页挂载时的 loadOrganization 由 QqConnectionTab 的 active gate 统一触发；本组件只读编辑器。
+  // QQ 页的 active gate 发起组织读取；容量选择会接管同一次在途读取，不能读取旧 API 的模型。
   const mediaRoles = QQ_MEDIA_GLOBAL_ROLES;
   const modelSuggestions = s.modelNames.map((name) => ({ value: name }));
   // 两个角色共用已存的图片理解模型：容量只读一次。晚到响应按 api/model/active 身份丢弃。
   const savedVisionModel = editor?.source.vision_model_name ?? null;
+  const organizationToken = editor?.token;
   const [visionCapacity, setVisionCapacity] = useState<{
     api: typeof s.apiClient;
     model: string;
+    token: object;
     capacity: number | null;
   } | null>(null);
-  useEffect(() => {
-    if (!active || !savedVisionModel) return;
+  const capacityTask = useRef<ReadTask | null>(null);
+  const capacityGeneration = useRef(0);
+  const cancelCapacity = useCallback(() => {
+    capacityGeneration.current++;
+    capacityTask.current?.cancel();
+    capacityTask.current = null;
+  }, []);
+  const readCapacity = useCallback(() => {
     const api = s.apiClient;
-    let current = true;
-    void api
-      .getModelCapacity(savedVisionModel)
-      .then((value) => {
-        if (current && useSuperstringStore.getState().apiClient === api)
-          setVisionCapacity({ api, model: savedVisionModel, capacity: value.context_length });
-      })
-      .catch(() => {
-        if (current && useSuperstringStore.getState().apiClient === api)
-          setVisionCapacity({ api, model: savedVisionModel, capacity: null });
-      });
-    return () => {
-      current = false;
+    if (!savedVisionModel || !organizationToken) return;
+    const generation = ++capacityGeneration.current;
+    const matches = () => {
+      const state = useSuperstringStore.getState();
+      const source = state.organizationEditor;
+      return (
+        capacityGeneration.current === generation &&
+        state.apiClient === api &&
+        !!source &&
+        source.token === organizationToken &&
+        source.source.vision_model_name === savedVisionModel
+      );
     };
-  }, [active, savedVisionModel, s.apiClient]);
+    void (async () => {
+      // Source ownership must settle before capacity is read, including an API
+      // replacement whose previous editor happened to use the same model name.
+      await s.loadOrganization();
+      if (!matches() || useSuperstringStore.getState().organizationError) return;
+      capacityTask.current = startRead((signal) => api.getModelCapacity(savedVisionModel, signal), {
+        success: (value) => {
+          if (matches())
+            setVisionCapacity({
+              api,
+              model: savedVisionModel,
+              token: organizationToken,
+              capacity: value.context_length,
+            });
+        },
+        failure: () => {
+          if (matches())
+            setVisionCapacity({
+              api,
+              model: savedVisionModel,
+              token: organizationToken,
+              capacity: null,
+            });
+        },
+        settled: () => {
+          if (matches()) capacityTask.current = null;
+        },
+      });
+    })();
+  }, [savedVisionModel, organizationToken, s.apiClient, s.loadOrganization]);
+  useForegroundRead(readCapacity, cancelCapacity, {
+    enabled: !!savedVisionModel && !!organizationToken,
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: cancelCapacity,
+  });
   const savedVisionCapacity =
     visionCapacity &&
     visionCapacity.api === s.apiClient &&
-    visionCapacity.model === savedVisionModel
+    visionCapacity.model === savedVisionModel &&
+    visionCapacity.token === organizationToken
       ? visionCapacity.capacity
       : null;
   // 两个 QQ 角色只剩非法原文、草稿本身不脏时也必须能放弃；knowledge_organize 的 raw 不在此清理。
@@ -105,6 +155,12 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
       >
         {editor && (
           <>
+            <p id={modelHintId} className="settings-content-padding text-xs text-muted-foreground">
+              {t("models.mediaUnsetHint")}
+            </p>
+            {compare && (
+              <h3 className="px-4 pt-3 text-sm font-medium">{t("materials.localDraft")}</h3>
+            )}
             <SettingsRow
               label={
                 <label
@@ -120,7 +176,8 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
                 id="qq-default-vision-model"
                 suggestions={modelSuggestions}
                 value={editor.visionModelName ?? ""}
-                placeholder={t("models.followDefault")}
+                placeholder={t("library.unset")}
+                aria-describedby={modelHintId}
                 disabled={s.settingsSaving || s.organizationLoading}
                 aria-label={t("models.purpose.vision")}
                 onValueChange={(value) =>
@@ -144,7 +201,8 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
                 id="qq-default-transcription-model"
                 suggestions={modelSuggestions}
                 value={editor.transcriptionModelName ?? ""}
-                placeholder={t("models.followDefault")}
+                placeholder={t("library.unset")}
+                aria-describedby={modelHintId}
                 disabled={s.settingsSaving || s.organizationLoading}
                 aria-label={t("models.purpose.transcription")}
                 onValueChange={(value) =>
@@ -153,6 +211,90 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
                 className="w-full sm:w-64 sm:min-w-56"
               />
             </SettingsRow>
+            {compare && (
+              <section
+                aria-label={t("materials.savedBaseline")}
+                className="space-y-2 border-t bg-muted/20 px-4 py-3 text-sm"
+              >
+                <h3 className="font-medium">
+                  {t("materials.savedBaseline")} ·{" "}
+                  {t("common.revision", { "0": editor.source.revision })}
+                </h3>
+                <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-[auto_1fr]">
+                  {editor.visionModelName !== editor.source.vision_model_name && (
+                    <>
+                      <dt>{t("models.purpose.vision")}</dt>
+                      <dd>{editor.source.vision_model_name ?? t("library.not.set")}</dd>
+                    </>
+                  )}
+                  {editor.transcriptionModelName !== editor.source.transcription_model_name && (
+                    <>
+                      <dt>{t("models.purpose.transcription")}</dt>
+                      <dd>{editor.source.transcription_model_name ?? t("library.not.set")}</dd>
+                    </>
+                  )}
+                </dl>
+                {mediaRoles.map((role) => {
+                  const profile = editor.source.auxiliary_allocation?.[role];
+                  const draft = editor.auxiliaryAllocation?.[role];
+                  if (!organizationDirty(editor, "allocation", [role])) return null;
+                  const limit = (value: number | null | undefined) =>
+                    value === undefined
+                      ? t("schemes.allocation.aux.inherit")
+                      : value === null
+                        ? t("materials.noHardLimit")
+                        : String(value);
+                  return (
+                    <div key={role} className="space-y-1">
+                      <h4 className="font-medium">
+                        {t(`schemes.allocation.aux.role.${role}.name`)}
+                      </h4>
+                      {profile ? (
+                        <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-[auto_1fr]">
+                          {draft?.mode !== profile.mode && (
+                            <>
+                              <dt>{t("schemes.allocation.aux.mode")}</dt>
+                              <dd>
+                                {t(
+                                  profile.mode === "auto"
+                                    ? "schemes.allocation.aux.modeAuto"
+                                    : "schemes.allocation.aux.modeFixed",
+                                )}
+                              </dd>
+                            </>
+                          )}
+                          {draft?.input_limit !== profile.input_limit && (
+                            <>
+                              <dt>{t("schemes.allocation.aux.inputLimit")}</dt>
+                              <dd>{limit(profile.input_limit)}</dd>
+                            </>
+                          )}
+                          {draft?.output_reserved !== profile.output_reserved && (
+                            <>
+                              <dt>{t("schemes.allocation.aux.outputReserved")}</dt>
+                              <dd>{limit(profile.output_reserved)}</dd>
+                            </>
+                          )}
+                        </dl>
+                      ) : (
+                        <p>{t("schemes.allocation.aux.inherit")}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </section>
+            )}
+            <div className="px-4 py-2">
+              <Button
+                variant="outline"
+                disabled={s.settingsSaving || s.organizationLoading}
+                tooltip={t("hints.library.knowledge.refreshSettings")}
+                onClick={() => void s.loadOrganization(true)}
+              >
+                <RefreshCw />
+                {t("materials.refreshOrganization")}
+              </Button>
+            </div>
             <p className="border-t border-border/40 bg-muted/10 px-4 py-2.5 text-xs text-muted-foreground">
               {t("qq.models.saveScope")}
             </p>
@@ -176,7 +318,7 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
           </>
         )}
         {!editor && (
-          <div className="p-4 sm:p-5">
+          <div className="settings-content-padding">
             <Button
               tooltip={<Trans i18nKey="hints.complete.defaultsRetry" />}
               variant="outline"
@@ -260,7 +402,7 @@ function QqMultimodalSettings({ active = true }: { active?: boolean }) {
             saving: t("schemes.allocation.aux.saving"),
             customized: t("schemes.allocation.aux.customized"),
             inherit: t("schemes.allocation.aux.inherit"),
-            inheritPlaceholder: t("schemes.allocation.aux.inheritPlaceholder"),
+            inheritPlaceholder: t("schemes.allocation.aux.shortPlaceholder"),
             invalidPositiveInt: t("schemes.allocation.aux.invalidPositiveInt"),
             unit: t("schemes.allocation.aux.unit"),
             hardContract: t("schemes.allocation.aux.hardContract"),
@@ -301,9 +443,13 @@ export function QqConnectionTab({
       qqManagedLifecycleId: state.qqManagedLifecycleId,
       loadQqAccess: state.loadQqAccess,
       loadOrganization: state.loadOrganization,
+      acquireOrganizationRead: state.acquireOrganizationRead,
+      releaseOrganizationRead: state.releaseOrganizationRead,
       loadQqManaged: state.loadQqManaged,
       loadQqManagedResources: state.loadQqManagedResources,
       loadQqManagedAccounts: state.loadQqManagedAccounts,
+      acquireQqManagedAccounts: state.acquireQqManagedAccounts,
+      releaseQqManagedAccounts: state.releaseQqManagedAccounts,
       patchQqManagedDraft: state.patchQqManagedDraft,
       patchQqManagedResourceDraft: state.patchQqManagedResourceDraft,
       saveQqManagedResources: state.saveQqManagedResources,
@@ -319,9 +465,13 @@ export function QqConnectionTab({
       qqManagedSaving: state.qqManagedSaving,
       qqManagedStatus: state.qqManagedStatus,
       qqManagedResources: state.qqManagedResources,
+      qqManagedResourceError: state.qqManagedResourceError,
       qqManagedResourcesLoading: state.qqManagedResourcesLoading,
       qqManagedAccounts: state.qqManagedAccounts,
       qqManagedAccountsLoading: state.qqManagedAccountsLoading,
+      qqManagedAccountsLoaded: state.qqManagedAccountsLoaded,
+      qqManagedAccountsAvailability: state.qqManagedAccountsAvailability,
+      qqManagedAccountsError: state.qqManagedAccountsError,
       qqManagedEventsPage: state.qqManagedEventsPage,
       qqManagedEventsLoading: state.qqManagedEventsLoading,
       qqManagedEventsError: state.qqManagedEventsError,
@@ -342,10 +492,8 @@ export function QqConnectionTab({
   );
   const {
     loadQqAccess,
-    loadOrganization,
     loadQqManaged,
     loadQqManagedResources,
-    loadQqManagedAccounts,
     setQqManagedEventsActive,
     clearQqManagedQr,
   } = s;
@@ -357,13 +505,12 @@ export function QqConnectionTab({
     try {
       if (task === "events") await s.loadQqManagedEvents();
       else if (task === "runtime") {
-        await Promise.all([s.loadQqAccess(), s.loadOrganization()]);
+        await Promise.all([s.loadQqAccess(), s.loadOrganization(true)]);
       } else {
         await Promise.all([
           s.refreshQqConnection(),
           s.refreshQqManaged(),
           s.refreshQqManagedResources(),
-          s.loadQqManagedAccounts(),
         ]);
       }
     } finally {
@@ -381,26 +528,49 @@ export function QqConnectionTab({
     return () => document.removeEventListener("visibilitychange", revalidateVisible);
   }, [active, s.apiClient, s.qqManagedLifecycleId, loadQqAccess]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: The task resources belong to the current API and managed lifecycle, not the stable action functions.
-  useEffect(() => {
-    if (!active) return;
-    if (task === "connection") {
-      void loadQqManaged();
-      void loadQqManagedResources();
-      void loadQqManagedAccounts();
-    } else if (task === "runtime") {
-      void loadOrganization();
-    }
-  }, [
-    active,
-    task,
-    s.apiClient,
-    s.qqManagedLifecycleId,
-    loadOrganization,
-    loadQqManaged,
-    loadQqManagedResources,
-    loadQqManagedAccounts,
-  ]);
+  const accountsOwner = useMemo(
+    () => ({ api: s.apiClient, lifecycleId: s.qqManagedLifecycleId }),
+    [s.apiClient, s.qqManagedLifecycleId],
+  );
+  const releaseAccounts = useCallback(
+    () => s.releaseQqManagedAccounts(accountsOwner),
+    [s.releaseQqManagedAccounts, accountsOwner],
+  );
+  const readAccounts = useCallback(() => {
+    // Revalidate before registering: retained snapshots cannot authorize a new entry.
+    void loadQqManaged();
+    void loadQqManagedResources();
+    void s.acquireQqManagedAccounts(accountsOwner);
+  }, [accountsOwner, s.acquireQqManagedAccounts, loadQqManaged, loadQqManagedResources]);
+  useForegroundRead(readAccounts, releaseAccounts, {
+    enabled: task === "connection",
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: releaseAccounts,
+  });
+
+  const organizationOwner = useMemo(() => ({ api: s.apiClient }), [s.apiClient]);
+  const releaseRuntimeOrganization = useCallback(
+    () => s.releaseOrganizationRead(organizationOwner),
+    [s.releaseOrganizationRead, organizationOwner],
+  );
+  const readRuntimeOrganization = useCallback(() => {
+    const current = useSuperstringStore.getState();
+    if (
+      current.apiClient !== s.apiClient ||
+      current.qqManagedLifecycleId !== s.qqManagedLifecycleId
+    )
+      return;
+    void s.acquireOrganizationRead(organizationOwner);
+  }, [s.apiClient, s.qqManagedLifecycleId, s.acquireOrganizationRead, organizationOwner]);
+  useForegroundRead(readRuntimeOrganization, releaseRuntimeOrganization, {
+    enabled: task === "runtime",
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: releaseRuntimeOrganization,
+  });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: Rebind the event owner when the API or managed lifecycle changes without switching tasks.
   useEffect(() => {
@@ -515,16 +685,21 @@ export function QqConnectionTab({
                 <QqManagedComponentCard
                   status={cardStatus}
                   resources={s.qqManagedResources}
+                  resourceError={s.qqManagedResourceError}
+                  onRetryResources={() => void s.loadQqManagedResources()}
                   resourceDraftRoot={
                     s.resourceDraft ? s.resourceDraft.root : (s.qqManagedResources?.root ?? "")
                   }
                   accounts={s.qqManagedAccounts}
+                  accountsAvailability={s.qqManagedAccountsAvailability}
+                  accountsLoaded={s.qqManagedAccountsLoaded}
+                  accountsLoading={s.qqManagedAccountsLoading}
+                  accountsError={s.qqManagedAccountsError}
+                  onRetryAccounts={() => void s.loadQqManagedAccounts()}
                   selectedQuickLoginAccount={
                     connectionDraft ? connectionDraft.accountId : (s.qqSettings?.account_id ?? "")
                   }
-                  loading={
-                    s.qqManagedLoading || s.qqManagedResourcesLoading || s.qqManagedAccountsLoading
-                  }
+                  loading={s.qqManagedLoading || s.qqManagedResourcesLoading}
                   saving={s.qqManagedSaving}
                   onToggleManaged={(enabled) => s.patchQqManagedDraft(enabled)}
                   onRefreshQr={() =>

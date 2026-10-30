@@ -252,7 +252,7 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     await act(async () => {});
     act(() =>
       store.getState().patchPageAgent("memory-tools", {
-        memory_retrieval_prompt: "retain this reading draft",
+        p5_config: { ...agent.p5_config, memory_read: { enabled: false, max_bytes: 1337 } },
       }),
     );
     for (const section of [/资料读取/, /人设表达/, /模型配置/, /工具权限/]) {
@@ -272,9 +272,7 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     }
     fireEvent.click(screen.getByRole("button", { name: "所有 Agent" }));
     expect(screen.getByRole("heading", { name: "你的 Agent" })).toBeTruthy();
-    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe(
-      "retain this reading draft",
-    );
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read?.max_bytes).toBe(1337);
     expect(updateAgent).not.toHaveBeenCalled();
   });
 
@@ -289,16 +287,16 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     render(<AssistantWorkspace active />);
     await act(async () => {});
     act(() =>
-      store
-        .getState()
-        .patchPageAgent("memory-tools", { memory_retrieval_prompt: "unsaved reading rule" }),
+      store.getState().patchPageAgent("memory-tools", {
+        p5_config: { ...agent.p5_config, memory_read: { enabled: false, max_bytes: 1338 } },
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "所有 Agent" }));
     expect(screen.getByRole("heading", { name: "你的 Agent" })).toBeTruthy();
-    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("unsaved reading rule");
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read?.max_bytes).toBe(1338);
     expect(updateAgent).not.toHaveBeenCalled();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "打开工作室" })));
-    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("unsaved reading rule");
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read?.max_bytes).toBe(1338);
     expect(screen.getByRole("button", { name: "所有 Agent" })).toBeTruthy();
     expect(updateAgent).not.toHaveBeenCalled();
   });
@@ -351,7 +349,7 @@ describe("assistant workspace canonical host & resource rules regressions", () =
 
     // Patch memory-tools whitelist field
     store.getState().patchPageAgent("memory-tools", {
-      memory_retrieval_prompt: "Focus on task facts and user decisions",
+      p5_config: { ...agent.p5_config, memory_read: { enabled: true, max_bytes: 6144 } },
     });
 
     // Also draft a context field that should NOT be saved with memory-tools
@@ -366,7 +364,8 @@ describe("assistant workspace canonical host & resource rules regressions", () =
 
     expect(updateAgent).toHaveBeenCalledTimes(1);
     const sent = updateAgent.mock.calls[0][1] as Record<string, unknown>;
-    expect(sent.memory_retrieval_prompt).toBe("Focus on task facts and user decisions");
+    expect(sent).not.toHaveProperty("memory_retrieval_prompt");
+    expect((sent.p5_config as typeof agent.p5_config).memory_read?.max_bytes).toBe(6144);
     // p5_config 提交的是基线上下文值，context_window 保持已存基线值（未连坐提交草稿的 65536）
     const p5Sent = sent.p5_config as Record<string, unknown>;
     expect(p5Sent).toBeDefined();
@@ -453,20 +452,14 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     });
     render(<AssistantWorkspace active />);
     await act(async () => {});
-    const candidateInput = screen.getByLabelText("每次查询候选条数上限");
-    const originalCandidate = agent.p5_config.retrieval_presets.standard.candidate_limit;
-    fireEvent.change(candidateInput, { target: { value: String(originalCandidate + 1) } });
-    const bytes = screen.getByTestId("reading-preset-max-tokens-standard");
+    const bytes = screen.getByLabelText("记忆工具读取额度");
     const originalBytes = agent.p5_config.retrieval_presets.standard.max_tokens;
     fireEvent.change(bytes, { target: { value: String(originalBytes + 512) } });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "保存 Agent" }));
-    });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "保存 Agent" })));
     expect(updateAgent).toHaveBeenCalledTimes(1);
-    const rulesPayload = updateAgent.mock.calls[0][1];
-    const rulesP5 = rulesPayload.p5_config as typeof agent.p5_config;
-    expect(rulesP5.retrieval_presets.standard.candidate_limit).toBe(originalCandidate + 1);
-    expect(rulesP5.retrieval_presets.standard.max_tokens).toBe(originalBytes + 512);
+    const rulesP5 = updateAgent.mock.calls[0][1].p5_config as typeof agent.p5_config;
+    expect(rulesP5.memory_read?.max_bytes).toBe(originalBytes + 512);
+    expect(rulesP5.retrieval_presets).toEqual(agent.p5_config.retrieval_presets);
   });
 
   it("edits the rendered knowledge budget and commits all four fields without saving other drafts", async () => {
@@ -533,7 +526,7 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     expect(screen.getByRole("tab", { name: labels[3] }).getAttribute("data-state")).toBe("active");
     act(() =>
       store.getState().patchPageAgent("memory-tools", {
-        memory_retrieval_prompt: "reading draft stays",
+        p5_config: { ...agent.p5_config, memory_read: { enabled: false, max_bytes: 333 } },
       }),
     );
     for (const label of [labels[0], labels[1], labels[3]]) {
@@ -545,7 +538,7 @@ describe("assistant workspace canonical host & resource rules regressions", () =
       });
       expect(screen.getByRole("tab", { name: label }).getAttribute("data-state")).toBe("active");
     }
-    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("reading draft stays");
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read?.max_bytes).toBe(333);
     expect(updateAgent).not.toHaveBeenCalled();
   });
   it("hydrates a direct reading entry once and allows an explicit retry after loading fails", async () => {
@@ -570,7 +563,7 @@ describe("assistant workspace canonical host & resource rules regressions", () =
     });
     expect(getAgent).toHaveBeenCalledTimes(2);
     expect(store.getState().pageEditor?.agent.id).toBe(agent.id);
-    expect(screen.getByTestId("reading-section-memory")).toBeTruthy();
+    expect(screen.getByTestId("agent-materials")).toBeTruthy();
     expect(client.listModels).not.toHaveBeenCalled();
   });
 });
@@ -589,9 +582,9 @@ it("keeps one Agent header and tab strip while reading actions retain their own 
   const header = heading.closest("header");
   const tabs = screen.getByRole("tablist");
   act(() =>
-    store
-      .getState()
-      .patchPageAgent("memory-tools", { memory_retrieval_prompt: "retain reading draft" }),
+    store.getState().patchPageAgent("memory-tools", {
+      p5_config: { ...agent.p5_config, memory_read: { enabled: false, max_bytes: 444 } },
+    }),
   );
   for (const name of ["人设表达", "模型配置", "工具权限", "资料读取"]) {
     await act(async () =>
@@ -601,7 +594,7 @@ it("keeps one Agent header and tab strip while reading actions retain their own 
     expect(heading.closest("header")).toBe(header);
     expect(screen.getByRole("tablist")).toBe(tabs);
     expect(screen.queryByTestId("reading-task-header")).toBeNull();
-    expect(screen.queryByRole("button", { name: "保存 Agent" }) !== null).toBe(name !== "工具权限");
+    expect(screen.queryByRole("button", { name: "保存 Agent" }) !== null).toBe(true);
   }
   if (!(header instanceof HTMLElement)) throw new Error("missing Agent page header");
   expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
@@ -622,7 +615,7 @@ it("keeps one Agent header and tab strip while reading actions retain their own 
   expect(back.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(screen.queryByRole("button", { name: "保存记忆规则" })).toBeNull();
   expect(screen.getByRole("button", { name: "保存 Agent" })).toBeTruthy();
-  expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("retain reading draft");
+  expect(store.getState().pageEditor?.draft.p5_config.memory_read?.max_bytes).toBe(444);
   expect(updateAgent).not.toHaveBeenCalled();
 });
 // 目录网格的 render-ready 生命周期：受控双帧 + 观察器/字体事件回放；主题与模式不参与。

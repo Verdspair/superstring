@@ -1,9 +1,10 @@
 import { Camera } from "lucide-react";
-import { useState } from "react";
+import { type RefObject, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import type { ConversationSummary } from "../../../shared/contracts/conversation";
 import { Button } from "../../components/ui/button";
 import { useConversationAvatar } from "../../features/conversations/use-conversation-avatar";
+import { useSuperstringStore } from "../../store";
 import { ConversationAvatar } from "./avatar";
 import { AvatarEditor } from "./avatar-editor";
 
@@ -11,15 +12,20 @@ export function ConversationAvatarDialog({
   conversation,
   open,
   onOpenChange,
+  returnFocusRef,
 }: {
   conversation: ConversationSummary;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
+  const api = useSuperstringStore((state) => state.apiClient);
   const { value, save } = useConversationAvatar(conversation);
   return (
     <AvatarEditor
       key={conversation.id}
+      operationOwner={api}
+      returnFocusRef={returnFocusRef}
       conversationId={conversation.id}
       title={conversation.title}
       topology={conversation.topology}

@@ -1,8 +1,8 @@
 // 助手首屏预热：纯人设 + 选中记忆 100 条摘要的预热语义与消费接线（真实 store + 替身 API）。
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { EntriesList, PersonaResponse } from "../../src/shared/contracts";
+import type { MemoryManagementList, PersonaResponse } from "../../src/shared/contracts";
 import { AgentResponseSchema, PersonaResponseSchema } from "../../src/shared/contracts/agent";
-import { EntriesListSchema, PolicyViewSchema } from "../../src/shared/contracts/memory";
+import { MemoryManagementListSchema, PolicyViewSchema } from "../../src/shared/contracts/memory";
 import { api } from "../../src/web/api";
 import {
   clearAgentPreloadCache,
@@ -33,7 +33,7 @@ const personaFixture: PersonaResponse = PersonaResponseSchema.parse({
   updated_at: NOW,
 });
 
-const entriesFixture: EntriesList = EntriesListSchema.parse({
+const entriesFixture: MemoryManagementList = MemoryManagementListSchema.parse({
   total: 2,
   items: [
     {
@@ -46,6 +46,15 @@ const entriesFixture: EntriesList = EntriesListSchema.parse({
       created_at: NOW,
       scope: "web",
       scope_key: AGENT,
+      owner_agent_id: AGENT,
+      visibility: "session_private",
+      visibility_revision: 1,
+      recipient_agent_ids: [],
+      origins: [],
+      origin_complete: false,
+      source_validity: "unknown",
+      runtime_eligibility: "unknown",
+      raw_preview: "unknown",
     },
     {
       id: "m-2",
@@ -57,6 +66,15 @@ const entriesFixture: EntriesList = EntriesListSchema.parse({
       created_at: NOW,
       scope: "web",
       scope_key: AGENT,
+      owner_agent_id: AGENT,
+      visibility: "session_private",
+      visibility_revision: 1,
+      recipient_agent_ids: [],
+      origins: [],
+      origin_complete: false,
+      source_validity: "unknown",
+      runtime_eligibility: "unknown",
+      raw_preview: "unknown",
     },
   ],
 });
@@ -124,7 +142,7 @@ describe("agent preload target & eligibility", () => {
 
 describe("warmAgentResources", () => {
   it("makes a ready persona available without waiting for optional memory preload", async () => {
-    const memory = Promise.withResolvers<EntriesList>();
+    const memory = Promise.withResolvers<MemoryManagementList>();
     const client = agentClient({ listMemoryEntries: vi.fn(() => memory.promise) });
     const warming = warmAgentResources(client, AGENT);
     let ready = false;

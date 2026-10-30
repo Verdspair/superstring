@@ -33,6 +33,7 @@ import {
   DEFAULT_MEMORY_RETRIEVAL_PROMPT,
   newAgentDefaults,
 } from "../../shared/contracts/agent";
+import { publishConversationChange } from "../conversation/conversation-changes";
 import {
   AppError,
   DatabaseError,
@@ -49,6 +50,11 @@ import {
 } from "../errors";
 import type { AgentRow } from "../services/runtime-config";
 import { requireChat, runtimeFromAgent } from "../services/runtime-config";
+import {
+  closeConversationSource,
+  ensureWebConversationIdentity,
+  touchWebConversation,
+} from "./conversation-identity-repository";
 import { KnowledgeReadRepository } from "./knowledge-read-repository";
 import { readOrganizationSettings } from "./organization-repository";
 import * as schema from "./schema";
@@ -289,6 +295,7 @@ export function createSession(
       ) {
         throw new IdempotencyConflictError();
       }
+      ensureWebConversationIdentity(db, existing.id, DEFAULT_USER_ID);
       return existing;
     }
 
@@ -357,6 +364,7 @@ export function createSession(
       if (raced.title !== title || raced.agentId !== agentRow.id || raced.mode !== mode) {
         throw new IdempotencyConflictError();
       }
+      ensureWebConversationIdentity(db, raced.id, DEFAULT_USER_ID);
       return raced;
     }
 
@@ -371,6 +379,7 @@ export function createSession(
       )
       .get();
     if (!created) throw new Error("session insert could not be read back");
+    ensureWebConversationIdentity(db, created.id, DEFAULT_USER_ID);
     return created;
   });
 }
@@ -404,6 +413,7 @@ export function deleteSession(orm: Orm, sessionId: string): SessionRow {
       .map((r) => r.id);
     invalidateTurnsForMemory(orm, item.agentId, turnIds);
     invalidateTurnsForSummaries(orm, turnIds);
+    closeConversationSource(db, "web", sessionId, nowIso());
     orm.delete(schema.sessions).where(eq(schema.sessions.id, sessionId)).run();
     return item;
   });
@@ -418,6 +428,8 @@ export function renameSession(orm: Orm, sessionId: string, title: string): Sessi
       .set({ title, updatedAt: nowIso() })
       .where(eq(schema.sessions.id, sessionId))
       .run();
+    const conversation = ensureWebConversationIdentity(db, sessionId, item.userId);
+    if (conversation) publishConversationChange(db, conversation.id);
     return { ...item, title };
   });
 }
@@ -963,6 +975,7 @@ export function prepareTurn(
           .set({ nextSequenceNo: nextSequence + 1, updatedAt: now })
           .where(eq(schema.sessions.id, sessionId))
           .run();
+        touchWebConversation(db, sessionId, now);
         orm
           .insert(schema.messages)
           .values({
@@ -1015,6 +1028,7 @@ export function prepareTurn(
         .set({ updatedAt: now })
         .where(eq(schema.sessions.id, sessionId))
         .run();
+      touchWebConversation(db, sessionId, now);
 
       const refreshed = orm
         .select({ id: schema.messages.id })
@@ -1037,6 +1051,7 @@ export function prepareTurn(
       .set({ nextSequenceNo: nextSequence + 2, updatedAt: now })
       .where(eq(schema.sessions.id, sessionId))
       .run();
+    touchWebConversation(db, sessionId, now);
 
     const turnId = newId();
     orm
@@ -1246,6 +1261,7 @@ function saveAssistantMessage(
       .set({ updatedAt: now })
       .where(eq(schema.sessions.id, sessionId))
       .run();
+    touchWebConversation(db, sessionId, now);
 
     const saved = orm.select().from(schema.messages).where(eq(schema.messages.id, item.id)).get();
     if (!saved) throw new Error("assistant message could not be read back");

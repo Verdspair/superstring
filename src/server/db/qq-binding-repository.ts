@@ -9,8 +9,13 @@
 // Agent 保存；改绑恢复新 Agent 已存的值（无记录＝全部跟随），普通保存只在 agent/scheme/开关真的
 // 移动时才碰新表。
 
+import type { Database } from "bun:sqlite";
 import { and, eq } from "drizzle-orm";
-import type { QqBindingResponse, QqBindingTriggers } from "../../shared/contracts/qq";
+import type {
+  QqBindingResponse,
+  QqBindingSchemeChangeBaseline,
+  QqBindingTriggers,
+} from "../../shared/contracts/qq";
 import {
   isBothTrueInteractionPair,
   isEmptyQqGroupOverrides,
@@ -21,9 +26,11 @@ import {
   type QqGroupSchemeOverrides,
   QqGroupSchemeOverridesSchema,
 } from "../../shared/contracts/qq-group-config";
+import { publishConversationChange } from "../conversation/conversation-changes";
 import { fail } from "../errors";
 import type { QqBinding, QqConversationIdentity } from "../services/qq-binding-contract";
 import { parseQqBinding, qqConversationScope } from "../services/qq-binding-contract";
+import { ConversationEventRepository } from "./conversation-event-repository";
 import { stableStringify } from "./json-text";
 import { pendingObservationCount } from "./qq-observation-repository";
 import { readQqScheme, schemeStickerCollectionIds, schemeTriggers } from "./qq-scheme-repository";
@@ -31,6 +38,11 @@ import { newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
 export type QqBindingRow = typeof schema.qqBindings.$inferSelect;
+
+// Mutation entrypoints retain the root ORM; native SQLite transactions supply nested savepoints.
+function bindingDb(orm: Orm): Database {
+  return (orm as unknown as { $client: Database }).$client;
+}
 
 /**
  * Stored integers become the contract's booleans, and `conversation_kind` becomes the
@@ -195,10 +207,11 @@ export interface SaveQqBindingArgs {
   /** The revision the caller read; a mismatch is a conflict, not an overwrite. */
   expectedRevision: number;
   /**
-   * 群聊换基础方案时的显式决定：`keep` 保留本群方案差异，`reset` 清空差异（能力停用不重置）。
+   * 群聊或私聊换基础方案时的显式决定：`keep` 保留本会话方案差异，`reset` 清空差异（能力停用不重置）。
    * 同一 Agent 带着差异换方案而不给决定时拒绝保存；换 Agent 时按新 Agent 已保存的差异恢复。
    */
   schemeChange?: "keep" | "reset";
+  schemeChangeBaseline?: QqBindingSchemeChangeBaseline;
 }
 
 /**
@@ -209,57 +222,56 @@ export interface SaveQqBindingArgs {
  * "you typed something invalid".
  */
 export function insertQqBinding(orm: Orm, binding: QqBinding): QqBinding {
-  const existing = readBindingByConversation(orm, {
-    accountId: binding.accountId,
-    kind: binding.kind,
-    peerId: binding.peerId,
-  });
-  if (existing) fail("MEMORY_STATE_CONFLICT", "该会话已有绑定，请改为修改这条绑定");
-  const writeRow = (tx: Orm): QqBinding => {
-    const row = tx
-      .insert(schema.qqBindings)
-      .values({
-        id: binding.id,
+  const db = bindingDb(orm);
+  return db
+    .transaction(() => {
+      const existing = readBindingByConversation(orm, {
         accountId: binding.accountId,
-        conversationKind: binding.kind,
+        kind: binding.kind,
         peerId: binding.peerId,
-        agentId: binding.agentId,
-        schemeId: binding.schemeId,
-        paused: binding.paused ? 1 : 0,
-        ...triggerColumns(binding.triggers),
-        ...attentionColumns(binding.attention),
-        ...taskLimitColumns(binding.taskLimits),
-        ...antiSpamColumn(binding.inputAntiSpam),
-        shareWebMemory: binding.shareWebMemory ? 1 : 0,
-        memoryBatchSize: binding.memoryBatchSize,
-        ownerIdentityRevision: binding.ownerIdentityRevision,
-        revision: binding.revision,
-        authorityRevision: binding.authorityRevision,
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
-      })
-      .returning()
-      .get();
-    if (!row) fail("DATABASE_UNAVAILABLE", "数据服务暂不可用，请检查数据库", 503);
-    return toContractQqBinding(row);
-  };
-  // A group binding born with explicit switches starts with a record holding them, so the mirror
-  // and the record agree from the first write on — otherwise the first rebinding would lose them.
-  if (binding.kind !== "group" || allNullTriggers(binding.triggers)) return writeRow(orm);
-  return orm.transaction(
-    (tx) => {
-      const created = writeRow(tx);
-      writeQqGroupAgentConfigRow(tx, {
-        bindingId: created.id,
-        agentId: created.agentId,
-        overrides: overridesWithTriggers({}, created.triggers),
-        disabledCapabilities: [],
-        expectedRevision: 0,
       });
+      if (existing) fail("MEMORY_STATE_CONFLICT", "该会话已有绑定，请改为修改这条绑定");
+      const row = orm
+        .insert(schema.qqBindings)
+        .values({
+          id: binding.id,
+          accountId: binding.accountId,
+          conversationKind: binding.kind,
+          peerId: binding.peerId,
+          agentId: binding.agentId,
+          schemeId: binding.schemeId,
+          paused: binding.paused ? 1 : 0,
+          ...triggerColumns(binding.triggers),
+          ...attentionColumns(binding.attention),
+          ...taskLimitColumns(binding.taskLimits),
+          ...antiSpamColumn(binding.inputAntiSpam),
+          shareWebMemory: binding.shareWebMemory ? 1 : 0,
+          memoryBatchSize: binding.memoryBatchSize,
+          ownerIdentityRevision: binding.ownerIdentityRevision,
+          revision: binding.revision,
+          authorityRevision: binding.authorityRevision,
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        })
+        .returning()
+        .get();
+      if (!row) fail("DATABASE_UNAVAILABLE", "数据服务暂不可用，请检查数据库", 503);
+      new ConversationEventRepository(db).ensureOneBotActivation(row.id);
+      const created = toContractQqBinding(row);
+      // A group binding born with explicit switches starts with a record holding them, so the mirror
+      // and the record agree from the first write on — otherwise the first rebinding would lose them.
+      if (binding.kind === "group" && !allNullTriggers(binding.triggers)) {
+        writeQqGroupAgentConfigRow(orm, {
+          bindingId: created.id,
+          agentId: created.agentId,
+          overrides: overridesWithTriggers({}, created.triggers),
+          disabledCapabilities: [],
+          expectedRevision: 0,
+        });
+      }
       return created;
-    },
-    { behavior: "immediate" },
-  );
+    })
+    .immediate();
 }
 
 /**
@@ -267,32 +279,55 @@ export function insertQqBinding(orm: Orm, binding: QqBinding): QqBinding {
  * binding also applies its cross-table effects in one IMMEDIATE transaction.
  */
 export function saveQqBinding(orm: Orm, args: SaveQqBindingArgs): QqBinding {
-  const before = readQqBinding(orm, args.binding.id);
-  if (before === null) fail("MEMORY_NOT_FOUND", "QQ绑定不存在", 404);
-  assertBindingInteractionPair(orm, before, args.binding);
-  if (!needsGroupEffects(orm, before, args.binding)) return saveQqBindingRow(orm, args);
-  return orm.transaction(
-    (tx) => {
-      const current = readQqBinding(tx, args.binding.id);
+  const db = bindingDb(orm);
+  return db
+    .transaction(() => {
+      const current = readQqBinding(orm, args.binding.id);
       if (current === null) fail("MEMORY_NOT_FOUND", "QQ绑定不存在", 404);
-      if (current.revision !== args.expectedRevision) {
+      if (current.revision !== args.expectedRevision)
         fail("MEMORY_STATE_CONFLICT", "QQ绑定已变化，请重新加载后保存");
+      // Compare the preview inside the same transaction as the binding/config writes.
+      // Prompt and sticker edits can advance only config.revision, not binding.revision.
+      if (args.schemeChange !== undefined && args.schemeChangeBaseline === undefined) {
+        fail("MEMORY_STATE_CONFLICT", "换方案需要重新预览配置后确认");
       }
-      return writeQqBindingRow(tx, applyGroupEffects(tx, current, args), args.expectedRevision);
-    },
-    { behavior: "immediate" },
-  );
+      if (args.schemeChangeBaseline !== undefined) {
+        const config = readQqGroupConfigRow(orm, current.id, current.agentId);
+        const scheme = readQqScheme(orm, args.binding.schemeId);
+        if ((config?.revision ?? 0) !== args.schemeChangeBaseline.config_revision) {
+          fail("MEMORY_STATE_CONFLICT", "本会话配置已变化，请重新预览后保存");
+        }
+        if (scheme === null || scheme.revision !== args.schemeChangeBaseline.scheme_revision) {
+          fail("MEMORY_STATE_CONFLICT", "目标方案已变化，请重新预览后保存");
+        }
+      }
+      const binding =
+        needsGroupEffects(orm, current, args.binding) || args.schemeChange !== undefined
+          ? applyGroupEffects(orm, current, args)
+          : args.binding;
+      assertBindingInteractionPair(
+        orm,
+        current,
+        args.schemeChange === "reset" ? binding : args.binding,
+      );
+      return writeQqBindingRow(orm, db, binding, args.expectedRevision);
+    })
+    .immediate();
 }
 
-/** CAS + row write only (no cross-table effects); the group-config save composes its own record writes in the same transaction. */
+/** Row-only composition retains the caller's native transaction and root ORM handle. */
 export function saveQqBindingRow(orm: Orm, args: SaveQqBindingArgs): QqBinding {
-  const current = readQqBinding(orm, args.binding.id);
-  if (current === null) fail("MEMORY_NOT_FOUND", "QQ绑定不存在", 404);
-  if (current.revision !== args.expectedRevision) {
-    fail("MEMORY_STATE_CONFLICT", "QQ绑定已变化，请重新加载后保存");
-  }
-  assertBindingInteractionPair(orm, current, args.binding);
-  return writeQqBindingRow(orm, args.binding, args.expectedRevision);
+  const db = bindingDb(orm);
+  return db
+    .transaction(() => {
+      const current = readQqBinding(orm, args.binding.id);
+      if (current === null) fail("MEMORY_NOT_FOUND", "QQ绑定不存在", 404);
+      if (current.revision !== args.expectedRevision)
+        fail("MEMORY_STATE_CONFLICT", "QQ绑定已变化，请重新加载后保存");
+      assertBindingInteractionPair(orm, current, args.binding);
+      return writeQqBindingRow(orm, db, args.binding, args.expectedRevision);
+    })
+    .immediate();
 }
 
 /**
@@ -327,7 +362,12 @@ function assertBindingInteractionPair(orm: Orm, before: QqBinding, next: QqBindi
 }
 
 /** The row write itself; the read revision travels into the WHERE clause, and an unchanged save writes nothing. */
-function writeQqBindingRow(orm: Orm, binding: QqBinding, expectedRevision: number): QqBinding {
+function writeQqBindingRow(
+  orm: Orm,
+  db: Database,
+  binding: QqBinding,
+  expectedRevision: number,
+): QqBinding {
   if (binding.revision === expectedRevision) {
     const current = readQqBinding(orm, binding.id);
     if (current === null) fail("MEMORY_NOT_FOUND", "QQ绑定不存在", 404);
@@ -361,6 +401,8 @@ function writeQqBindingRow(orm: Orm, binding: QqBinding, expectedRevision: numbe
     .returning()
     .get();
   if (!updated) fail("MEMORY_STATE_CONFLICT", "QQ绑定已变化，请重新加载后保存");
+  const conversation = new ConversationEventRepository(db).ensureOneBotActivation(updated.id);
+  if (conversation) publishConversationChange(db, conversation.id);
   return toContractQqBinding(updated);
 }
 

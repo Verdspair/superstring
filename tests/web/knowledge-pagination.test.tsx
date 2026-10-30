@@ -2,7 +2,11 @@
 // 失败保列表可重试、翻页后批量快照只含显式勾选，以及两个跨页入口的 outline/default 层级。
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { KnowledgeDocumentsPage } from "../../src/shared/contracts/knowledge";
+import type {
+  KnowledgeDocumentDetail,
+  KnowledgeDocumentsPage,
+} from "../../src/shared/contracts/knowledge";
+import { ApiError, type SuperstringApi } from "../../src/web/api";
 import zh from "../../src/web/i18n/locales/zh-CN/translation.json";
 import { KnowledgeLibrary } from "../../src/web/screens/library/KnowledgeLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -224,7 +228,8 @@ describe("资料列表的服务端分页", () => {
     });
     await act(async () => render(<KnowledgeLibrary />));
     await act(async () => fireEvent.click(nextButton()));
-    expect(store.getState().error).toContain("服务端不可达");
+    expect(store.getState().knowledgeLibraryError).toContain("服务端不可达");
+    expect(screen.getByRole("alert").textContent).toContain("服务端不可达");
     expect(store.getState().knowledgeDocuments.map((doc) => doc.id)).toEqual([docA.id]);
     expect(store.getState().knowledgeLoading).toBe(false);
     expect(store.getState().knowledgeNextCursor).toBe("c1");
@@ -386,4 +391,204 @@ describe("资料列表的服务端分页", () => {
         .getAttribute("data-variant"),
     ).toBe("ghost");
   });
+});
+
+describe("knowledge editor hidden resume CAS", () => {
+  function concurrent() {
+    let remote: KnowledgeDocumentDetail = { ...base, revision: 1 };
+    const updateKnowledgeDocument = vi.fn(
+      async (
+        _id: string,
+        body: { expected_revision: number; original_text?: string; name?: string },
+      ) => {
+        if (body.expected_revision !== remote.revision)
+          throw new ApiError(409, "KNOWLEDGE_REVISION_CONFLICT", "conflict");
+        remote = { ...remote, ...body, revision: remote.revision + 1 };
+        return remote;
+      },
+    );
+    const saveKnowledgeGrants = vi.fn(
+      async (_id: string, revision: number, ids: string[], visibility?: "private" | "public") => {
+        if (revision !== remote.revision)
+          throw new ApiError(409, "KNOWLEDGE_REVISION_CONFLICT", "conflict");
+        remote = {
+          ...remote,
+          revision: remote.revision + 1,
+          agent_ids: ids,
+          ...(visibility ? { visibility } : {}),
+        };
+        return remote;
+      },
+    );
+    const client = setupLibrary({
+      getKnowledgeDocument: vi.fn(async () => remote),
+      updateKnowledgeDocument,
+      saveKnowledgeGrants,
+    });
+    return { client, remote: () => remote };
+  }
+  it.each(["document", "grants"] as const)(
+    "keeps %s edit revision on same-field remote changes and submits a real failing old CAS",
+    async (kind) => {
+      const f = concurrent();
+      await store.getState().openKnowledgeEditor({ kind, id: D });
+      const editor = store.getState().knowledgeEditor!;
+      if (editor.kind === "document")
+        store.getState().updateKnowledgeEditor({ ...editor, original_text: "A local text" });
+      else if (editor.kind === "grants")
+        store.getState().updateKnowledgeEditor({ ...editor, agent_ids: [A, docB.id] });
+      store.getState().cancelKnowledgeLibraryRead();
+      if (kind === "document")
+        await f.client.updateKnowledgeDocument(D, {
+          expected_revision: 1,
+          original_text: "B remote text",
+        });
+      else await f.client.saveKnowledgeGrants(D, 1, [A, docC.id]);
+      const dirty = store.getState().knowledgeEditor;
+      await store.getState().resumeKnowledgeLibraryRead();
+      expect(store.getState().knowledgeEditor).toBe(dirty);
+      expect(store.getState().knowledgeEditor).toMatchObject({ source: { revision: 1 } });
+      expect(store.getState().knowledgeLibraryError).toBeTruthy();
+      expect(store.getState().knowledgeDirty).toBe(true);
+      expect(await store.getState().saveKnowledgeEditor()).toBe(false);
+      expect(store.getState().knowledgeEditor).toBe(dirty);
+      expect(store.getState().knowledgeDirty).toBe(true);
+      expect(f.remote()).toMatchObject(
+        kind === "document"
+          ? { revision: 2, original_text: "B remote text" }
+          : { revision: 2, agent_ids: [A, docC.id] },
+      );
+      expect(
+        kind === "document" ? f.client.updateKnowledgeDocument : f.client.saveKnowledgeGrants,
+      ).toHaveBeenCalledTimes(2);
+      store.getState().requestKnowledgeEditor({ kind, id: D });
+      store.getState().cancelPendingNavigation();
+      expect(store.getState().knowledgeEditor).toBe(dirty);
+      store.getState().requestKnowledgeEditor({ kind, id: D });
+      await store.getState().confirmDiscardAndContinue();
+      expect(store.getState().knowledgeEditor).toMatchObject({ source: { revision: 2 } });
+      expect(store.getState().knowledgeDirty).toBe(false);
+    },
+  );
+  it("adopts untouched remote grants when only visibility is locally edited, and preserves remote visibility when only grants are edited", async () => {
+    const f = concurrent();
+    await store.getState().openKnowledgeEditor({ kind: "grants", id: D });
+    let editor = store.getState().knowledgeEditor;
+    if (editor?.kind !== "grants") throw new Error("grants missing");
+    store.getState().updateKnowledgeEditor({ ...editor, visibility: "public" });
+    store.getState().cancelKnowledgeLibraryRead();
+    await f.client.saveKnowledgeGrants(D, 1, [docC.id]);
+    await store.getState().resumeKnowledgeLibraryRead();
+    expect(store.getState().knowledgeEditor).toMatchObject({
+      source: { revision: 2 },
+      agent_ids: [docC.id],
+      visibility: "public",
+    });
+    expect(await store.getState().saveKnowledgeEditor()).toBe(true);
+    expect(f.client.saveKnowledgeGrants).toHaveBeenLastCalledWith(D, 2, [docC.id], "public");
+    await store.getState().openKnowledgeEditor({ kind: "grants", id: D });
+    editor = store.getState().knowledgeEditor;
+    if (editor?.kind !== "grants") throw new Error("grants missing");
+    store.getState().updateKnowledgeEditor({ ...editor, agent_ids: [A] });
+    store.getState().cancelKnowledgeLibraryRead();
+    await f.client.saveKnowledgeGrants(D, 3, [docC.id], "private");
+    await store.getState().resumeKnowledgeLibraryRead();
+    expect(store.getState().knowledgeEditor).toMatchObject({
+      source: { revision: 4 },
+      agent_ids: [A],
+      visibility: "private",
+    });
+    expect(await store.getState().saveKnowledgeEditor()).toBe(true);
+    expect(f.client.saveKnowledgeGrants).toHaveBeenLastCalledWith(D, 4, [A], "private");
+  });
+  it("merges an untouched remote document name while preserving local original text", async () => {
+    const f = concurrent();
+    await store.getState().openKnowledgeEditor({ kind: "document", id: D });
+    const editor = store.getState().knowledgeEditor;
+    if (editor?.kind !== "document") throw new Error("document missing");
+    store.getState().updateKnowledgeEditor({ ...editor, original_text: "local original" });
+    store.getState().cancelKnowledgeLibraryRead();
+    await f.client.updateKnowledgeDocument(D, { expected_revision: 1, name: "remote name" });
+    await store.getState().resumeKnowledgeLibraryRead();
+    expect(store.getState().knowledgeEditor).toMatchObject({
+      name: "remote name",
+      original_text: "local original",
+      source: { revision: 2 },
+    });
+    expect(await store.getState().saveKnowledgeEditor()).toBe(true);
+    expect(f.remote()).toMatchObject({
+      name: "remote name",
+      original_text: "local original",
+      revision: 3,
+    });
+  });
+});
+
+it("offers in-sheet explicit refresh, cancels without losing the draft, and accepts latest values only after discard", async () => {
+  let remote = { ...base, revision: 1 };
+  const client = setupLibrary({ getKnowledgeDocument: vi.fn(async () => remote) });
+  await act(async () => render(<KnowledgeLibrary />));
+  await act(async () => store.getState().openKnowledgeEditor({ kind: "document", id: D }));
+  const editor = store.getState().knowledgeEditor;
+  if (editor?.kind !== "document") throw new Error("editor missing");
+  act(() => store.getState().updateKnowledgeEditor({ ...editor, original_text: "local draft" }));
+  remote = { ...remote, revision: 2, original_text: "remote text" };
+  const dialog = screen.getByRole("dialog");
+  const refresh = Array.from(dialog.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === label("library.refresh"),
+  );
+  if (!refresh) throw new Error("editor refresh missing");
+  fireEvent.click(refresh);
+  expect(store.getState().pendingNavigation).toEqual({
+    kind: "knowledge",
+    target: { kind: "document", id: D },
+  });
+  act(() => store.getState().cancelPendingNavigation());
+  expect(store.getState().knowledgeEditor).toMatchObject({
+    original_text: "local draft",
+    source: { revision: 1 },
+  });
+  fireEvent.click(refresh);
+  await act(async () => store.getState().confirmDiscardAndContinue());
+  expect(store.getState().knowledgeEditor).toMatchObject({
+    original_text: "remote text",
+    source: { revision: 2 },
+  });
+  expect(client.updateKnowledgeDocument).not.toHaveBeenCalled();
+});
+
+it("ignores a cancelled or old-API dirty resume without writes or draft loss", async () => {
+  let finish!: (value: KnowledgeDocumentDetail) => void;
+  const getKnowledgeDocument = vi
+    .fn<SuperstringApi["getKnowledgeDocument"]>()
+    .mockResolvedValueOnce(base)
+    .mockImplementationOnce(
+      () =>
+        new Promise<KnowledgeDocumentDetail>((resolve) => {
+          finish = resolve;
+        }),
+    );
+  const client = setupLibrary({ getKnowledgeDocument });
+  await store.getState().openKnowledgeEditor({ kind: "document", id: D });
+  const editor = store.getState().knowledgeEditor;
+  if (editor?.kind !== "document") throw new Error("editor missing");
+  store.getState().updateKnowledgeEditor({ ...editor, original_text: "private local draft" });
+  store.getState().cancelKnowledgeLibraryRead();
+  const resume = store.getState().resumeKnowledgeLibraryRead();
+  await act(async () => {});
+  const signal = getKnowledgeDocument.mock.calls[1]![1] as AbortSignal;
+  store.getState().cancelKnowledgeLibraryRead();
+  expect(signal.aborted).toBe(true);
+  const draft = store.getState().knowledgeEditor;
+  const replacement = {
+    ...client,
+    getKnowledgeDocument: vi.fn().mockResolvedValue({ ...base, revision: 9 }),
+  };
+  store.setState({ apiClient: replacement, knowledgeLibraryError: "new owner notice" });
+  finish({ ...base, revision: 2, original_text: "old API remote" });
+  await resume;
+  expect(store.getState().knowledgeEditor).toBe(draft);
+  expect(store.getState().knowledgeLibraryError).toBe("new owner notice");
+  expect(client.updateKnowledgeDocument).not.toHaveBeenCalled();
+  expect(replacement.updateKnowledgeDocument).not.toHaveBeenCalled();
 });

@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveAppPaths } from "../../src/server/app-paths";
+import type { BotEvidenceScope } from "../../src/server/conversation/evidence-scope";
 import {
   readQqSettings,
   updateQqSettings,
@@ -13,7 +14,6 @@ import { DEFAULT_AGENT_ID, ensureDefaults, nowIso } from "../../src/server/db/re
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
-import type { BotEvidenceScope } from "../../src/server/modules/conversation-evidence";
 import { loadConversationEvidence } from "../../src/server/modules/conversation-evidence-store";
 import type {
   createNapCatManagedSession,

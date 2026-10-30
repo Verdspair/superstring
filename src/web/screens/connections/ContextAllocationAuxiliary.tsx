@@ -1,5 +1,5 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { Trans } from "react-i18next";
+import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import type {
   AgentAuxiliaryAllocation,
   AuxiliaryAllocationProfile,
@@ -45,7 +45,7 @@ export interface ContextAllocationAuxiliaryProps {
   readOnly?: boolean;
   embedded?: boolean;
   labels?: Partial<Record<string, string>>;
-  /** 只渲染/校验所选的全局辅助角色；缺省渲染全部三个（Agent3 不受影响）。 */
+  /** 只渲染/校验所选的全局辅助角色；缺省渲染全部三个（Agent 仅整理与研究）。 */
   globalRoles?: readonly (keyof GlobalAuxiliaryAllocation)[];
 }
 
@@ -67,13 +67,6 @@ const AGENT_ROLES: RoleMeta[] = [
     description: "后台归纳与压缩对话事实记忆，包含提炼与去重判断。",
     inputUnitDesc: "估算消息与 Schema 字节/字符量 (非截断，超限报错)",
     outputDesc: "模型硬上限 max_tokens (Consolidation & Suppression 共用)",
-  },
-  {
-    key: "memory_retrieval_select",
-    name: "记忆检索选材 (memory_retrieval_select)",
-    description: "多候选记忆条目的相关性过滤与排序任务。",
-    inputUnitDesc: "候选批次估算输入上限 (字节)",
-    outputDesc: "单次决策输出 max_tokens",
   },
   {
     key: "research",
@@ -164,6 +157,8 @@ export function ContextAllocationAuxiliary({
   labels = {},
   globalRoles,
 }: ContextAllocationAuxiliaryProps) {
+  const { t } = useTranslation();
+  const valueHintId = useId();
   const settingsPresentation = presentation === "settings" && scope === "global";
   // Track raw drafts for inputs to allow temporary invalid/typing states without clobbering
   const [rawDrafts, setRawDrafts] = useState<RawDraftState>({});
@@ -356,7 +351,7 @@ export function ContextAllocationAuxiliary({
         data-testid={`aux-card-${meta.key}`}
         className={
           settingsPresentation
-            ? "space-y-4 p-4 sm:p-5 transition-colors"
+            ? "space-y-4 settings-content-padding transition-colors"
             : "rounded-lg border bg-card/60 p-4 transition-colors space-y-3"
         }
       >
@@ -415,6 +410,9 @@ export function ContextAllocationAuxiliary({
                 : "ml-1 pl-3.5 sm:pl-4 border-l-2 border-primary/25 pt-2 space-y-3"
             }
           >
+            <p id={`${valueHintId}-${meta.key}`} className="text-xs text-muted-foreground">
+              {t("schemes.allocation.aux.valueHint")}
+            </p>
             <div className="grid gap-4 sm:grid-cols-3">
               {/* Mode Select */}
               <div className="space-y-2">
@@ -473,7 +471,10 @@ export function ContextAllocationAuxiliary({
                   id={`aux-input-${meta.key}`}
                   data-testid={`aux-input-limit-${meta.key}`}
                   type="text"
-                  placeholder={labels["inheritPlaceholder"] || "Default (follows caller default)"}
+                  placeholder={
+                    labels["inheritPlaceholder"] || t("schemes.allocation.aux.shortPlaceholder")
+                  }
+                  aria-describedby={`${valueHintId}-${meta.key}`}
                   value={rawInput}
                   disabled={readOnly}
                   onChange={(e) =>
@@ -523,7 +524,10 @@ export function ContextAllocationAuxiliary({
                   id={`aux-output-${meta.key}`}
                   data-testid={`aux-output-reserved-${meta.key}`}
                   type="text"
-                  placeholder={labels["inheritPlaceholder"] || "Default (follows caller default)"}
+                  placeholder={
+                    labels["inheritPlaceholder"] || t("schemes.allocation.aux.shortPlaceholder")
+                  }
+                  aria-describedby={`${valueHintId}-${meta.key}`}
                   value={rawOutput}
                   disabled={readOnly}
                   onChange={(e) =>
@@ -604,7 +608,7 @@ export function ContextAllocationAuxiliary({
               renderRoleCard(role, "global", globalProfiles[role.key as GlobalRoleKey]),
             )}
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3 settings-content-padding">
             <p className="min-w-0 flex-1 text-xs text-muted-foreground">
               {labels["globalScopeNotice"] ||
                 "Saving updates organization settings for every feature using global vision/knowledge organization."}
@@ -644,7 +648,11 @@ export function ContextAllocationAuxiliary({
     <div data-testid="context-allocation-auxiliary-root" className="space-y-6">
       {/* SCOPE 1: AGENT AUXILIARY TASKS */}
       {showAgent && (
-        <Card data-testid="aux-section-agent" className="border">
+        <Card
+          presentation={embedded ? "plain" : "default"}
+          data-testid="aux-section-agent"
+          className="border"
+        >
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div className="space-y-1">

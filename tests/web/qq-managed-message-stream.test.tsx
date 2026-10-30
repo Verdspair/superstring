@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type React from "react";
 import { I18nextProvider } from "react-i18next";
@@ -307,4 +307,39 @@ describe("QqManagedMessageStream presentational unit tests", () => {
     renderStream(<QqManagedMessageStream events={[]} connected={true} />);
     expect(screen.getByText(/暂无协议事件|no protocol events/i)).toBeTruthy();
   });
+});
+
+it("programmatic event detail closes to its exact source row", async () => {
+  renderStream(<QqManagedMessageStream events={sampleEvents} connected />);
+  const row = document.querySelector<HTMLButtonElement>('[data-stream-row="1"]');
+  if (!row) throw new Error("missing event row");
+  await userEvent.click(row);
+  await screen.findByRole("dialog");
+  await userEvent.click(screen.getByTestId("detail-close-btn"));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(row));
+});
+
+it("inactive hidden event owner cannot receive a close return focus", async () => {
+  const { rerender } = renderStream(
+    <div>
+      <QqManagedMessageStream events={sampleEvents} connected active />
+    </div>,
+  );
+  const row = document.querySelector<HTMLButtonElement>('[data-stream-row="1"]');
+  if (!row) throw new Error("missing event row");
+  await userEvent.click(row);
+  const focus = vi.spyOn(row, "focus");
+  rerender(
+    <I18nextProvider i18n={i18n}>
+      <div hidden>
+        <QqManagedMessageStream events={sampleEvents} connected active={false} />
+      </div>
+    </I18nextProvider>,
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(document.activeElement).not.toBe(row));
+  expect(document.querySelector('[data-stream-row="1"]')).toBe(row);
+  expect(row.closest("[hidden]")).toBeTruthy();
+  expect(focus).not.toHaveBeenCalled();
 });

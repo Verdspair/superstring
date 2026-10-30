@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { P5ConfigSchema } from "../../src/shared/contracts";
 import type { SuperstringApi } from "../../src/web/api";
 import { ConversationIndex as Sidebar } from "../../src/web/screens/conversations/ConversationIndex";
 import { DirectConversation as ChatPage } from "../../src/web/screens/conversations/DirectConversation";
+import { useSuperstringStore as canonicalStore } from "../../src/web/store";
 import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 import { render } from "./helpers/render-with-providers";
 
@@ -230,3 +231,357 @@ describe("R5 聊天区 P0 交互", () => {
     await waitFor(() => expect(screen.queryByRole("menu", { name: "消息操作" })).toBeNull());
   });
 });
+
+describe("message menu confirmation origin", () => {
+  it("pointer dropdown cancel returns to the exact original trigger with no DELETE", async () => {
+    const deleteMessage = vi.fn();
+    useSuperstringStore.setState({ apiClient: fakeClient({ deleteMessage }) });
+    render(<ChatPage />);
+    const article = screen.getByText("需要删除的消息").closest("article");
+    if (!article) throw new Error("missing message article");
+    const trigger = within(article).getByRole("button", { name: "消息操作" });
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除消息" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "确认删除这条消息？" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    expect(trigger.isConnected).toBe(true);
+    expect(screen.getByText("需要删除的消息")).toBeTruthy();
+    expect(deleteMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(["ContextMenu", "{Shift>}{F10}{/Shift}"])(
+    "keyboard %s cancellation returns to the actual context origin",
+    async (key) => {
+      const deleteMessage = vi.fn();
+      useSuperstringStore.setState({ apiClient: fakeClient({ deleteMessage }) });
+      render(<ChatPage />);
+      const article = screen.getByText("需要删除的消息").closest("article");
+      if (!article) throw new Error("missing message article");
+      await userEvent.click(article);
+      await userEvent.keyboard(key === "ContextMenu" ? "{ContextMenu}" : key);
+      await userEvent.click(screen.getByRole("menuitem", { name: "删除消息" }));
+      const dialog = await screen.findByRole("alertdialog");
+      await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+      await waitFor(() => expect(document.activeElement).toBe(article));
+      expect(deleteMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reopening another message changes only the origin and retains exact deletion identity", async () => {
+    const deleteMessage = vi.fn();
+    const secondId = "44444444-4444-4444-8444-444444444444";
+    useSuperstringStore.setState({
+      apiClient: fakeClient({ deleteMessage }),
+      messages: [
+        ...useSuperstringStore.getState().messages,
+        {
+          id: secondId,
+          role: "assistant",
+          content: "第二条消息",
+          status: "completed",
+          errorCode: null,
+          createdAt: NOW,
+          completedAt: NOW,
+        },
+      ],
+    });
+    render(<ChatPage />);
+    for (const text of ["需要删除的消息", "第二条消息"]) {
+      const article = screen.getByText(text).closest("article");
+      if (!article) throw new Error("missing target article");
+      const trigger = within(article).getByRole("button", { name: "消息操作" });
+      await userEvent.click(trigger);
+      await userEvent.click(screen.getByRole("menuitem", { name: "删除消息" }));
+      await userEvent.click(screen.getByRole("button", { name: "取消" }));
+      await waitFor(() => expect(document.activeElement).toBe(trigger));
+    }
+    expect(deleteMessage).not.toHaveBeenCalled();
+    expect(screen.getByText("需要删除的消息")).toBeTruthy();
+    expect(screen.getByText("第二条消息")).toBeTruthy();
+  });
+});
+
+it.each(["session", "api", "inactive", "removed"] as const)(
+  "message confirmation target and return origin do not survive %s replacement",
+  async (change) => {
+    const deleteMessage = vi.fn();
+    useSuperstringStore.setState({ apiClient: fakeClient({ deleteMessage }) });
+    const { rerender } = render(<ChatPage active />);
+    const article = screen.getByText("需要删除的消息").closest("article");
+    if (!article) throw new Error("missing message article");
+    const trigger = within(article).getByRole("button", { name: "消息操作" });
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除消息" }));
+    await screen.findByRole("alertdialog");
+    const focus = vi.spyOn(trigger, "focus");
+    if (change === "inactive") rerender(<ChatPage active={false} />);
+    else
+      await act(async () => {
+        if (change === "session")
+          useSuperstringStore.setState({
+            currentSessionId: "55555555-5555-4555-8555-555555555555",
+            messages: [],
+          });
+        else if (change === "api")
+          useSuperstringStore.setState({ apiClient: fakeClient({ deleteMessage: vi.fn() }) });
+        else useSuperstringStore.setState({ messages: [] });
+      });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await act(async () => {});
+    expect(focus).not.toHaveBeenCalled();
+    expect(deleteMessage).not.toHaveBeenCalled();
+    if (change === "inactive") {
+      rerender(<ChatPage active />);
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    }
+  },
+);
+
+it("message menu confirmation submits only its snapshotted message and session", async () => {
+  const deleteMessage = vi.fn().mockResolvedValue(undefined);
+  const secondId = "44444444-4444-4444-8444-444444444444";
+  const originalMessages = useSuperstringStore.getState().messages;
+  useSuperstringStore.setState({
+    apiClient: fakeClient({
+      deleteMessage,
+      listMessages: vi.fn().mockResolvedValue({ items: [], has_more: false }),
+      getSessionRuntime: vi.fn().mockRejectedValue(new Error("runtime unavailable")),
+    }),
+    messages: [
+      ...originalMessages,
+      {
+        id: secondId,
+        role: "assistant",
+        content: "确认目标消息",
+        status: "completed",
+        errorCode: null,
+        createdAt: NOW,
+        completedAt: NOW,
+      },
+    ],
+  });
+  render(<ChatPage />);
+  const article = screen.getByText("确认目标消息").closest("article");
+  if (!article) throw new Error("missing target article");
+  await userEvent.click(within(article).getByRole("button", { name: "消息操作" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "删除消息" }));
+  await act(async () =>
+    useSuperstringStore.setState({
+      messages: [
+        { ...originalMessages[0], content: "新消息更新不换目标" },
+        {
+          id: secondId,
+          role: "assistant",
+          content: "确认目标消息",
+          status: "completed",
+          errorCode: null,
+          createdAt: NOW,
+          completedAt: NOW,
+        },
+      ],
+    }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: "删除" }));
+  await waitFor(() => expect(deleteMessage).toHaveBeenCalledWith(SESSION_ID, secondId));
+  expect(deleteMessage).toHaveBeenCalledTimes(1);
+});
+
+describe("directory menu modal origins", () => {
+  it.each(["重命名", "删除会话"])(
+    "directory %s cancellation returns to its exact dropdown without selecting the operated row",
+    async (action) => {
+      const renameSession = vi.fn();
+      const deleteSession = vi.fn();
+      const other = "66666666-6666-4666-8666-666666666666";
+      const state = useSuperstringStore.getState();
+      useSuperstringStore.setState({
+        apiClient: fakeClient({ renameSession, deleteSession }),
+        sessions: [
+          ...state.sessions.map((item) => ({
+            ...item,
+            mode: "chat" as const,
+            config_version: 1,
+            created_at: NOW,
+            updated_at: NOW,
+          })),
+          {
+            id: other,
+            title: "另一个会话",
+            agent_id: "11111111-1111-4111-8111-111111111111",
+            mode: "chat",
+            config_version: 1,
+            created_at: NOW,
+            updated_at: NOW,
+          },
+        ],
+      });
+      render(<Sidebar />);
+      const trigger = screen.getByRole("button", { name: "会话操作：另一个会话" });
+      await userEvent.click(trigger);
+      await userEvent.click(screen.getByRole("menuitem", { name: action }));
+      const dialog = await screen.findByRole(action === "重命名" ? "dialog" : "alertdialog");
+      await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+      await waitFor(() => expect(document.activeElement).toBe(trigger));
+      expect(useSuperstringStore.getState().currentSessionId).toBe(SESSION_ID);
+      expect(renameSession).not.toHaveBeenCalled();
+      expect(deleteSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["api", "hidden", "removed"] as const)(
+    "directory rename closes when its %s owner ends",
+    async (change) => {
+      const renameSession = vi.fn();
+      useSuperstringStore.setState({ apiClient: fakeClient({ renameSession }) });
+      const { rerender } = render(<Sidebar active />);
+      const trigger = screen.getByRole("button", { name: "会话操作：测试会话" });
+      await userEvent.click(trigger);
+      await userEvent.click(screen.getByRole("menuitem", { name: "重命名" }));
+      await screen.findByRole("dialog");
+      const focus = vi.spyOn(trigger, "focus");
+      if (change === "hidden") rerender(<Sidebar active={false} />);
+      else
+        await act(async () => {
+          if (change === "api")
+            useSuperstringStore.setState({ apiClient: fakeClient({ renameSession: vi.fn() }) });
+          else
+            canonicalStore.setState((state) => {
+              const id = state.sessionConversationIds[SESSION_ID];
+              return {
+                summaryById: Object.fromEntries(
+                  Object.entries(state.summaryById).filter(([key]) => key !== id),
+                ),
+                directoryIds: state.directoryIds.filter((key) => key !== id),
+                sessionConversationIds: Object.fromEntries(
+                  Object.entries(state.sessionConversationIds).filter(
+                    ([source]) => source !== SESSION_ID,
+                  ),
+                ),
+              };
+            });
+        });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      if (change === "removed") {
+        expect(canonicalStore.getState().summaryById[`test:${SESSION_ID}`]).toBeUndefined();
+        expect(canonicalStore.getState().directoryIds).not.toContain(`test:${SESSION_ID}`);
+      }
+      await act(async () => {});
+      expect(focus).not.toHaveBeenCalled();
+      expect(renameSession).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("directory post-delete focus continuation", () => {
+  it.each(["success", "old-api-success", "old-api-failure", "hidden"] as const)(
+    "header destination belongs only to %s deletion",
+    async (mode) => {
+      const gate = Promise.withResolvers<void>();
+      const deleteSession = vi.fn().mockReturnValue(gate.promise);
+      useSuperstringStore.setState({ apiClient: fakeClient({ deleteSession }) });
+      canonicalStore.setState({ currentConversationId: null });
+      const { rerender } = render(<Sidebar active />);
+      const header = screen.getByRole("heading", { name: "对话", hidden: true });
+      const headerFocus = vi.spyOn(header, "focus");
+      await userEvent.click(screen.getByRole("button", { name: "会话操作：测试会话" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "删除会话" }));
+      const dialog = await screen.findByRole("alertdialog");
+      await userEvent.click(within(dialog).getByRole("button", { name: "删除" }));
+      expect(deleteSession).toHaveBeenCalledWith(SESSION_ID);
+      if (mode.startsWith("old-api"))
+        await act(async () =>
+          canonicalStore.setState({
+            apiClient: fakeClient(),
+            summaryById: {},
+            directoryIds: [],
+            sessionConversationIds: {},
+          }),
+        );
+      if (mode === "hidden") rerender(<Sidebar active={false} />);
+      await act(async () => {
+        if (mode === "old-api-failure") gate.reject(new Error("old deletion failure"));
+        else gate.resolve();
+      });
+      if (mode === "success") {
+        await waitFor(() => expect(headerFocus).toHaveBeenCalledTimes(1));
+        expect(document.activeElement).toBe(header);
+      } else {
+        await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+        await act(async () => {});
+        expect(headerFocus).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("an obsolete deletion completion cannot focus the header while another target modal is open", async () => {
+    const gate = Promise.withResolvers<void>();
+    const deleteSession = vi.fn().mockReturnValue(gate.promise);
+    useSuperstringStore.setState({ apiClient: fakeClient({ deleteSession }) });
+    canonicalStore.setState({ currentConversationId: null });
+    render(<Sidebar />);
+    const headerFocus = vi.spyOn(
+      screen.getByRole("heading", { name: "对话", hidden: true }),
+      "focus",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "会话操作：测试会话" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除会话" }));
+    await userEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "删除" }),
+    );
+    const replacement = {
+      ...canonicalStore.getState().summaryById[`test:${SESSION_ID}`],
+      id: "new-row",
+      sourceId: "new-session",
+      title: "新目标",
+    };
+    await act(async () =>
+      canonicalStore.setState({
+        apiClient: fakeClient(),
+        summaryById: { [replacement.id]: replacement },
+        directoryIds: [replacement.id],
+        sessionConversationIds: { [replacement.sourceId]: replacement.id },
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "会话操作：新目标" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "重命名" }));
+    const input = screen.getByRole("textbox", { name: "会话名称" });
+    await act(async () => gate.resolve());
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(document.activeElement).toBe(input);
+    expect(headerFocus).not.toHaveBeenCalled();
+  });
+});
+
+it.each(["summary-only", "canonical-source"] as const)(
+  "an external %s removal during a pending Web deletion cannot acquire the success header destination",
+  async (removal) => {
+    const gate = Promise.withResolvers<void>();
+    useSuperstringStore.setState({
+      apiClient: fakeClient({ deleteSession: vi.fn().mockReturnValue(gate.promise) }),
+    });
+    canonicalStore.setState({ currentConversationId: null });
+    render(<Sidebar />);
+    const headerFocus = vi.spyOn(
+      screen.getByRole("heading", { name: "对话", hidden: true }),
+      "focus",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "会话操作：测试会话" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "删除会话" }));
+    await userEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "删除" }),
+    );
+    await act(async () =>
+      canonicalStore.setState(() => ({
+        summaryById: {},
+        directoryIds: [],
+        ...(removal === "canonical-source" ? { sessionConversationIds: {} } : {}),
+      })),
+    );
+    await act(async () => gate.resolve());
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(headerFocus).not.toHaveBeenCalled();
+  },
+);

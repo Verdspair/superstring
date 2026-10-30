@@ -1,6 +1,7 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { AlertDialogContent, AlertDialogTitle, AlertDialog as Root } from "./ui/alert-dialog";
+import { useOverlayReturnFocus } from "./ui/use-overlay-return-focus";
 
 /** Shared modal mechanics only; callers own actions and when successful work closes. */
 export function AlertDialog({
@@ -11,6 +12,7 @@ export function AlertDialog({
   escapeCloses = true,
   busy = false,
   open,
+  returnFocusRef,
 }: {
   title: string;
   children: ReactNode;
@@ -20,9 +22,16 @@ export function AlertDialog({
   busy?: boolean;
   /** 常挂载：调用方把原条件作为 open，关闭动画期间内容由 Radix Presence 保留。 */
   open: boolean;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
-  const returnFocus = useRef<HTMLElement | null>(null);
+  const focusHandlers = useOverlayReturnFocus({
+    returnFocusRef,
+    onOpenAutoFocus: (event) => {
+      event.preventDefault();
+      contentRef.current?.querySelector<HTMLElement>("[data-dialog-cancel]")?.focus();
+    },
+  });
   return (
     <Root
       open={open}
@@ -32,23 +41,14 @@ export function AlertDialog({
     >
       <AlertDialogContent
         ref={contentRef}
-        className={`max-h-[85dvh] overflow-y-auto ${className}`}
+        className={`max-h-[85dvh] ${className}`}
         aria-modal="true"
         aria-busy={busy}
         aria-describedby={undefined}
         onEscapeKeyDown={(event) => {
           if (busy || !escapeCloses) event.preventDefault();
         }}
-        onOpenAutoFocus={(event) => {
-          returnFocus.current =
-            document.activeElement instanceof HTMLElement ? document.activeElement : null;
-          event.preventDefault();
-          contentRef.current?.querySelector<HTMLElement>("[data-dialog-cancel]")?.focus();
-        }}
-        onCloseAutoFocus={(event) => {
-          event.preventDefault();
-          if (returnFocus.current?.isConnected) returnFocus.current.focus();
-        }}
+        {...focusHandlers}
       >
         <AlertDialogTitle asChild>
           <strong>{title}</strong>
@@ -69,6 +69,8 @@ export function ConfirmDialog({
   onCancel,
   busy = false,
   open,
+  returnFocusRef,
+  invocationOwner,
 }: {
   message: string;
   confirmLabel?: string;
@@ -77,24 +79,41 @@ export function ConfirmDialog({
   busy?: boolean;
   /** 常挂载：调用方把原条件作为 open，关闭动画期间内容由 Radix Presence 保留。 */
   open: boolean;
+  returnFocusRef?: RefObject<HTMLElement | null>;
+  invocationOwner?: object;
 }) {
   const { t } = useTranslation();
   // 常挂载后 pending/invoking 跨开合保留；只由当前调用的 finally 复位，避免新一轮打开提前放行。
   const [pending, setPending] = useState(false);
-  const invoking = useRef(false);
+  const invoking = useRef<{ owner: object | undefined } | null>(null);
+  useEffect(() => {
+    if (invoking.current?.owner !== invocationOwner) {
+      invoking.current = null;
+      setPending(false);
+    }
+  }, [invocationOwner]);
   const confirm = async () => {
     if (busy || invoking.current) return;
-    invoking.current = true;
+    const invocation = { owner: invocationOwner };
+    invoking.current = invocation;
     setPending(true);
     try {
       await onConfirm();
     } finally {
-      invoking.current = false;
-      setPending(false);
+      if (invoking.current === invocation) {
+        invoking.current = null;
+        setPending(false);
+      }
     }
   };
   return (
-    <AlertDialog open={open} title={message} onCancel={onCancel} busy={busy || pending}>
+    <AlertDialog
+      open={open}
+      title={message}
+      onCancel={onCancel}
+      busy={busy || pending}
+      returnFocusRef={returnFocusRef}
+    >
       <AlertDialogFooter>
         <Button
           tooltip={<Trans i18nKey="hints.complete.cancel" />}

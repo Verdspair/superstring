@@ -36,7 +36,7 @@ export const SPACES = [
     icon: Wrench,
     description: "workspace.manage_built_in_capabilities_and_execution_limits_by_function",
   },
-  // 方案（P9）：独立一级目录；按应用登记，QQ 是当前唯一实现，群与私聊共用同一批方案。
+  // 方案：独立一级目录；按应用登记，QQ 是当前唯一实现，群与私聊共用同一批方案。
   {
     id: "schemes",
     label: "workspace.schemes",
@@ -94,6 +94,8 @@ export function activeSpace(
   if (
     [
       "system-capabilities",
+      "capability-memory",
+      "capability-knowledge",
       "media-tools",
       "web-access",
       "execution-settings",
@@ -102,8 +104,9 @@ export function activeSpace(
     ].includes(state.settingsRoute)
   )
     return "capabilities";
-  // memory-tools 与 knowledge-tools 统一归属助手空间 (access 标签)，系统能力目录仅保留功能元信息与跳转链接
-  if (["memory-tools", "knowledge-tools"].includes(state.settingsRoute)) return "assistants";
+  // Agent 读取策略与系统能力的全局组件分别使用各自路由。
+  if (["memory-tools", "knowledge-tools", "agent-tools"].includes(state.settingsRoute))
+    return "assistants";
   // 原 qq-scheme-config 详情归方案一级；目录入口是 scheme-library，绑定首次发现入口是 scheme-bindings。
   // QQ 应用级管理（方案目录/连接/数据）也归方案，接入只留外置扩展。
   if (

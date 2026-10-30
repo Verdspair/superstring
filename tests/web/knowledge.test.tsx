@@ -127,7 +127,15 @@ describe("knowledge editing and authorization", () => {
     vi.mocked(store.getState().apiClient.updateKnowledgeDocument).mockClear();
     store.getState().openSettings();
     expect(store.getState().knowledgeDirty).toBe(true);
-    expect(store.getState().pendingNavigation).toBeNull();
+    expect(store.getState().pendingNavigation).toMatchObject({
+      kind: "page",
+      page: "settings",
+      settingsView: "hub",
+    });
+    store.getState().cancelPendingNavigation();
+    expect(store.getState().knowledgeEditor).toMatchObject({ name: "修改名称" });
+    expect(store.getState().knowledgeDirty).toBe(true);
+    expect(store.getState().apiClient.updateKnowledgeDocument).not.toHaveBeenCalled();
     store.getState().openChat();
     await store.getState().confirmDiscardAndContinue();
     expect(store.getState().page).toBe("chat");
@@ -326,7 +334,11 @@ describe("knowledge editing and authorization", () => {
       assertApiCall();
       const alert = within(sheet).getByRole("alert");
       expect(globalThis.document.querySelectorAll('[role="alert"]')).toHaveLength(1);
-      expect(alert.textContent).toContain("冲突");
+      expect(alert.textContent).toContain(
+        store.getState().knowledgeEditor?.kind === "document"
+          ? "知识库远端内容已更改；本地草稿保留，未自动推进保存版本。请刷新并核对后重试。"
+          : "设置版本冲突",
+      );
       assertDraft(sheet);
     },
   );

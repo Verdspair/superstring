@@ -6,7 +6,12 @@ import {
   evidenceToolDescriptions,
 } from "../../shared/contracts/agent-action-descriptions";
 import type { RunOwner } from "../../shared/contracts/agent-run";
-import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
+import {
+  type Evidence,
+  type MemoryEvidenceMetadata,
+  MemoryEvidenceMetadataSchema,
+  type SourceRef,
+} from "../../shared/contracts/evidence";
 import type { PermissionRequirement } from "../../shared/contracts/permissions";
 import { AppError, fail } from "../errors";
 import {
@@ -16,7 +21,12 @@ import {
 } from "../modules/contracts";
 import { estimateTokens } from "../services/token-estimate";
 import type { ActionDescription } from "./agent-specs";
-import { type ActionObservation, inputUnits, textMessage, uniqueSources } from "./context-engine";
+import {
+  type ActionObservation,
+  actionObservationMessage,
+  inputUnits,
+  uniqueSources,
+} from "./context-engine";
 
 export type RetryOrigin = "system" | "qq";
 
@@ -101,14 +111,18 @@ export interface EvidenceCatalogEntry {
   title: string;
   summary: string;
   bodyRef: string;
+  metadata?: MemoryEvidenceMetadata;
 }
 /** A catalog projection alone does not register or authorize its random reference. */
-export function evidenceCatalogEntry(_kind: string, item: Evidence): EvidenceCatalogEntry {
+export function evidenceCatalogEntry(kind: string, item: Evidence): EvidenceCatalogEntry {
   return {
     id: item.id,
     title: item.preview?.title ?? item.id,
     summary: item.preview?.summary ?? "",
     bodyRef: randomUUID(),
+    ...(kind === "memory" && item.metadata
+      ? { metadata: MemoryEvidenceMetadataSchema.parse(item.metadata) }
+      : {}),
   };
 }
 export type EvidenceResultFitter = (value: unknown, sources: readonly SourceRef[]) => boolean;
@@ -166,20 +180,13 @@ function observationUnits(
 ): number {
   return (
     inputUnits([
-      textMessage(
-        "user",
-        JSON.stringify({
-          kind: "action_observation",
-          trust: "data_only",
-          value: {
-            id: "00000000-0000-0000-0000-000000000000",
-            name,
-            arguments: arguments_,
-            value,
-            sources,
-          },
-        }),
-      ),
+      actionObservationMessage({
+        id: "00000000-0000-0000-0000-000000000000",
+        name,
+        arguments: arguments_,
+        value,
+        sources,
+      }),
     ]) - inputUnits([])
   );
 }
@@ -565,6 +572,11 @@ export function createEvidenceActionSet(
               : externalTextPage(evidence.text, offset, limit);
             check(state, context, evidence.sources);
             const points = textPoints(page, offset, limit);
+            const metadata =
+              kind === "memory" ? (module.read ? page.metadata : evidence.metadata) : undefined;
+            const memoryMetadata = metadata
+              ? MemoryEvidenceMetadataSchema.parse(metadata)
+              : undefined;
             const fits = await options.fit(`${kind}.read`, arguments_, context.signal);
             check(state, context, evidence.sources);
             let length = points.length;
@@ -578,6 +590,7 @@ export function createEvidenceActionSet(
                     text: points.slice(0, length).join(""),
                     offset,
                     nextOffset: offset + length < page.total ? offset + length : null,
+                    ...(memoryMetadata ? { metadata: memoryMetadata } : {}),
                   },
                 ],
               };

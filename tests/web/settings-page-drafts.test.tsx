@@ -16,7 +16,8 @@ import {
   pageAgentPayload,
 } from "../../src/web/features/agents/page-drafts";
 import { selectLocale } from "../../src/web/i18n";
-import { MemoryReadingRules } from "../../src/web/screens/assistants/ResourceRules";
+import { AgentMaterials } from "../../src/web/screens/assistants/AgentMaterials";
+
 import { useSuperstringStore as store } from "../../src/web/store";
 
 /** 显式 tooltip（保存按钮/字段帮助）必须挂在真实 DesignSystemProvider 下渲染。 */
@@ -34,148 +35,69 @@ function agent(id = "A") {
     updated_at: "2026-09-19T00:00:00.000Z",
   });
 }
-it("模型页可提交检索模型草稿；工具额度与上下文白名单互不夹带", () => {
+it("资料读取与上下文白名单互不夹带并保留旧字段", () => {
   const editor = newPageEditor(agent(), persona());
-  editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-  editor.draft.p5_config.max_catalog_batches = 7;
-  editor.draft.p5_config.catalog_batch_size = 9;
-  editor.draft.p5_config.retrieval_presets.broad.candidate_limit = 200;
-  editor.draft.p5_config.retrieval_presets.broad.relevance_instruction = "ignored";
+  editor.draft.p5_config = {
+    ...structuredClone(editor.draft.p5_config),
+    memory_read: { enabled: true, max_bytes: 1234 },
+    max_catalog_batches: 7,
+    summary_read_max_tokens: 800,
+  };
   editor.draft.memory_retrieval_prompt = "ignored prompt";
-  editor.draft.memory_retrieval_model_name = "ignored model";
-  editor.draft.p5_config.summary_read_max_tokens = 800;
-  editor.draft.p5_config.auxiliary_timeout_seconds = 360;
-  const maintenance = pageAgentPayload(editor, "long-memory");
   const memory = pageAgentPayload(editor, "memory-tools").p5_config;
   const context = pageAgentPayload(editor, "context").p5_config;
   if (!memory || !context) throw new Error("Missing page config");
-  // 维护页不再承载读取字段：不再发送 p5_config。
-  expect(maintenance).not.toHaveProperty("p5_config");
-  expect(maintenance).not.toHaveProperty("memory_retrieval_prompt");
-  expect(pageAgentPayload(editor, "models")).toEqual(
-    expect.objectContaining({ memory_retrieval_model_name: "ignored model" }),
-  );
-  // 目录批次两项已并入 memory-tools 白名单：草稿改动随本页保存。
-  expect(memory.max_catalog_batches).toBe(7);
-  expect(memory.catalog_batch_size).toBe(9);
-  expect(memory.retrieval_presets.broad).toEqual({
-    ...editor.agent.p5_config.retrieval_presets.broad,
-    candidate_limit: 200,
-    relevance_instruction: "ignored",
-  });
-  expect(pageAgentPayload(editor, "memory-tools")).toHaveProperty(
-    "memory_retrieval_prompt",
-    "ignored prompt",
-  );
-  expect(pageAgentPayload(editor, "context")).not.toHaveProperty("memory_retrieval_prompt");
-  expect(memory.summary_read_max_tokens).toBeUndefined();
-  expect(memory.auxiliary_timeout_seconds).toBe(900);
-  expect(context.max_catalog_batches).toBe(100);
-  expect(context.catalog_batch_size).toBe(30);
-  expect(context.retrieval_presets).toEqual(editor.agent.p5_config.retrieval_presets);
+  expect(pageAgentPayload(editor, "long-memory")).not.toHaveProperty("p5_config");
+  expect(pageAgentPayload(editor, "memory-tools")).not.toHaveProperty("memory_retrieval_prompt");
+  expect(memory.memory_read).toEqual({ enabled: true, max_bytes: 1234 });
+  expect(memory.max_catalog_batches).toBe(editor.agent.p5_config.max_catalog_batches);
+  expect(memory.retrieval_presets).toEqual(editor.agent.p5_config.retrieval_presets);
+  expect(context.memory_read).toEqual(editor.agent.p5_config.memory_read);
   expect(context.summary_read_max_tokens).toBe(800);
-  expect(context.auxiliary_timeout_seconds).toBe(360);
 });
-
-it("非全量档不显示目录批次输入，payload 不夹带给 context 页", async () => {
+it("旧目录批次草稿不会由任一活动页面改写", () => {
   const editor = newPageEditor(agent(), persona());
-  editor.draft.p5_config = structuredClone(editor.draft.p5_config);
-  editor.draft.p5_config.retrieval_mode = "broad";
-  editor.draft.p5_config.max_catalog_batches = 55;
-  const memory = pageAgentPayload(editor, "memory-tools").p5_config;
-  if (!memory) throw new Error("Missing memory config");
-  expect(memory.max_catalog_batches).toBe(55);
-  // 上下文页白名单不含这两项，不得夹带。
-  const context = pageAgentPayload(editor, "context").p5_config;
-  if (!context) throw new Error("Missing context config");
-  expect(context.max_catalog_batches).toBe(100);
-  expect(context.catalog_batch_size).toBe(30);
-});
-
-it("存量 full 档：模式选择按真实存量展示且无隐式写，退役输入移除，存量批次与模式保真；主动切普通档则持久化该档", async () => {
-  persisted = {
-    ...persisted,
-    p5_config: {
-      ...persisted.p5_config,
-      retrieval_mode: "full_catalog",
-      max_catalog_batches: 17,
-      catalog_batch_size: 23,
-    },
-  };
-  await store.getState().editAgent("A");
-  store.getState().openSettingsRoute("memory-tools");
-  await act(async () => render(<MemoryReadingRules />));
-  // 模式选择按真实值显示 full_catalog，不伪装成 broad。
-  const modeSelect = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
-  expect(modeSelect.value).toBe("full_catalog");
-
-  // 退役的 disabled catalogbatch 输入已移除，不污染 DOM
-  expect(screen.queryByLabelText("最多目录批次")).toBeNull();
-  expect(screen.queryByLabelText("每批目录条数")).toBeNull();
-
-  // 存量 full 批次字段在草稿中严格保真，未产生隐式 dirty
-  expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
-  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
-  expect(store.getState().pageEditor?.draft.p5_config.catalog_batch_size).toBe(23);
-
-  // 负例 1：未改任何东西时保存按钮禁用（不因 full 而进页即保存）。
-  expect((screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement).disabled).toBe(
-    true,
+  editor.draft.p5_config = { ...editor.draft.p5_config, max_catalog_batches: 55 };
+  expect(pageAgentPayload(editor, "memory-tools").p5_config?.max_catalog_batches).toBe(
+    editor.agent.p5_config.max_catalog_batches,
   );
-
-  // 负例 2：重新进入后未改点保存不发 PUT（updateAgent 调用数不变）。
-  const callsBefore = (client.updateAgent as ReturnType<typeof vi.fn>).mock.calls.length;
-  await store.getState().editAgent("A");
-  store.getState().openSettingsRoute("memory-tools");
-  expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
-  expect((client.updateAgent as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore);
-
-  // 正例 3：主动切换到 ordinary 档（standard）→ 保存持久化该档；旧批次数保真不丢。
-  await act(async () => {
-    fireEvent.change(screen.getByLabelText("记忆工具额度模式"), { target: { value: "standard" } });
-  });
-  expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
-  expect(persisted.p5_config.retrieval_mode).toBe("standard");
-  expect(persisted.p5_config.max_catalog_batches).toBe(17);
-  expect(persisted.p5_config.catalog_batch_size).toBe(23);
+  expect(pageAgentPayload(editor, "context").p5_config?.max_catalog_batches).toBe(
+    editor.agent.p5_config.max_catalog_batches,
+  );
 });
 
-it("存量 full_body：真实模式与批次保真且不误写草稿其它字段，用户可主动切换为宽泛模式并持久化", async () => {
-  persisted = {
-    ...persisted,
-    p5_config: {
-      ...persisted.p5_config,
-      retrieval_mode: "full_body",
-      max_catalog_batches: 17,
-      catalog_batch_size: 23,
-    },
-  };
-  await store.getState().editAgent("A");
-  store.getState().openSettingsRoute("memory-tools");
-  await act(async () => render(<MemoryReadingRules />));
-  const save = () => screen.getByRole("button", { name: "保存记忆规则" }) as HTMLButtonElement;
-
-  // 模式按真实 full_body 显示，未修改前保存按钮禁用
-  const modeSelect = screen.getByLabelText("记忆工具额度模式") as HTMLSelectElement;
-  expect(modeSelect.value).toBe("full_body");
-  expect(save().disabled).toBe(true);
-
-  // 存量批次字段严格保真
-  expect(store.getState().pageEditor?.draft.p5_config.max_catalog_batches).toBe(17);
-  expect(store.getState().pageEditor?.draft.p5_config.catalog_batch_size).toBe(23);
-  expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
-
-  // 点击“切换为宽泛模式”快捷按钮 → retrieval_mode 变为 broad → 产生 dirty
-  fireEvent.click(screen.getByRole("button", { name: "改为广泛额度" }));
-  expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools"]);
-  expect(save().disabled).toBe(false);
-
-  // 保存成功，persisted 变为 broad，旧批次保真不丢
-  expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
-  expect(persisted.p5_config.retrieval_mode).toBe("broad");
-  expect(persisted.p5_config.max_catalog_batches).toBe(17);
-  expect(persisted.p5_config.catalog_batch_size).toBe(23);
-});
+it.each(["full_catalog", "full_body"] as const)(
+  "存量 %s 保真且只通过单一额度编辑",
+  async (mode) => {
+    persisted = {
+      ...persisted,
+      p5_config: {
+        ...persisted.p5_config,
+        memory_read: undefined,
+        retrieval_mode: mode,
+        max_catalog_batches: 17,
+        catalog_batch_size: 23,
+      },
+    };
+    await store.getState().editAgent("A");
+    store.getState().openSettingsRoute("memory-tools");
+    await act(async () => render(<AgentMaterials />));
+    expect(screen.queryByLabelText("记忆工具额度模式")).toBeNull();
+    expect(screen.queryByLabelText("最多目录批次")).toBeNull();
+    expect(screen.queryByLabelText("每批目录条数")).toBeNull();
+    expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
+    expect(persisted.p5_config.retrieval_mode).toBe(mode);
+    const callsBefore = vi.mocked(client.updateAgent).mock.calls.length;
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+    expect(vi.mocked(client.updateAgent).mock.calls.length).toBe(callsBefore);
+    fireEvent.change(screen.getByLabelText("记忆工具读取额度"), { target: { value: "2048" } });
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+    expect(persisted.p5_config.memory_read).toEqual({ enabled: true, max_bytes: 2048 });
+    expect(persisted.p5_config.retrieval_mode).toBe(mode);
+    expect(persisted.p5_config.max_catalog_batches).toBe(17);
+    expect(persisted.p5_config.catalog_batch_size).toBe(23);
+  },
+);
 function persona(id = "A") {
   return PersonaResponseSchema.parse({
     id,
@@ -222,6 +144,11 @@ beforeEach(async () => {
       auto_enabled: true,
       context_budget: 4096,
     })),
+    getAgentKnowledgeRead: vi.fn(async () => ({
+      revision: 1,
+      config: { enabled: true, context_budget: null, scope: "all", document_ids: [] },
+    })),
+    listAgentKnowledge: vi.fn(async () => []),
     saveKnowledgeSettings: vi.fn(async ({ expected_revision, ...body }) => ({
       ...body,
       revision: expected_revision + 1,
@@ -264,7 +191,7 @@ afterEach(() => {
 
 describe("页面草稿与白名单保存", () => {
   it.each(["full_catalog", "full_body", "off"] as const)(
-    "%s survives visits, other-page saves and reloads; only a memory-tools save normalizes full modes",
+    "%s survives visits, other-page saves and reloads without implicit normalization",
     async (mode) => {
       persisted = {
         ...persisted,
@@ -335,33 +262,39 @@ describe("页面草稿与白名单保存", () => {
   );
   it("p5三页白名单互不夹带并保留其他页草稿", async () => {
     const baseline = persisted.p5_config;
-    // long-memory 不再拥有读取字段：patch 被白名单整体丢弃，不产生草稿。
     store.getState().patchPageAgent("long-memory", {
-      p5_config: { ...baseline, retrieval_mode: "broad" },
+      p5_config: { ...baseline, memory_read: { enabled: false, max_bytes: 1234 } },
       model_name: "forbidden",
     });
-    expect(store.getState().pageEditor?.draft.p5_config.retrieval_mode).toBe(
-      baseline.retrieval_mode,
-    );
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read).toEqual(baseline.memory_read);
     expect(store.getState().pageEditor?.draft.model_name).toBe("model");
     store.getState().patchPageAgent("memory-tools", {
-      p5_config: { ...baseline, retrieval_mode: "off", recent_turns: 99 },
+      p5_config: {
+        ...baseline,
+        memory_read: { enabled: false, max_bytes: 1234 },
+        recent_turns: 99,
+      },
       model_name: "forbidden",
     });
     store.getState().patchPageAgent("context", {
-      p5_config: { ...baseline, recent_turns: 12, retrieval_mode: "broad" },
+      p5_config: {
+        ...baseline,
+        recent_turns: 12,
+        memory_read: { enabled: true, max_bytes: 5000 },
+      },
     });
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools", "context"]);
     expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
     expect(persisted.p5_config.recent_turns).toBe(baseline.recent_turns);
-    expect(persisted.p5_config.retrieval_mode).toBe("off");
+    expect(persisted.p5_config.memory_read).toEqual({ enabled: false, max_bytes: 1234 });
     expect(persisted.model_name).toBe("model");
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
     expect(await store.getState().saveSettingsPage("context")).toBe(true);
-    expect(persisted.p5_config.retrieval_mode).toBe("off");
+    expect(persisted.p5_config.memory_read).toEqual({ enabled: false, max_bytes: 1234 });
     expect(persisted.p5_config.recent_turns).toBe(12);
     expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
   });
+
   it("policy只在保存时提交，部分失败重试不重复agent请求", async () => {
     const policy = { auto_enabled: true, every_turns: 20, target_chars: 1200, version: 1 };
     store.setState({
@@ -582,8 +515,12 @@ describe("页面草稿与白名单保存", () => {
     store.getState().patchPageAgent("basic", { name: "draft" });
     store.getState().openSettingsRoute("expression");
     expect(store.getState().navigationConfirmOpen).toBe(false);
+    expect(store.getState().settingsRoute).toBe("expression");
     store.getState().requestPageNavigation("settings", "general");
-    expect(store.getState().navigationConfirmOpen).toBe(false);
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    expect(store.getState().settingsRoute).toBe("expression");
+    store.getState().cancelPendingNavigation();
+    expect(store.getState().pageEditor?.draft.name).toBe("draft");
     store.getState().openChat();
     expect(store.getState().navigationConfirmOpen).toBe(true);
     store.getState().cancelPendingNavigation();
@@ -674,7 +611,8 @@ describe("页面草稿与白名单保存", () => {
     expect(store.getState().editorDraft?.model_name).toBe("model");
     expect(store.getState().pageEditor?.draft.model_name).toBe("unsaved");
     store.getState().patchPageAgent("basic", { name: "draft name" });
-    store.getState().openSettingsRoute("models");
+    store.getState().openSettingsRoute("context");
+    expect(store.getState().navigationConfirmOpen).toBe(false);
     store.getState().openSettingsRoute("basic");
     expect(store.getState().settingsView).toBe("agents");
     expect(store.getState().pageEditor?.draft.name).toBe("draft name");
@@ -695,6 +633,7 @@ describe("页面草稿与白名单保存", () => {
     try {
       store.getState().openSettingsRoute("basic");
       expect(store.getState().navigationConfirmOpen).toBe(true);
+      expect(store.getState().pageEditor?.draft.name).toBe("retained draft");
       if (choice === "save") await store.getState().confirmSaveAndContinue();
       else await store.getState().confirmDiscardAndContinue();
       expect(store.getState().settingsView).toBe("agents");
@@ -708,11 +647,19 @@ describe("页面草稿与白名单保存", () => {
   it("资料内部保存或放弃不连带处理助手页草稿", async () => {
     store.getState().patchPageAgent("basic", { name: "assistant draft" });
     store.setState({ settingsView: "knowledge", knowledgeDirty: true });
-    store.getState().openSettingsRoute("models");
+    store.getState().openSettingsRoute("context");
+    expect(store.getState().pendingNavigation).toMatchObject({ settingsRoute: "context" });
     await store.getState().confirmDiscardAndContinue();
+    expect(store.getState().settingsRoute).toBe("context");
     expect(store.getState().pageEditor?.draft.name).toBe("assistant draft");
     expect(client.updateAgent).not.toHaveBeenCalled();
     expect(store.getState().settingsView).toBe("workspace");
+    store.setState({ knowledgeDirty: true, settingsRoute: "context" });
+    store.getState().openSettingsRoute("management");
+    expect(store.getState().pendingNavigation).toMatchObject({ settingsRoute: "models" });
+    store.getState().cancelPendingNavigation();
+    expect(store.getState().settingsRoute).toBe("context");
+    expect(store.getState().knowledgeDirty).toBe(true);
   });
 
   it.each(["save", "discard"] as const)("记忆纠正%s后切页保留其他配置草稿", async (choice) => {
@@ -746,46 +693,20 @@ describe("页面草稿与白名单保存", () => {
 });
 
 describe("memory reading text settings", () => {
-  it("edits preset relevance and the common prompt through the page save without other drafts", async () => {
+  it("saves a single allowance without touching legacy prompts or other task drafts", async () => {
     store.getState().openSettingsRoute("memory-tools");
-    await act(async () => render(<MemoryReadingRules />));
+    await act(async () => render(<AgentMaterials />));
     const originalPresets = structuredClone(persisted.p5_config.retrieval_presets);
+    const originalPrompt = persisted.memory_retrieval_prompt;
     store.getState().patchPageAgent("models", { model_name: "unsaved model" });
     store
       .getState()
       .patchPageAgent("long-memory", { memory_consolidation_prompt: "unsaved maintenance" });
-
-    // Store patch preserves private prompt & relevance without retired DOM textarea controls
-    store.getState().patchPageAgent("memory-tools", {
-      memory_retrieval_prompt: "选择有证据的记忆",
-      p5_config: {
-        ...persisted.p5_config,
-        retrieval_presets: {
-          ...persisted.p5_config.retrieval_presets,
-          standard: {
-            ...persisted.p5_config.retrieval_presets.standard,
-            relevance_instruction: "包含必要背景",
-          },
-        },
-      },
-    });
-
+    fireEvent.change(screen.getByLabelText("记忆工具读取额度"), { target: { value: "2048" } });
     expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
-    const [id, body] = (client.updateAgent as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(id).toBe("A");
-    expect(Object.keys(body).sort()).toEqual([
-      "expected_version",
-      "memory_retrieval_prompt",
-      "p5_config",
-    ]);
-    expect(body.memory_retrieval_prompt).toBe("选择有证据的记忆");
-    expect(persisted.p5_config.retrieval_presets.standard.relevance_instruction).toBe(
-      "包含必要背景",
-    );
-    expect(persisted.p5_config.retrieval_presets.conservative).toEqual(
-      originalPresets.conservative,
-    );
-    expect(persisted.p5_config.retrieval_presets.broad).toEqual(originalPresets.broad);
+    expect(persisted.p5_config.memory_read).toEqual({ enabled: true, max_bytes: 2048 });
+    expect(persisted.p5_config.retrieval_presets).toEqual(originalPresets);
+    expect(persisted.memory_retrieval_prompt).toBe(originalPrompt);
     expect(persisted.model_name).toBe("model");
     expect(store.getState().pageEditor?.draft.model_name).toBe("unsaved model");
     expect(store.getState().pageEditor?.draft.memory_consolidation_prompt).toBe(
@@ -793,137 +714,65 @@ describe("memory reading text settings", () => {
     );
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["models", "long-memory"]);
   });
-
-  it("keeps edited text after a save conflict and discards only the memory page", async () => {
+  it("keeps the allowance after a save conflict and discards only the memory page", async () => {
     store.getState().openSettingsRoute("memory-tools");
-    await act(async () => render(<MemoryReadingRules />));
-
-    store.getState().patchPageAgent("memory-tools", {
-      memory_retrieval_prompt: "保留草稿",
-      p5_config: {
-        ...persisted.p5_config,
-        retrieval_presets: {
-          ...persisted.p5_config.retrieval_presets,
-          conservative: {
-            ...persisted.p5_config.retrieval_presets.conservative,
-            relevance_instruction: "只选直接相关",
-          },
-        },
-      },
-    });
-
-    (client.updateAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("conflict"));
+    await act(async () => render(<AgentMaterials />));
+    fireEvent.change(screen.getByLabelText("记忆工具读取额度"), { target: { value: "2048" } });
+    vi.mocked(client.updateAgent).mockRejectedValueOnce(new Error("conflict"));
     expect(await store.getState().saveSettingsPage("memory-tools")).toBe(false);
-    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe("保留草稿");
-    expect(
-      store.getState().pageEditor?.draft.p5_config.retrieval_presets.conservative
-        .relevance_instruction,
-    ).toBe("只选直接相关");
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read?.max_bytes).toBe(2048);
     expect(dirtyPages(store.getState().pageEditor)).toContain("memory-tools");
     store.getState().patchPageAgent("basic", { name: "kept basic draft" });
     store.getState().discardSettingsPages("memory-tools");
-    expect(store.getState().pageEditor?.draft.memory_retrieval_prompt).toBe(
-      persisted.memory_retrieval_prompt,
-    );
-    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets).toEqual(
-      persisted.p5_config.retrieval_presets,
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read).toEqual(
+      persisted.p5_config.memory_read,
     );
     expect(store.getState().pageEditor?.draft.name).toBe("kept basic draft");
   });
-
-  it("uses contract numeric bounds and retains blank relevance rejected by the save endpoint", async () => {
+  it("accepts the documented upper bound and rejects values beyond it without a write", async () => {
     const persist = client.updateAgent;
     client.updateAgent = vi.fn(async (id, body) =>
       persist(id, UpdateAgentRequestSchema.parse(body)),
     );
     store.getState().openSettingsRoute("memory-tools");
-    await act(async () => render(<MemoryReadingRules />));
-    const candidates = screen.getAllByLabelText("每次查询候选条数上限")[0] as HTMLInputElement;
-    const entries = screen.getAllByLabelText("每页最大返回项")[0] as HTMLInputElement;
-    expect(candidates.max).toBe("10000");
-    fireEvent.change(candidates, { target: { value: "10000" } });
-    expect(entries.max).toBe("10000");
-    fireEvent.change(entries, { target: { value: "10000" } });
+    await act(async () => render(<AgentMaterials />));
+    const bytes = screen.getByLabelText("记忆工具读取额度");
+    fireEvent.change(bytes, { target: { value: "1048576" } });
     expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
-
-    // Patch blank relevance into conservative preset via store
-    store.getState().patchPageAgent("memory-tools", {
-      p5_config: {
-        ...persisted.p5_config,
-        retrieval_presets: {
-          ...persisted.p5_config.retrieval_presets,
-          conservative: {
-            ...persisted.p5_config.retrieval_presets.conservative,
-            relevance_instruction: " ",
-          },
-        },
-      },
-    });
-
-    const calls = (client.updateAgent as ReturnType<typeof vi.fn>).mock.calls.length;
+    fireEvent.change(bytes, { target: { value: "1048577" } });
+    const calls = vi.mocked(client.updateAgent).mock.calls.length;
     expect(await store.getState().saveSettingsPage("memory-tools")).toBe(false);
-    expect(client.updateAgent).toHaveBeenCalledTimes(calls + 1);
-    expect(persisted.p5_config.retrieval_presets.conservative.relevance_instruction).not.toBe(" ");
-    expect(
-      store.getState().pageEditor?.draft.p5_config.retrieval_presets.conservative
-        .relevance_instruction,
-    ).toBe(" ");
+    expect(vi.mocked(client.updateAgent).mock.calls.length).toBe(calls);
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read?.max_bytes).toBe(1048576);
   });
 });
-describe("memory reading rules bytes single-owner persistence and context draft isolation", () => {
-  it("saves edited preset bytes via memory-tools and preserves independent context drafts", async () => {
-    await store.getState().editAgent("A");
+describe("memory allowance persistence and context draft isolation", () => {
+  it("saves edited bytes while retaining independent context draft", async () => {
     store.getState().openSettingsRoute("memory-tools");
-    await act(async () => render(<MemoryReadingRules />));
-
-    store.getState().patchPageAgent("context", {
-      p5_config: { ...persisted.p5_config, context_window: 24576 },
-    });
-    expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
-
-    const bytesInput = screen.getByTestId("reading-preset-max-tokens-standard") as HTMLInputElement;
-    fireEvent.change(bytesInput, { target: { value: "32768" } });
-
+    await act(async () => render(<AgentMaterials />));
+    store
+      .getState()
+      .patchPageAgent("context", { p5_config: { ...persisted.p5_config, context_window: 24576 } });
+    fireEvent.change(screen.getByLabelText("记忆工具读取额度"), { target: { value: "32768" } });
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["memory-tools", "context"]);
-
-    const saveBtn = screen.getByTestId("reading-save-rules-btn") as HTMLButtonElement;
-    expect(saveBtn.disabled).toBe(false);
-
-    await act(async () => {
-      fireEvent.click(saveBtn);
-    });
-
-    expect(persisted.p5_config.retrieval_presets.standard.max_tokens).toBe(32768);
+    expect(await store.getState().saveSettingsPage("memory-tools")).toBe(true);
+    expect(persisted.p5_config.memory_read?.max_bytes).toBe(32768);
     expect(store.getState().pageEditor?.draft.p5_config.context_window).toBe(24576);
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);
   });
-
-  it("blocks save when preset bytes are invalid and discards invalid bytes without discarding context drafts", async () => {
-    await store.getState().editAgent("A");
+  it("blocks invalid bytes and discards them without discarding context draft", async () => {
     store.getState().openSettingsRoute("memory-tools");
-    await act(async () => render(<MemoryReadingRules />));
-
-    store.getState().patchPageAgent("context", {
-      p5_config: { ...persisted.p5_config, context_window: 28000 },
-    });
-
-    const bytesInput = screen.getByTestId("reading-preset-max-tokens-standard") as HTMLInputElement;
-    fireEvent.change(bytesInput, { target: { value: "-5" } });
-
-    const saveBtn = screen.getByTestId("reading-save-rules-btn") as HTMLButtonElement;
-    expect(saveBtn.disabled).toBe(true);
-
+    await act(async () => render(<AgentMaterials />));
+    store
+      .getState()
+      .patchPageAgent("context", { p5_config: { ...persisted.p5_config, context_window: 28000 } });
+    fireEvent.change(screen.getByLabelText("记忆工具读取额度"), { target: { value: "-5" } });
     const callsBefore = vi.mocked(client.updateAgent).mock.calls.length;
     expect(await store.getState().saveSettingsPage("memory-tools")).toBe(false);
-    expect(store.getState().error).toBe("请先修正方案中的无效数字，再保存。");
     expect(vi.mocked(client.updateAgent).mock.calls.length).toBe(callsBefore);
-
-    await act(async () => {
-      store.getState().discardSettingsPages("memory-tools");
-    });
-
-    expect(store.getState().pageEditor?.draft.p5_config.retrieval_presets.standard.max_tokens).toBe(
-      persisted.p5_config.retrieval_presets.standard.max_tokens,
+    await act(async () => store.getState().discardSettingsPages("memory-tools"));
+    expect(store.getState().pageEditor?.draft.p5_config.memory_read).toEqual(
+      persisted.p5_config.memory_read,
     );
     expect(store.getState().pageEditor?.draft.p5_config.context_window).toBe(28000);
     expect(dirtyPages(store.getState().pageEditor)).toEqual(["context"]);

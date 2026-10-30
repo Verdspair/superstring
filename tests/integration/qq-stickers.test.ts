@@ -14,12 +14,12 @@
 //
 // The copy store is exercised against a temporary directory, never the app's real data area.
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import upstream from "omggif";
-import { createToolCatalog, describeTool } from "../../src/server/agent/tool-catalog";
+import { createToolCatalog } from "../../src/server/agent/tool-catalog";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import {
   addQqStickerToCollections,
@@ -31,8 +31,10 @@ import {
   QQ_STICKER_PENDING_GOVERNANCE,
   qqStickerLibrarySnapshot,
   readQqStickerAsset,
+  readQqStickerAssetRow,
   removeQqStickerFromCollection,
   saveQqStickerDraft,
+  saveQqStickerTagsDraft,
   setQqStickerEnabled,
   updateQqStickerCollection,
 } from "../../src/server/db/qq-sticker-repository";
@@ -43,6 +45,7 @@ import { createQqStickerSearch } from "../../src/server/services/qq-sticker-capa
 import { resolveQqStickerLibrary } from "../../src/server/services/qq-sticker-contract";
 import { importQqStickerCopy } from "../../src/server/services/qq-sticker-import";
 import { QqStickerStore } from "../../src/server/services/qq-sticker-store";
+import { describeTool } from "../../src/shared/contracts/tool-directory";
 
 const MODEL = "qwen/qwen3-4b-2507";
 // Real bytes, not a stub: §9.2's "格式/大小/尺寸自动读取" reads the header, so a fixture that is
@@ -434,6 +437,43 @@ describe("collections and membership", () => {
       expectedRevision: renamed.revision,
     });
     expect(noop.revision).toBe(renamed.revision);
+  });
+});
+
+describe("sticker source revision producer", () => {
+  it("advances every persisted asset revision at the same clock instant and through rollback while preserving no-op edits", () => {
+    const h = tracked();
+    try {
+      setSystemTime(new Date("2026-10-28T12:00:00.999Z"));
+      const asset = importAsset(h);
+      const edited = editQqSticker(h.orm, asset.id, { description: "first current revision" });
+      const tagged = editQqSticker(h.orm, asset.id, { tags: ["new"] });
+      const draft = saveQqStickerDraft(h.orm, asset.id, "description draft");
+      const draftTags = saveQqStickerTagsDraft(h.orm, asset.id, ["draft"]);
+      const enabled = setQqStickerEnabled(h.orm, asset.id, true);
+      const revisions = [asset, edited, tagged, draft, draftTags, enabled].map(
+        (row) => row.updatedAt,
+      );
+      expect(new Set(revisions).size).toBe(revisions.length);
+      for (let i = 1; i < revisions.length; i++)
+        expect(revisions[i]! > revisions[i - 1]!).toBe(true);
+      expect(editQqSticker(h.orm, asset.id, { description: edited.description }).updatedAt).toBe(
+        enabled.updatedAt,
+      );
+      expect(setQqStickerEnabled(h.orm, asset.id, true).updatedAt).toBe(enabled.updatedAt);
+      setSystemTime(new Date("2026-10-28T11:00:00.000Z"));
+      const rollback = editQqSticker(h.orm, asset.id, { usageNote: "after clock rollback" });
+      expect(rollback.updatedAt > enabled.updatedAt).toBe(true);
+      h.business.db
+        .query("UPDATE qq_sticker_assets SET updated_at=? WHERE id=?")
+        .run("2026-10-28T12:00:00.999999Z", asset.id);
+      expect(editQqSticker(h.orm, asset.id, { name: "roll fraction" }).updatedAt).toBe(
+        "2026-10-28T12:00:01.000000Z",
+      );
+      expect(readQqStickerAssetRow(h.orm, asset.id)?.enabled).toBe(1);
+    } finally {
+      setSystemTime();
+    }
   });
 });
 

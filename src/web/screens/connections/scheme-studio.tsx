@@ -90,7 +90,7 @@ function SchemeTaskGroup({
           <WorkspaceHelp title={title} description={t(description)} />
         ) : undefined
       }
-      containerClassName="space-y-4 divide-y-0 p-3 sm:p-4"
+      containerClassName="space-y-4 divide-y-0 settings-content-padding"
     >
       {children}
     </SettingsGroup>
@@ -612,10 +612,12 @@ export function SchemeStudio({
   active = true,
   breadcrumb,
   embedded = false,
+  pageHeader,
 }: {
   active?: boolean;
   breadcrumb?: ReactNode;
   embedded?: boolean;
+  pageHeader?: ReactNode;
 } = {}) {
   const { t } = useTranslation();
   const state = useSuperstringStore(
@@ -766,134 +768,135 @@ export function SchemeStudio({
     }
   };
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto lg:overflow-hidden">
-      {editor && (
-        <header
-          data-visual="qq-task-header"
-          className="mb-[24px] flex flex-col gap-[14px] border-b border-border pb-[20px] min-[768px]:flex-row min-[768px]:items-start min-[768px]:justify-between"
-        >
-          <div className="min-w-0 flex-1">
-            {!embedded && (
-              <>
-                {breadcrumb ?? (
-                  <div className="mb-[6px] text-[12.5px] text-[var(--text-tertiary)]">
-                    {t("schemes.qq.name")} · {editor.name}
-                  </div>
-                )}
-                <div className="flex flex-wrap items-center gap-[12px]">
-                  <h1 className="workspace-page-title">
-                    {t(
-                      schemeTaskLabels[effectiveTab] ??
-                        QQ_SCHEME_SECTIONS.find((section) => section.id === effectiveTab)
-                          ?.labelKey ??
-                        "connections.speechTriggers",
-                    )}
-                  </h1>
-                  <span className="rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] text-muted-foreground">
-                    {t("schemes.sharedScope")}
-                  </span>
-                </div>
-                <p className="mt-[6px] max-w-[680px] text-[13.5px] leading-[1.55] text-muted-foreground">
-                  {t(
-                    effectiveTab === "participation"
-                      ? "strict.qq.participationDescription"
-                      : "schemes.sharedScopeNote",
-                  )}
-                </p>
-              </>
-            )}
-            {embedded && (
-              <span className="text-[12.5px] text-muted-foreground">
-                {t("schemes.sharedScope")}
-              </span>
-            )}
-          </div>
-          <div className="flex shrink-0 flex-col items-start gap-[10px] min-[768px]:items-end">
-            <p
-              className={`rounded-[9999px] border px-[12px] py-[4px] text-[12px] font-semibold whitespace-nowrap ${dirty || invalid ? "border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning)]" : "border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success)]"}`}
-              role="status"
-            >
-              {invalid
-                ? t("connections.correctInvalidNumbersFirst")
-                : dirty
-                  ? t("connections.valueUnsavedChanges", { "0": changes.length })
-                  : t("strict.reading.clean")}
-            </p>
-            <div className="flex flex-wrap items-center gap-[8px]">
-              {invalid && invalidFields[0] && (
-                <Button
-                  variant="link"
-                  size="sm"
-                  tooltip={t("hints.qq.locateInvalid")}
-                  onClick={() => {
-                    const field = invalidFields[0];
-                    setTask(schemeFieldTask(field));
-                    setFocusField(field);
-                  }}
-                >
-                  <Crosshair />
-                  {t("schemes.studio.locateInvalid")}
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="sm"
-                tooltip={t("hints.qq.previewChanges")}
-                onClick={() => setPreview(true)}
-              >
-                <FileDiff />
-                {t("connections.reviewChanges")}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="gap-[8px]"
-                disabled={busy || !dirty}
-                tooltip={t("hints.qq.schemeDiscard")}
-                onClick={() => state.discardQqSchemeChanges()}
-              >
-                {t("connections.discardChanges")}
-              </Button>
-              <Button
-                aria-label={t("connections.saveScheme")}
-                disabled={busy || invalid || !changes.length || !editor.name.trim()}
-                tooltip={t("hints.qq.schemeSave")}
-                onClick={() => void state.saveQqScheme()}
-              >
-                <Save />
-                {t("strict.qq.saveConfig")}
-              </Button>
-            </div>
-          </div>
-        </header>
-      )}
-      {!editor ? (
-        <div className="grid flex-1 place-content-center gap-3 p-8 text-center">
-          <h2 className="workspace-section-title">
-            {t("connections.defineParticipationInRealConversations")}
-          </h2>
-          <p className="max-w-sm text-sm text-muted-foreground">
-            {t("connections.aSchemeCanBeSharedBySeveralGroupsOr")}
-          </p>
-          <Button
-            disabled={saving}
-            tooltip={t("hints.qq.schemeNew")}
-            onClick={() => setNaming({ kind: "new", step: "name" })}
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <ScrollArea ref={taskScrollRoot} className="min-h-0 flex-1">
+        {pageHeader}
+        {editor && (
+          <header
+            data-visual="qq-task-header"
+            className="mb-[24px] flex flex-col gap-[14px] border-b border-border pb-[20px] min-[768px]:flex-row min-[768px]:items-start min-[768px]:justify-between"
           >
-            <Plus />
-            {t("connections.newScheme")}
-          </Button>
-        </div>
-      ) : (
-        <Tabs
-          orientation="horizontal"
-          value={effectiveTab}
-          onValueChange={(value) => setTask(value as SchemeTask)}
-          className="flex min-h-[28rem] shrink-0 flex-col gap-0 lg:min-h-0 lg:flex-1"
-        >
-          <ScrollArea ref={taskScrollRoot} className="min-h-0 flex-1">
+            <div className="min-w-0 flex-1">
+              {!embedded && (
+                <>
+                  {breadcrumb ?? (
+                    <div className="mb-[6px] text-[12.5px] text-[var(--text-tertiary)]">
+                      {t("schemes.qq.name")} · {editor.name}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap items-center gap-[12px]">
+                    <h1 className="workspace-page-title">
+                      {t(
+                        schemeTaskLabels[effectiveTab] ??
+                          QQ_SCHEME_SECTIONS.find((section) => section.id === effectiveTab)
+                            ?.labelKey ??
+                          "connections.speechTriggers",
+                      )}
+                    </h1>
+                    <span className="rounded-[9999px] border border-border bg-muted px-[10px] py-[3px] text-[12px] text-muted-foreground">
+                      {t("schemes.sharedScope")}
+                    </span>
+                  </div>
+                  <p className="mt-[6px] max-w-[680px] text-[13.5px] leading-[1.55] text-muted-foreground">
+                    {t(
+                      effectiveTab === "participation"
+                        ? "strict.qq.participationDescription"
+                        : "schemes.sharedScopeNote",
+                    )}
+                  </p>
+                </>
+              )}
+              {embedded && (
+                <span className="text-[12.5px] text-muted-foreground">
+                  {t("schemes.sharedScope")}
+                </span>
+              )}
+            </div>
+            <div className="flex shrink-0 flex-col items-start gap-[10px] min-[768px]:items-end">
+              <p
+                className={`rounded-[9999px] border px-[12px] py-[4px] text-[12px] font-semibold whitespace-nowrap ${dirty || invalid ? "border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning)]" : "border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success)]"}`}
+                role="status"
+              >
+                {invalid
+                  ? t("connections.correctInvalidNumbersFirst")
+                  : dirty
+                    ? t("connections.valueUnsavedChanges", { "0": changes.length })
+                    : t("strict.reading.clean")}
+              </p>
+              <div className="flex flex-wrap items-center gap-[8px]">
+                {invalid && invalidFields[0] && (
+                  <Button
+                    variant="link"
+                    size="sm"
+                    tooltip={t("hints.qq.locateInvalid")}
+                    onClick={() => {
+                      const field = invalidFields[0];
+                      setTask(schemeFieldTask(field));
+                      setFocusField(field);
+                    }}
+                  >
+                    <Crosshair />
+                    {t("schemes.studio.locateInvalid")}
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  tooltip={t("hints.qq.previewChanges")}
+                  onClick={() => setPreview(true)}
+                >
+                  <FileDiff />
+                  {t("connections.reviewChanges")}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="gap-[8px]"
+                  disabled={busy || !dirty}
+                  tooltip={t("hints.qq.schemeDiscard")}
+                  onClick={() => state.discardQqSchemeChanges()}
+                >
+                  {t("connections.discardChanges")}
+                </Button>
+                <Button
+                  aria-label={t("connections.saveScheme")}
+                  disabled={busy || invalid || !changes.length || !editor.name.trim()}
+                  tooltip={t("hints.qq.schemeSave")}
+                  onClick={() => void state.saveQqScheme()}
+                >
+                  <Save />
+                  {t("strict.qq.saveConfig")}
+                </Button>
+              </div>
+            </div>
+          </header>
+        )}
+        {!editor ? (
+          <div className="grid min-h-full place-content-center gap-3 p-8 text-center">
+            <h2 className="workspace-section-title">
+              {t("connections.defineParticipationInRealConversations")}
+            </h2>
+            <p className="max-w-sm text-sm text-muted-foreground">
+              {t("connections.aSchemeCanBeSharedBySeveralGroupsOr")}
+            </p>
+            <Button
+              disabled={saving}
+              tooltip={t("hints.qq.schemeNew")}
+              onClick={() => setNaming({ kind: "new", step: "name" })}
+            >
+              <Plus />
+              {t("connections.newScheme")}
+            </Button>
+          </div>
+        ) : (
+          <Tabs
+            orientation="horizontal"
+            value={effectiveTab}
+            onValueChange={(value) => setTask(value as SchemeTask)}
+            className="min-w-0 gap-0"
+          >
             <div className="min-w-0 space-y-5 pb-7">
-              <SettingsGroup containerClassName="space-y-4 divide-y-0 p-3 sm:p-4">
+              <SettingsGroup containerClassName="space-y-4 divide-y-0 settings-content-padding">
                 <div className="flex flex-wrap items-center gap-2">
                   <NativeSelect
                     className="min-w-0 flex-1 basis-48"
@@ -1002,7 +1005,11 @@ export function SchemeStudio({
                 </div>
               </SettingsGroup>
               <div>
-                <TabsList className="grid h-auto w-full min-w-0 grid-cols-2 gap-2 rounded-none bg-transparent p-0 md:grid-cols-3 xl:grid-cols-6">
+                <TabsList
+                  presentation="compact"
+                  flow="grid"
+                  className="grid-cols-2 gap-2 rounded-none bg-transparent p-0 md:grid-cols-3 xl:grid-cols-6"
+                >
                   {QQ_SCHEME_SECTIONS.map((section) => (
                     <TabsTrigger
                       key={section.id}
@@ -1031,7 +1038,7 @@ export function SchemeStudio({
                           description={t("strict.qq.modelBody")}
                         />
                       }
-                      containerClassName="flex flex-wrap items-center justify-between gap-3 p-3 sm:p-4"
+                      containerClassName="flex flex-wrap items-center justify-between gap-3 settings-content-padding"
                     >
                       <span className="text-sm">{t("strict.qq.modelRule")}</span>
                       <span className="text-xs font-medium text-primary">
@@ -1710,22 +1717,22 @@ export function SchemeStudio({
                 )}
               </div>
             </div>
-          </ScrollArea>
-        </Tabs>
-      )}
-      {editor && (state.error || state.feedback) && (
-        <div className="shrink-0 border-t px-4 py-2">
-          {state.error ? (
-            <p role="alert" className="text-sm text-destructive">
-              {translateNotice(state.error)}
-            </p>
-          ) : (
-            <p role="status" className="text-sm text-muted-foreground">
-              {translateNotice(state.feedback)}
-            </p>
-          )}
-        </div>
-      )}
+          </Tabs>
+        )}
+        {editor && (state.error || state.feedback) && (
+          <div className="shrink-0 border-t px-4 py-2">
+            {state.error ? (
+              <p role="alert" className="text-sm text-destructive">
+                {translateNotice(state.error)}
+              </p>
+            ) : (
+              <p role="status" className="text-sm text-muted-foreground">
+                {translateNotice(state.feedback)}
+              </p>
+            )}
+          </div>
+        )}
+      </ScrollArea>
       <ConfirmDialog
         open={confirmDelete && editor !== null}
         message={t(
@@ -1748,7 +1755,7 @@ export function SchemeStudio({
           if (!open && !busy) setNaming(null);
         }}
       >
-        <DialogContent>
+        <DialogContent scrollMode="surface">
           <DialogHeader>
             <DialogTitle>
               {t(
@@ -1843,7 +1850,7 @@ export function SchemeStudio({
         </DialogContent>
       </Dialog>
       <Dialog open={preview} onOpenChange={setPreview}>
-        <DialogContent className="max-h-[85dvh] overflow-auto sm:max-w-3xl">
+        <DialogContent scrollMode="surface" className="max-h-[85dvh]  sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>{t("connections.reviewChanges")}</DialogTitle>
             <DialogDescription>

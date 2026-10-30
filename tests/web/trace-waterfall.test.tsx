@@ -20,6 +20,7 @@ import {
 import { ExecutionWorkspace } from "../../src/web/screens/observability/ObservabilityWorkspace";
 import { traceTask, wakeCauseSummary } from "../../src/web/screens/observability/presentation";
 import { TraceTimeline } from "../../src/web/screens/observability/TraceTimeline";
+import { RunWorkspace } from "../../src/web/screens/runs/RunEntry";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { render } from "./helpers/render-with-providers";
 
@@ -240,11 +241,16 @@ it("distinguishes partial output, historical absence, revocation and expiry", as
   expect(screen.getByText("来源保留期已结束，模型输出已清除。")).toBeTruthy();
 });
 it("labels verified fallbacks and unverified requested models truthfully", () => {
-  const view = render(<EvidenceWorkbench item={child} />);
+  const view = render(
+    <EvidenceWorkbench renderRun={(runId) => <RunWorkspace runId={runId} />} item={child} />,
+  );
   expect(screen.getByText("实际请求模型: actual-model")).toBeTruthy();
   expect(screen.getByText("已使用替补模型；请求模型：requested-model")).toBeTruthy();
   view.rerender(
-    <EvidenceWorkbench item={{ ...child, details: { ...child.details, modelResolved: false } }} />,
+    <EvidenceWorkbench
+      renderRun={(runId) => <RunWorkspace runId={runId} />}
+      item={{ ...child, details: { ...child.details, modelResolved: false } }}
+    />,
   );
   expect(screen.getByText("请求模型: actual-model")).toBeTruthy();
   expect(screen.queryByText("已使用替补模型；请求模型：requested-model")).toBeNull();
@@ -267,7 +273,7 @@ it("changes to the parent run in the workbench without nested dialogs or retaine
       errorCode: null,
     }),
   });
-  render(<EvidenceWorkbench item={child} />);
+  render(<EvidenceWorkbench renderRun={(runId) => <RunWorkspace runId={runId} />} item={child} />);
   await pointer(screen.getByRole("button", { name: "查看实际输入与输出" }));
   await screen.findByText("Exact protected input");
   await pointer(screen.getByRole("button", { name: "所属运行" }));

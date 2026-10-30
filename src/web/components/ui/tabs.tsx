@@ -21,7 +21,7 @@ function Tabs({
 }
 
 const tabsListVariants = cva(
-  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
+  "group/tabs-list w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
   {
     variants: {
       variant: {
@@ -38,13 +38,33 @@ const tabsListVariants = cva(
 function TabsList({
   className,
   variant = "default",
+  presentation = "compact",
+  flow = "wrap",
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.List> & VariantProps<typeof tabsListVariants>) {
+}: React.ComponentProps<typeof TabsPrimitive.List> &
+  VariantProps<typeof tabsListVariants> & {
+    presentation?: "compact" | "workspace";
+    flow?: "wrap" | "scroll" | "grid";
+  }) {
   return (
     <TabsPrimitive.List
       data-slot="tabs-list"
       data-variant={variant}
-      className={cn(tabsListVariants({ variant }), className)}
+      data-presentation={presentation}
+      data-flow={flow}
+      className={cn(
+        tabsListVariants({ variant }),
+        "min-w-0 max-w-full group-data-horizontal/tabs:h-auto",
+        flow === "wrap" &&
+          "inline-flex flex-wrap justify-start [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal",
+        flow === "scroll" &&
+          "inline-flex overflow-x-auto justify-start [&_[role=tab]]:min-h-8 [&_[role=tab]]:flex-none",
+        flow === "grid" &&
+          "grid h-auto w-full min-w-0 [&_[role=tab]]:h-auto [&_[role=tab]]:min-w-0 [&_[role=tab]]:whitespace-normal",
+        presentation === "workspace" &&
+          "gap-[6px] rounded-[8px] border border-border bg-muted p-[4px] [&_[role=tab]]:min-h-8 [&_[role=tab]]:rounded-[8px] [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]",
+        className,
+      )}
       {...props}
     />
   );
@@ -59,7 +79,7 @@ function TabsTrigger({
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
       className={cn(
-        "relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-1.5 py-0.5 text-sm font-medium whitespace-nowrap text-foreground/60 transition-[color,background-color,border-color,box-shadow] duration-[var(--motion-fast)] group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 has-data-[icon=inline-end]:pr-1 has-data-[icon=inline-start]:pl-1 dark:text-muted-foreground dark:hover:text-foreground group-data-[variant=line]/tabs-list:data-active:shadow-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "relative inline-flex min-w-0 max-w-full h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-1.5 py-0.5 text-sm font-medium whitespace-nowrap text-foreground/60 transition-[color,background-color,border-color,box-shadow] duration-[var(--motion-fast)] group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 has-data-[icon=inline-end]:pr-1 has-data-[icon=inline-start]:pl-1 dark:text-muted-foreground dark:hover:text-foreground group-data-[variant=line]/tabs-list:data-active:shadow-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
         "data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-input/30 dark:data-active:text-foreground",
         "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity after:duration-[var(--motion-fast)] after:ease-[var(--ease-standard)] group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-[-5px] group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-0 group-data-vertical/tabs:after:-right-1 group-data-vertical/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
@@ -68,7 +88,8 @@ function TabsTrigger({
       {...props}
       onFocus={(event) => {
         props.onFocus?.(event);
-        if (tooltip) event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
+        if (event.currentTarget.closest('[data-flow="scroll"]'))
+          event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
       }}
     />
   );

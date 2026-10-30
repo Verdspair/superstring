@@ -35,6 +35,8 @@ import {
 } from "./types";
 
 export interface QqInputs {
+  /** Navigation hands scheme choices to the original binding editor before saving anything. */
+  bindingSchemeConfirmationId: string | null;
   schemeTexts: Record<string, string>;
   schemeInvalid: Record<string, string>;
   schemeNewName: string;
@@ -99,6 +101,7 @@ export interface QqInputs {
   stickerBatchTag: string;
 }
 export const emptyQqInputs = (): QqInputs => ({
+  bindingSchemeConfirmationId: null,
   schemeTexts: {},
   schemeInvalid: {},
   schemeNewName: "",
@@ -764,6 +767,17 @@ export function createQqDraftActions(
           : undefined;
       if (qqGroupConfigHasInvalidInputs(groupEditor, targetScheme)) {
         set({ error: msg("请先修正方案中的无效数字，再保存。") });
+        return false;
+      }
+      const schemeChoice = Object.entries(get().qqInputs.choices).find(
+        ([, choice]) =>
+          choice.source &&
+          choice.agentId === choice.source.agent_id &&
+          choice.schemeId !== choice.source.scheme_id,
+      );
+      if (schemeChoice) {
+        patchInputs({ bindingSchemeConfirmationId: schemeChoice[0] });
+        set({ error: null });
         return false;
       }
       const schemeWasDirty = qqSchemeDirty(get().qqSchemeEditor);

@@ -298,24 +298,6 @@ export function conversationMessagesSince(
   );
 }
 
-/** Permanent event identities, including media-only messages; scoped exactly like context. */
-export function qqMemberEventCount(orm: Orm, scope: QqConversationScope): number {
-  const row = orm
-    .select({ total: count() })
-    .from(schema.qqEvents)
-    .where(
-      and(
-        eq(schema.qqEvents.accountId, scope.accountId),
-        eq(schema.qqEvents.conversationKind, scope.conversationKind),
-        eq(schema.qqEvents.peerId, scope.peerId),
-        eq(schema.qqEvents.agentId, scope.agentId),
-        inArray(schema.qqEvents.speakerKind, ["member", "anonymous"] as const),
-      ),
-    )
-    .get();
-  return row?.total ?? 0;
-}
-
 export interface QqObservedConversation {
   readonly accountId: string;
   readonly kind: "group" | "private";

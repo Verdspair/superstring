@@ -102,7 +102,6 @@ function fixture() {
       conversationId: conversation.id,
       owner: { ...owner, id: options.ownerId ?? owner.id },
       scopes: null,
-      mode: "standard",
       query: text,
       ...(options.cursor ? { cursor: options.cursor } : {}),
       budget: DEFAULT_STANDARD_PRESET.max_tokens,

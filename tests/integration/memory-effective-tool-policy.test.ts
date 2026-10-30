@@ -1,3 +1,4 @@
+import { P5ConfigSchema } from "../../src/shared/contracts/models";
 import { runtimeFixtureBusiness } from "../harness/business-db";
 // Memory effective tool policy goldens (ADR0019 §8.11 tool-first retrieval): stored
 // full_catalog/full_body and legacy batch values stay raw; the active tool path maps
@@ -31,7 +32,7 @@ import { updateAgent } from "../../src/server/services/agent-service";
 import { runtimeFromAgent } from "../../src/server/services/runtime-config";
 import type { RuntimeConfig } from "../../src/shared/contracts";
 import type { Evidence } from "../../src/shared/contracts/evidence";
-import { resolveMemoryReadPolicy } from "../../src/shared/contracts/memory";
+import { resolveMemoryReadSettings } from "../../src/shared/contracts/memory";
 import { DEFAULT_RETRIEVAL_PRESETS } from "../../src/shared/contracts/models";
 import type { ModelStep } from "../harness/model";
 import { batchScore, decideGenerate, say } from "../harness/model";
@@ -131,7 +132,6 @@ function moduleFor(runtime: RuntimeConfig) {
         agentId: DEFAULT_AGENT_ID,
         owner,
         scopes: null,
-        mode: "standard",
         query: "",
         budget: 65536,
         ...extra,
@@ -198,7 +198,7 @@ describe("memory effective tool policy", () => {
     for (let index = 0; index < 18; index += 1)
       seedMemory(`m${String(index).padStart(2, "0")}`, `正文${index} ${"x".repeat(200)}`);
     const { capacity, leaf, query, read } = moduleFor(runtime);
-    const page = await query({ mode: "full_body" });
+    const page = await query();
     expect(page.status).toBe("ok");
     expect(page.items).toHaveLength(16); // broad preset cap (fold), no automatic full scan/body fill
     expect(page.nextCursor).toBeString();
@@ -246,9 +246,12 @@ describe("memory effective tool policy", () => {
       { p5_config: { ...stored, retrieval_presets: presets } },
       row.configVersion,
     );
-    const { query } = moduleFor(frozenRuntime());
-    expect((await query({ mode: "conservative" })).items).toHaveLength(2);
-    expect((await query({ mode: "standard" })).items).toHaveLength(4);
+    const legacy = frozenRuntime();
+    delete legacy.p5_config.memory_read;
+    legacy.p5_config.retrieval_mode = "conservative";
+    expect((await moduleFor(legacy).query()).items).toHaveLength(2);
+    legacy.p5_config.retrieval_mode = "standard";
+    expect((await moduleFor(legacy).query()).items).toHaveLength(4);
     // Legacy batch edits stay stored but are inactive for the current tool path:
     const edited = getAgentRow(business.orm, DEFAULT_AGENT_ID)!;
     const stored2 = JSON.parse(edited.p5Config) as Record<string, unknown>;
@@ -267,12 +270,12 @@ describe("memory effective tool policy", () => {
     );
     const frozen = frozenRuntime();
     const second = moduleFor(frozen);
-    const full = await second.query({ mode: "full_body" });
+    const full = await second.query();
     expect(full.items).toHaveLength(16); // broad cap, not batch=1
     const evidence = full.items[0]!;
-    frozen.p5_config.retrieval_mode = "off";
+    frozen.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
     const off = moduleFor(frozen);
-    expect((await off.query({ mode: "broad" })).items).toEqual([]);
+    expect((await off.query()).items).toEqual([]);
     await expect(off.read(evidence)).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
   });
 
@@ -336,33 +339,31 @@ describe("memory effective tool policy", () => {
   });
 });
 
-describe("resolveMemoryReadPolicy", () => {
-  const presets = DEFAULT_RETRIEVAL_PRESETS;
-  it("keeps ordinary modes on their own preset and folds retired legacy full modes to broad", () => {
-    for (const mode of ["conservative", "standard", "broad"] as const)
-      expect(resolveMemoryReadPolicy(mode, presets)).toEqual({
-        storedMode: mode,
-        effectiveMode: mode,
-        presetName: mode,
-        legacyFieldsInactive: false,
-        preset: presets[mode],
+describe("resolveMemoryReadSettings", () => {
+  it("decodes legacy limits without returning active tier identities", () => {
+    for (const retrieval_mode of [
+      "conservative",
+      "standard",
+      "broad",
+      "full_catalog",
+      "full_body",
+      "off",
+    ]) {
+      const p5 = P5ConfigSchema.parse({ retrieval_mode });
+      const legacy =
+        DEFAULT_RETRIEVAL_PRESETS[
+          retrieval_mode === "off"
+            ? "conservative"
+            : retrieval_mode === "full_catalog" || retrieval_mode === "full_body"
+              ? "broad"
+              : (retrieval_mode as "standard")
+        ];
+      expect(resolveMemoryReadSettings(p5)).toEqual({
+        enabled: retrieval_mode !== "off",
+        maxBytes: legacy.max_tokens,
+        candidateLimit: legacy.candidate_limit,
+        maxEntries: legacy.max_entries,
       });
-    for (const mode of ["full_catalog", "full_body"] as const)
-      expect(resolveMemoryReadPolicy(mode, presets)).toEqual({
-        storedMode: mode,
-        effectiveMode: "broad",
-        presetName: "broad",
-        legacyFieldsInactive: true,
-        preset: presets.broad,
-      });
-  });
-  it("short-circuits off on the conservative preset", () => {
-    expect(resolveMemoryReadPolicy("off", presets)).toEqual({
-      storedMode: "off",
-      effectiveMode: "off",
-      presetName: "conservative",
-      legacyFieldsInactive: false,
-      preset: presets.conservative,
-    });
+    }
   });
 });

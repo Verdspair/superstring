@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../src/web/api";
 import { selectLocale } from "../../src/web/i18n";
@@ -170,6 +171,10 @@ describe("workspace panel retention", () => {
       target: { value: "memory draft" },
     });
     const workspaceScroll = screen.getByTestId("library-workspace-scroll");
+    Object.defineProperties(workspaceScroll, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 100 },
+    });
     workspaceScroll.scrollTop = 37;
     fireEvent.scroll(workspaceScroll);
 
@@ -205,6 +210,151 @@ describe("workspace panel retention", () => {
     expectPanel("knowledge", "knowledge draft");
     expectPanel("stickers", "sticker draft");
     expect((screen.getByTestId("library-workspace-scroll") as HTMLDivElement).scrollTop).toBe(37);
+  });
+
+  it("preserves each tab position across commit-time clamping and direct route changes", () => {
+    store.setState({ settingsRoute: "long-memory" });
+    render(<LibraryWorkspace />);
+    const root = screen.getByTestId("library-workspace-scroll");
+    let scroll = 0;
+    const memoryVisible = () => !screen.getByTestId("memory-panel").parentElement?.hidden;
+    Object.defineProperties(root, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, get: () => (memoryVisible() ? 1000 : 100) },
+      scrollTop: {
+        configurable: true,
+        get: () => {
+          if (!memoryVisible()) scroll = 0;
+          return scroll;
+        },
+        set: (value: number) => {
+          scroll = Math.min(value, memoryVisible() ? 900 : 0);
+        },
+      },
+    });
+    root.scrollTop = 80;
+    fireEvent.scroll(root);
+    visit("knowledge-config");
+    expect(root.scrollTop).toBe(0);
+    fireEvent.scroll(root);
+    visit("long-memory");
+    expect(root.scrollTop).toBe(80);
+  });
+
+  it("reads the current owner position when a delayed scroll event arrives after a tab switch", () => {
+    store.setState({ settingsRoute: "long-memory" });
+    render(<LibraryWorkspace />);
+    const root = screen.getByTestId("library-workspace-scroll");
+    Object.defineProperties(root, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 100 },
+    });
+    root.scrollTop = 80;
+    fireEvent.scroll(root);
+    visit("knowledge-config");
+    root.scrollTop = 29;
+    fireEvent.scroll(root);
+    visit("long-memory");
+    expect(root.scrollTop).toBe(80);
+    // A queued event carries no old scrollTop: the live node still owns 80.
+    fireEvent.scroll(root);
+    visit("knowledge-config");
+    expect(root.scrollTop).toBe(29);
+    visit("long-memory");
+    expect(root.scrollTop).toBe(80);
+  });
+
+  it("restores a deferred tab target on content resize but never after real user intent or a stale callback", () => {
+    const observers: { callback: ResizeObserverCallback; disconnect: ReturnType<typeof vi.fn> }[] =
+      [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        callback: ResizeObserverCallback;
+        disconnect = vi.fn();
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = callback;
+          observers.push(this);
+        }
+        observe() {}
+        unobserve() {}
+      },
+    );
+    try {
+      store.setState({ settingsRoute: "long-memory" });
+      const view = render(<LibraryWorkspace />);
+      const root = screen.getByTestId("library-workspace-scroll");
+      let height = 1000;
+      Object.defineProperties(root, {
+        clientHeight: { configurable: true, value: 100 },
+        scrollHeight: { configurable: true, get: () => height },
+      });
+      root.scrollTop = 80;
+      fireEvent.scroll(root);
+      visit("knowledge-config");
+      height = 100;
+      visit("long-memory");
+      const first = observers.at(-1)!;
+      expect(root.scrollTop).toBe(0);
+      fireEvent.scroll(root); // Browser clamp/queued scroll is not user intent.
+      height = 1000;
+      act(() => first.callback([], first as unknown as ResizeObserver));
+      expect(root.scrollTop).toBe(80);
+      root.scrollTop = 45;
+      fireEvent.scroll(root);
+      act(() => first.callback([], first as unknown as ResizeObserver));
+      expect(root.scrollTop).toBe(45);
+      visit("knowledge-config");
+      height = 100;
+      visit("long-memory");
+      const second = observers.at(-1)!;
+      height = 1000;
+      act(() => first.callback([], first as unknown as ResizeObserver));
+      expect(root.scrollTop).toBe(0);
+      fireEvent.wheel(root, { deltaY: 20 });
+      act(() => second.callback([], second as unknown as ResizeObserver));
+      expect(root.scrollTop).toBe(0);
+      expect(second.disconnect).toHaveBeenCalled();
+      visit("knowledge-config");
+      act(() => first.callback([], first as unknown as ResizeObserver));
+      expect(root.scrollTop).toBe(0);
+      view.rerender(<LibraryWorkspace active={false} />);
+      act(() => second.callback([], second as unknown as ResizeObserver));
+      expect(root.scrollTop).toBe(0);
+      view.rerender(<LibraryWorkspace active />);
+      const remove = vi.spyOn(root, "removeEventListener");
+      view.unmount();
+      for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
+        expect(remove.mock.calls.some(([eventType]) => eventType === type)).toBe(true);
+      act(() => second.callback([], second as unknown as ResizeObserver));
+      expect(root.isConnected).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps memory position when guarded tab navigation is cancelled and supports keyboard switching", async () => {
+    store.setState({ page: "settings", settingsView: "workspace", settingsRoute: "long-memory" });
+    render(<LibraryWorkspace />);
+    const root = screen.getByTestId("library-workspace-scroll");
+    Object.defineProperties(root, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 100 },
+    });
+    root.scrollTop = 80;
+    fireEvent.scroll(root);
+    store.setState({ memoryCorrectionDirty: true });
+    const memoryTab = screen.getByRole("tab", { name: "记忆" });
+    memoryTab.focus();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    act(() => store.getState().cancelPendingNavigation());
+    expect(root.scrollTop).toBe(80);
+    expect(store.getState().settingsRoute).toBe("long-memory");
+    store.setState({ memoryCorrectionDirty: false });
+    await userEvent.click(screen.getByRole("tab", { name: "文档" }));
+    await userEvent.click(screen.getByRole("tab", { name: "记忆" }));
+    expect(root.scrollTop).toBe(80);
   });
 
   it("retains visited connection panels and activates only the selected panel", () => {

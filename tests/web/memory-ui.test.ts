@@ -1,11 +1,11 @@
 // Presentation-specific cases moved to fresh-product-workspaces.test.tsx.
-import { cleanup } from "@testing-library/react";
+import { cleanup, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AgentResponseSchema,
   type MemoryEntryResponse,
   type MemoryJobView,
-  type MemorySummary,
+  type MemoryManagementEntry,
   PersonaResponseSchema,
 } from "../../src/shared/contracts";
 import { api } from "../../src/web/api";
@@ -47,7 +47,16 @@ const persona = PersonaResponseSchema.parse({
   updated_at: NOW,
 });
 
-const memory: MemorySummary = {
+const memory: MemoryManagementEntry = {
+  owner_agent_id: AGENT_ID,
+  visibility: "session_private",
+  visibility_revision: 1,
+  recipient_agent_ids: [],
+  origins: [{ channel: "web", conversation_id: SESSION_ID }],
+  origin_complete: true,
+  source_validity: "valid",
+  runtime_eligibility: "unknown",
+  raw_preview: "unknown",
   id: MEMORY_ID,
   name: "项目约定",
   summary: "使用当前实现",
@@ -200,6 +209,9 @@ describe("记忆管理迟到响应与离页回归", () => {
     const old = deferred<Awaited<ReturnType<typeof api.listMemoryEntries>>>();
     setup({ listMemoryEntries: vi.fn(() => old.promise) });
     const work = store.getState().loadMemoryPage(1);
+    await waitFor(() =>
+      expect(store.getState().apiClient.listMemoryEntries).toHaveBeenCalledTimes(1),
+    );
     store.setState({ settingsRoute: "context", feedback: "context feedback" });
     old.reject(new Error("old list failed"));
     await work;
@@ -269,7 +281,11 @@ describe("R5 B 区记忆面板状态", () => {
     expect(useSuperstringStore.getState().memoryEntryTotal).toBe(1);
 
     await useSuperstringStore.getState().loadMemoryEntryDetail(MEMORY_ID);
-    expect(client.getMemoryEntry).toHaveBeenCalledWith(AGENT_ID, MEMORY_ID);
+    expect(client.getMemoryEntry).toHaveBeenCalledWith(
+      AGENT_ID,
+      MEMORY_ID,
+      expect.any(AbortSignal),
+    );
     expect(useSuperstringStore.getState().memoryEntryDetail?.body).toBe("不恢复已经撤销的机制。");
   });
 

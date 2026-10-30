@@ -1,14 +1,7 @@
-export interface ActionDescription {
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  capability: string;
-  /**
-   * 有没有副作用。**默认 `write`（保守）**：没声明的一律串行执行，只有明确声明 `read` 的动作
-   * 才允许同批并行——一个动作"看起来只读"不是理由。
-   */
-  effect?: "read" | "write";
-}
+import type { SharedActionDescription } from "../../shared/contracts/agent-action-descriptions";
+
+/** Missing effect defaults to write; only explicit reads may run in parallel. */
+export type ActionDescription = SharedActionDescription;
 export interface LeafAgentSpec {
   id: string;
   version?: string;

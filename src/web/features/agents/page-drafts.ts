@@ -1,4 +1,5 @@
 import type { AgentResponse, PersonaResponse, PolicyView } from "../../../shared/contracts";
+import { resolveMemoryReadSettings } from "../../../shared/contracts/memory";
 import type { AgentDraft } from "../../state/types";
 import { toDraft } from "./draft";
 
@@ -13,13 +14,7 @@ export const EDITABLE_PAGES = [
 ] as const;
 // Explicit ownership: no future p5 field is silently assigned to a page.
 export const PAGE_P5_FIELDS = {
-  // 目录批次两项为存量 full_catalog/full_body 字段，按存储保真原则随本页白名单保存；运行时按有界策略生效。
-  "memory-tools": [
-    "retrieval_mode",
-    "retrieval_presets",
-    "max_catalog_batches",
-    "catalog_batch_size",
-  ],
+  "memory-tools": ["memory_read"],
   context: [
     "context_window",
     "max_output_tokens",
@@ -54,13 +49,12 @@ export const PAGE_AGENT_FIELDS = {
     "model_name",
     "temperature",
     "memory_consolidation_model_name",
-    "memory_retrieval_model_name",
     "context_compression_model_name",
   ],
   identity: ["additional_instructions"],
   expression: ["persona_intensity"],
   "long-memory": ["memory_consolidation_prompt", "memory_consolidation_additional_instructions"],
-  "memory-tools": ["memory_retrieval_prompt"],
+  "memory-tools": [],
   context: [],
 } as const;
 export const PAGE_PERSONA_FIELDS = {
@@ -102,6 +96,11 @@ export function agentPageDirty(editor: PageEditor, page: EditablePage): boolean 
   if (PAGE_AGENT_FIELDS[page].some((key) => editor.draft[key] !== editor.agent[key])) {
     return true;
   }
+  if (page === "memory-tools") {
+    const saved = resolveMemoryReadSettings(editor.agent.p5_config);
+    const draft = resolveMemoryReadSettings(editor.draft.p5_config);
+    return saved.enabled !== draft.enabled || saved.maxBytes !== draft.maxBytes;
+  }
   return p5Fields(page).some(
     (key) => !equal(editor.draft.p5_config[key], editor.agent.p5_config[key]),
   );
@@ -133,18 +132,6 @@ export function pageAgentPayload(editor: PageEditor, page: EditablePage) {
           p5_config: {
             ...editor.agent.p5_config,
             ...Object.fromEntries(p5Fields(page).map((key) => [key, p5[key]])),
-            ...(page === "memory-tools"
-              ? {
-                  // Retired legacy modes normalize to broad only when the user actively
-                  // switched the mode away from the stored full mode this draft session.
-                  // A stored full mode kept untouched stays full in the payload for raw storage fidelity.
-                  retrieval_mode:
-                    p5.retrieval_mode !== editor.agent.p5_config.retrieval_mode &&
-                    (p5.retrieval_mode === "full_catalog" || p5.retrieval_mode === "full_body")
-                      ? "broad"
-                      : p5.retrieval_mode,
-                }
-              : {}),
           },
         }
       : {}),

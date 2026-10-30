@@ -1,7 +1,9 @@
 import { SavePersonaRequestSchema, UpdateAgentRequestSchema } from "../../../shared/contracts";
+import { resolveMemoryReadSettings } from "../../../shared/contracts/memory";
 import { msg } from "../../i18n";
 import { errorText } from "../../state/helpers";
-import type { AgentDraft, StoreGet, StoreSet, SuperstringState } from "../../state/types";
+import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
+import { agentPermissionScope, permissionSettingsDirty } from "../access/permission-state";
 import type { createKnowledgeReadActions } from "../knowledge/read-actions";
 import { knowledgeReadDirty } from "../knowledge/types";
 import { toDraft } from "./draft";
@@ -22,23 +24,6 @@ import {
   personaPageDirty,
   policyDirty,
 } from "./page-drafts";
-
-type Presets = AgentDraft["p5_config"]["retrieval_presets"];
-type Preset = Presets["conservative"];
-
-/**
- * 逐档合并判据（写回通用，不依赖预设里「每个键都存在」的假设）：既有档保留缺席键，
- * 新增档整份带入；相对已保存基线被修改的键在刷新后继续保留。
- */
-function mergePresetModes(
-  baseline: Presets,
-  each: (mode: keyof Presets, savedMode: Preset | undefined) => Preset | undefined,
-): Presets {
-  const merged: Record<string, unknown> = { ...baseline };
-  for (const mode of PRESET_MODE_KEYS) merged[mode] = each(mode, baseline[mode]);
-  return merged as unknown as Presets;
-}
-const PRESET_MODE_KEYS = ["conservative", "standard", "broad"] as const;
 
 export function createPageActions(
   set: StoreSet,
@@ -100,14 +85,7 @@ export function createPageActions(
       get().editorAgentId === id &&
       get().apiClient === api &&
       extraMatches();
-    // 只有用户本会话主动把存量 full 档改走时才由归一化触发保存；未改动的 full 档
-    // 不再「进页即保存」，批量字段改动照常经 agentPageDirty 保存且 mode 保持 full。
-    const normalizeMemoryMode =
-      page === "memory-tools" &&
-      editor.draft.p5_config.retrieval_mode !== editor.agent.p5_config.retrieval_mode &&
-      (editor.draft.p5_config.retrieval_mode === "full_catalog" ||
-        editor.draft.p5_config.retrieval_mode === "full_body");
-    if (page !== "expression" && (agentPageDirty(editor, page) || normalizeMemoryMode)) {
+    if (page !== "expression" && agentPageDirty(editor, page)) {
       if (
         page === "context" &&
         !capacityChecked &&
@@ -152,6 +130,7 @@ export function createPageActions(
     identity: ["basic", "identity", "expression"],
     conversation: ["models", "context"],
     materials: ["memory-tools"],
+    tools: [],
   } as const satisfies Record<
     import("../../state/types").AgentWorkspaceTask,
     readonly EditablePage[]
@@ -166,12 +145,37 @@ export function createPageActions(
       id = editor.agent.id,
       api = get().apiClient,
       operation = {};
+    const { page: ownerPage, settingsView: ownerView, settingsRoute: ownerRoute } = get();
     const matches = () =>
-      get().pageEditor?.token === token && get().editorAgentId === id && get().apiClient === api;
+      get().pageEditor?.token === token &&
+      get().editorAgentId === id &&
+      get().apiClient === api &&
+      get().page === ownerPage &&
+      get().settingsView === ownerView &&
+      get().settingsRoute === ownerRoute;
     knowledgeStep.acquire(operation);
+    const notice = (error: string | null, feedback: string) => {
+      if (task && matches())
+        set({ agentTaskResult: { agentId: id, token, task, error, feedback } });
+    };
+    notice(null, "");
     set({ settingsSaving: true, error: null, feedback: "" });
     let knowledge: ReturnType<typeof knowledgeStep.capture> = null;
     try {
+      if (task === "tools") {
+        if (!get().permissionEditor || get().permissionLoading) {
+          notice(get().permissionError || msg("保存失败，请修正后重试或取消。"), "");
+          return false;
+        }
+        const scope = agentPermissionScope(get().permissionEditor, id);
+        const saved = await get().savePermissionSettings(scope);
+        if (!matches()) return false;
+        notice(
+          saved ? null : get().permissionError,
+          saved ? msg("页面配置已保存；其他页面的草稿保持不变。") : "",
+        );
+        return saved;
+      }
       knowledge = task === "materials" ? knowledgeStep.capture() : null;
       if (knowledge && (knowledge.agentId !== id || !knowledgeStep.matches(knowledge)))
         return false;
@@ -228,21 +232,26 @@ export function createPageActions(
             token,
             api,
             task === "conversation",
-            () => !knowledge || knowledgeStep.matches(knowledge),
+            () => matches() && (!knowledge || knowledgeStep.matches(knowledge)),
           ))
         )
           return false;
         if (!matches() || (knowledge && !knowledgeStep.matches(knowledge))) return false;
       }
       if (knowledge && !(await knowledgeStep.commit(knowledge))) {
-        if (matches() && knowledgeStep.matches(knowledge))
-          set({ feedback: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。") });
+        if (matches() && knowledgeStep.matches(knowledge)) {
+          const feedback = msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。");
+          notice(get().error, feedback);
+          set({ feedback });
+        }
         return false;
       }
       if (!matches() || (knowledge && !knowledgeStep.matches(knowledge))) return false;
+      notice(null, msg("页面配置已保存；其他页面的草稿保持不变。"));
       set({ feedback: msg("页面配置已保存；其他页面的草稿保持不变。") });
       return true;
     } catch (error) {
+      notice(errorText(error), msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"));
       if (matches() && (!knowledge || knowledgeStep.matches(knowledge)))
         set({
           error: errorText(error),
@@ -279,6 +288,7 @@ export function createPageActions(
           },
         },
         feedback: "",
+        agentTaskResult: null,
       });
     },
     patchPagePersona: (page, patch) => {
@@ -295,6 +305,7 @@ export function createPageActions(
           personaDraft: { ...editor.personaDraft, ...allowed },
         },
         feedback: "",
+        agentTaskResult: null,
       });
     },
     patchPagePolicy: (patch) => {
@@ -316,6 +327,21 @@ export function createPageActions(
     saveSettingsTask: (task) => save(taskPages[task], task),
     settingsTaskDirty: (task) => {
       const editor = get().pageEditor;
+      if (task === "tools")
+        return permissionSettingsDirty(
+          get().permissionEditor,
+          agentPermissionScope(get().permissionEditor, get().editorAgentId),
+        );
+      if (
+        Object.keys(get().allocationInvalidInputs).some((key) =>
+          task === "materials"
+            ? key.startsWith(`agent:${get().editorAgentId}:reading:`)
+            : task === "conversation" &&
+              (key.startsWith(`agent:${get().editorAgentId}:context:`) ||
+                key.startsWith(`agent:${get().editorAgentId}:aux:`)),
+        )
+      )
+        return true;
       return (
         Boolean(
           editor &&
@@ -330,8 +356,12 @@ export function createPageActions(
     },
     discardSettingsTask: (task) => {
       if (get().settingsSaving) return;
+      if (task === "tools")
+        get().discardPermissionSettings(
+          agentPermissionScope(get().permissionEditor, get().editorAgentId),
+        );
       for (const page of taskPages[task]) get().discardSettingsPages(page);
-      if (task === "materials") get().discardKnowledgeRead();
+      if (task === "materials") get().discardKnowledgeRead({ preserveBaseline: true });
     },
     // 三个文本用途共用模型页的白名单与版本校验；旧独立检索模型值保持原样。
     applyDefaultModelToAgent: async (modelName) => {
@@ -422,15 +452,25 @@ export function createPageActions(
       });
     },
     // 显式刷新保存基线：只推进未修改字段与 config_version；已改草稿（含 p5）保留，不自动重试写。
-    refreshSettingsAgent: async () => {
+    refreshSettingsAgent: async (options) => {
       const editor = get().pageEditor;
       if (!editor || get().settingsSaving || get().editorLoading) return false;
       const token = editor.token;
       const id = editor.agent.id;
       const api = get().apiClient;
+      const operation = { api, agentId: id, token };
+      const refreshKnowledge = options?.materials ? knowledgeStep.prepareRefresh() : null;
       const matches = () =>
-        get().pageEditor?.token === token && get().editorAgentId === id && get().apiClient === api;
-      set({ editorLoading: true, error: null });
+        get().editorBaselineRefresh === operation &&
+        get().pageEditor?.token === token &&
+        get().editorAgentId === id &&
+        get().apiClient === api;
+      set({
+        editorLoading: true,
+        editorBaselineRefresh: operation,
+        error: null,
+        agentTaskResult: null,
+      });
       try {
         const fresh = await api.getAgent(id);
         if (!matches()) return false;
@@ -444,31 +484,21 @@ export function createPageActions(
           for (const key of PAGE_AGENT_FIELDS[page]) {
             if (current.draft[key] !== current.agent[key]) draftRecord[key] = current.draft[key];
           }
-          if (page === "memory-tools") {
-            // 三方逐档合并：fresh=新基线、saved=刷新前基线、draft=当前草稿。
-            // 只把「相对 saved 真被改过」的嵌套键保留为草稿值，其余跟随 fresh；
-            // 未改档不再整组被旧对象覆盖，其他页/他端的预设更新得以并入基线。
-            const savedPresets = current.agent.p5_config.retrieval_presets;
-            const draftPresets = current.draft.p5_config.retrieval_presets;
-            const freshPresets = fresh.p5_config.retrieval_presets;
-            p5Record.retrieval_presets = mergePresetModes(freshPresets, (mode, freshMode) => {
-              const savedMode = savedPresets[mode];
-              const draftMode = draftPresets[mode];
-              if (!freshMode) return savedMode ?? draftMode;
-              if (!draftMode || !savedMode) return freshMode;
-              // 逐键三方合并：相对刷新前基线被改过的键保留草稿值，其余跟随新基线。
-              // 不按页分组，避免记忆页改非预算键时把上下文页未保存的预算草稿一起丢掉。
-              const merged = { ...freshMode } as Record<string, unknown>;
-              for (const key of Object.keys(savedMode) as (keyof Preset)[]) {
-                if (JSON.stringify(draftMode[key]) !== JSON.stringify(savedMode[key])) {
-                  merged[key] = draftMode[key];
-                }
-              }
-              return merged as Preset;
-            });
-          }
           for (const key of p5Fields(page)) {
-            if (key === "retrieval_presets") continue;
+            if (key === "memory_read") {
+              const baseline = resolveMemoryReadSettings(current.agent.p5_config);
+              const draftRead = resolveMemoryReadSettings(current.draft.p5_config);
+              const freshRead = resolveMemoryReadSettings(fresh.p5_config);
+              const enabledChanged = draftRead.enabled !== baseline.enabled;
+              const bytesChanged = draftRead.maxBytes !== baseline.maxBytes;
+              if (enabledChanged || bytesChanged) {
+                p5Record.memory_read = {
+                  enabled: enabledChanged ? draftRead.enabled : freshRead.enabled,
+                  max_bytes: bytesChanged ? draftRead.maxBytes : freshRead.maxBytes,
+                };
+              }
+              continue;
+            }
             if (
               JSON.stringify(current.draft.p5_config[key]) !==
               JSON.stringify(current.agent.p5_config[key])
@@ -482,12 +512,14 @@ export function createPageActions(
           agents: state.agents.map((item) => (item.id === fresh.id ? fresh : item)),
           feedback: msg("刷新不提交草稿；冲突后请核对最新值再保存。"),
         }));
-        return true;
+        if (refreshKnowledge && !(await refreshKnowledge(operation))) return false;
+        return matches();
       } catch (error) {
         if (matches()) set({ error: errorText(error) });
         return false;
       } finally {
-        if (matches()) set({ editorLoading: false });
+        if (get().editorBaselineRefresh === operation)
+          set({ editorBaselineRefresh: null, ...(matches() ? { editorLoading: false } : {}) });
       }
     },
   };

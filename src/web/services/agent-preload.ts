@@ -1,4 +1,4 @@
-import type { EntriesList, PersonaResponse } from "../../shared/contracts";
+import type { MemoryManagementList, PersonaResponse } from "../../shared/contracts";
 import type { SuperstringApi } from "../api";
 
 /**
@@ -8,7 +8,7 @@ import type { SuperstringApi } from "../api";
  */
 export interface WarmAgentResult {
   persona: PersonaResponse | null;
-  memoryEntries: EntriesList | null;
+  memoryEntries: MemoryManagementList | null;
 }
 
 export interface AgentPreloadStoreState {
@@ -43,7 +43,7 @@ const sameOwner = (owner: AgentPreloadOwner, api: SuperstringApi, agentId: strin
 let slot:
   | (AgentPreloadOwner & {
       persona: PersonaResponse | null;
-      memoryEntries: EntriesList | null;
+      memoryEntries: MemoryManagementList | null;
     })
   | null = null;
 let inFlight: {
@@ -128,11 +128,17 @@ export function consumePreloadedPersona(
   return persona;
 }
 
-export function peekPreloadedMemory(api: SuperstringApi, agentId: string): EntriesList | null {
+export function peekPreloadedMemory(
+  api: SuperstringApi,
+  agentId: string,
+): MemoryManagementList | null {
   return slot && sameOwner(slot, api, agentId) ? slot.memoryEntries : null;
 }
 
-export function consumePreloadedMemory(api: SuperstringApi, agentId: string): EntriesList | null {
+export function consumePreloadedMemory(
+  api: SuperstringApi,
+  agentId: string,
+): MemoryManagementList | null {
   if (!slot || !sameOwner(slot, api, agentId) || !slot.memoryEntries) return null;
   const memoryEntries = slot.memoryEntries;
   slot = slot.persona ? { ...slot, memoryEntries: null } : null;

@@ -20,6 +20,7 @@ interface ResourceEntry<A> {
   reject: ((cause: unknown) => void) | null;
   /** 当前 task 是否由预热发起：面板全部退场时不得 abort。 */
   warmOwned: boolean;
+  invalidated: boolean;
   /** 已挂载面板消费者数（entry.listeners 同步增减）。 */
   owners: number;
   listeners: Set<() => void>;
@@ -34,6 +35,7 @@ function createEntry<A>(): ResourceEntry<A> {
     promise: null,
     reject: null,
     warmOwned: false,
+    invalidated: false,
     owners: 0,
     listeners: new Set(),
   };
@@ -60,14 +62,14 @@ function readEntry<A>(
       success: (value) => {
         // 迟到的 success/error 不得落入已替换/已取消的新 current read。
         if (entry.task !== task) return;
-        entry.data = value;
+        if (!entry.invalidated) entry.data = value;
         entry.error = "";
         resolve(value);
       },
       failure: (cause) => {
         if (entry.task !== task) return;
         if (entry.data === null) {
-          if (!silent) entry.error = errorText(cause);
+          if (!silent && !entry.invalidated) entry.error = errorText(cause);
           reject(cause);
         } else {
           resolve(entry.data);
@@ -81,7 +83,14 @@ function readEntry<A>(
         entry.reject = null;
         entry.warmOwned = false;
         entry.loading = false;
-        emitEntry(entry);
+        const invalidated = entry.invalidated;
+        entry.invalidated = false;
+        if (invalidated && entry.owners > 0) {
+          void readEntry(api, entry, read).catch(() => {});
+        } else {
+          if (invalidated) entry.data = null;
+          emitEntry(entry);
+        }
       },
     });
     entry.task = task;
@@ -99,6 +108,7 @@ function cancelEntry<A>(entry: ResourceEntry<A>) {
   entry.promise = null;
   entry.reject = null;
   entry.warmOwned = false;
+  entry.invalidated = false;
   entry.loading = false;
   task?.cancel();
   reject?.(new Error("connection resource read cancelled"));
@@ -125,7 +135,12 @@ function useSharedResource<A>(
 ) {
   const [, render] = useState(0);
   const revalidated = useRef(false);
+  const previousEntry = useRef(entry);
   useEffect(() => {
+    if (previousEntry.current !== entry) {
+      previousEntry.current = entry;
+      revalidated.current = false;
+    }
     if (!active) return;
     const listener = () => render((n) => n + 1);
     entry.listeners.add(listener);
@@ -142,7 +157,10 @@ function useSharedResource<A>(
       entry.owners -= 1;
       entry.listeners.delete(listener);
       // 最后一个面板消费者退场：warm 持有的读取允许完成，面板独占前台读取按原语义取消。
-      if (entry.owners === 0 && entry.task && !entry.warmOwned) cancelEntry(entry);
+      if (entry.owners === 0 && entry.task && !entry.warmOwned) {
+        revalidated.current = false;
+        cancelEntry(entry);
+      }
     };
   }, [active, api, entry, read]);
   const refresh = useCallback(() => {
@@ -212,6 +230,22 @@ export function useMcpServersResource(api: SuperstringApi, active = true) {
 
 export function useSkillsResource(api: SuperstringApi, active = true) {
   return useSharedResource(api, entryFor(skillsEntries, api), readSkills, active);
+}
+
+export function invalidateToolDirectory(api: SuperstringApi) {
+  const entry = entryFor(toolEntries, api);
+  if (entry.task && entry.warmOwned) {
+    entry.invalidated = true;
+    return;
+  }
+  if (entry.task) cancelEntry(entry);
+  if (entry.owners > 0) {
+    void readEntry(api, entry, readTools).catch(() => {});
+  } else {
+    entry.data = null;
+    entry.error = "";
+    emitEntry(entry);
+  }
 }
 
 export function useToolDirectoryResource(api: SuperstringApi, active = true) {

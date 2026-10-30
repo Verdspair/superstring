@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   MemoryAccessMetadata,
+  MemoryManagementEntry,
   MemoryVisibilityResponse,
 } from "../../src/shared/contracts/memory";
 import { ApiError, api } from "../../src/web/api";
@@ -20,9 +21,9 @@ const mockMetadataNull: MemoryAccessMetadata = {
     { channel: "onebot11", conversation_id: "22222222-2222-4222-8222-222222222222" },
   ],
   origin_complete: false,
-  source_validity: "not_evaluated",
-  runtime_eligibility: "not_evaluated",
-  raw_preview: "not_evaluated",
+  source_validity: "unknown",
+  runtime_eligibility: "unknown",
+  raw_preview: "unknown",
 };
 
 const mockMetadataPrivate: MemoryAccessMetadata = {
@@ -59,19 +60,7 @@ beforeEach(() => {
   store.setState({
     settingsRoute: "long-memory",
     agents: [agent, { ...agent, id: B, name: "Agent B" }],
-    memoryEntries: [
-      {
-        id: memory.id,
-        name: memory.name,
-        summary: memory.summary,
-        tags: memory.tags,
-        kinds: memory.kinds,
-        status: memory.status,
-        scope: memory.scope,
-        scope_key: memory.scope_key,
-        created_at: memory.created_at,
-      },
-    ],
+    memoryEntries: [{ ...memory } satisfies MemoryManagementEntry],
     memoryEntryDetail: null,
   });
 });
@@ -89,6 +78,30 @@ const clickTab = async (name: string) => {
 };
 
 describe("memory metadata and visibility management UI", () => {
+  it("keeps inventory controls in one padded content group while filters still reach the original reader", async () => {
+    render(<MemoryLibrary active />);
+    await screen.findByRole("button", { name: "Memory one" });
+    const view = screen.getByRole("combobox", { name: "条目归属" });
+    const visibility = screen.getByRole("combobox", { name: "来源与共享" });
+    const origin = screen.getByRole("combobox", { name: "来源会话" });
+    const principal = screen.getByRole("combobox", { name: "核验读取资格的会话" });
+    const content = view.closest(".settings-content-padding");
+    expect(content).toBeTruthy();
+    for (const control of [visibility, origin, principal])
+      expect(control.closest(".settings-content-padding")).toBe(content);
+    fireEvent.change(view, { target: { value: "received" } });
+    await waitFor(() =>
+      expect(store.getState().apiClient.listMemoryEntries).toHaveBeenLastCalledWith(
+        A,
+        0,
+        100,
+        expect.objectContaining({ view: "received" }),
+        expect.any(AbortSignal),
+      ),
+    );
+    expect(store.getState().apiClient.saveMemoryVisibility).not.toHaveBeenCalled();
+  });
+
   it("displays historical null as 历史未分类 and performs no N+1 list fetch or unneeded PUT", async () => {
     render(<MemoryLibrary active={true} />);
 
@@ -104,6 +117,7 @@ describe("memory metadata and visibility management UI", () => {
       A,
       memory.id,
       expect.any(AbortSignal),
+      undefined,
     );
 
     // Shows 历史未分类
@@ -334,8 +348,8 @@ describe("memory metadata and visibility management UI", () => {
     // Start read 1
     const p1 = store.getState().loadMemoryAccessMetadata(memory.id);
 
-    // Supersede with read 2
-    const p2 = store.getState().loadMemoryAccessMetadata(memory.id);
+    // An explicit refresh replaces transport; an ordinary matching read shares it.
+    const p2 = store.getState().loadMemoryAccessMetadata(memory.id, { force: true });
 
     // p1 must immediately resolve to false without waiting for pending1 to resolve!
     const res1 = await p1;
@@ -640,7 +654,7 @@ describe("memory metadata and visibility management UI", () => {
       expect(select).toHaveProperty("disabled", false);
     });
     expect(select).toHaveProperty("value", "unclassified");
-    expect(screen.getByText("历史未分类")).toBeTruthy();
+    expect(within(select).getByRole("option", { name: "历史未分类" })).toBeTruthy();
   });
 
   it("closes confirm dialog and cancels PUT if entry, API, or draft changes before confirmation", async () => {
@@ -715,5 +729,232 @@ describe("memory metadata and visibility management UI", () => {
     expect(store.getState().memoryVisibilityDirty).toBe(false);
     expect(store.getState().memoryVisibilityDraft).toBeNull();
     expect(store.getState().editorAgentId).toBe(B);
+  });
+  it("revalidates a clean saved public basis explicitly without dirtying readers, and preserves errors on lost strong proof", async () => {
+    const saved = { ...mockMetadataNull, visibility: "public" as const, recipient_agent_ids: [B] };
+    vi.mocked(store.getState().apiClient.getMemoryAccessMetadata).mockResolvedValue(saved);
+    render(<MemoryLibrary active />);
+    fireEvent.click(await screen.findByRole("button", { name: "Memory one" }));
+    await clickTab("来源与共享");
+    const revalidate = await screen.findByRole("button", { name: "重新验证发布依据" });
+    expect(store.getState().memoryVisibilityDirty).toBe(false);
+    fireEvent.click(revalidate);
+    const confirm = await screen.findByRole("alertdialog");
+    expect(within(confirm).getByText(/重新验证会检查当前可读来源/)).toBeTruthy();
+    fireEvent.click(within(confirm).getByRole("button", { name: "取消" }));
+    expect(store.getState().apiClient.saveMemoryVisibility).not.toHaveBeenCalled();
+    fireEvent.click(revalidate);
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "确认" }),
+    );
+    await waitFor(() =>
+      expect(store.getState().apiClient.saveMemoryVisibility).toHaveBeenCalledWith(A, memory.id, {
+        expected_revision: 1,
+        visibility: "public",
+        recipient_agent_ids: [B],
+        revalidate_publication: true,
+      }),
+    );
+    expect(store.getState().memoryVisibilityDirty).toBe(false);
+    vi.mocked(store.getState().apiClient.saveMemoryVisibility).mockRejectedValueOnce(
+      new ApiError(409, "MEMORY_SOURCE_INVALID", "原文到期，无法重新验证"),
+    );
+    fireEvent.click(revalidate);
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "确认" }),
+    );
+    expect(await screen.findByText(/原文到期，无法重新验证/)).toBeTruthy();
+    expect(store.getState().memoryMetadataBaseline?.recipient_agent_ids).toEqual([B]);
+  });
+  it("uses the original save/discard/cancel guard before revalidating dirty shared settings", async () => {
+    vi.mocked(store.getState().apiClient.getMemoryAccessMetadata).mockResolvedValue({
+      ...mockMetadataNull,
+      visibility: "public",
+      recipient_agent_ids: [B],
+    });
+    render(<MemoryLibrary active />);
+    fireEvent.click(await screen.findByRole("button", { name: "Memory one" }));
+    await clickTab("来源与共享");
+    fireEvent.change(await screen.findByRole("combobox", { name: "来源与共享" }), {
+      target: { value: "session_private" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "重新验证发布依据" }));
+    const guard = await screen.findByRole("alertdialog");
+    expect(within(guard).getByText(/共享设置尚未保存/)).toBeTruthy();
+    fireEvent.click(within(guard).getByRole("button", { name: "取消" }));
+    expect(store.getState().memoryVisibilityDirty).toBe(true);
+    expect(store.getState().apiClient.saveMemoryVisibility).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "重新验证发布依据" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "放弃共享修改" }),
+    );
+    expect(store.getState().memoryVisibilityDirty).toBe(false);
+    expect(store.getState().apiClient.saveMemoryVisibility).not.toHaveBeenCalled();
+  });
+
+  it("does not commit or send clean revalidation for a mismatched saved API/entry and preserves unrelated correction draft", async () => {
+    const current = store.getState().apiClient;
+    store.setState({
+      memoryEntryDetail: memory,
+      memoryReadSelection: { entry: memory, conversationId: null },
+    });
+    await store.getState().loadMemoryAccessMetadata(memory.id);
+    store.setState({
+      memoryMetadataBaseline: {
+        agentId: A,
+        memoryId: memory.id,
+        api: current,
+        visibility: "public",
+        revision: 1,
+        recipient_agent_ids: [B],
+      },
+      memoryVisibilityDraft: { visibility: "public", recipient_agent_ids: [B] },
+      memoryVisibilityDirty: false,
+      memoryCorrectionDraft: {
+        expected_revision: "a".repeat(64),
+        name: "draft",
+        summary: "draft",
+        tags: [],
+        body: "unrelated correction",
+      },
+      memoryCorrectionDirty: true,
+    });
+    expect(await store.getState().saveMemoryVisibility({ revalidatePublication: true })).toBe(true);
+    expect(store.getState().memoryCorrectionDraft?.body).toBe("unrelated correction");
+    const replacement = { ...current, saveMemoryVisibility: vi.fn() };
+    store.setState({ apiClient: replacement });
+    expect(await store.getState().saveMemoryVisibility({ revalidatePublication: true })).toBe(
+      false,
+    );
+    expect(replacement.saveMemoryVisibility).not.toHaveBeenCalled();
+  });
+
+  it("advances saved list/selection publication fields and clears old source addresses after successful basis update only", async () => {
+    const initial = {
+      ...mockMetadataNull,
+      visibility: "public" as const,
+      recipient_agent_ids: [B],
+    };
+    const updated = { ...initial, visibility_revision: 2 };
+    vi.mocked(store.getState().apiClient.getMemoryAccessMetadata).mockResolvedValue(updated);
+    store.setState({
+      memoryEntries: [{ ...memory, ...initial }],
+      memoryEntryDetail: memory,
+      memoryReadSelection: { entry: { ...memory, ...initial }, conversationId: null },
+      memoryMetadata: initial,
+      memoryMetadataBaseline: {
+        agentId: A,
+        memoryId: memory.id,
+        api: store.getState().apiClient,
+        visibility: "public",
+        revision: 1,
+        recipient_agent_ids: [B],
+      },
+      memoryVisibilityDraft: { visibility: "public", recipient_agent_ids: [B] },
+      memoryVisibilityDirty: false,
+      memorySourcePosition: { sourceKey: "old-token", revision: "old", offset: 4096 },
+    });
+    expect(await store.getState().saveMemoryVisibility({ revalidatePublication: true })).toBe(true);
+    expect(store.getState().memoryEntries[0]).toMatchObject({
+      visibility: "public",
+      visibility_revision: 2,
+      recipient_agent_ids: [B],
+    });
+    expect(store.getState().memoryReadSelection?.entry).toMatchObject({
+      visibility: "public",
+      visibility_revision: 2,
+      recipient_agent_ids: [B],
+    });
+    expect(store.getState().memorySourcePosition).toBeNull();
+    expect(store.getState().memorySourcePreview).toBeNull();
+    expect(store.getState().memoryReadable).toBeNull();
+    expect(store.getState().apiClient.getMemoryAccessMetadata).not.toHaveBeenCalled();
+    expect(store.getState().memoryMetadataBaseline?.revision).toBe(2);
+  });
+
+  it("shares matching active metadata reads and aborts only when their last consumer leaves", async () => {
+    store.setState({ memoryEntryDetail: memory });
+    const pending = deferred<MemoryAccessMetadata>();
+    const read = vi.mocked(store.getState().apiClient.getMemoryAccessMetadata);
+    read.mockReturnValue(pending.promise);
+    const firstOwner = {};
+    const secondOwner = {};
+    const first = store.getState().acquireMemoryMetadataRead(firstOwner, memory.id);
+    const second = store.getState().acquireMemoryMetadataRead(secondOwner, memory.id);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    const signal = read.mock.calls[0]![2]!;
+    store.getState().releaseMemoryMetadataRead(firstOwner);
+    expect(signal.aborted).toBe(false);
+    store.getState().releaseMemoryMetadataRead(secondOwner);
+    expect(signal.aborted).toBe(true);
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(false);
+    pending.resolve(mockMetadataPrivate);
+    await act(async () => {});
+    expect(store.getState().memoryMetadata).toBeNull();
+    expect(store.getState().memoryMetadataLoading).toBe(false);
+    read.mockResolvedValue(mockMetadataPrivate);
+    await expect(store.getState().acquireMemoryMetadataRead(firstOwner, memory.id)).resolves.toBe(
+      true,
+    );
+    store.getState().releaseMemoryMetadataRead(firstOwner);
+    await expect(store.getState().acquireMemoryMetadataRead(secondOwner, memory.id)).resolves.toBe(
+      true,
+    );
+    expect(read).toHaveBeenCalledTimes(3);
+    store.getState().releaseMemoryMetadataRead(secondOwner);
+  });
+
+  it("refreshes publication metadata once for an active consumer while preserving the committed PUT baseline", async () => {
+    const read = vi.mocked(store.getState().apiClient.getMemoryAccessMetadata);
+    read.mockResolvedValue(mockMetadataPrivate);
+    store.setState({
+      apiClient: {
+        ...store.getState().apiClient,
+        listMemorySources: vi.fn().mockResolvedValue({
+          memory_id: memory.id,
+          entry_revision: "entry",
+          source_validity: "valid",
+          raw_preview: "unknown",
+          checked_sources: 0,
+          total: 0,
+          nextOffset: null,
+          items: [],
+        }),
+      },
+    });
+    render(<MemoryLibrary active />);
+    fireEvent.click(await screen.findByRole("button", { name: "Memory one" }));
+    await waitFor(() => expect(store.getState().memoryMetadataBaseline?.revision).toBe(1));
+    await clickTab("来源与共享");
+    const select = await screen.findByRole("combobox", { name: "来源与共享" });
+    fireEvent.change(select, { target: { value: "agent_shared" } });
+    const pending = deferred<MemoryAccessMetadata>();
+    read.mockReturnValueOnce(pending.promise);
+    fireEvent.click(screen.getByRole("button", { name: "保存共享设置" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "确认" }),
+    );
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(store.getState().memoryMetadataBaseline).toMatchObject({
+      memoryId: memory.id,
+      revision: 2,
+      visibility: "agent_shared",
+      recipient_agent_ids: [A],
+    });
+    expect(read.mock.calls[1]![2]!.aborted).toBe(false);
+    await clickTab("来源");
+    expect(read.mock.calls[1]![2]!.aborted).toBe(false);
+    await act(async () => {
+      pending.resolve({
+        ...mockMetadataPrivate,
+        visibility: "agent_shared",
+        visibility_revision: 2,
+        recipient_agent_ids: [A],
+      });
+    });
+    await waitFor(() => expect(store.getState().memoryMetadataLoading).toBe(false));
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(store.getState().memoryVisibilityDirty).toBe(false);
   });
 });

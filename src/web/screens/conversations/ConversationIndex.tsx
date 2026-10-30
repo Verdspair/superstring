@@ -10,7 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ConversationSummary } from "../../../shared/contracts/conversation";
@@ -31,6 +31,7 @@ import { sessionBusy } from "../../features/chat/conversation-state";
 import { translateNotice } from "../../i18n";
 import { cn } from "../../lib/utils";
 import { useSuperstringStore } from "../../store";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { ConversationAvatar } from "./avatar";
 import { ConversationAvatarDialog } from "./avatar-control";
 import { ConversationEntryButton } from "./ConversationEntryButton";
@@ -38,8 +39,15 @@ import { QqGroupControls } from "./QqGroupControls";
 import { RecordActions } from "./RecordActions";
 import { useDirectoryManagement } from "./use-directory-management";
 
-export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
+export function ConversationIndex({
+  onSelected,
+  active = true,
+}: {
+  onSelected?: () => void;
+  active?: boolean;
+}) {
   const { t } = useTranslation();
+  const searchHintId = useId();
   const ids = useSuperstringStore((s) => s.directoryIds);
   const summaries = useSuperstringStore((s) => s.summaryById);
   const current = useSuperstringStore((s) => s.currentConversationId);
@@ -51,39 +59,40 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
   const select = useSuperstringStore((s) => s.requestConversationNavigation);
   const [query, setQuery] = useState("");
   const [channel, setChannel] = useState("all");
+  const api = useSuperstringStore((state) => state.apiClient);
   const [avatarId, setAvatarId] = useState<string | null>(null);
-  const management = useDirectoryManagement();
+  const management = useDirectoryManagement(active);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A hidden directory or replacement API must not restore a previous modal's row origin.
+  const modalOrigin = useMemo(() => ({ current: null as HTMLElement | null }), [api, active]);
+  useEffect(() => {
+    if (!active || (avatarId && !summaries[avatarId])) setAvatarId(null);
+  }, [active, avatarId, summaries]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A replacement API does not own the directory avatar dialog opened by its predecessor.
+  useEffect(() => {
+    setAvatarId(null);
+  }, [api]);
   const header = useRef<HTMLHeadingElement>(null);
+  const postDelete = useRef<object | null>(null);
+  const directoryOwner = useMemo(() => ({ api, active }), [api, active]);
+  const liveDirectory = useRef(directoryOwner);
+  liveDirectory.current = directoryOwner;
+  useEffect(
+    () => () => {
+      postDelete.current = null;
+    },
+    [],
+  );
   // 常挂载删除确认在关闭动画期间仍会渲染：目标取最近一次点击删除的行。
   const lastDeleting = useRef<ConversationSummary | null>(null);
   const deleting = management.deleting ?? lastDeleting.current;
   const deletingQq = deleting?.channel === "onebot11";
-  const [groupRenaming, setGroupRenaming] = useState(false);
-  const [groupNotice, setGroupNotice] = useState("");
   const groupEditing =
     management.editing?.channel === "onebot11" &&
     management.editing.topology === "shared" &&
     management.editing.qqGroup
       ? management.editing
       : null;
-  const busy = management.busy || groupRenaming;
-  const saveGroupName = async () => {
-    const editing = groupEditing;
-    if (!editing) return;
-    setGroupRenaming(true);
-    setGroupNotice("");
-    try {
-      const summary = await useSuperstringStore
-        .getState()
-        .apiClient.renameConversationGroup(editing.id, management.name.trim() || null);
-      useSuperstringStore.getState().rememberConversation(summary);
-      management.cancel();
-    } catch (e) {
-      setGroupNotice(e instanceof Error ? e.message : String(e));
-    } finally {
-      setGroupRenaming(false);
-    }
-  };
+  const busy = management.busy;
   const deleteBusy = useSuperstringStore((s) =>
     sessionBusy(s, management.deleting?.sourceId ?? ""),
   );
@@ -132,7 +141,8 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
             </InputGroupAddon>
             <InputGroupInput
               aria-label={t("workspace.search_loaded_conversations")}
-              placeholder={t("workspace.search_loaded_conversations")}
+              placeholder={t("workspace.conversationSearchPlaceholder")}
+              aria-describedby={searchHintId}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -150,10 +160,22 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
               </InputGroupAddon>
             )}
           </InputGroup>
+          <WorkspaceHelp
+            title={t("workspace.search_loaded_conversations")}
+            description={t("workspace.conversationSearchHint")}
+          />
+          <span id={searchHintId} className="sr-only">
+            {t("workspace.conversationSearchHint")}
+          </span>
           <ConversationEntryButton />
         </div>
         <Tabs value={channel} onValueChange={setChannel}>
-          <TabsList className="w-full" aria-label={t("workspace.conversation_channels")}>
+          <TabsList
+            presentation="compact"
+            flow="wrap"
+            className="w-full"
+            aria-label={t("workspace.conversation_channels")}
+          >
             <TabsTrigger
               value="all"
               tooltip={t("hints.custom.conversationFilter.all")}
@@ -214,17 +236,24 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
             agentName={agentNames.get(item.agentId)}
             disabled={management.busy}
             onSelect={() => void choose(item.id)}
-            onRename={() => {
-              setGroupNotice("");
+            onRename={(origin) => {
+              postDelete.current = null;
+              modalOrigin.current = origin;
               management.rename(item);
             }}
             onRefresh={() => void management.refresh(item)}
-            onDelete={() => {
+            onDelete={(origin) => {
+              postDelete.current = null;
+              modalOrigin.current = origin;
               lastDeleting.current = item;
               management.remove(item);
             }}
             onConfigure={() => useSuperstringStore.getState().openQqGroupConfig(item.sourceId)}
-            onAvatar={() => setAvatarId(item.id)}
+            onAvatar={(origin) => {
+              postDelete.current = null;
+              modalOrigin.current = origin;
+              setAvatarId(item.id);
+            }}
           />
         ))}
       </nav>
@@ -270,7 +299,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
           if (!open) management.cancel();
         }}
       >
-        <DialogContent showCloseButton={!busy}>
+        <DialogContent returnFocusRef={modalOrigin} scrollMode="surface" showCloseButton={!busy}>
           <DialogTitle>{t("workspace.rename_conversation")}</DialogTitle>
           <DialogDescription>
             {groupEditing
@@ -295,13 +324,13 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
                   : !!trimmed && [...trimmed].length <= 200)
               ) {
                 e.preventDefault();
-                void (groupEditing ? saveGroupName() : management.save());
+                void management.save();
               }
             }}
           />
-          {(groupEditing ? groupNotice : management.notice) && (
+          {management.notice && (
             <p role="alert" className="text-sm text-destructive">
-              {translateNotice(groupEditing ? groupNotice : management.notice)}
+              {translateNotice(management.notice)}
             </p>
           )}
           <DialogFooter>
@@ -321,17 +350,18 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
                   ? [...management.name.trim()].length > 100
                   : !management.name.trim() || [...management.name.trim()].length > 200)
               }
-              onClick={() => void (groupEditing ? saveGroupName() : management.save())}
+              onClick={() => void management.save()}
             >
               {busy ? t("workspace.saving") : t("workspace.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {avatarId && summaries[avatarId] && (
+      {active && avatarId && summaries[avatarId] && (
         <ConversationAvatarDialog
           key={avatarId}
           conversation={summaries[avatarId]}
+          returnFocusRef={modalOrigin}
           open
           onOpenChange={(open) => {
             if (!open) setAvatarId(null);
@@ -339,6 +369,7 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
         />
       )}
       <AlertDialog
+        returnFocusRef={modalOrigin}
         open={management.deleting !== null}
         title={t(deletingQq ? "qq.conversation.removeTitle" : "workspace.delete_chat")}
         busy={management.busy}
@@ -373,12 +404,46 @@ export function ConversationIndex({ onSelected }: { onSelected?: () => void }) {
                 tooltip={<Trans i18nKey="hints.complete.delete" />}
                 variant="destructive"
                 disabled={management.busy || deleteBusy}
-                onClick={() =>
-                  void management.confirmDelete()?.then(() => {
-                    if (!useSuperstringStore.getState().summaryById[deleting.id])
-                      header.current?.focus();
-                  })
-                }
+                onClick={() => {
+                  const target = management.deleting;
+                  const destination = header.current;
+                  if (!target || !destination) return;
+                  const operation = {};
+                  const owner = directoryOwner;
+                  postDelete.current = operation;
+                  void management.confirmDelete()?.then((removed) => {
+                    const current = useSuperstringStore.getState();
+                    if (
+                      removed !== true ||
+                      postDelete.current !== operation ||
+                      current.apiClient !== api ||
+                      liveDirectory.current !== owner ||
+                      !liveDirectory.current.active ||
+                      lastDeleting.current !== target ||
+                      current.summaryById[target.id] ||
+                      header.current !== destination ||
+                      !destination.isConnected
+                    )
+                      return;
+                    for (
+                      let node: HTMLElement | null = destination;
+                      node;
+                      node = node.parentElement
+                    ) {
+                      const style = node.ownerDocument.defaultView?.getComputedStyle(node);
+                      if (
+                        node.hidden ||
+                        node.hasAttribute("inert") ||
+                        style?.display === "none" ||
+                        style?.visibility === "hidden" ||
+                        style?.visibility === "collapse"
+                      )
+                        return;
+                    }
+                    postDelete.current = null;
+                    destination.focus();
+                  });
+                }}
               >
                 {management.busy
                   ? t("workspace.deleting")
@@ -408,11 +473,11 @@ function IndexRecord({
   agentName?: string;
   disabled: boolean;
   onSelect: () => void;
-  onRename: () => void;
+  onRename: (origin: HTMLElement | null) => void;
   onRefresh: () => void;
-  onDelete: () => void;
+  onDelete: (origin: HTMLElement | null) => void;
   onConfigure: () => void;
-  onAvatar: () => void;
+  onAvatar: (origin: HTMLElement | null) => void;
 }) {
   const { t, i18n } = useTranslation();
   const busy = useSuperstringStore((s) => sessionBusy(s, item.sourceId));

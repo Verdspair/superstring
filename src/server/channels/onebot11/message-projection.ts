@@ -12,9 +12,9 @@ import type {
   QqMessageFact,
   QqMessagePart,
 } from "../../../shared/contracts/qq-message";
+import { evidenceScopeExists } from "../../conversation/evidence-scope";
 import { nowIso, type Orm } from "../../db/repositories";
 import * as schema from "../../db/schema";
-import { evidenceScopeExists } from "../../modules/conversation-evidence";
 import type { EvidenceStore } from "../../modules/conversation-evidence-store";
 import { botScope, collectMentions } from "../../services/qq-message-fact-projection";
 import {

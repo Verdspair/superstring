@@ -1,4 +1,4 @@
-import { act, cleanup } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentResponse,
@@ -9,6 +9,7 @@ import type { PermissionsResponse } from "../../src/shared/contracts/permissions
 import { api } from "../../src/web/api";
 import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { selectLocale } from "../../src/web/i18n";
+import { AssistantWorkspace } from "../../src/web/screens/assistants/AssistantWorkspace";
 import { CapabilitiesWorkspace } from "../../src/web/screens/connections/CapabilitiesWorkspace";
 import { navigationBusy } from "../../src/web/state/unsaved-changes";
 import { useSuperstringStore as store } from "../../src/web/store";
@@ -125,36 +126,35 @@ describe("CapabilitiesWorkspace active boundary during navigation", () => {
     expect(navigationBusy(store.getState())).toBe(false);
   });
 
-  it("triggers autoLoad exactly once when active is true", async () => {
-    const getAgentSpy = vi.fn().mockImplementation(async (id: string) => {
-      return testAgent(id);
-    });
-
+  it("loads exactly the explicitly chosen Agent and never hydrates from a global capability", async () => {
+    const getAgentSpy = vi.fn(async (id: string) => testAgent(id));
     store.getState().resetForTests({
       ...api,
       getPermissions: vi.fn().mockResolvedValue(permissions),
       getAgent: getAgentSpy,
       getPersona: vi.fn(async (id: string) => testPersona(id)),
-    });
-
+      getToolDirectory: vi.fn(async () => ({ tools: [] })),
+      getSkills: vi.fn(async () => ({ skills: [], problems: [] })),
+      getMcpServers: vi.fn(async () => ({ servers: [] })),
+    } as unknown as typeof api);
     store.setState({
       page: "settings",
       settingsView: "workspace",
-      settingsRoute: "memory-tools",
+      settingsRoute: "capability-memory",
       agents: [testAgent("a1")],
       editorAgentId: "a1",
       pageEditor: null,
-      editorLoading: false,
-      reloadMemory: vi.fn().mockResolvedValue(undefined),
     });
-
-    render(<CapabilitiesWorkspace active={true} />);
+    render(<CapabilitiesWorkspace active />);
     await act(async () => {});
-
+    expect(getAgentSpy).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("combobox", { name: "选择要配置的 Agent" }), {
+      target: { value: "a1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "配置此 Agent 的资料读取" }));
+    await waitFor(() => expect(store.getState().pageEditor?.agent.id).toBe("a1"));
     expect(getAgentSpy).toHaveBeenCalledTimes(1);
-    expect(store.getState().editorLoading).toBe(false);
-    expect(store.getState().pageEditor?.agent.id).toBe("a1");
-    expect(store.getState().error).toBeNull();
+    expect(navigationBusy(store.getState())).toBe(false);
   });
 
   it("switching routes while inactive does not initiate spurious agent requests", async () => {
@@ -198,6 +198,17 @@ describe("CapabilitiesWorkspace active boundary during navigation", () => {
       getAgent,
       getPersona: vi.fn(async (id: string) => testPersona(id)),
       getPermissions: vi.fn().mockResolvedValue(permissions),
+      getAgentKnowledgeRead: vi.fn(async () => ({
+        revision: 1,
+        config: { enabled: true, context_budget: null, scope: "all" as const, document_ids: [] },
+      })),
+      listAgentKnowledge: vi.fn(async () => []),
+      getKnowledgeSettings: vi.fn(async () => ({
+        revision: 1,
+        context_budget: 2048,
+        auto_enabled: true,
+        model_name: null,
+      })),
     });
     store.setState({
       page: "settings",
@@ -206,13 +217,14 @@ describe("CapabilitiesWorkspace active boundary during navigation", () => {
       agents: [testAgent("a1")],
       editorAgentId: "a1",
       reloadMemory: vi.fn().mockResolvedValue(undefined),
+      modelNames: ["model"],
     });
-    const { rerender } = render(<CapabilitiesWorkspace active />);
+    const { rerender } = render(<AssistantWorkspace active />);
     await act(async () => {});
     const editor = store.getState().pageEditor;
     expect(editor?.agent.id).toBe("a1");
     for (let cycle = 0; cycle < 5; cycle++) {
-      rerender(<CapabilitiesWorkspace active={false} />);
+      rerender(<AssistantWorkspace active={false} />);
       await act(async () => {
         store.getState().openSettingsRoute("scheme-library");
       });
@@ -221,7 +233,7 @@ describe("CapabilitiesWorkspace active boundary during navigation", () => {
       await act(async () => {
         store.getState().openSettingsRoute("memory-tools");
       });
-      rerender(<CapabilitiesWorkspace active />);
+      rerender(<AssistantWorkspace active />);
       await act(async () => {});
       expect(store.getState().pageEditor).toBe(editor);
       expect(store.getState().error).toBeNull();

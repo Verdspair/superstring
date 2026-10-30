@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ContentItemSchema } from "./content";
 
 /** A reference is not authority. Hosts resolve access and retention on every read. */
 export const SourceRefSchema = z.strictObject({
@@ -16,6 +17,16 @@ export type SourceRef = z.infer<typeof SourceRefSchema>;
  */
 export type SourceAccess = "available" | "expired" | "revoked";
 
+export const MemoryEvidenceMetadataSchema = ContentItemSchema.pick({ content_origin: true }).extend(
+  {
+    content_origin: ContentItemSchema.shape.content_origin.extract([
+      "derived",
+      "manual_correction",
+    ]),
+  },
+);
+export type MemoryEvidenceMetadata = z.infer<typeof MemoryEvidenceMetadataSchema>;
+
 export const EvidenceSchema = z.strictObject({
   id: z.string(),
   text: z.string(),
@@ -23,5 +34,6 @@ export const EvidenceSchema = z.strictObject({
   scope: z.string().optional(),
   score: z.number().optional(),
   preview: z.strictObject({ title: z.string(), summary: z.string() }).optional(),
+  metadata: MemoryEvidenceMetadataSchema.optional(),
 });
 export type Evidence = z.infer<typeof EvidenceSchema>;

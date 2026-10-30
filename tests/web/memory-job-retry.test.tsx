@@ -338,7 +338,7 @@ describe("failed memory job retry", () => {
     if (!form) throw new Error("missing search form");
     fireEvent.submit(form);
     await waitFor(() =>
-      expect(listMemoryEntries.mock.calls.at(-1)?.[3]).toEqual({ search: "query" }),
+      expect(listMemoryEntries.mock.calls.at(-1)?.[3]).toEqual({ view: "owned", search: "query" }),
     );
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
     await waitFor(() => expect(listMemoryEntries.mock.calls.at(-1)?.[1]).toBe(100));
@@ -350,7 +350,7 @@ describe("failed memory job retry", () => {
       A,
       100,
       100,
-      { search: "query" },
+      { view: "owned", search: "query" },
       expect.any(AbortSignal),
     );
   });

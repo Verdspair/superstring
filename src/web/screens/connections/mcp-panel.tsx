@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { McpServerConfig, McpServerStatus } from "../../../shared/contracts/mcp";
 import { executionPolicy } from "../../../shared/contracts/permissions";
-import type { ToolDirectoryEntry } from "../../../shared/contracts/tool-directory";
 import { CatalogItem } from "../../components/catalog-item";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Field } from "../../components/form-field";
@@ -29,7 +28,11 @@ import {
   serverPayload,
   upsertServer,
 } from "../../features/access/mcp-draft";
-import { useMcpServersResource } from "../../services/connection-resources";
+import {
+  invalidateToolDirectory,
+  useMcpServersResource,
+  useToolDirectoryResource,
+} from "../../services/connection-resources";
 import { type ReadTask, startRead } from "../../services/read-task";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
@@ -68,9 +71,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
   const policy = useSuperstringStore((s) => s.permissionEditor?.snapshot.policy);
   const loadPermissions = useSuperstringStore((s) => s.loadPermissionSettings);
   const openComponent = useSuperstringStore((s) => s.openSystemComponent);
-  const [detail, setDetail] = useState<McpServerStatus | null>(null);
-  const [detailTools, setDetailTools] = useState<ToolDirectoryEntry[]>([]);
-  const toolRead = useRef<ReadTask | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const {
     data: status,
     loading,
@@ -78,6 +79,16 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
     refresh,
     mutate,
   } = useMcpServersResource(apiClient, active);
+  const detail = status?.servers.find((row) => row.config.id === detailId) ?? null;
+  const { data: toolDirectory, error: toolError } = useToolDirectoryResource(
+    apiClient,
+    active && detail !== null,
+  );
+  const detailTools = detail
+    ? (toolDirectory?.tools ?? []).filter((tool) =>
+        tool.name.startsWith(`mcp.${detail.config.id}.`),
+      )
+    : [];
   const [busy, setBusy] = useState<"" | "save" | "reload">("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -106,29 +117,21 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
     if (active) void loadPermissions();
     return () => {
       reloadTask.current?.cancel();
-      toolRead.current?.cancel();
     };
   }, [active, loadPermissions]);
   useEffect(() => {
     if (target?.kind === "mcp" && status) {
       const server = status.servers.find((row) => row.config.id === target.id);
-      if (server) setDetail(server);
+      if (server) setDetailId(server.config.id);
     }
   }, [target, status]);
   useEffect(() => {
-    toolRead.current?.cancel();
-    setDetailTools([]);
-    if (!active || !detail) return;
-    toolRead.current = startRead((signal) => apiClient.getToolDirectory(signal), {
-      success: (response) =>
-        setDetailTools(
-          response.tools.filter((tool) => tool.name.startsWith(`mcp.${detail.config.id}.`)),
-        ),
-      failure: (caught) => setError(errorText(caught)),
-    });
-    return () => toolRead.current?.cancel();
-  }, [active, detail, apiClient]);
-
+    if (status && detailId && !status.servers.some((row) => row.config.id === detailId)) {
+      setDetailId(null);
+      if (useSuperstringStore.getState().componentTarget?.kind === "mcp")
+        useSuperstringStore.setState({ componentTarget: null });
+    }
+  }, [detailId, status]);
   const modulePaused = policy ? !executionPolicy(policy).modules.mcp : false;
   const orderedServers = [...(status?.servers ?? [])].sort((a, b) => serverRank(a) - serverRank(b));
   const servers = (status?.servers ?? []).map((row) => row.config);
@@ -144,6 +147,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
         servers: next,
       });
       mutate(() => saved);
+      invalidateToolDirectory(apiClient);
       setEditor(null);
       setNotice(t("connections.mcp.saved"));
     } catch (caught) {
@@ -155,7 +159,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
   };
 
   return (
-    <div className="w-full space-y-6 px-4 py-6">
+    <div className="w-full min-w-0 space-y-6 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="workspace-section-title">{t("connections.mcp.title")}</h2>
@@ -168,7 +172,10 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
             variant="outline"
             tooltip={t("hints.extensions.mcp.refresh")}
             disabled={loading || busy !== ""}
-            onClick={refresh}
+            onClick={() => {
+              refresh();
+              invalidateToolDirectory(apiClient);
+            }}
           >
             <RefreshCw />
             {t("connections.common.refresh")}
@@ -186,6 +193,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
               reloadTask.current = startRead(() => apiClient.reloadMcpServers(), {
                 success: (value) => {
                   mutate(() => value);
+                  invalidateToolDirectory(apiClient);
                   setNotice(t("connections.mcp.reloaded"));
                 },
                 failure: (caught) => setError(errorText(caught)),
@@ -263,7 +271,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
                       variant="ghost"
                       size="sm"
                       tooltip={t("hints.extensions.mcp.details")}
-                      onClick={() => setDetail(row)}
+                      onClick={() => setDetailId(row.config.id)}
                     >
                       {t("connections.tools.details")}
                     </Button>
@@ -316,13 +324,13 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
         open={active && detail !== null}
         onOpenChange={(open) => {
           if (!open) {
-            setDetail(null);
+            setDetailId(null);
             if (useSuperstringStore.getState().componentTarget?.kind === "mcp")
               useSuperstringStore.setState({ componentTarget: null });
           }
         }}
       >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
+        <SheetContent scrollMode="surface" className="w-full  sm:max-w-2xl">
           <SheetHeader>
             <SheetTitle>{detail?.config.name}</SheetTitle>
             <SheetDescription>{t("connections.mcp.description")}</SheetDescription>
@@ -332,6 +340,11 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
               <p className="font-mono text-sm">{detail.config.id}</p>
               <p className="text-sm">{detail.config.transport}</p>
               <h3 className="font-medium">{t("connections.components.tools")}</h3>
+              {toolError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {toolError}
+                </p>
+              )}
               <div className="space-y-2">
                 {detailTools.map((tool) => (
                   <Button
@@ -358,7 +371,7 @@ export function McpPanel({ active = true }: { active?: boolean } = {}) {
           }
         }}
       >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
+        <SheetContent scrollMode="surface" className="w-full  sm:max-w-2xl">
           <SheetHeader className="border-b">
             <SheetTitle>
               {editor?.originalId ? t("connections.mcp.edit") : t("connections.mcp.add")}

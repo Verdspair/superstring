@@ -29,6 +29,54 @@ function renderCard(ui: React.ReactElement) {
   return render(<I18nextProvider i18n={i18n}>{ui}</I18nextProvider>);
 }
 
+describe("QqManagedComponentCard resource failures", () => {
+  it("retains the editable draft when a resource save fails", () => {
+    renderCard(
+      <QqManagedComponentCard
+        status={baseStatus()}
+        resources={{
+          revision: "r1",
+          status: "missing",
+          root: null,
+          diagnostic_code: "runtime_not_selected",
+        }}
+        resourceDraftRoot="synthetic draft"
+        resourceError="Resource conflict 409"
+        onRetryResources={vi.fn()}
+        onUpdateResourcePath={vi.fn()}
+        onToggleManaged={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("Resource conflict 409");
+    expect(
+      (screen.getByLabelText(i18n.t("connections.managed.resources.title")) as HTMLInputElement)
+        .value,
+    ).toBe("synthetic draft");
+  });
+
+  it("shows error instead of unconfigured and retries without dropping a draft", () => {
+    const retry = vi.fn();
+    renderCard(
+      <QqManagedComponentCard
+        status={baseStatus()}
+        resources={null}
+        resourceDraftRoot="synthetic draft"
+        resourceError="HTTP 503"
+        onRetryResources={retry}
+        onUpdateResourcePath={vi.fn()}
+        onToggleManaged={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("HTTP 503");
+    expect(
+      (screen.getByLabelText(i18n.t("connections.managed.resources.title")) as HTMLInputElement)
+        .value,
+    ).toBe("synthetic draft");
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("capabilities.retry") }));
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("QqManagedComponentCard presentational unit tests", () => {
   it("composes host save actions into the managed section without owning their state", () => {
     const save = vi.fn();
@@ -459,6 +507,8 @@ describe("QqManagedComponentCard presentational unit tests", () => {
           diagnostic_code: null,
         }}
         accounts={accounts}
+        accountsAvailability="available"
+        accountsLoaded
         selectedQuickLoginAccount="12345678"
         onToggleManaged={vi.fn()}
         onSelectQuickLoginAccount={onSelect}
@@ -495,6 +545,8 @@ describe("QqManagedComponentCard presentational unit tests", () => {
             diagnostic_code: null,
           }}
           accounts={[{ account_id: "12345678", display_name: null }]}
+          accountsAvailability="available"
+          accountsLoaded
           selectedQuickLoginAccount="12345678"
           onToggleManaged={vi.fn()}
           onSelectQuickLoginAccount={vi.fn()}
@@ -522,6 +574,8 @@ describe("QqManagedComponentCard presentational unit tests", () => {
       <QqManagedComponentCard
         status={baseStatus({ phase: "waiting_scan", ownership: "external", process: "running" })}
         accounts={[{ account_id: "12345678", display_name: null }]}
+        accountsAvailability="available"
+        accountsLoaded
         selectedQuickLoginAccount="12345678"
         onToggleManaged={vi.fn()}
         onSelectQuickLoginAccount={vi.fn()}
@@ -707,6 +761,8 @@ describe("QqManagedComponentCard presentational unit tests", () => {
 
     const pathInput = screen.getByRole("textbox", { name: /运行时路径|runtime path/i });
     expect(pathInput).toBeTruthy();
+    const hint = document.getElementById(pathInput.getAttribute("aria-describedby")!);
+    expect(hint?.textContent).toContain(i18n.t("connections.managed.resources.description"));
     fireEvent.change(pathInput, { target: { value: "D:/tools/napcat/shell" } });
 
     const savePathBtn = screen.getByRole("button", { name: /更新路径|update path/i });
@@ -768,5 +824,79 @@ describe("QqManagedComponentCard presentational unit tests", () => {
     const savePathBtn = screen.getByRole("button", { name: /更新路径|update path/i });
     fireEvent.click(savePathBtn);
     expect(onUpdate).toHaveBeenCalledWith("E:/new/draft");
+  });
+});
+
+describe("QqManagedComponentCard account read projection", () => {
+  it.each([
+    ["unknown", false, "connections.managed.quickLogin.notQueried"],
+    ["unavailable", false, "connections.managed.quickLogin.unavailable"],
+    ["available", true, "connections.managed.quickLogin.emptyAccounts"],
+  ] as const)(
+    "distinguishes %s and loaded=%s without showing an invented empty list",
+    (availability, loaded, key) => {
+      renderCard(
+        <QqManagedComponentCard
+          status={baseStatus()}
+          accounts={[]}
+          accountsAvailability={availability}
+          accountsLoaded={loaded}
+          onToggleManaged={vi.fn()}
+        />,
+      );
+      expect(screen.getByText(i18n.t(key))).toBeTruthy();
+      expect(
+        screen.queryByRole("button", {
+          name: i18n.t("connections.managed.quickLogin.loginButton"),
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("shows account loading without disabling unrelated managed preferences", () => {
+    renderCard(
+      <QqManagedComponentCard
+        status={baseStatus({ managedEnabled: true })}
+        accounts={[]}
+        accountsAvailability="available"
+        accountsLoading
+        onRetryAccounts={vi.fn()}
+        onToggleManaged={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(i18n.t("connections.common.loading"))).toBeTruthy();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: i18n.t("connections.managed.quickLogin.refreshAccounts"),
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(screen.getByRole("checkbox").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("keeps an account failure visible and its retry independent from component activation", () => {
+    const retryAccounts = vi.fn(),
+      retryManaged = vi.fn();
+    renderCard(
+      <QqManagedComponentCard
+        status={baseStatus({ phase: "waiting_scan", ownership: "owned", process: "running" })}
+        accounts={[{ account_id: "10001", display_name: null }]}
+        accountsAvailability="available"
+        accountsLoaded={false}
+        accountsError="HTTP 503 accounts unavailable"
+        onRetryAccounts={retryAccounts}
+        onRetry={retryManaged}
+        onToggleManaged={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("HTTP 503 accounts unavailable");
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: i18n.t("connections.managed.quickLogin.refreshAccounts"),
+      }),
+    );
+    expect(retryAccounts).toHaveBeenCalledTimes(1);
+    expect(retryManaged).not.toHaveBeenCalled();
   });
 });

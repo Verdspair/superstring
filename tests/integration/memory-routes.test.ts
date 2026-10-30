@@ -830,11 +830,12 @@ describe("0.2.1 immutable memory correction", () => {
     return { ...ctx, agentId, sessionId, turn, id, url, detail, input };
   }
 
-  it("returns true source messages, creates a new revision and rejects stale saves without writes", async () => {
+  it("returns source identities without eager plaintext, creates a new revision and rejects stale saves without writes", async () => {
     const f = await fixture();
     try {
-      expect(f.detail.source_messages[0].user).toBe("餐费上限80元");
-      expect(f.detail.source_messages[0].assistant).toBe("你好");
+      expect(f.detail).not.toHaveProperty("source_messages");
+      expect(f.detail.content.sources).toHaveLength(1);
+      expect(f.detail.content.sources[0]?.valid).toBe(true);
       const saved = await call(f.app, `${f.url}/correct`, json(f.input));
       expect(saved.status).toBe(201);
       const revision = MemoryContentResponseSchema.parse(await saved.json());

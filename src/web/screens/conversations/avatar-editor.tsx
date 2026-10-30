@@ -1,5 +1,5 @@
 import { ImagePlus, RotateCcw, Shuffle } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import {
   AVATAR_MEDIA_TYPES,
@@ -42,11 +42,20 @@ type AvatarEditorProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: (selection: AvatarSelection) => Promise<void>;
+  operationOwner?: object;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 };
 
 /** The editor owns a draft only while open; successful persistence is the sole commit point. */
 export function AvatarEditor(props: AvatarEditorProps) {
   const [busy, setBusy] = useState(false);
+  const previousOwner = useRef(props.operationOwner);
+  useEffect(() => {
+    if (previousOwner.current !== props.operationOwner) {
+      previousOwner.current = props.operationOwner;
+      setBusy(false);
+    }
+  }, [props.operationOwner]);
   return (
     <Dialog
       open={props.open}
@@ -70,6 +79,8 @@ function AvatarEditorForm({
   onOpenChange,
   onSave,
   onBusyChange,
+  operationOwner,
+  returnFocusRef,
 }: AvatarEditorProps & { onBusyChange: (value: boolean) => void }) {
   const { t, i18n } = useTranslation();
   const identity: AvatarIdentity = { id: conversationId, title, topology, channel, qqGroup };
@@ -87,7 +98,19 @@ function AvatarEditorForm({
   const [error, setError] = useState("");
   const [imageFailed, setImageFailed] = useState(false);
   const [uploadReady, setUploadReady] = useState(false);
-  const saving = useRef(false);
+  const saving = useRef<{ owner: object | undefined } | null>(null);
+  const currentOwner = useRef(operationOwner);
+  currentOwner.current = operationOwner;
+  useEffect(() => {
+    if (saving.current?.owner !== operationOwner) {
+      saving.current = null;
+      setBusy(false);
+      setError("");
+    }
+    return () => {
+      saving.current = null;
+    };
+  }, [operationOwner]);
   const inputId = useId();
   const styleId = useId();
   const radioId = useId();
@@ -147,25 +170,32 @@ function AvatarEditorForm({
   const dirty = !!file || JSON.stringify(initial) !== JSON.stringify(draft);
   const save = async () => {
     if (saving.current || !dirty || imageFailed || (file && !uploadReady)) return;
-    saving.current = true;
+    const operation = { owner: operationOwner };
+    const owner = operationOwner;
+    saving.current = operation;
     setBusy(true);
     onBusyChange(true);
     setError("");
     try {
       if (draft?.kind === "uploaded" && !file) return;
       await onSave(file ?? (draft?.kind === "generated" ? draft : null));
-      onOpenChange(false);
+      if (saving.current === operation && currentOwner.current === owner) onOpenChange(false);
     } catch (cause) {
-      setError(t("avatar.save_failed", { "0": translateNotice(errorText(cause)) }));
+      if (saving.current === operation && currentOwner.current === owner)
+        setError(t("avatar.save_failed", { "0": translateNotice(errorText(cause)) }));
     } finally {
-      saving.current = false;
-      setBusy(false);
-      onBusyChange(false);
+      if (saving.current === operation && currentOwner.current === owner) {
+        saving.current = null;
+        setBusy(false);
+        onBusyChange(false);
+      }
     }
   };
   return (
     <DialogContent
-      className="max-h-[90svh] overflow-y-auto sm:max-w-xl"
+      returnFocusRef={returnFocusRef}
+      scrollMode="surface"
+      className="max-h-[90svh]  sm:max-w-xl"
       showCloseButton={!busy}
       onKeyDown={(event) => {
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -211,7 +241,7 @@ function AvatarEditorForm({
         </div>
       </div>
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="w-full">
+        <TabsList presentation="compact" flow="wrap" className="w-full">
           <TabsTrigger value="presets" disabled={busy}>
             {t("avatar.presets")}
           </TabsTrigger>

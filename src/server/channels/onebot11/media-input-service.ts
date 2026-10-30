@@ -17,6 +17,7 @@ import type { LeafAgentRuntime } from "../../agent/agent-runtime";
 import type { ContextPrincipal } from "../../agent/context-access";
 import type { ModelContextBudget } from "../../agent/model-port";
 import type { ModelMediaClassification } from "../../agent/model-response-envelope";
+import { ownerScope } from "../../conversation/evidence-scope";
 import { bodyRevision } from "../../db/conversation-event-repository";
 import {
   linkMediaAssetSource,
@@ -43,11 +44,7 @@ import {
 } from "../../services/qq-image-header";
 import { createQqMediaAdapter } from "../../services/qq-media-adapter";
 import { readQqMediaTaskOnce } from "../../services/qq-media-reader";
-import {
-  createQqMediaSourceRef,
-  ownerScope,
-  qqMediaSourceAccess,
-} from "../../services/qq-media-sources";
+import { createQqMediaSourceRef, qqMediaSourceAccess } from "../../services/qq-media-sources";
 import {
   createQqMediaReadTaskSourceRef,
   qqMediaReadTaskSourceAccess,

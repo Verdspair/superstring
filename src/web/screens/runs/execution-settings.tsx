@@ -188,7 +188,13 @@ const PAGE_SCOPE: PermissionScope = {
   modules: [...PAGE_MODULE_KEYS],
 };
 
-export function ExecutionSettings({ active = true }: { active?: boolean } = {}) {
+export function ExecutionSettings({
+  active = true,
+  embedded = false,
+}: {
+  active?: boolean;
+  embedded?: boolean;
+} = {}) {
   const { t } = useTranslation();
   const uid = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -288,16 +294,20 @@ export function ExecutionSettings({ active = true }: { active?: boolean } = {}) 
     </SettingsGroup>
   );
   return (
-    <div ref={rootRef} className="w-full min-w-0 space-y-6 px-4 py-6">
+    <div ref={rootRef} className="w-full min-w-0 space-y-6 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="workspace-section-title flex items-center gap-2">
-            <SlidersHorizontal className="size-4 text-primary" />
-            {t("connections.execution.title")}
-          </h2>
-          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            {t("connections.execution.description")}
-          </p>
+          {!embedded && (
+            <>
+              <h2 className="workspace-section-title flex items-center gap-2">
+                <SlidersHorizontal className="size-4 text-primary" />
+                {t("connections.execution.title")}
+              </h2>
+              <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+                {t("connections.execution.description")}
+              </p>
+            </>
+          )}
           <p className="mt-1 max-w-3xl text-xs text-muted-foreground">
             {t("capabilities.policy.globalScope")}
           </p>

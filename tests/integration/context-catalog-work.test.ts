@@ -1,10 +1,7 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { createHash } from "node:crypto";
+import { afterEach, describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
-  catalogByScopeKeys,
   memoryBodiesByScopeKeys,
-  memoryFingerprintByScopeKeys,
   scanMemoryCandidates,
 } from "../../src/server/db/context-repository";
 import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
@@ -16,8 +13,6 @@ import {
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
-import * as casefold from "../../src/server/services/casefold-table";
-import { AGENT_LEVEL_SCOPE_KEY } from "../../src/server/services/memory-contract";
 import { qqMemoryScopeKey } from "../../src/server/services/qq-binding-contract";
 
 const handles: ReturnType<typeof openBusinessDb>[] = [];
@@ -97,60 +92,16 @@ function captureError(run: () => unknown) {
 }
 
 describe("memory catalog work and unchanged legacy reads", () => {
-  it("scores each valid row once and matches the scalar Unicode ordering", () => {
-    const { h, seed } = fixture();
-    for (let i = 0; i < 96; i++)
-      seed(
-        `m-${i}`,
-        i % 3 ? `name-${i}` : `Straße-${i}`,
-        `${i % 5 ? "other" : "ﬃ"} ${"文".repeat(500)} ${i}`,
-      );
-    const words = ["STRASSE", "FFI", "σ"];
-    const rows = entries(h.orm, DEFAULT_AGENT_ID, undefined, {
-      status: "active",
-      scopeKeys: [scope],
-    });
-    const folded = words.map(casefold.fullCasefold);
-    const score = (row: (typeof rows)[number]) =>
-      folded.reduce(
-        (sum, word) =>
-          sum +
-          Number(
-            [row.name, row.summary, row.body]
-              .map(casefold.fullCasefold)
-              .some((text) => text.includes(word)),
-          ),
-        0,
-      );
-    const expected = rows
-      .toSorted(
-        (a, b) =>
-          score(b) - score(a) || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
-      )
-      .slice(0, 17)
-      .map((row) => row.id);
-    const original = casefold.fullCasefold;
-    const fold = spyOn(casefold, "fullCasefold").mockImplementation(original);
-    try {
-      const actual = catalogByScopeKeys(h.orm, DEFAULT_AGENT_ID, [scope], {
-        keywords: words,
-        limit: 17,
-      });
-      expect(actual.map((item) => item.id)).toEqual(expected);
-      expect(fold.mock.calls.length).toBe(words.length + rows.length * 3);
-    } finally {
-      fold.mockRestore();
-    }
-  });
-
   it("prefilters selected bodies in SQL, retains duplicates/order and rejects unavailable selections identically", () => {
     const { h, seed } = fixture();
     for (let i = 0; i < 80; i++) seed(`row-${i}`);
     seed("outside", "outside", "private", "other-scope");
-    const expected = catalogByScopeKeys(h.orm, DEFAULT_AGENT_ID, [scope], {
-      allEntries: true,
-      limit: 100,
-    });
+    const expected = new Map(
+      entries(h.orm, DEFAULT_AGENT_ID, undefined, { scopeKeys: [scope] }).map((row) => [
+        row.id,
+        row.body,
+      ]),
+    );
     const original = h.db.prepare;
     const prepare = original.bind(h.db);
     const returned: number[] = [];
@@ -172,9 +123,9 @@ describe("memory catalog work and unchanged legacy reads", () => {
     }) as typeof h.db.prepare;
     try {
       const ids = ["row-73", "row-2", "row-73"];
-      expect(memoryBodiesByScopeKeys(h.orm, DEFAULT_AGENT_ID, ids, [scope])).toEqual(
-        ids.map((id) => expected.find((item) => item.id === id)!),
-      );
+      const selected = memoryBodiesByScopeKeys(h.orm, DEFAULT_AGENT_ID, ids, [scope]);
+      expect(selected.map((item) => item.id)).toEqual(ids);
+      expect(selected.map((item) => item.body)).toEqual(ids.map((id) => expected.get(id)));
       expect(returned).toEqual([2]);
     } finally {
       h.db.prepare = original;
@@ -237,64 +188,5 @@ describe("memory catalog work and unchanged legacy reads", () => {
         memoryBodiesByScopeKeys(h.orm, DEFAULT_AGENT_ID, [corrected.content.id], [scope]),
       ),
     ).toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
-  });
-
-  it("retains complete valid catalogs, UTF-16 afterId filtering, locale ordering and metadata fingerprint bytes", () => {
-    const { h, seed } = fixture();
-    for (const id of ["a", "A", "ä", "z", "𠮷", "😀"]) seed(id);
-    seed("invalid");
-    h.orm
-      .update(schema.memoryEntries)
-      .set({ configSnapshot: '{"correction_retired":true}' })
-      .where(eq(schema.memoryEntries.id, "invalid"))
-      .run();
-    seed("outside", "outside", "body", "other");
-    const rows = entries(h.orm, DEFAULT_AGENT_ID, undefined, {
-      status: "active",
-      scopeKeys: [scope],
-    })
-      .filter((row) => row.id !== "invalid")
-      .sort((a, b) => a.id.localeCompare(b.id));
-    expect(
-      catalogByScopeKeys(h.orm, DEFAULT_AGENT_ID, [scope], {
-        allEntries: true,
-        afterId: "z",
-        limit: 100,
-      }).map((item) => item.id),
-    ).toEqual(rows.filter((row) => row.id > "z").map((row) => row.id));
-    const digest = createHash("sha256")
-      .update(`${DEFAULT_AGENT_ID}:${AGENT_LEVEL_SCOPE_KEY}`)
-      .update(`:${JSON.stringify([scope])}`);
-    for (const row of rows)
-      digest
-        .update(
-          JSON.stringify([
-            row.id,
-            row.name,
-            row.summary,
-            JSON.parse(row.tags),
-            row.createdAt,
-            row.status,
-          ]),
-        )
-        .update("\n");
-    const before = memoryFingerprintByScopeKeys(h.orm, DEFAULT_AGENT_ID, [scope]);
-    expect(before).toBe(digest.digest("hex"));
-    const revision = memoryBodiesByScopeKeys(h.orm, DEFAULT_AGENT_ID, ["a"], [scope])[0].revision;
-    h.orm
-      .update(schema.memoryEntries)
-      .set({ body: "body changed" })
-      .where(eq(schema.memoryEntries.id, "a"))
-      .run();
-    expect(memoryFingerprintByScopeKeys(h.orm, DEFAULT_AGENT_ID, [scope])).toBe(before);
-    expect(memoryBodiesByScopeKeys(h.orm, DEFAULT_AGENT_ID, ["a"], [scope])[0].revision).not.toBe(
-      revision,
-    );
-    expect(
-      catalogByScopeKeys(h.orm, DEFAULT_AGENT_ID, [], { allEntries: true, limit: 100 }),
-    ).toEqual([]);
-    expect(
-      catalogByScopeKeys(h.orm, DEFAULT_AGENT_ID, null, { allEntries: true, limit: 100 }),
-    ).toHaveLength(rows.length + 1);
   });
 });

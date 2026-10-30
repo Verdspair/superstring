@@ -3,7 +3,8 @@
 //
 // 页面键文案沿用既有 groupConfig 键；这里只断言稳定可见事实与保存载荷。
 
-import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AgentKnowledgeReadSettings } from "../../src/shared/contracts/knowledge";
 import {
@@ -239,4 +240,63 @@ it("私聊绑定复用同一配置页：GET 读同一编辑器，字段改动按
   expect(payload.overrides.reply).toBeUndefined();
   expect(payload.scheme_id).toBeUndefined();
   expect(payload.scheme_change).toBeUndefined();
+});
+
+it("私聊实际方案预览取消返回同一个按钮，保留未存方案与稀疏差异", async () => {
+  const targetId = "33333333-3333-4333-8333-333333333333";
+  const target = qqScheme({ id: targetId, name: "私聊目标方案", revision: 7 });
+  const view = await renderPrivatePage({ listQqSchemes: vi.fn(async () => [qqScheme(), target]) });
+  act(() => store.getState().patchQqGroupOverride("rhythm", "merge_window_seconds", "45"));
+  const select = view.container.querySelector(
+    'select[data-field="scheme.switch"]',
+  ) as HTMLSelectElement;
+  await userEvent.selectOptions(select, targetId);
+  const switching = await screen.findByRole("dialog");
+  await userEvent.click(switching.querySelector('[data-switch-action="keep"]') as HTMLElement);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  const draft = structuredClone(store.getState().qqGroupConfigEditor?.overrides);
+  const trigger = screen.getByRole("button", { name: "预览变更" });
+  await userEvent.click(trigger);
+  const preview = await screen.findByRole("dialog");
+  await userEvent.click(within(preview).getByRole("button", { name: "取消" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+  expect(trigger.isConnected).toBe(true);
+  expect(select.value).toBe(targetId);
+  expect(store.getState().qqGroupConfigEditor?.overrides).toEqual(draft);
+  expect(view.fake.saveQqGroupConfig).not.toHaveBeenCalled();
+});
+
+it("私聊原生方案选择取消与keep/reset返回同一选择框，保私域草稿且零PUT", async () => {
+  const targetId = "33333333-3333-4333-8333-333333333333";
+  const target = qqScheme({ id: targetId, name: "私聊选择目标", revision: 7 });
+  const view = await renderPrivatePage({ listQqSchemes: vi.fn(async () => [qqScheme(), target]) });
+  act(() => store.getState().patchQqGroupOverride("rhythm", "merge_window_seconds", "45"));
+  const select = view.container.querySelector(
+    'select[data-field="scheme.switch"]',
+  ) as HTMLSelectElement;
+  const baseline = structuredClone(store.getState().qqGroupConfigEditor?.overrides);
+  for (const choice of ["cancel", "escape", "keep", "reset"] as const) {
+    await userEvent.click(select);
+    await userEvent.selectOptions(select, targetId);
+    const dialog = await screen.findByRole("dialog");
+    if (choice === "escape") await userEvent.keyboard("{Escape}");
+    else if (choice === "cancel")
+      await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    else
+      await userEvent.click(
+        dialog.querySelector(`[data-switch-action="${choice}"]`) as HTMLElement,
+      );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(select));
+    expect(select.isConnected).toBe(true);
+    expect(select.value).toBe(choice === "cancel" || choice === "escape" ? SCHEME_ID : targetId);
+    expect(store.getState().qqGroupConfigEditor?.source.base_scheme.id).toBe(SCHEME_ID);
+    expect(store.getState().qqGroupConfigEditor?.overrides).toEqual(
+      choice === "reset" ? {} : baseline,
+    );
+    expect(view.fake.saveQqGroupConfig).not.toHaveBeenCalled();
+    expect(screen.queryByRole("tab", { name: "本群能力" })).toBeNull();
+    if (choice === "keep") act(() => store.getState().patchQqGroupConfigScheme(undefined));
+  }
 });

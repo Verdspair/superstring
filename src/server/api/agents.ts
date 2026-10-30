@@ -15,7 +15,7 @@ import {
   UpdateAgentRequestSchema,
 } from "../../shared/contracts";
 import type { PermissionRequirement } from "../../shared/contracts/permissions";
-import type { BuiltInAction } from "../agent/built-in-actions";
+import type { ToolDefinition } from "../../shared/contracts/tool-directory";
 import { ensureDefaults, type Orm } from "../db/repositories";
 import { isAppError } from "../errors";
 import type { McpManagement } from "../mcp/management";
@@ -73,12 +73,12 @@ function toPersonaResponse(row: {
 
 export interface AgentRoutesOptions {
   permissions?: PermissionService;
-  externalActions?: () => readonly BuiltInAction[];
+  externalActions?: () => readonly ToolDefinition[];
   mcpManagement?: McpManagement;
 }
 
 export function snapshotAgentCreationRequirements(
-  actions: () => readonly BuiltInAction[],
+  actions: () => readonly ToolDefinition[],
   management?: McpManagement,
 ): PermissionRequirement[] {
   const before = management?.status();

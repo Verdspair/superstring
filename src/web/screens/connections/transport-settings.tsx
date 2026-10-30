@@ -147,7 +147,7 @@ export function TransportSettings({
               />
             }
           >
-            <div className="space-y-5 p-4 sm:p-5">
+            <div className="space-y-5 settings-content-padding">
               <Field label="connections.assistantAccount" tooltip={t("hints.fieldExtra.qqAccount")}>
                 <Input
                   inputMode="numeric"

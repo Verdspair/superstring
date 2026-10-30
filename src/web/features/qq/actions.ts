@@ -2,9 +2,8 @@
 //
 // Everything here goes through the API client, and every write reloads or patches the two lists
 // from the server's answer rather than from the form: §9.2's fields are shared with the reply
-// path, so the surface must show what is stored, not what was typed. A failed call leaves the
-// editor as it was and reports the error, the same discipline the rest of the settings surfaces
-// follow.
+// path, so the surface must show what is stored, not what was typed. Multi-endpoint saves accept
+// each durable response while retaining unfinished groups and later draft edits.
 
 import type {
   QqBindingResponse,
@@ -24,6 +23,7 @@ import { errorText, persistBrowserState } from "../../state/helpers";
 import type { StoreGet, StoreSet, SuperstringState } from "../../state/types";
 import { invalidSchemeInputs, invalidSchemeTimezone, parseAttentionMembers } from "./draft-state";
 import {
+  acceptQqStickerSave,
   QQ_STORAGE_PAGE_SIZE,
   type QqAccessState,
   type QqBindingsReadOptions,
@@ -36,6 +36,9 @@ import {
   qqSchemeChanges,
   qqSchemeDirty,
   qqSchemeEditorFrom,
+  qqStickerCollectionsDirty,
+  qqStickerContentDirty,
+  qqStickerEditorDirty,
   qqStickerEditorFrom,
   qqStickerEditorTags,
   qqStorageDaysChanged,
@@ -62,6 +65,8 @@ export function createQqStickerActions(
   | "renameQqStickerCollection"
   | "clearQqStickerImportNotice"
 > {
+  let editorSession = 0;
+  let impactRequest = 0;
   const replaceAsset = (asset: QqStickerAssetResponse) => {
     set((state) => ({
       qqStickerAssets: state.qqStickerAssets.map((row) => (row.id === asset.id ? asset : row)),
@@ -72,9 +77,18 @@ export function createQqStickerActions(
     }));
   };
   const loadImpact = async (id: string) => {
+    const api = get().apiClient;
+    const session = editorSession;
+    const request = ++impactRequest;
     try {
-      const impact = await get().apiClient.getQqStickerImpact(id);
-      if (get().qqStickerEditor?.source.id === id) set({ qqStickerImpact: impact });
+      const impact = await api.getQqStickerImpact(id);
+      if (
+        request === impactRequest &&
+        get().apiClient === api &&
+        editorSession === session &&
+        get().qqStickerEditor?.source.id === id
+      )
+        set({ qqStickerImpact: impact });
     } catch {
       // The impact panel is informational; a failure to read it must not look like a failed save.
     }
@@ -116,73 +130,145 @@ export function createQqStickerActions(
     openQqStickerEditor: (id) => {
       const asset = get().qqStickerAssets.find((row) => row.id === id);
       if (!asset) return;
+      editorSession++;
       set({
         qqStickerEditor: { ...qqStickerEditorFrom(asset) },
+        error: null,
+        feedback: "",
         qqStickerImpact: null,
         qqStickerImportNotice: null,
       });
       void loadImpact(id);
     },
-    closeQqStickerEditor: () => set({ qqStickerEditor: null, qqStickerImpact: null }),
+    closeQqStickerEditor: () => {
+      editorSession++;
+      set({ qqStickerEditor: null, qqStickerImpact: null, error: null, feedback: "" });
+    },
     patchQqStickerEditor: (patch) =>
       set((state) =>
         state.qqStickerEditor ? { qqStickerEditor: { ...state.qqStickerEditor, ...patch } } : {},
       ),
     saveQqStickerEditor: async (options) => {
-      const editor = get().qqStickerEditor;
-      if (!editor || get().qqStickerSaving) return false;
+      const submitted = get().qqStickerEditor;
+      if (!submitted || get().qqStickerSaving || options?.isCurrent?.() === false) return false;
+      const api = get().apiClient;
+      const session = editorSession;
+      const id = submitted.source.id;
+      const { page, settingsView, settingsRoute } = get();
+      const ownsSession = () =>
+        get().apiClient === api &&
+        editorSession === session &&
+        get().qqStickerEditor?.source.id === id;
+      const ownsEditor = () =>
+        ownsSession() &&
+        options?.isCurrent?.() !== false &&
+        get().page === page &&
+        get().settingsView === settingsView &&
+        get().settingsRoute === settingsRoute;
+      let saved = submitted.source;
+      const accept = (
+        asset: QqStickerAssetResponse,
+        group: "content" | "collections" | "enabled",
+      ) => {
+        saved = asset;
+        if (get().apiClient !== api) return;
+        set((state) => ({
+          qqStickerAssets: state.qqStickerAssets.map((row) => (row.id === id ? asset : row)),
+          ...(ownsSession() && state.qqStickerEditor
+            ? {
+                qqStickerEditor: acceptQqStickerSave(
+                  state.qqStickerEditor,
+                  submitted,
+                  asset,
+                  group,
+                ),
+              }
+            : {}),
+        }));
+      };
       set({ qqStickerSaving: true, error: null, feedback: "" });
       try {
-        const api = get().apiClient;
-        // Content first, then the membership set: both answers describe the same row, and the last
-        // one read back is what the surface shows (the PUT answers with the saved content too).
-        await api.updateQqStickerAsset(editor.source.id, {
-          name: editor.name.trim(),
-          description: editor.description.trim() === "" ? null : editor.description.trim(),
-          tags: qqStickerEditorTags(editor.tags),
-          usage_note: editor.usageNote.trim() === "" ? null : editor.usageNote.trim(),
+        if (qqStickerContentDirty(submitted)) {
+          accept(
+            await api.updateQqStickerAsset(id, {
+              name: submitted.name.trim(),
+              description:
+                submitted.description.trim() === "" ? null : submitted.description.trim(),
+              tags: qqStickerEditorTags(submitted.tags),
+              usage_note: submitted.usageNote.trim() === "" ? null : submitted.usageNote.trim(),
+            }),
+            "content",
+          );
+          if (!ownsEditor()) return false;
+        }
+        if (qqStickerCollectionsDirty(submitted)) {
+          accept(
+            await api.setQqStickerCollections(id, {
+              collection_ids: submitted.collectionIds,
+            }),
+            "collections",
+          );
+          if (!ownsEditor()) return false;
+        }
+        if (options?.enableAfterSave && !saved.enabled) {
+          accept(await api.setQqStickerEnabled(id, true), "enabled");
+          if (!ownsEditor()) return false;
+        }
+        if (!ownsEditor()) return false;
+        const complete = !qqStickerEditorDirty(get().qqStickerEditor);
+        set({
+          feedback: complete
+            ? options?.enableAfterSave
+              ? "已保存并启用"
+              : "已保存素材整理"
+            : msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
         });
-        const collected = await api.setQqStickerCollections(editor.source.id, {
-          collection_ids: editor.collectionIds,
-        });
-        const final = options?.enableAfterSave
-          ? await api.setQqStickerEnabled(editor.source.id, true)
-          : collected;
-        set((state) => {
-          const isCurrent = state.qqStickerEditor === editor;
-          return {
-            qqStickerAssets: state.qqStickerAssets.map((row) =>
-              row.id === final.id ? final : row,
-            ),
-            qqStickerEditor: isCurrent ? { ...qqStickerEditorFrom(final) } : state.qqStickerEditor,
-            ...(isCurrent
-              ? { feedback: options?.enableAfterSave ? "已保存并启用" : "已保存素材整理" }
-              : {}),
-          };
-        });
-        void loadImpact(final.id);
-        return true;
+        if (saved !== submitted.source) void loadImpact(id);
+        return complete;
       } catch (error) {
-        report(error);
+        if (ownsEditor()) report(error);
         return false;
       } finally {
-        set({ qqStickerSaving: false });
+        if (get().apiClient === api) set({ qqStickerSaving: false });
       }
     },
     setQqStickerEnabled: async (id, enabled) => {
       if (get().qqStickerSaving) return false;
+      const api = get().apiClient;
+      const session = editorSession;
+      const { page, settingsView, settingsRoute } = get();
+      const ownsEditor = () =>
+        get().apiClient === api &&
+        editorSession === session &&
+        get().qqStickerEditor?.source.id === id &&
+        get().page === page &&
+        get().settingsView === settingsView &&
+        get().settingsRoute === settingsRoute;
       set({ qqStickerSaving: true, error: null });
       try {
-        const asset = await get().apiClient.setQqStickerEnabled(id, enabled);
-        replaceAsset(asset);
-        set({ feedback: enabled ? "已启用素材" : "已停用素材" });
-        if (enabled) await loadImpact(id);
+        const asset = await api.setQqStickerEnabled(id, enabled);
+        if (get().apiClient !== api) return false;
+        set((state) => ({
+          qqStickerAssets: state.qqStickerAssets.map((row) => (row.id === id ? asset : row)),
+          ...(ownsEditor() && state.qqStickerEditor
+            ? {
+                qqStickerEditor: acceptQqStickerSave(
+                  state.qqStickerEditor,
+                  state.qqStickerEditor,
+                  asset,
+                  "enabled",
+                ),
+                feedback: enabled ? "已启用素材" : "已停用素材",
+              }
+            : {}),
+        }));
+        if (enabled && ownsEditor()) void loadImpact(id);
         return true;
       } catch (error) {
-        report(error);
+        if (ownsEditor()) report(error);
         return false;
       } finally {
-        set({ qqStickerSaving: false });
+        if (get().apiClient === api) set({ qqStickerSaving: false });
       }
     },
     importQqStickerFile: async (file) => {
@@ -195,6 +281,7 @@ export function createQqStickerActions(
           set({ qqStickerImportNotice: { kind: "rejected", reason: result.reason } });
           return false;
         }
+        editorSession++;
         set((state) => ({
           qqStickerAssets: [...state.qqStickerAssets, result.asset],
           qqStickerImportNotice: { kind: "imported", name: result.asset.name },
@@ -1556,6 +1643,14 @@ export function createQqAccessActions(
       const settings = get().qqSettings;
       if (!settings || get().qqAccessSaving) return false;
       const op = beginAccessWrite();
+      const lifecycleId = get().qqManagedLifecycleId;
+      const affectsManaged =
+        (patch.enabled !== undefined && patch.enabled !== settings.enabled) ||
+        (patch.account_id !== undefined && patch.account_id !== settings.account_id) ||
+        (patch.endpoint !== undefined && patch.endpoint !== settings.transport.endpoint) ||
+        patch.token !== undefined;
+      const managedOwner = affectsManaged ? get().beginQqManagedConnectionWrite() : null;
+      let managedChanged = false;
       /**
        * 共享同一条 qq_settings 修订链的另一个草稿（保留设置）：每个成功步都把它的基线 revision
        * 推进到写入后的值——天数原文与旧 source 其余字段保留供脏比较；部分成功也留下有效基线。
@@ -1583,7 +1678,11 @@ export function createQqAccessActions(
             ...(patch.account_id === undefined ? {} : { account_id: patch.account_id }),
             expected_revision: current.revision,
           });
-          if (!isCurrentAccessWriteApi(op)) return false;
+          if (!isCurrentAccessWriteApi(op) || get().qqManagedLifecycleId !== lifecycleId)
+            return false;
+          managedChanged ||=
+            updatedSettings.enabled !== current.enabled ||
+            updatedSettings.account_id !== current.account_id;
           current = updatedSettings;
           set((state) => ({
             qqSettings: current,
@@ -1605,20 +1704,26 @@ export function createQqAccessActions(
             ...(patch.token === undefined ? {} : { token: patch.token }),
             expected_revision: current.revision,
           });
-          if (!isCurrentAccessWriteApi(op)) return false;
+          if (!isCurrentAccessWriteApi(op) || get().qqManagedLifecycleId !== lifecycleId)
+            return false;
+          managedChanged ||=
+            patch.token !== undefined ||
+            updatedTransport.transport.endpoint !== current.transport.endpoint;
           current = updatedTransport;
           advanceStorageBaseline(before, current.revision);
         }
-        if (!isCurrentAccessWriteApi(op)) return false;
+        if (!isCurrentAccessWriteApi(op) || get().qqManagedLifecycleId !== lifecycleId)
+          return false;
         set({ qqSettings: current, feedback: "已保存接入设置" });
         return true;
       } catch (error) {
-        if (isCurrentAccessWriteApi(op)) {
+        if (isCurrentAccessWriteApi(op) && get().qqManagedLifecycleId === lifecycleId) {
           report(error);
         }
         return false;
       } finally {
-        endAccessWrite(op);
+        if (managedOwner) await get().endQqManagedConnectionWrite(managedOwner, managedChanged);
+        if (get().qqManagedLifecycleId === lifecycleId) endAccessWrite(op);
       }
     },
     bindQqConversation: async ({ conversation, agentId, schemeId }) => {
@@ -1728,11 +1833,10 @@ export function createQqAccessActions(
       if (get().qqAccessSaving || get().qqGroupConfigSaving) return false;
       const op = beginAccessWrite();
       try {
-        // 方案切换的显式决定（keep/reset, ADR0019 §13.2 G）与绑定补丁走同一个 PUT；字段已是
-        // 真实 public 类型，缺省不携带＝这不是一次「移动到其他方案」的保存，不伪造决定。
+        // The choice and its preview revisions travel in the same PUT as the binding patch.
+        // No decision or baseline is inferred from a later directory/config read.
         const saved = await op.api.updateQqBinding(binding.id, {
           ...patch,
-          ...(patch.scheme_change ? { scheme_change: patch.scheme_change } : {}),
           expected_revision: binding.revision,
         });
         if (!isCurrentAccessWriteApi(op)) return false;

@@ -338,6 +338,8 @@ function assertFlexibleGreedyPartition(
 
     // 2. Chunks are contiguous non-empty slices of the actual DB retrieval order.
     const callBody = JSON.parse(call.messages[1].content) as {
+      candidate: MemoryDraft;
+      candidate_context?: Record<string, unknown>;
       blocked: Array<{ name: string; summary: string; body: string }>;
     };
     const chunk = callBody.blocked;
@@ -351,10 +353,21 @@ function assertFlexibleGreedyPartition(
     const nextIndex = offset + chunk.length;
     const isTerminalEvaluated = i === suppressionCalls.length - 1;
     if (!isTerminalEvaluated && nextIndex < orderedBlocked.length) {
-      const nextItem = orderedBlocked[nextIndex];
-      const overflowChunk = [...chunk, nextItem];
-      const overflowPrompt = suppressionPrompt(CANDIDATE_DRAFT, overflowChunk);
-      const overflowCost = measureRequestTokens(overflowPrompt, SUPPRESSION_RESULT_JSON_SCHEMA);
+      const nextBody = JSON.parse(suppressionCalls[i + 1].messages[1].content) as {
+        blocked: Array<{ name: string; summary: string; body: string }>;
+      };
+      const nextItem = nextBody.blocked[0];
+      expect(nextItem).toBeDefined();
+      expect({ name: nextItem.name, summary: nextItem.summary, body: nextItem.body }).toEqual(
+        orderedBlocked[nextIndex],
+      );
+      const overflowPrompt = suppressionPrompt(
+        callBody.candidate,
+        [...chunk, nextItem],
+        callBody.candidate_context ?? null,
+      );
+      expect(call.responseSchema).toEqual(SUPPRESSION_RESULT_JSON_SCHEMA);
+      const overflowCost = measureRequestTokens(overflowPrompt, call.responseSchema!);
       expect(overflowCost).toBeGreaterThan(ceiling);
     }
 
@@ -386,7 +399,8 @@ describe("dynamic suppression packing (C4)", () => {
   const all8Items = Array.from({ length: 8 }, (_, i) => makeBlockedItem(i));
   const autoItems = all8Items.map((item) => ({
     ...item,
-    body: `${item.body}该项还有单独的维护窗口记录和访问范围说明，需要结合配置的原始上下文核对。`,
+    // Synthetic source detail makes the eight-entry request exceed the probed draft cost.
+    body: `${item.body}该项还有单独的维护窗口记录和访问范围说明，需要结合配置的原始上下文核对。维护记录还注明变更须经值班人员确认，核对备份状态、网络访问规则、恢复步骤和监控告警；完成后登记检查结果，并在下一次例行巡检时复核。`,
   }));
   const autoPrompt8 = suppressionPrompt(CANDIDATE_DRAFT, autoItems);
   const autoPrompt4First = suppressionPrompt(CANDIDATE_DRAFT, autoItems.slice(0, 4));

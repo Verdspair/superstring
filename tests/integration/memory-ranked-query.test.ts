@@ -95,7 +95,6 @@ function fixture() {
         userId: DEFAULT_USER_ID,
       },
       scopes: null,
-      mode: "standard",
       query,
       budget: DEFAULT_STANDARD_PRESET.max_tokens,
       ...(cursor ? { cursor } : {}),

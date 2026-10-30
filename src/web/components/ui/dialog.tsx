@@ -4,6 +4,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import type * as React from "react";
 import { Trans } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { useOverlayReturnFocus } from "./use-overlay-return-focus";
 
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
@@ -41,20 +42,40 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  scrollMode = "surface",
+  onOpenAutoFocus,
+  onCloseAutoFocus,
+  onBlurCapture,
+  returnFocusRef,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
+  scrollMode?: "surface" | "body" | "none";
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
 }) {
+  const focusHandlers = useOverlayReturnFocus({
+    onOpenAutoFocus,
+    onCloseAutoFocus,
+    onBlurCapture,
+    returnFocusRef,
+  });
   return (
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        data-scroll-mode={scrollMode}
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-[var(--motion-base)] ease-[var(--ease-standard)] data-closed:ease-[var(--ease-exit)] outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-98 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-98",
+          "fixed top-1/2 left-1/2 z-50 w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-[var(--motion-base)] ease-[var(--ease-standard)] data-closed:ease-[var(--ease-exit)] outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-98 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-98",
+          "max-h-[min(90dvh,calc(100dvh-2rem))] min-w-0",
+          scrollMode === "surface" && "grid overflow-y-auto",
+          scrollMode === "body" &&
+            "flex flex-col overflow-hidden [&>[data-slot=dialog-header]]:shrink-0 [&>[data-slot=dialog-footer]]:shrink-0",
+          scrollMode === "none" && "grid overflow-hidden",
           className,
         )}
         {...props}
+        {...focusHandlers}
       >
         {children}
         {showCloseButton && (
@@ -79,7 +100,11 @@ function DialogContent({
 
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
-    <div data-slot="dialog-header" className={cn("flex flex-col gap-2", className)} {...props} />
+    <div
+      data-slot="dialog-header"
+      className={cn("min-w-0 shrink-0 flex flex-col gap-2 pr-10", className)}
+      {...props}
+    />
   );
 }
 
@@ -95,7 +120,7 @@ function DialogFooter({
     <div
       data-slot="dialog-footer"
       className={cn(
-        "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 p-4 sm:flex-row sm:justify-end",
+        "-mx-4 -mb-4 min-w-0 max-w-full shrink-0 flex flex-col-reverse flex-wrap gap-2 rounded-b-xl border-t bg-muted/50 p-4 sm:flex-row sm:justify-end",
         className,
       )}
       {...props}
@@ -116,7 +141,7 @@ function DialogTitle({ className, ...props }: React.ComponentProps<typeof Dialog
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn("font-heading workspace-dialog-title", className)}
+      className={cn("min-w-0 break-words pr-8 font-heading workspace-dialog-title", className)}
       {...props}
     />
   );

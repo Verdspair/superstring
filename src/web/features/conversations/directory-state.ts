@@ -27,6 +27,7 @@ export interface ConversationDirectoryState {
   requestConversationNavigation: (id: string) => Promise<void>;
   memoryReadModeBaseline: {
     id: string;
+    canonicalId: string;
     mode: ConversationMemoryReadMode;
     revision: number;
     api: SuperstringState["apiClient"];
@@ -40,6 +41,11 @@ export interface ConversationDirectoryState {
     options?: { force?: boolean; preserveDraft?: boolean },
   ) => Promise<boolean>;
   cancelConversationMemoryReadMode: () => void;
+  resolveMemoryReadConversation: (
+    id: string,
+    signal: AbortSignal,
+    api?: SuperstringState["apiClient"],
+  ) => Promise<string>;
   patchConversationMemoryReadModeDraft: (mode: ConversationMemoryReadMode) => void;
   saveConversationMemoryReadMode: (id: string) => Promise<boolean>;
   discardConversationMemoryReadMode: () => void;
@@ -56,6 +62,7 @@ export const directoryInitial = {
   selectionRevision: 0,
   memoryReadModeBaseline: null as {
     id: string;
+    canonicalId: string;
     mode: ConversationMemoryReadMode;
     revision: number;
     api: SuperstringState["apiClient"];
@@ -78,6 +85,7 @@ export function currentSessionId(state: SuperstringState): string | null {
 export function conversationModeDirty(state: {
   memoryReadModeBaseline: {
     id: string;
+    canonicalId: string;
     mode: ConversationMemoryReadMode;
     revision: number;
     api: SuperstringState["apiClient"];
@@ -105,6 +113,7 @@ export function createDirectoryActions(
   | "selectConversation"
   | "loadConversationMemoryReadMode"
   | "cancelConversationMemoryReadMode"
+  | "resolveMemoryReadConversation"
   | "patchConversationMemoryReadModeDraft"
   | "saveConversationMemoryReadMode"
   | "discardConversationMemoryReadMode"
@@ -286,6 +295,15 @@ export function createDirectoryActions(
         persistBrowserState(get().browserStateStorage, "superstring-conversation", id);
       }
     },
+    resolveMemoryReadConversation: async (id, signal, api = get().apiClient) => {
+      signal.throwIfAborted();
+      if (get().apiClient !== api) throw new Error("Conversation reader changed");
+      const result = await api.getConversationMemoryReadMode(id, signal);
+      signal.throwIfAborted();
+      if (get().apiClient !== api) throw new Error("Conversation reader changed");
+      if (!result.conversation_id) throw new Error("Current conversation is unavailable");
+      return result.conversation_id;
+    },
     cancelConversationMemoryReadMode: () => {
       if (activeModeResolve) {
         activeModeResolve(false);
@@ -338,6 +356,7 @@ export function createDirectoryActions(
               return {
                 memoryReadModeBaseline: {
                   id,
+                  canonicalId: res.conversation_id,
                   mode: res.mode,
                   revision: res.revision,
                   api: capturedApi,
@@ -391,7 +410,7 @@ export function createDirectoryActions(
       set({ memoryReadModeSaving: true, memoryReadModeError: null });
 
       try {
-        const res = await capturedApi.saveConversationMemoryReadMode(id, {
+        const res = await capturedApi.saveConversationMemoryReadMode(baseline.canonicalId, {
           mode: draft,
           expected_revision: baseline.revision,
         });
@@ -406,6 +425,7 @@ export function createDirectoryActions(
         set({
           memoryReadModeBaseline: {
             id,
+            canonicalId: res.conversation_id,
             mode: res.mode,
             revision: res.revision,
             api: capturedApi,

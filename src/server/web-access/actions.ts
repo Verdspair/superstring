@@ -11,6 +11,7 @@ import {
   webToolSchemas,
 } from "../../shared/contracts/agent-action-descriptions";
 import type { PermissionRequirement } from "../../shared/contracts/permissions";
+import type { ToolDefinition } from "../../shared/contracts/tool-directory";
 import {
   type ActionContext,
   type BuiltInAction,
@@ -112,14 +113,22 @@ async function settle<T>(
   }
 }
 
+export function createWebToolDefinitions(): ToolDefinition[] {
+  const descriptions = webToolDescriptions(WEB_TOOL_LIMITS);
+  return [
+    { permission: WEB_PERMISSION, description: descriptions["web.search"] },
+    { permission: WEB_PERMISSION, description: descriptions["web.fetch"] },
+  ];
+}
+
 export function createWebActions(options: WebAccessActionOptions = {}): BuiltInAction[] {
+  const definitions = createWebToolDefinitions();
   const network = {
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.resolve ? { resolve: options.resolve } : {}),
   };
   const search: BuiltInAction = {
-    permission: WEB_PERMISSION,
-    description: webToolDescriptions(WEB_TOOL_LIMITS)["web.search"],
+    ...definitions[0]!,
     async execute(arguments_, context) {
       context.signal.throwIfAborted();
       const input = SearchSchema.parse(arguments_);
@@ -155,8 +164,7 @@ export function createWebActions(options: WebAccessActionOptions = {}): BuiltInA
     },
   };
   const fetchAction: BuiltInAction = {
-    permission: WEB_PERMISSION,
-    description: webToolDescriptions(WEB_TOOL_LIMITS)["web.fetch"],
+    ...definitions[1]!,
     async execute(arguments_, context) {
       context.signal.throwIfAborted();
       const input = FetchSchema.parse(arguments_);

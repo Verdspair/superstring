@@ -6,8 +6,8 @@ import type {
   MemoryCorrection,
   MemoryEntryResponse,
   MemoryJobView,
+  MemoryManagementEntry,
   MemorySessionOption,
-  MemorySummary,
   MemoryTurnRow,
   PersonaResponse,
   PolicyView,
@@ -46,12 +46,20 @@ export type SettingsView =
   | "knowledge"
   | "workspace"
   | "observability";
-export type SectionKey = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "knowledge";
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 export type ConversationView = "messages" | "activity" | "tasks";
 export type ConversationScope = "current" | "global";
 export type QqSchemeView = "settings" | "bindings";
 export type PendingNavigation =
+  | {
+      kind: "workspace-target";
+      route: SettingsRoute;
+      agentId?: string | null;
+      componentTarget?: SystemComponentTarget | null;
+      allocation?: ContextAllocationTarget;
+      origin?: import("../workspace/navigation-context").WorkspaceReturnContext;
+      returning?: boolean;
+    }
   | {
       kind: "context-allocation";
       target: import("../features/context-allocation").ContextAllocationTarget;
@@ -74,7 +82,6 @@ export type PendingNavigation =
       id: string | "__new__";
       settingsRoute?: SettingsRoute;
     }
-  | { kind: "section"; section: SectionKey }
   | {
       kind: "scheme";
       id: string;
@@ -119,7 +126,7 @@ export interface AgentDraft {
   persona_intensity: number;
 }
 
-export type AgentWorkspaceTask = "identity" | "conversation" | "materials";
+export type AgentWorkspaceTask = "identity" | "conversation" | "materials" | "tools";
 
 export interface SuperstringState
   extends ConversationState,
@@ -144,6 +151,7 @@ export interface SuperstringState
   allocationInvalidInputs: Record<string, string>;
   pageEditor: import("../features/agents/page-drafts").PageEditor | null;
   settingsSaving: boolean;
+  settingsSaveOwner: object | null;
   patchPagePolicy: (patch: Partial<Omit<PolicyView, "version">>) => void;
   patchPageAgent: (
     page: import("../features/agents/page-drafts").EditablePage,
@@ -160,8 +168,8 @@ export interface SuperstringState
   saveSettingsTask: (task: AgentWorkspaceTask) => Promise<boolean>;
   settingsTaskDirty: (task: AgentWorkspaceTask) => boolean;
   discardSettingsTask: (task: AgentWorkspaceTask) => void;
-  /** 显式刷新保存基线：GET 当前 Agent，只推进未修改字段与 config_version，保留已改草稿且不自动重试保存。 */
-  refreshSettingsAgent: () => Promise<boolean>;
+  /** Refresh saved baselines without submitting drafts. Materials also refreshes knowledge CAS. */
+  refreshSettingsAgent: (options?: { materials?: boolean }) => Promise<boolean>;
   /**
    * 一键覆盖：把当前助手的四个**文本用途**模型（对话、记忆读取、记忆整理、
    * 上下文压缩）都设成给定的默认模型，并立即保存该助手的模型页。图片理解与语音转写不是助手的字段，
@@ -176,10 +184,22 @@ export interface SuperstringState
   status: LoadStatus;
   error: string | null;
   feedback: string;
+  agentTaskResult: {
+    agentId: string;
+    token: object;
+    task: AgentWorkspaceTask;
+    error: string | null;
+    feedback: string;
+  } | null;
   page: Page;
   settingsView: SettingsView;
   settingsRoute: SettingsRoute;
   componentTarget: SystemComponentTarget | null;
+  workspaceReturns: import("../workspace/navigation-context").WorkspaceReturnContext[];
+  openWorkspaceTarget: (route: SettingsRoute, agentId?: string | null) => void;
+  returnWorkspaceTarget: () => void;
+  openContextAllocation: (target?: Partial<ContextAllocationTarget>) => void;
+  returnFromContextAllocation: () => void;
   conversationView: ConversationView;
   conversationScope: ConversationScope;
   qqSchemeView: QqSchemeView;
@@ -191,7 +211,6 @@ export interface SuperstringState
     returning?: boolean,
   ) => void;
   openSystemComponent: (target: SystemComponentTarget) => void;
-  activeSection: SectionKey;
   dirty: boolean;
   pendingNavigation: PendingNavigation | null;
   navigationConfirmOpen: boolean;
@@ -201,14 +220,36 @@ export interface SuperstringState
   editorAgentId: string | "__new__";
   editorDraft: AgentDraft | null;
   editorLoading: boolean;
+  /** A same-editor baseline refresh keeps its mounted consumers; identity changes revoke it. */
+  editorBaselineRefresh: { api: SuperstringApi; agentId: string; token: object } | null;
   persona: PersonaResponse | null;
   policy: PolicyView | null;
   memorySessions: MemorySessionOption[];
   memoryTurns: MemoryTurnRow[];
-  memoryEntries: MemorySummary[];
+  memoryEntries: MemoryManagementEntry[];
   memoryEntryTotal: number;
   memoryManagementError: string | null;
   memoryManagementLoading: boolean;
+  memoryReadSelection: {
+    entry: import("../../shared/contracts/memory").MemoryManagementEntry;
+    conversationId: string | null;
+  } | null;
+  memoryReadable: import("../../shared/contracts/memory").MemoryReadablePage | null;
+  memorySources: import("../../shared/contracts/memory").MemorySourcePreviewList | null;
+  memorySourcePreview: import("../../shared/contracts/memory").MemorySourcePreviewPage | null;
+  memoryReadableOffset: number;
+  memorySourceOffset: number;
+  memorySourcePosition: { sourceKey: string; revision: string; offset: number } | null;
+  resumeMemorySources: () => Promise<void>;
+  memoryReadLoading: boolean;
+  memoryReadError: string | null;
+  cancelMemoryDetailRead: () => void;
+  cancelMemoryPayloadRead: () => void;
+  loadMemoryReadable: (offset?: number) => Promise<void>;
+  selectMemoryReadConversation: (id: string) => Promise<void>;
+  loadMemorySources: (offset?: number) => Promise<void>;
+  loadMemorySourcePreview: (sourceKey: string, revision: string, offset?: number) => Promise<void>;
+  clearMemorySourcePreview: () => void;
   memoryEntryDetail: MemoryEntryResponse | null;
   memoryContent: MemoryContentResponse | null;
   memoryCorrectionDraft: MemoryCorrection | null;
@@ -237,13 +278,15 @@ export interface SuperstringState
   discardMemoryCorrection: () => void;
   loadMemoryAccessMetadata: (
     memoryId?: string,
-    options?: { advanceRevisionIfDirty?: boolean },
+    options?: { advanceRevisionIfDirty?: boolean; force?: boolean },
   ) => Promise<boolean>;
+  acquireMemoryMetadataRead: (consumer: object, memoryId: string) => Promise<boolean>;
+  releaseMemoryMetadataRead: (consumer: object) => void;
   patchMemoryVisibilityDraft: (patch: {
     visibility?: "session_private" | "agent_shared" | "public" | null;
     recipient_agent_ids?: string[];
   }) => void;
-  saveMemoryVisibility: () => Promise<boolean>;
+  saveMemoryVisibility: (options?: { revalidatePublication?: boolean }) => Promise<boolean>;
   discardMemoryVisibilityDraft: () => void;
   clearMemoryMetadata: () => void;
   memoryJobs: MemoryJobView[];
@@ -316,11 +359,8 @@ export interface SuperstringState
   resendKnowledgeChat: () => Promise<void>;
   cancelKnowledgeResend: () => void;
   editAgent: (id: string | "__new__") => Promise<boolean>;
-  patchDraft: (patch: Partial<AgentDraft>) => void;
-  saveCurrentSection: () => Promise<boolean>;
-  savePersona: (
-    patch: Partial<PersonaResponse> & { persona_intensity: number },
-  ) => Promise<boolean>;
+  patchNewAgentDraft: (patch: Partial<AgentDraft>) => void;
+  createAgent: () => Promise<boolean>;
   deleteAgents: (ids: string[]) => Promise<void>;
   /**
    * 重新发现本地与外部模型。传入调用方自己读到的 provider 清单或读取 Promise 时直接复用，
@@ -335,17 +375,17 @@ export interface SuperstringState
   reloadMemory: () => Promise<void>;
   loadMemoryManagement: (
     page: number,
-    filters?: { scope_key?: string; search?: string; status?: string },
-    options?: { metadata?: boolean },
+    filters?: import("../../shared/contracts/memory").MemoryManagementQuery,
+    options?: { metadata?: boolean; preserveDetail?: boolean },
   ) => Promise<boolean>;
   cancelMemoryManagementRead: () => void;
   loadMemoryPolicy: () => Promise<void>;
   loadMemoryTurns: (sessionId: string, limit: number) => Promise<void>;
   loadMemoryPage: (
     page: number,
-    filters?: { scope_key?: string; search?: string; status?: string },
+    filters?: import("../../shared/contracts/memory").MemoryManagementQuery,
   ) => Promise<void>;
-  loadMemoryEntryDetail: (memoryId: string) => Promise<void>;
+  loadMemoryEntryDetail: (memoryId: string, conversationId?: string) => Promise<void>;
   manualConsolidate: (sessionId: string, turnIds: string[]) => Promise<void>;
   updatePolicy: (patch: Omit<PolicyView, "version">) => Promise<void>;
   resetForTests: (client?: SuperstringApi, effects?: Partial<RuntimeEffects>) => void;

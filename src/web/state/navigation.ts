@@ -1,10 +1,9 @@
-import { permissionSettingsDirty } from "../features/access/permission-state";
+import { agentPermissionScope, permissionSettingsDirty } from "../features/access/permission-state";
 import { webAccessDraftDirty } from "../features/access/web-access-state";
-import { toDraft } from "../features/agents/draft";
 import { dirtyPages } from "../features/agents/page-drafts";
 import {
-  resetContextAllocationTarget,
-  setContextAllocationTarget,
+  emptyContextAllocationTarget,
+  mergeContextAllocationTarget,
 } from "../features/context-allocation";
 import { conversationModeDirty } from "../features/conversations/directory-state";
 import {
@@ -14,7 +13,10 @@ import {
 } from "../features/knowledge/types";
 import { qqDraftChanges } from "../features/qq/draft-state";
 import { msg } from "../i18n";
-import { errorText } from "./helpers";
+import {
+  captureWorkspacePosition,
+  restoreWorkspacePosition,
+} from "../workspace/navigation-context";
 import type { PendingNavigation, StoreGet, StoreSet, SuperstringState } from "./types";
 import { hasUnsavedDrafts, navigationBusy } from "./unsaved-changes";
 
@@ -33,6 +35,52 @@ function discardEditorInvalidInputs(
   });
 }
 
+// models 是一级模型服务；Agent 模型字段的保存分区同名，但对话任务路由是 context。
+function isAgentEditor(
+  view: SuperstringState["settingsView"],
+  route: SuperstringState["settingsRoute"],
+) {
+  return (
+    view === "agents" ||
+    (view === "workspace" &&
+      [
+        "basic",
+        "identity",
+        "expression",
+        "context",
+        "memory-tools",
+        "knowledge-tools",
+        "agent-tools",
+      ].includes(route))
+  );
+}
+
+function staysInAgentEditor(state: SuperstringState, pending: PendingNavigation): boolean {
+  return (
+    pending.kind === "page" &&
+    pending.page === "settings" &&
+    state.page === "settings" &&
+    isAgentEditor(state.settingsView, state.settingsRoute) &&
+    isAgentEditor(pending.settingsView, pending.settingsRoute ?? state.settingsRoute)
+  );
+}
+
+// 保留的 Agent 草稿不是当前资料内容弹窗的提交范围；只有真正离开编辑所有者才处理它。
+function leavesConfigurationDrafts(state: SuperstringState, pending: PendingNavigation): boolean {
+  if (pending.kind === "knowledge" || pending.kind === "scheme") return false;
+  if (pending.kind !== "page") return true;
+  if (pending.page !== "settings") return true;
+  if (staysInAgentEditor(state, pending)) return false;
+  const returningToAgent = isAgentEditor(
+    pending.settingsView,
+    pending.settingsRoute ?? state.settingsRoute,
+  );
+  const leavingContent =
+    state.settingsView === "knowledge" ||
+    (state.settingsView === "workspace" && state.settingsRoute === "long-memory");
+  return !(returningToAgent && leavingContent && state.pageEditor !== null);
+}
+
 async function performNavigation(
   get: () => SuperstringState,
   set: (patch: Partial<SuperstringState>) => void,
@@ -40,6 +88,70 @@ async function performNavigation(
   discard: boolean,
   markLanded: () => void,
 ): Promise<void> {
+  if (pending.kind === "workspace-target") {
+    const api = get().apiClient;
+    if (discard) {
+      get().discardSettingsPages();
+      get().discardKnowledgeRead();
+      get().discardKnowledgeModel();
+      get().discardKnowledgeEditor();
+      get().discardOrganization();
+      get().discardPermissionSettings();
+      get().discardWebAccessDraft();
+      get().discardQqDrafts();
+      get().discardMemoryCorrection();
+      get().discardMemoryVisibilityDraft();
+      get().discardConversationMemoryReadMode();
+    }
+    if (
+      pending.returning &&
+      pending.agentId &&
+      !get().agents.some((agent) => agent.id === pending.agentId)
+    ) {
+      set({
+        page: "settings",
+        settingsView: "workspace",
+        settingsRoute: "basic",
+        workspaceReturns: get().workspaceReturns.slice(0, -1),
+        pendingNavigation: null,
+        navigationConfirmOpen: false,
+      });
+      markLanded();
+      return;
+    }
+    if (pending.agentId && (pending.agentId !== get().editorAgentId || !get().pageEditor)) {
+      if (
+        !get().agents.some((agent) => agent.id === pending.agentId) ||
+        !(await get().editAgent(pending.agentId))
+      ) {
+        if (get().apiClient === api)
+          set({ pendingNavigation: pending, navigationConfirmOpen: true });
+        return;
+      }
+    }
+    if (get().apiClient !== api) return;
+    const returns = pending.returning
+      ? get().workspaceReturns.slice(0, -1)
+      : pending.origin
+        ? [...get().workspaceReturns, pending.origin]
+        : get().workspaceReturns;
+    set({
+      page: "settings",
+      settingsView: "workspace",
+      settingsRoute: pending.route,
+      componentTarget: pending.componentTarget ?? null,
+      workspaceReturns: returns,
+      ...(pending.allocation ? { contextAllocationTarget: pending.allocation } : {}),
+      pendingNavigation: null,
+      navigationConfirmOpen: false,
+      navigationConfirmMessage: "",
+      error: null,
+      feedback: "",
+    });
+    markLanded();
+    if (pending.returning && pending.origin) restoreWorkspacePosition(pending.origin);
+    return;
+  }
   if (pending.kind === "context-allocation") {
     const requested = pending.target;
     if (!pending.returning && requested.purpose === "qq") {
@@ -84,7 +196,10 @@ async function performNavigation(
       get().discardSettingsPages();
       get().discardKnowledgeRead();
       get().discardKnowledgeModel();
+      get().discardKnowledgeEditor();
       get().discardOrganization();
+      get().discardPermissionSettings();
+      get().discardWebAccessDraft();
       get().discardQqDrafts();
       get().discardMemoryCorrection();
       get().discardMemoryVisibilityDraft();
@@ -114,8 +229,9 @@ async function performNavigation(
       !(await get().selectQqGroupConfig(target.bindingId))
     )
       return;
-    if (pending.returning) resetContextAllocationTarget();
-    else setContextAllocationTarget(target);
+    set({
+      contextAllocationTarget: pending.returning ? { ...emptyContextAllocationTarget } : target,
+    });
     // 着陆路由判定：根据目的和目标精细分流，不使用 returnRoute 猜测目的
     // - 助手主目的 (assistant) 或带 Agent 的辅助用途 (aux): 着陆于 "context" (CapabilityEditor)
     // - 带 Agent 的读取目的 (reading): 统一着陆于 "memory-tools" (AssistantWorkspace access 标签页，同屏呈现 MemoryReadingRules 与 KnowledgeToolSettings)
@@ -244,7 +360,8 @@ async function performNavigation(
     pendingNavigation: null,
     navigationConfirmOpen: false,
     navigationConfirmMessage: "",
-    dirty: false,
+    dirty:
+      pending.kind === "page" && !leavesConfigurationDrafts(get(), pending) ? dirtyBefore : false,
     error: null,
   });
   if (pending.kind === "page") {
@@ -259,33 +376,34 @@ async function performNavigation(
     };
     // 放弃修改并离开 agents 页时清除草稿，使再次进入按默认规则读取而非显示已放弃改动；
     // 普通导航（保存后或取消）保留草稿。
-    if (
-      discard &&
-      (pending.page !== "settings" ||
-        (dirtyBefore && (get().settingsView === "agents" || get().editorAgentId === "__new__")))
-    ) {
+    if (discard && leavesConfigurationDrafts(get(), pending)) {
       discardEditorInvalidInputs(get, set);
+      get().discardSettingsPages();
       get().discardOrganization();
       get().discardKnowledgeModel();
       get().discardKnowledgeRead();
-      patch.pageEditor = null;
-      patch.editorDraft = null;
-      patch.dirty = false;
-      patch.editorAgentId = "__new__";
-    }
-    get().discardMemoryCorrection();
-    if (pending.page !== "settings") get().discardKnowledgeEditor();
-    if (discard && pending.page !== "settings") {
+      get().discardKnowledgeEditor();
       get().discardPermissionSettings();
       get().discardWebAccessDraft();
+      get().discardQqDrafts();
+      if (
+        pending.page !== "settings" ||
+        (dirtyBefore && (get().settingsView === "agents" || get().editorAgentId === "__new__"))
+      ) {
+        patch.pageEditor = null;
+        patch.editorDraft = null;
+        patch.editorAgentId = "__new__";
+      }
     }
-    if (discard) get().discardQqDrafts();
+    get().discardMemoryCorrection();
+    if (discard || pending.page !== "settings") get().discardKnowledgeEditor();
     set(patch);
     markLanded();
     if (pending.conversationId) await get().selectConversation(pending.conversationId);
     return;
   }
   if (pending.kind === "agent") {
+    const api = get().apiClient;
     const previous = {
       editorAgentId: get().editorAgentId,
       pageEditor: get().pageEditor,
@@ -298,11 +416,19 @@ async function performNavigation(
       memoryEntries: get().memoryEntries,
       memoryEntryTotal: get().memoryEntryTotal,
       memoryEntryDetail: get().memoryEntryDetail,
+      memoryReadSelection: get().memoryReadSelection,
+      memoryReadableOffset: get().memoryReadableOffset,
+      memorySourceOffset: get().memorySourceOffset,
+      memorySourcePosition: get().memorySourcePosition,
       memoryJobs: get().memoryJobs,
-      activeSection: get().activeSection,
     };
+    const permissionScope = agentPermissionScope(get().permissionEditor, get().editorAgentId);
     const changed = await get().editAgent(pending.id);
-    if (changed && discard) get().discardQqDrafts();
+    if (get().apiClient !== api) return;
+    if (changed && discard) {
+      get().discardQqDrafts();
+      get().discardPermissionSettings(permissionScope);
+    }
     if (changed && pending.settingsRoute && get().settingsRoute !== pending.settingsRoute) {
       get().openSettingsRoute(pending.settingsRoute);
     }
@@ -322,40 +448,17 @@ async function performNavigation(
     }
     return;
   }
-  if (discard && dirtyBefore && get().editorAgentId !== "__new__") {
-    try {
-      const [agent, persona] = await Promise.all([
-        get().apiClient.getAgent(get().editorAgentId),
-        get().apiClient.getPersona(get().editorAgentId),
-      ]);
-      set({ editorDraft: toDraft(agent), persona });
-    } catch (error) {
-      // 放弃时重读目标 Agent 失败：恢复 pendingNavigation 以便可重试或取消。
-      set({
-        pendingNavigation: pending,
-        dirty: true,
-        navigationConfirmOpen: true,
-        navigationConfirmMessage: msg(
-          "读取 Agent 失败：{0}；未放弃修改，可重试或取消。",
-          errorText(error),
-        ),
-      });
-      return;
-    }
-  }
-  get().discardMemoryCorrection();
-  if (discard) get().discardMemoryVisibilityDraft();
-  if (discard) get().discardKnowledgeRead();
-  if (discard) get().discardQqDrafts();
-  if (discard) get().discardConversationMemoryReadMode();
-  set({ activeSection: pending.section, feedback: "", dirty: false });
-  markLanded();
 }
+
 export function createNavigationActions(
   set: StoreSet,
   get: StoreGet,
 ): Pick<
   SuperstringState,
+  | "openWorkspaceTarget"
+  | "returnWorkspaceTarget"
+  | "openContextAllocation"
+  | "returnFromContextAllocation"
   | "requestConversationNavigation"
   | "requestConversationView"
   | "openSettingsRoute"
@@ -375,15 +478,6 @@ export function createNavigationActions(
   | "confirmDiscardAndContinue"
   | "cancelPendingNavigation"
 > {
-  const guardQqDrafts = (pending: PendingNavigation) => {
-    if (!qqDraftChanges(get()).length) return false;
-    set({
-      pendingNavigation: pending,
-      navigationConfirmOpen: true,
-      navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
-    });
-    return true;
-  };
   // 导航落地序号：每次有效落地递增，晚到的会话选择完成不得覆盖更新的视图/位置。
   let navigationSequence = 0;
   const markLanded = () => {
@@ -395,10 +489,161 @@ export function createNavigationActions(
         get().settingsRoute,
       )
     ) {
-      resetContextAllocationTarget();
+      set({ contextAllocationTarget: { ...emptyContextAllocationTarget } });
     }
   };
+  const origin = () => ({
+    route: get().settingsRoute,
+    agentId: get().editorAgentId !== "__new__" ? get().editorAgentId : null,
+    componentTarget: get().componentTarget,
+    allocation: { ...get().contextAllocationTarget },
+    ...captureWorkspacePosition(),
+  });
+  const routeOwner = (route: SuperstringState["settingsRoute"]) => {
+    switch (route) {
+      case "management":
+      case "knowledge-model":
+      case "external-api":
+        return "models";
+      case "qq-app-schemes":
+        return "scheme-library";
+      case "qq-app-groups":
+        return "scheme-bindings";
+      case "knowledge-tools":
+        return "memory-tools";
+      case "expression":
+        return "identity";
+      default:
+        return route;
+    }
+  };
+  const requestPage = (pending: Extract<PendingNavigation, { kind: "page" }>) => {
+    const state = get();
+    if (navigationBusy(state)) return;
+    // 旧资料容器与资料正文路由是同一落点；只规范地址，不关闭编辑器或处理草稿。
+    if (
+      state.page === "settings" &&
+      state.settingsView === "knowledge" &&
+      pending.page === "settings" &&
+      pending.settingsView === "workspace" &&
+      pending.settingsRoute === "knowledge-config"
+    ) {
+      set({ settingsView: "workspace", settingsRoute: "knowledge-config", feedback: "" });
+      markLanded();
+      return;
+    }
+    if (
+      state.page === pending.page &&
+      state.settingsView === pending.settingsView &&
+      (!pending.settingsRoute ||
+        (routeOwner(state.settingsRoute) === routeOwner(pending.settingsRoute) &&
+          state.componentTarget === null))
+    )
+      return;
+    const leavingConfiguration = leavesConfigurationDrafts(state, pending);
+    const unsaved = leavingConfiguration
+      ? hasUnsavedDrafts(state)
+      : state.memoryCorrectionDirty ||
+        state.memoryVisibilityDirty ||
+        state.knowledgeDirty ||
+        (state.settingsRoute === "long-memory" &&
+          Object.keys(state.qqMemoryBatchDrafts).length > 0);
+    if (unsaved) {
+      set({
+        pendingNavigation: pending,
+        navigationConfirmOpen: true,
+        navigationConfirmMessage:
+          state.dirty && (state.settingsView === "agents" || state.editorAgentId === "__new__")
+            ? msg("当前 Agent 有未保存修改，是否先保存再离开？")
+            : state.knowledgeDirty
+              ? msg("知识库有未保存修改，是否先保存再继续？")
+              : msg("设置中有未保存页面，是否全部保存再继续？"),
+      });
+      return;
+    }
+    void performNavigation(get, set, pending, false, markLanded);
+  };
+  const workspaceTarget = (pending: Extract<PendingNavigation, { kind: "workspace-target" }>) => {
+    const state = get();
+    if (navigationBusy(state)) return;
+    if (
+      !pending.returning &&
+      state.page === "settings" &&
+      state.settingsView === "workspace" &&
+      routeOwner(state.settingsRoute) === routeOwner(pending.route) &&
+      (!pending.agentId || pending.agentId === state.editorAgentId) &&
+      (pending.componentTarget?.kind ?? null) === (state.componentTarget?.kind ?? null) &&
+      (pending.componentTarget?.id ?? null) === (state.componentTarget?.id ?? null) &&
+      (!pending.allocation ||
+        JSON.stringify(pending.allocation) === JSON.stringify(state.contextAllocationTarget))
+    )
+      return;
+    if (hasUnsavedDrafts(state)) {
+      set({
+        pendingNavigation: pending,
+        navigationConfirmOpen: true,
+        navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
+      });
+    } else void performNavigation(get, set, pending, false, markLanded);
+  };
+  const returnTarget = () => {
+    const previous = get().workspaceReturns.at(-1);
+    if (!previous) return;
+    const agentRoute = [
+      "memory-tools",
+      "knowledge-tools",
+      "agent-tools",
+      "context",
+      "identity",
+      "expression",
+      "long-memory",
+    ].includes(previous.route);
+    workspaceTarget({
+      kind: "workspace-target",
+      route: previous.route,
+      agentId: agentRoute ? previous.agentId : null,
+      componentTarget: previous.componentTarget,
+      allocation: previous.allocation,
+      origin: previous,
+      returning: true,
+    });
+  };
   return {
+    openWorkspaceTarget: (route, agentId) => {
+      workspaceTarget({ kind: "workspace-target", route, agentId, origin: origin() });
+    },
+    returnWorkspaceTarget: returnTarget,
+    openContextAllocation: (target = {}) => {
+      const merged = mergeContextAllocationTarget(get().contextAllocationTarget, target);
+      const route =
+        merged.purpose === "qq"
+          ? merged.bindingId
+            ? "qq-group-config"
+            : "qq-scheme-config"
+          : merged.agentId
+            ? merged.purpose === "reading"
+              ? "memory-tools"
+              : "context"
+            : "context-allocation";
+      if (merged.purpose === "qq") get().requestContextAllocation(merged);
+      else
+        workspaceTarget({
+          kind: "workspace-target",
+          route,
+          agentId: merged.agentId,
+          allocation: merged,
+          origin: origin(),
+        });
+    },
+    returnFromContextAllocation: () => {
+      if (get().workspaceReturns.length) returnTarget();
+      else
+        get().requestContextAllocation(
+          get().contextAllocationTarget,
+          get().contextAllocationTarget.returnRoute ?? "scheme-library",
+          true,
+        );
+    },
     requestContextAllocation: (target, route, returning = false) => {
       if (navigationBusy(get())) return;
       const pending: PendingNavigation = { kind: "context-allocation", target, route, returning };
@@ -414,7 +659,13 @@ export function createNavigationActions(
     },
     requestConversationNavigation: async (id) => {
       if (navigationBusy(get())) return;
-      if (get().currentConversationId !== id && conversationModeDirty(get())) {
+      if (
+        (get().page !== "chat" ||
+          get().currentConversationId !== id ||
+          get().conversationView !== "messages" ||
+          get().conversationScope !== "current") &&
+        hasUnsavedDrafts(get())
+      ) {
         set({
           pendingNavigation: {
             kind: "page",
@@ -429,20 +680,6 @@ export function createNavigationActions(
         });
         return;
       }
-      if (
-        (get().currentConversationId !== id ||
-          get().conversationView !== "messages" ||
-          get().conversationScope !== "current") &&
-        guardQqDrafts({
-          kind: "page",
-          page: "chat",
-          settingsView: "hub",
-          conversationId: id,
-          conversationView: "messages",
-          conversationScope: "current",
-        })
-      )
-        return;
       get().requestPageNavigation("chat", "hub");
       const pending = get().pendingNavigation;
       if (pending?.kind === "page" && pending.page === "chat") {
@@ -515,57 +752,11 @@ export function createNavigationActions(
       if (settingsRoute === "knowledge-model" || settingsRoute === "management")
         settingsRoute = "models";
       if (navigationBusy(get())) return;
-      if (
-        !(
-          get().page === "settings" &&
-          get().settingsView === "workspace" &&
-          get().settingsRoute === settingsRoute
-        ) &&
-        guardQqDrafts({ kind: "page", page: "settings", settingsView: "workspace", settingsRoute })
-      )
-        return;
       if (settingsRoute === "basic") {
         get().openAgentSettings();
         return;
       }
-      if (
-        settingsRoute === "models" &&
-        get().page === "settings" &&
-        get().settingsView === "agents" &&
-        get().editorAgentId === "__new__" &&
-        get().editorDraft &&
-        !get().memoryCorrectionDirty &&
-        Object.keys(get().qqMemoryBatchDrafts).length === 0
-      ) {
-        set({ settingsView: "workspace", settingsRoute, feedback: "" });
-        markLanded();
-        return;
-      }
-      if (
-        settingsRoute !== "models" &&
-        get().settingsView === "workspace" &&
-        get().editorAgentId === "__new__" &&
-        get().dirty
-      ) {
-        set({
-          pendingNavigation: {
-            kind: "page",
-            page: "settings",
-            settingsView: "workspace",
-            settingsRoute,
-          },
-          navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("当前 Agent 有未保存修改，是否先保存再离开？"),
-        });
-        return;
-      }
-      get().requestPageNavigation("settings", "workspace");
-      const pending = get().pendingNavigation;
-      if (pending?.kind === "page" && pending.settingsView === "workspace") {
-        set({ pendingNavigation: { ...pending, settingsRoute } });
-      } else {
-        get().syncSettingsRoute(settingsRoute);
-      }
+      requestPage({ kind: "page", page: "settings", settingsView: "workspace", settingsRoute });
     },
     syncSettingsRoute: (settingsRoute) => {
       // 已落地工作区内的子路由同步：标签页是本地视图，只记录落点。
@@ -575,25 +766,18 @@ export function createNavigationActions(
       markLanded();
     },
     openSystemComponent: (target) => {
-      if (navigationBusy(get())) return;
       const route =
         target.kind === "tool"
           ? "tool-grants"
           : target.kind === "skill"
             ? "skill-catalog"
             : "mcp-servers";
-      get().openSettingsRoute(route);
-      const pending = get().pendingNavigation;
-      if (pending?.kind === "page" && pending.settingsRoute === route) {
-        set({ pendingNavigation: { ...pending, componentTarget: target } });
-      } else if (
-        !pending &&
-        get().page === "settings" &&
-        get().settingsView === "workspace" &&
-        get().settingsRoute === route
-      ) {
-        set({ componentTarget: target });
-      }
+      workspaceTarget({
+        kind: "workspace-target",
+        route,
+        componentTarget: target,
+        origin: origin(),
+      });
     },
     openChat: () => get().requestConversationView("messages", "current"),
     openSettings: () => get().requestPageNavigation("settings", "hub"),
@@ -630,82 +814,7 @@ export function createNavigationActions(
         get().openSettingsRoute("qq-connection");
         return;
       }
-      if (navigationBusy(get())) return;
-      if (
-        !(get().page === page && get().settingsView === settingsView) &&
-        guardQqDrafts({ kind: "page", page, settingsView })
-      )
-        return;
-      if (
-        get().memoryCorrectionDirty ||
-        get().memoryVisibilityDirty ||
-        Object.keys(get().qqMemoryBatchDrafts).length > 0 ||
-        conversationModeDirty(get())
-      ) {
-        set({
-          pendingNavigation: { kind: "page", page, settingsView },
-          navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
-        });
-        return;
-      }
-      if (get().page === page && get().settingsView === settingsView) return;
-      if (get().dirty && get().editorAgentId === "__new__" && get().settingsView === "workspace") {
-        if (page === "settings" && settingsView === "agents") {
-          set({ page, settingsView, feedback: "" });
-          markLanded();
-          return;
-        }
-        set({
-          pendingNavigation: { kind: "page", page, settingsView },
-          navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("当前 Agent 有未保存修改，是否先保存再离开？"),
-        });
-        return;
-      }
-      if (
-        ((permissionSettingsDirty(get().permissionEditor) ||
-          webAccessDraftDirty(get().webAccessSnapshot, get().webAccessDraft)) &&
-          (page !== "settings" ||
-            (get().page === "settings" &&
-              get().settingsView === "workspace" &&
-              settingsView !== "workspace"))) ||
-        (page !== "settings" &&
-          (dirtyPages(get().pageEditor).length > 0 ||
-            organizationDirty(get().organizationEditor, "all") ||
-            knowledgeModelDirty(get().knowledgeModelEditor) ||
-            knowledgeReadDirty(get().knowledgeReadEditor)))
-      ) {
-        set({
-          pendingNavigation: { kind: "page", page, settingsView },
-          navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("设置中有未保存页面，是否全部保存再继续？"),
-        });
-        return;
-      }
-      if (get().knowledgeDirty && page !== "settings") {
-        set({
-          pendingNavigation: { kind: "page", page, settingsView },
-          navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("知识库有未保存修改，是否先保存再继续？"),
-        });
-        return;
-      }
-      if (
-        (get().dirty || get().memoryCorrectionDirty) &&
-        get().page === "settings" &&
-        get().settingsView === "agents"
-      ) {
-        set({
-          pendingNavigation: { kind: "page", page, settingsView },
-          navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("当前 Agent 有未保存修改，是否先保存再离开？"),
-        });
-        return;
-      }
-      if (page !== "settings") get().discardKnowledgeEditor();
-      set({ page, settingsView, feedback: "" });
-      markLanded();
+      requestPage({ kind: "page", page, settingsView });
     },
     // 返回「请求的编辑身份是否已落地」：true＝当前编辑器已代表目标（含同身份短路），
     // false＝被在途写入、离开守卫或读取失败拦下；守卫确认后的落地由既有 continuation 完成。
@@ -718,6 +827,10 @@ export function createNavigationActions(
       ) {
         if (settingsRoute && get().settingsRoute !== settingsRoute) {
           get().openSettingsRoute(settingsRoute);
+          return (
+            get().pendingNavigation === null &&
+            routeOwner(get().settingsRoute) === routeOwner(settingsRoute)
+          );
         }
         return true;
       }
@@ -727,7 +840,11 @@ export function createNavigationActions(
         get().memoryVisibilityDirty ||
         Object.keys(get().qqMemoryBatchDrafts).length > 0 ||
         dirtyPages(get().pageEditor).length ||
-        knowledgeReadDirty(get().knowledgeReadEditor)
+        knowledgeReadDirty(get().knowledgeReadEditor) ||
+        permissionSettingsDirty(
+          get().permissionEditor,
+          agentPermissionScope(get().permissionEditor, get().editorAgentId),
+        )
       ) {
         set({
           pendingNavigation: {
@@ -844,6 +961,8 @@ export function createNavigationActions(
     confirmSaveAndContinue: async () => {
       const pending = get().pendingNavigation;
       const state = get();
+      const stillPending = () =>
+        get().apiClient === state.apiClient && get().pendingNavigation === pending;
       if (pending?.kind === "knowledge" && state.knowledgeEditor?.kind === "settings") {
         if (navigationBusy(state) || state.knowledgeModelLoading || state.organizationLoading)
           return;
@@ -859,20 +978,68 @@ export function createNavigationActions(
         }
         if (
           !(await get().saveKnowledgeModel("model")) ||
+          !stillPending() ||
           !(await get().saveKnowledgeModel("budget")) ||
+          !stillPending() ||
           !(await get().saveOrganization("allocation", ["knowledge_organize"])) ||
+          !stillPending() ||
           (get().knowledgeDirty && !(await get().saveKnowledgeEditor()))
         ) {
+          if (!stillPending()) return;
           set({
             navigationConfirmOpen: true,
             navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
           });
           return;
         }
+        if (!stillPending()) return;
         await performNavigation(get, set, pending, false, markLanded);
         return;
       }
-      if (Object.keys(state.allocationInvalidInputs).length) {
+      if (pending?.kind === "knowledge") {
+        if (navigationBusy(state)) return;
+        if (state.knowledgeDirty && !(await get().saveKnowledgeEditor())) {
+          if (!stillPending()) return;
+          set({
+            navigationConfirmOpen: true,
+            navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
+          });
+          return;
+        }
+        if (!stillPending()) return;
+        await performNavigation(get, set, pending, false, markLanded);
+        return;
+      }
+      if (pending?.kind === "page" && !leavesConfigurationDrafts(state, pending)) {
+        if (navigationBusy(state)) return;
+        if (state.memoryVisibilityDirty) {
+          set({
+            navigationConfirmOpen: true,
+            navigationConfirmMessage: msg(
+              "记忆共享设置需要单独确认发布，请在记忆详情中完成或放弃后再继续。",
+            ),
+          });
+          return;
+        }
+        if (
+          (state.knowledgeDirty && !(await get().saveKnowledgeEditor())) ||
+          !stillPending() ||
+          (get().memoryCorrectionDirty && !(await get().saveMemoryCorrection())) ||
+          !stillPending() ||
+          (state.settingsRoute === "long-memory" && !(await get().saveQqMemoryBatchDrafts()))
+        ) {
+          if (!stillPending()) return;
+          set({
+            navigationConfirmOpen: true,
+            navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
+          });
+          return;
+        }
+        if (!stillPending()) return;
+        await performNavigation(get, set, pending, false, markLanded);
+        return;
+      }
+      if (pending && Object.keys(state.allocationInvalidInputs).length) {
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("请先修正方案中的无效数字，再保存。"),
@@ -890,113 +1057,136 @@ export function createNavigationActions(
         return;
       if (pending.kind === "scheme") {
         if (!(await get().saveQqDrafts())) {
+          if (!stillPending()) return;
           set({
             navigationConfirmOpen: true,
-            navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
+            navigationConfirmMessage: get().qqInputs.bindingSchemeConfirmationId
+              ? get().navigationConfirmMessage
+              : msg("保存失败：{0}", get().error ?? msg("未知错误")),
           });
           return;
         }
+        if (!stillPending()) return;
         await performNavigation(get, set, pending, false, markLanded);
         return;
       }
       if (!(await get().saveQqDrafts())) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
-          navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
+          navigationConfirmMessage: get().qqInputs.bindingSchemeConfirmationId
+            ? get().navigationConfirmMessage
+            : msg("保存失败：{0}", get().error ?? msg("未知错误")),
         });
         return;
       }
+      if (!stillPending()) return;
       if (!(await get().saveQqMemoryBatchDrafts())) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
         });
         return;
       }
+      if (!stillPending()) return;
+      const leavingWorkspace = leavesConfigurationDrafts(state, pending);
+      const permissionScope =
+        pending.kind === "agent"
+          ? agentPermissionScope(get().permissionEditor, get().editorAgentId)
+          : "all";
       if (
-        pending.kind === "page" &&
-        pending.page !== "settings" &&
-        !(await get().savePermissionSettings())
+        leavingWorkspace &&
+        permissionSettingsDirty(get().permissionEditor, permissionScope) &&
+        !(await get().savePermissionSettings(permissionScope))
       ) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
         });
         return;
       }
+      if (!stillPending()) return;
       if (
-        pending.kind === "page" &&
-        pending.page !== "settings" &&
+        leavingWorkspace &&
+        pending.kind !== "agent" &&
         webAccessDraftDirty(get().webAccessSnapshot, get().webAccessDraft) &&
         !(await get().saveWebAccessDraft())
       ) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
         });
         return;
       }
-      const leavingWorkspace =
-        pending.kind === "context-allocation" ||
-        pending.kind === "agent" ||
-        pending.kind === "section" ||
-        (pending.kind === "page" && pending.page !== "settings");
+      if (!stillPending()) return;
       if (
         leavingWorkspace &&
         dirtyPages(get().pageEditor).length &&
         !(await get().saveAllSettingsPages())
       ) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
         });
         return;
       }
+      if (!stillPending()) return;
       if (
         leavingWorkspace &&
         knowledgeReadDirty(get().knowledgeReadEditor) &&
         !(await get().saveKnowledgeRead())
       ) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
         });
         return;
       }
+      if (!stillPending()) return;
       if (
         leavingWorkspace &&
         knowledgeModelDirty(get().knowledgeModelEditor) &&
         !(await get().saveKnowledgeModel())
       ) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
         });
         return;
       }
+      if (!stillPending()) return;
       if (
         leavingWorkspace &&
         organizationDirty(get().organizationEditor, "all") &&
         !(await get().saveOrganization("all"))
       ) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存未全部完成；已成功部分保留，未保存内容仍在草稿中。"),
         });
         return;
       }
+      if (!stillPending()) return;
       if (
         pending.kind !== "agent" &&
-        pending.kind !== "section" &&
         get().knowledgeDirty &&
         !(await get().saveKnowledgeEditor())
       ) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
         });
         return;
       }
+      if (!stillPending()) return;
       if (get().memoryVisibilityDirty) {
         set({
           navigationConfirmOpen: true,
@@ -1007,30 +1197,32 @@ export function createNavigationActions(
         return;
       }
       if (get().memoryCorrectionDirty && !(await get().saveMemoryCorrection())) {
+        if (!stillPending()) return;
         set({
           navigationConfirmOpen: true,
           navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
         });
         return;
       }
+      if (!stillPending()) return;
       if (conversationModeDirty(get())) {
         const convId = get().currentConversationId;
         if (convId && !(await get().saveConversationMemoryReadMode(convId))) {
+          if (!stillPending()) return;
           set({
             navigationConfirmOpen: true,
             navigationConfirmMessage: msg("保存失败：{0}", get().error ?? msg("未知错误")),
           });
           return;
         }
+        if (!stillPending()) return;
       }
-      const saved = !get().dirty
-        ? true
-        : get().activeSection === "D"
-          ? await get().savePersona({
-              ...(get().persona ?? {}),
-              persona_intensity: get().editorDraft?.persona_intensity ?? 60,
-            })
-          : await get().saveCurrentSection();
+      const saved =
+        !leavingWorkspace ||
+        get().editorAgentId !== "__new__" ||
+        !get().dirty ||
+        (await get().createAgent());
+      if (!stillPending()) return;
       if (!saved) {
         set({
           navigationConfirmOpen: true,
@@ -1049,9 +1241,20 @@ export function createNavigationActions(
       if (pending.kind === "knowledge" && get().knowledgeEditor?.kind === "settings") {
         get().discardOrganization("allocation", ["knowledge_organize"]);
         get().discardKnowledgeModel("budget");
-        const editor = get().knowledgeModelEditor;
-        if (editor)
-          set({ knowledgeModelEditor: { ...editor, modelName: editor.source.model_name } });
+        get().discardKnowledgeModel("model");
+        await performNavigation(get, set, pending, true, markLanded);
+        return;
+      }
+      if (pending.kind === "knowledge") {
+        await performNavigation(get, set, pending, true, markLanded);
+        return;
+      }
+      if (pending.kind === "page" && !leavesConfigurationDrafts(get(), pending)) {
+        if (get().memoryVisibilityDirty) {
+          get().discardMemoryVisibilityDraft();
+          get().clearMemoryMetadata();
+        }
+        if (get().settingsRoute === "long-memory") get().discardQqMemoryBatchDrafts();
         await performNavigation(get, set, pending, true, markLanded);
         return;
       }
@@ -1068,11 +1271,12 @@ export function createNavigationActions(
     },
     cancelPendingNavigation: () => {
       if (!get().pendingNavigation) return;
-      set({
+      set((state) => ({
         pendingNavigation: null,
         navigationConfirmOpen: false,
         navigationConfirmMessage: "",
-      });
+        qqInputs: { ...state.qqInputs, bindingSchemeConfirmationId: null },
+      }));
     },
   };
 }

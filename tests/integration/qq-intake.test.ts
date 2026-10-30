@@ -1198,10 +1198,11 @@ describe("an image message is recorded and never read (ADR0019 §8.11)", () => {
       expect(events).toContainEqual({
         kind: "follow_up",
         hasMedia: true,
-        dispatch: "scheduled",
+        dispatch: "not_scheduled",
         own: "none",
         supplement: "none",
       });
+      expect(h.orm.select().from(schema.qqDispatchCandidates).all()).toEqual([]);
       // Zero vision: no source action ever left the socket, and no attempt was spent.
       expect(socket.sent.filter((request) => MEDIA_ACTIONS.includes(request.action))).toEqual([]);
       const eventKey = h.orm.select().from(schema.qqEvents).all().at(-1)?.eventKey;

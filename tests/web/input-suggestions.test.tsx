@@ -231,3 +231,21 @@ it("never keeps an active descendant pointing at a filtered-out option", async (
   await userEvent.type(input, "-unknown");
   await waitFor(() => expect(input.hasAttribute("aria-activedescendant")).toBe(false));
 });
+
+it("preserves caller layout classes while retaining combobox accessibility", () => {
+  render(
+    <InputSuggestions
+      id="layout-model-id"
+      aria-label="Layout model id"
+      className="w-full sm:w-full sm:min-w-0"
+      suggestions={suggestions}
+      value=""
+      onValueChange={() => {}}
+    />,
+  );
+  const input = screen.getByRole("combobox", { name: "Layout model id" });
+  expect(input.className).toContain("sm:w-full");
+  expect(input.className).toContain("sm:min-w-0");
+  expect(input.getAttribute("aria-expanded")).toBe("false");
+  expect(input.getAttribute("aria-autocomplete")).toBe("list");
+});

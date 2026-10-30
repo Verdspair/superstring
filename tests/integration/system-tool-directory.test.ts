@@ -1,9 +1,11 @@
 import { expect, it } from "bun:test";
+import { createToolCatalog } from "../../src/server/agent/tool-catalog";
 import {
   SYSTEM_TOOL_DEFINITIONS,
   systemToolDefinitions,
 } from "../../src/server/modules/tool-definitions";
 import { projectToolDirectory } from "../../src/server/permissions/tool-directory";
+import { qqReplyTerminalDescriptions } from "../../src/shared/contracts/agent-action-descriptions";
 import { ExecutionPolicySchema } from "../../src/shared/contracts/permissions";
 
 it("lists real built-in definitions even before an MCP connection is registered", () => {
@@ -103,4 +105,48 @@ it("ships the builtin media skill with media.read, questionMessageId guidance, a
   expect(detail.instructions.replace(/\s+/gu, " ")).toContain(
     "cannot grant tools or bypass host authorization",
   );
+});
+
+it("lists current QQ terminals as host facts with unchanged descriptors and no executable binding", () => {
+  const rows = projectToolDirectory(SYSTEM_TOOL_DEFINITIONS, [], ExecutionPolicySchema.parse({}));
+  for (const description of qqReplyTerminalDescriptions(true)) {
+    const row = rows.find(({ name }) => name === description.name);
+    expect(row).toMatchObject({
+      ...description,
+      invocation: "host-terminal",
+      scope: "qq-conversation",
+      origin: "system",
+      functionId: "qq-reply",
+      effect: "write",
+      sandboxCallable: false,
+      resource: null,
+      approvalRequired: false,
+      directories: [],
+      globalEnabled: true,
+    });
+    expect(createToolCatalog([]).resolve(description.name)).toBeUndefined();
+  }
+  expect(rows.filter(({ invocation }) => invocation === "host-terminal")).toHaveLength(2);
+  expect(rows.some(({ name }) => name === "speech.reply" || name === "speech.evaluate")).toBe(
+    false,
+  );
+  expect(rows.find(({ name }) => name === "qq.members.query")?.scope).toBe("qq-group");
+  expect(rows.find(({ name }) => name === "media.read")?.scope).toBe("qq-conversation");
+  expect(rows.find(({ name }) => name === "memory.query")?.scope).toBe("conversation");
+});
+
+it("reports terminal supply from its actual host gate, independently of executable pauses", () => {
+  for (const enabled of [true, false]) {
+    const execution = ExecutionPolicySchema.parse({
+      pausedTools: ["reply.text", "reply.sticker", "memory.query"],
+      modules: { qqStickers: enabled },
+    });
+    const rows = projectToolDirectory(SYSTEM_TOOL_DEFINITIONS, [], execution);
+    expect(rows.find(({ name }) => name === "reply.text")?.globalEnabled).toBe(true);
+    expect(rows.find(({ name }) => name === "reply.sticker")?.globalEnabled).toBe(enabled);
+    expect(rows.find(({ name }) => name === "memory.query")?.globalEnabled).toBe(false);
+    expect(qqReplyTerminalDescriptions(enabled).map(({ name }) => name)).toEqual(
+      enabled ? ["reply.text", "reply.sticker"] : ["reply.text"],
+    );
+  }
 });

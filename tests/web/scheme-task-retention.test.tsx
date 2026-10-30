@@ -96,7 +96,7 @@ it("keeps visited task panel DOM and each task scroll position", async () => {
   const response = screen.getAllByRole("tab")[1];
   const tabs = participation.closest('[data-slot="tabs"]');
   const panel = tabs?.querySelector('[data-slot="tabs-content"]');
-  const viewport = tabs?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+  const viewport = tabs?.closest<HTMLElement>('[data-slot="scroll-area-viewport"]');
   if (!panel || !viewport) throw new Error("Missing task panel or viewport");
   viewport.scrollTop = 83;
   fireEvent.scroll(viewport);

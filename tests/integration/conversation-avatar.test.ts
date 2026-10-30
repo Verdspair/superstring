@@ -120,7 +120,7 @@ describe("server-shared conversation avatars", () => {
     expect(list.items.find((c) => c.id === other.id)?.avatar).toBeNull();
     expect(list.items.find((c) => c.id === summary.id)?.avatar).toEqual(generated);
     expect(await (await write(h.app, summary.id, null)).json()).toBeNull();
-    // List discovery may refresh activity from the same source, but avatar writes do not.
+    // Metadata reads and avatar writes never mutate the source-reference journal.
     expect(h.db.query("SELECT * FROM conversation_events").all()).toEqual(events);
     expect(
       h.db
@@ -291,8 +291,25 @@ describe("server-shared conversation avatars", () => {
     const oldSession = createSession(oldOrm, "preserved before avatar migration", {
       modelName: "fixture",
     });
-    new ConversationEventRepository(old).ensureWeb(oldSession.id);
+    // Seed the historical identity using only the v43 columns, without today's display projection.
+    old.query("DELETE FROM conversations WHERE channel='web' AND source_id=?").run(oldSession.id);
+    old
+      .query(`INSERT INTO conversations
+      (id,channel,topology,source_id,agent_id,user_id,binding_epoch,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?)`)
+      .run(
+        crypto.randomUUID(),
+        "web",
+        "direct",
+        oldSession.id,
+        oldSession.agentId,
+        oldSession.userId,
+        1,
+        oldSession.createdAt,
+        oldSession.updatedAt,
+      );
     const prior = old.query("SELECT * FROM conversations").all();
+    expect(prior).toHaveLength(1);
     old.close();
     const h = openBusinessDb({ path: filename });
     handles.push(h);

@@ -1,5 +1,5 @@
 import { Layers, RefreshCw, Save, Search, Undo2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { Field } from "@/components/form-field";
@@ -22,18 +22,11 @@ import { agentPageDirty } from "@/features/agents/page-drafts";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 import { P5ConfigSchema } from "../../../shared/contracts/models";
-import {
-  type PermissionPolicy,
-  selectEffectivePermissionGrant,
-} from "../../../shared/contracts/permissions";
 import { compilePersona } from "../../../shared/contracts/persona-compile";
-import { type AgentOverrideDraft, applyGrantEdits } from "../../features/access/permission-draft";
-import {
-  permissionResources,
-  permissionSettingsDirty,
-} from "../../features/access/permission-state";
+import { projectAgentPermissionEdits } from "../../features/access/permission-state";
 import { useToolDirectoryResource } from "../../services/connection-resources";
 import { TOOL_HUMAN_LABELS } from "../../workspace/capability-catalog";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { AllocationModelCapacity } from "../connections/AllocationModelCapacity";
 import { ContextAllocationAuxiliary } from "../connections/ContextAllocationAuxiliary";
 import { AgentModelPurpose } from "../environment/AgentModelPurpose";
@@ -63,7 +56,7 @@ export function IdentityEditor() {
   return (
     <div className="grid items-start gap-[28px] xl:grid-cols-[minmax(0,1fr)_minmax(260px,.6fr)]">
       <div className="space-y-6">
-        <Card>
+        <Card presentation="plain">
           <CardHeader>
             <CardTitle>{t("library.basic.identity")}</CardTitle>
             <CardDescription>
@@ -91,7 +84,7 @@ export function IdentityEditor() {
             </Field>
           </CardContent>
         </Card>
-        <Card>
+        <Card presentation="plain">
           <CardHeader>
             <CardTitle>{t("library.personality.expression")}</CardTitle>
             <CardDescription>
@@ -150,7 +143,7 @@ export function IdentityEditor() {
           </CardContent>
         </Card>
       </div>
-      <Card className="xl:sticky xl:top-6">
+      <Card presentation="plain" className="xl:sticky xl:top-6">
         <CardHeader>
           <CardTitle>{t("library.personality.preview")}</CardTitle>
           <CardDescription>
@@ -167,84 +160,10 @@ export function IdentityEditor() {
   );
 }
 
-function getBaseOverrideForAgent(
-  savedPolicy: PermissionPolicy | undefined,
-  resource: string,
-  agentId: string,
-  defaultRevision?: string,
-): AgentOverrideDraft {
-  if (!savedPolicy) {
-    return {
-      approved: false,
-      enabled: false,
-      revision: defaultRevision ?? undefined,
-      directories: [],
-    };
-  }
-
-  const savedGrant = savedPolicy.grants.find((g) => g.resource === resource);
-  if (!savedGrant) {
-    return {
-      approved: false,
-      enabled: false,
-      revision: defaultRevision ?? undefined,
-      directories: [],
-    };
-  }
-
-  // When overrideDraft is undefined in the draft (e.g. initial inheritance or after user clicked Revert),
-  // derive the saved base grant excluding this agent's saved override, so the agent cleanly inherits
-  // the saved base grant instead of reviving the reverted/deleted override.
-  let policyForInherit = savedPolicy;
-  if (savedGrant.agentOverrides && Object.hasOwn(savedGrant.agentOverrides, agentId)) {
-    const { [agentId]: _removed, ...restOverrides } = savedGrant.agentOverrides;
-    const modifiedGrant = {
-      ...savedGrant,
-      agentOverrides: Object.keys(restOverrides).length > 0 ? restOverrides : undefined,
-    };
-    policyForInherit = {
-      ...savedPolicy,
-      grants: savedPolicy.grants.map((g) => (g.resource === resource ? modifiedGrant : g)),
-    };
-  }
-
-  const savedEffective = selectEffectivePermissionGrant(policyForInherit, resource, agentId)?.grant;
-  if (!savedEffective) {
-    return {
-      approved: false,
-      enabled: false,
-      revision: defaultRevision ?? undefined,
-      directories: [],
-    };
-  }
-
-  const approved = savedEffective.approved === true;
-
-  let enabled: boolean | undefined = savedEffective.enabled;
-  if (enabled === undefined) {
-    if ((savedGrant as { enabled?: boolean }).enabled === false) {
-      // Base grant explicitly disabled
-      enabled = false;
-    } else if (savedGrant.agentIds !== undefined && !savedGrant.agentIds.includes(agentId)) {
-      // Agent restricted by base agentIds
-      enabled = false;
-    }
-  }
-
-  const revision = savedEffective.revision ?? defaultRevision ?? undefined;
-  const directories = Array.from(new Set(savedEffective.directories ?? []));
-
-  return {
-    approved,
-    enabled,
-    revision,
-    directories,
-  };
-}
-
-// 此处只投影工具范围，编辑仍归系统能力与扩展授权。
 export function AgentToolScope({ agentId, active }: { agentId: string; active: boolean }) {
   const { t } = useTranslation();
+  const scopeId = useId();
+  const searchHelpId = useId();
   const s = useSuperstringStore(
     useShallow((state) => ({
       apiClient: state.apiClient,
@@ -253,6 +172,7 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
       permissionLoading: state.permissionLoading,
       permissionSaving: state.permissionSaving,
       permissionError: state.permissionError,
+      taskResult: state.agentTaskResult,
       loadPermissionSettings: state.loadPermissionSettings,
       patchToolGrant: state.patchToolGrant,
       savePermissionSettings: state.savePermissionSettings,
@@ -307,24 +227,29 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
     return Array.from(map.entries());
   }, [visible]);
 
-  const savedPolicy = s.permissionEditor?.snapshot.policy;
-
-  const draftPolicy: PermissionPolicy | undefined = useMemo(() => {
-    if (!s.permissionEditor) return undefined;
-    return applyGrantEdits(
-      s.permissionEditor.snapshot.policy,
-      permissionResources(s.permissionEditor.snapshot),
-      s.permissionEditor.grants,
-    );
-  }, [s.permissionEditor]);
+  const grantViews = useMemo(
+    () => projectAgentPermissionEdits(s.permissionEditor, agentId),
+    [s.permissionEditor, agentId],
+  );
 
   return (
-    <Card>
+    <Card
+      presentation="plain"
+      role="region"
+      aria-label={t("library.tools.for.agent")}
+      aria-describedby={scopeId}
+    >
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <CardTitle>{t("library.tools.for.agent")}</CardTitle>
-            <CardDescription>{t("library.tools.for.agent.hint")}</CardDescription>
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <CardTitle>{t("library.tools.for.agent")}</CardTitle>
+              <WorkspaceHelp
+                title={t("library.tools.for.agent")}
+                description={t("library.tools.for.agent.hint")}
+              />
+            </div>
+            <CardDescription id={scopeId}>{t("library.tools.for.agent.scope")}</CardDescription>
           </div>
           <Button
             variant="outline"
@@ -348,11 +273,19 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
             <Input
               className="pl-9"
               aria-label={t("connections.tools.search")}
-              placeholder={t("connections.tools.search")}
+              aria-describedby={searchHelpId}
+              placeholder={t("connections.tools.searchPlaceholder")}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
+          <WorkspaceHelp
+            title={t("connections.tools.searchPlaceholder")}
+            description={t("connections.tools.agentSearchHelp")}
+          />
+          <span id={searchHelpId} className="sr-only">
+            {t("connections.tools.agentSearchHelp")}
+          </span>
         </div>
 
         {directoryError && (
@@ -363,7 +296,11 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
 
         {s.permissionError && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-            <p role="alert">{translateNotice(s.permissionError)}</p>
+            {!(
+              s.taskResult?.agentId === agentId &&
+              s.taskResult.task === "tools" &&
+              s.taskResult.error
+            ) && <p role="alert">{translateNotice(s.permissionError)}</p>}
             <Button
               variant="outline"
               size="sm"
@@ -389,8 +326,8 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
                     key={tool.name}
                     className="flex flex-wrap items-center justify-between gap-3 p-3.5 sm:p-4"
                   >
-                    <div className="space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
+                    <div className="min-w-0 max-w-full flex-1 basis-60 space-y-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
                         {humanKey && <span className="text-sm font-medium">{t(humanKey)}</span>}
                         <span className="font-mono text-sm text-muted-foreground">{tool.name}</span>
                         <Badge variant="outline">{t("connections.grants.group.builtin")}</Badge>
@@ -399,10 +336,19 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
                             ? t("connections.grants.effectRead")
                             : t("connections.grants.effectWrite")}
                         </span>
+                        <span className="text-xs text-muted-foreground">
+                          {t(`connections.tools.scope.${tool.scope}`)}
+                        </span>
+                        {tool.invocation === "host-terminal" && (
+                          <span className="text-xs text-muted-foreground">
+                            {t("connections.tools.hostTerminal")}
+                          </span>
+                        )}
                         {!tool.globalEnabled && (
                           <Badge
                             variant="outline"
-                            className="text-[10px] h-4 border-destructive/60 text-destructive"
+                            wrap
+                            className="text-[10px] border-destructive/60 text-destructive"
                           >
                             {t("connections.grants.modulePaused")}
                           </Badge>
@@ -419,13 +365,18 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
                     {!tool.globalEnabled ? (
                       <Badge
                         variant="outline"
+                        wrap
                         className="text-xs border-destructive/60 text-destructive"
                       >
                         {t("connections.grants.modulePaused")}
                       </Badge>
                     ) : (
                       <span className="text-xs text-muted-foreground">
-                        {t("connections.grants.baseScopeHint")}
+                        {t(
+                          tool.invocation === "host-terminal"
+                            ? "connections.tools.hostTerminalHint"
+                            : "connections.components.scopeBound",
+                        )}
                       </span>
                     )}
                   </div>
@@ -438,50 +389,24 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
                 const overrideDraft = grantDraft?.agentOverrides?.[agentId];
                 const hasOverride = overrideDraft !== undefined;
 
-                const savedGrant = savedPolicy?.grants.find((g) => g.resource === resource);
-                const savedOverride = savedGrant?.agentOverrides?.[agentId];
+                const view = grantViews.get(resource);
+                const savedOverride = view?.saved?.agentOverrides?.[agentId];
                 const isSavedDisabled = savedOverride?.enabled === false;
                 const hasSavedOverride = savedOverride !== undefined;
+                const draftEffectiveEnabled = view?.enabled ?? false;
+                const anyApprovalRequired = groupTools.some((tool) => tool.approvalRequired);
+                const draftEffectiveApproved = view?.approved ?? false;
 
-                const effective = draftPolicy
-                  ? selectEffectivePermissionGrant(draftPolicy, resource, agentId)?.grant
-                  : undefined;
-                const isAllowedByAgentIds =
-                  effective?.agentIds === undefined || effective.agentIds.includes(agentId);
+                const isDirty = view?.dirty ?? false;
+                const declaredDirectories = view?.declaredDirectories ?? [];
 
-                const draftEffectiveEnabled =
-                  effective !== undefined &&
-                  effective.enabled !== false &&
-                  (overrideDraft?.enabled !== undefined
-                    ? overrideDraft.enabled
-                    : grantDraft?.enabled !== false && isAllowedByAgentIds);
-
-                const anyApprovalRequired = groupTools.some((t) => t.approvalRequired);
-                const draftEffectiveApproved =
-                  effective?.approved === true && effective.revision === groupTools[0]?.revision;
-
-                const isDirty = permissionSettingsDirty(s.permissionEditor, {
-                  agentOverrides: [{ resource, agentId }],
-                });
-
-                const snapshotResource = s.permissionEditor?.snapshot.resources.find(
-                  (r) => r.resource === resource,
-                );
-                const declaredDirectories = Array.from(
-                  new Set(snapshotResource?.directories ?? []),
-                );
-
-                const baseOverride = getBaseOverrideForAgent(
-                  savedPolicy,
-                  resource,
-                  agentId,
-                  groupTools[0]?.revision ?? undefined,
-                );
-
-                const currentDirectories =
-                  overrideDraft !== undefined
-                    ? overrideDraft.directories
-                    : baseOverride.directories;
+                const baseOverride = view?.base ?? {
+                  enabled: false,
+                  approved: false,
+                  revision: groupTools[0]?.revision ?? undefined,
+                  directories: [],
+                };
+                const currentDirectories = view?.directories ?? [];
 
                 const historicalDirectories = Array.from(
                   new Set(currentDirectories.filter((d) => !declaredDirectories.includes(d))),
@@ -493,7 +418,7 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
                     data-resource={resource}
                     className="flex flex-wrap items-start justify-between gap-4 p-3.5 sm:p-4"
                   >
-                    <div className="space-y-2 flex-1 min-w-[240px]">
+                    <div className="min-w-0 max-w-full flex-1 basis-60 space-y-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono text-sm font-semibold text-foreground">
                           {resource}
@@ -543,21 +468,18 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
                                   ? t("connections.grants.effectRead")
                                   : t("connections.grants.effectWrite")}
                               </span>
+                              <span className="text-[11px] text-muted-foreground">
+                                {t(`connections.tools.scope.${tool.scope}`)}
+                              </span>
                               {!tool.globalEnabled ? (
                                 <Badge
                                   variant="outline"
-                                  className="text-[10px] h-4 border-destructive/60 text-destructive"
+                                  wrap
+                                  className="text-[10px] border-destructive/60 text-destructive"
                                 >
                                   {t("connections.grants.modulePaused")}
                                 </Badge>
-                              ) : (
-                                <span className="text-[11px] text-muted-foreground">
-                                  •{" "}
-                                  {t(
-                                    "connections.theseOverridesApplyOnlyToThisConversationDetailedParameters",
-                                  )}
-                                </span>
-                              )}
+                              ) : null}
                             </div>
                           );
                         })}
@@ -746,21 +668,6 @@ export function AgentToolScope({ agentId, active }: { agentId: string; active: b
                           {t("connections.grants.agentOverrideRevert")}
                         </Button>
                       )}
-
-                      <Button
-                        size="sm"
-                        data-testid={`agent-tool-save-${resource}`}
-                        disabled={
-                          !isEditorReady || !isDirty || s.permissionSaving || s.permissionLoading
-                        }
-                        onClick={() => {
-                          void s.savePermissionSettings({
-                            agentOverrides: [{ resource, agentId }],
-                          });
-                        }}
-                      >
-                        {t("connections.grants.save")}
-                      </Button>
                     </div>
                   </div>
                 );
@@ -947,7 +854,7 @@ export function CapabilityEditor({
       <AgentModelPurpose active={active} embedded={embedded} />
 
       {/* 2. 助手短期上下文预算与模式 */}
-      <Card data-testid="agent-context-card">
+      <Card presentation="plain" data-testid="agent-context-card">
         <CardHeader className="pb-3">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
@@ -1152,7 +1059,7 @@ export function CapabilityEditor({
               "customToggle",
               "mode",
             ],
-            ...["memory_consolidate", "memory_retrieval_select", "research"].flatMap((role) =>
+            ...["memory_consolidate", "research"].flatMap((role) =>
               ["name", "desc", "inputDesc", "outputDesc"].map((field) => `role.${role}.${field}`),
             ),
           ].map((k) => [k, t(`schemes.allocation.aux.${k}`)]),

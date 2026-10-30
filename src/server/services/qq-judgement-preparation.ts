@@ -7,16 +7,13 @@ import type { SourceRef } from "../../shared/contracts/evidence";
 import { readQqBinding } from "../db/qq-binding-repository";
 import { readEffectiveQqScheme } from "../db/qq-group-config-repository";
 import { attemptedUnreadMediaNoteIds } from "../db/qq-media-repository";
-import { qqMemberLabels } from "../db/qq-member-repository";
 import {
   conversationMessagesSince,
   type QqConversationScope,
-  qqMemberEventCount,
 } from "../db/qq-observation-repository";
 import {
   effectiveQqTriggers,
   schemeContext,
-  schemePrompts,
   schemeReply,
   schemeRhythm,
 } from "../db/qq-scheme-repository";
@@ -25,24 +22,10 @@ import {
   lastQqInitiativeSeconds,
   lastQqSpeech,
   newestMemberMessageSeconds,
-  ownSpeechSince,
   qqInitiativeSpeechesInWindow,
 } from "../db/qq-speech-repository";
 import { getAgentRow, type Orm } from "../db/repositories";
-import { qqConversationKey } from "./qq-binding-contract";
-import {
-  type QqContextSelection,
-  qqBuildTimeline,
-  qqContextLimits,
-  qqSelectContext,
-} from "./qq-context-contract";
-import { qqJudgementMaterial, qqJudgementQuestion } from "./qq-judgement-material";
-import {
-  buildQqPrompt,
-  type QqPromptMaterial,
-  qqPromptMessages,
-  qqSpeakerLabel,
-} from "./qq-prompt-contract";
+import { qqContextLimits } from "./qq-context-contract";
 import { type QqReplyTarget, qqReplyTargets } from "./qq-reply-targets";
 import { checkQqInitiativeRhythm, qqBatchVerdict } from "./qq-rhythm-contract";
 import {
@@ -51,7 +34,6 @@ import {
   disabledKindsFromTriggers,
   isInitiativeSpeech,
 } from "./qq-speaking-contract";
-import { compileSystemPrompt, runtimeFromAgent } from "./runtime-config";
 
 const Input = z.strictObject({
   bindingId: z.uuid(),
@@ -102,49 +84,8 @@ export type QqJudgementPreparation =
     }
   | {
       readonly kind: "prepared";
-      /** The path this preparation was made for; all four kinds prepare the same way (P5s). */
       readonly path: "direct_reply" | "follow_up" | "chiming_in" | "idle_topic";
-      readonly bindingId: string;
-      /**
-       * 这间会话的键（0036）：判断读数按会话存放，而读数不指向绑定（解绑即收敛），所以调用方需要
-       * 一个与绑定生命周期无关的身份。同时带上 `nowSeconds`：写读数用的就是这次判断的同一个时钟，
-       * 不让调用方另取一次时间。
-       */
-      readonly conversationKey: string;
-      readonly nowSeconds: number;
-      readonly agentId: string;
-      readonly schemeId: string;
-      readonly bindingRevision: number;
-      readonly authorityRevision: number;
-      readonly schemeRevision: number;
-      readonly modelName: string;
-      readonly agentConfigVersion: number;
-      readonly memberEventCount: number;
-      readonly selection: QqContextSelection;
-      /**
-       * 这一轮要回谁（0037）。空数组＝这一轮没有具体的回话对象（冷场发起往安静的房间里开话题，或最新
-       * 那条消息是匿名的）；判断与生成都按这个列表一人跑一次。
-       */
       readonly targets: readonly QqReplyTarget[];
-      /**
-       * 「按发言人分开回答」开着（0037）：判断与生成**每人各一次**，一人一条消息。
-       *
-       * 关掉时这一轮仍然按人算合并窗口（按 id 来算），但只跑**一次**生成、用程序内置的默认
-       * 回复文案，写出来的话回整间会话、不加 `@`——那是这个开关关掉时本来就在做的事。
-       */
-      readonly splitBySpeaker: boolean;
-      /**
-       * 判断用的提示词，一份对应一个目标（`target: null` 是"没有对象"的那一份：冷场发起、匿名发言，
-       * 或者开关关掉时的整轮那一次）。顺序与 `targets` 一致；共用的部分（人设、时间线、记忆与资料）
-       * 只组装一次。
-       */
-      readonly judgementPrompts: readonly {
-        readonly target: QqReplyTarget | null;
-        readonly messages: readonly {
-          readonly role: "system" | "user";
-          readonly content: string;
-        }[];
-      }[];
     };
 
 /**
@@ -196,8 +137,6 @@ export function prepareQqJudgement(
   orm: Orm,
   input: unknown,
   options?: {
-    onSources?: (sources: SourceRef[]) => void;
-    eligibilityOnly?: boolean;
     /** Host-owned mature, unhandled participant opportunities; never supplied by a model. */
     pendingTargets?: readonly QqReplyTarget[];
     /**
@@ -276,11 +215,8 @@ export function prepareQqJudgement(
     peerId: binding.peerId,
     agentId: binding.agentId,
   };
-  // 判断用的可选资料（记忆与资料），由下面的主动性分支填充；直接回应/连续交谈不跑判断，不读它们。
-  let material: readonly QqPromptMaterial[] = [];
   const newest = newestMemberMessageSeconds(orm, scope);
-  // 同任务恢复（P3 partial recovery）：配置闸按发送口径（开关/暂停/触发器），不重入新起始的
-  // no-reply 闸（判断已结算，`awaiting_reply` 是新机会的规则）；来源/材料/媒体闸全部照旧。
+  // 同任务恢复：配置闸按发送口径，不重入新机会的 no-reply 闸；媒体 proof 仍由宿主提供。
   const resumeTargets = options?.resumedInitiative?.targets;
   if (resumeTargets !== undefined) {
     if (path !== "chiming_in") return { kind: "blocked", reason: "trigger_off" };
@@ -308,24 +244,13 @@ export function prepareQqJudgement(
     if (gate.kind === "blocked") return { kind: "blocked", reason: gate.reason };
     if (newest === null) return { kind: "blocked", reason: "no_member_message" };
   }
-  // The context window is what the judgement and the media gate below both work from, so it is
-  // read once here rather than twice later.
+  // The eligibility window bounds target selection and the media gate.
   const limits = qqContextLimits(schemeContext(scheme), "judgement");
   const sinceSeconds = Math.max(0, nowSeconds - limits.windowMinutes * 60 - 1);
   const messages = conversationMessagesSince(orm, scope, {
     sinceSeconds,
     limit: limits.messageLimit,
-    includeSources: options !== undefined,
   });
-  const scopeLabels = qqMemberLabels(
-    orm,
-    {
-      accountId: scope.accountId,
-      conversationKind: scope.conversationKind,
-      peerId: scope.peerId,
-    },
-    new Date(nowSeconds * 1000).toISOString(),
-  );
   // 这一轮要回谁（0037，不同人的消息分开来跑）。
   //   * 自主接话：按**人**算合并窗口——他自己的最后一条消息过完窗口就算说完了；她上次开口之后说过话
   //     的人才是这一轮的活（回过的人不会因为别人又开一次口被重新翻出来）。
@@ -343,7 +268,7 @@ export function prepareQqJudgement(
     const lastSpeechSeconds = lastQqSpeech(orm, scope)?.spokeAtSeconds ?? null;
     if (resumeTargets !== undefined) {
       // 恢复轮（P3 partial recovery）：目标＝冻结快照的全部获准成员，原样（不重选、不按合并
-      // 窗口/节奏重算——判断早已结算）；其余闸（媒体失败闸、材料读取、提示词组装）照常走。
+      // 窗口/节奏重算——判断早已结算）；媒体失败闸仍照常走。
       targets = resumeTargets.map((entry) => ({
         speakerId: entry.speakerId,
         newestSeconds: 0,
@@ -501,15 +426,6 @@ export function prepareQqJudgement(
         }
       }
     }
-    // 打分口径里排在人物与上下文之后的两层：长期记忆与知识库。只在真会跑判断的
-    // 两条路径上读；取不到就少一段，绝不因此不判断（与上面那条媒体闸门不同性质）。
-    material = options?.eligibilityOnly
-      ? []
-      : qqJudgementMaterial(orm, {
-          binding,
-          question: qqJudgementQuestion(messages.map((message) => message.text)),
-          onSources: options?.onSources,
-        });
   } else {
     // 被叫到 = **挣来这一轮的那条消息**的发言人（`focusEventKey`；没给就退回最新一条）。匿名发言也是
     // 一个人，只是没有号（`speakerId: null`，不加 `@`）。
@@ -529,72 +445,5 @@ export function prepareQqJudgement(
       ]);
     }
   }
-  const timeline = qqBuildTimeline({
-    messages: messages.map(({ eventKey: _eventKey, ...message }) => message),
-    ownSpeech: ownSpeechSince(orm, scope, {
-      sinceSeconds,
-      limit: limits.messageLimit,
-      includeSources: options !== undefined,
-    }),
-  });
-  const selection = qqSelectContext({ timeline, limits, nowSeconds });
-  options?.onSources?.(selection.messages.flatMap((m) => m.sources ?? []));
-  const runtime = runtimeFromAgent(agent);
-  // 提示词按目标一人一份（共用部分只组装一次）。三种情况都归到"一份无对象提示词"：
-  //   * 开关关掉——整间会话一次，不加 `@`（旧行为）；
-  //   * 冷场发起——往安静的房间里开话题；
-  //   * 这一轮没有目标。
-  const splitBySpeaker = schemeReply(scheme).split_by_speaker;
-  const promptTargets: readonly (QqReplyTarget | null)[] =
-    splitBySpeaker && targets.length > 0 ? targets : [null];
-  const judgementPrompts = (options?.eligibilityOnly ? [] : promptTargets).map((target) => ({
-    target,
-    messages: qqPromptMessages(
-      buildQqPrompt({
-        tier: "judgement",
-        path,
-        persona: compileSystemPrompt(runtime),
-        prompts: schemePrompts(scheme),
-        timeline: selection.messages,
-        nowSeconds,
-        labels: scopeLabels,
-        // 0031: mark the attention list in the timeline — a hint to the model, never a threshold.
-        attentionMembers: binding.attention.members,
-        ...(target === null
-          ? {}
-          : {
-              replyingTo: {
-                speakerId: target.speakerId,
-                label: qqSpeakerLabel(target.speakerId, scopeLabels),
-              },
-            }),
-        // 记忆与资料（可能为空）。`buildQqPrompt` 把它们固定在 user 段，§6.1 的"资料不是系统权限"因此
-        // 不依赖调用方记得这件事。
-        ...(material.length > 0 ? { material } : {}),
-      }),
-    ),
-  }));
-  return {
-    kind: "prepared",
-    path,
-    bindingId: binding.id,
-    conversationKey: qqConversationKey({
-      accountId: binding.accountId,
-      kind: binding.kind,
-      peerId: binding.peerId,
-    }),
-    nowSeconds,
-    agentId: binding.agentId,
-    schemeId: binding.schemeId,
-    bindingRevision: binding.revision,
-    authorityRevision: binding.authorityRevision,
-    schemeRevision: scheme.revision,
-    modelName: settings.judgementModelName ?? runtime.model_name,
-    agentConfigVersion: runtime.config_version,
-    memberEventCount: qqMemberEventCount(orm, scope),
-    selection,
-    targets,
-    splitBySpeaker,
-    judgementPrompts,
-  };
+  return { kind: "prepared", path, targets };
 }

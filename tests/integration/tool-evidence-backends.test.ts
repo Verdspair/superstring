@@ -1,12 +1,20 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
+import { createBuiltInActions } from "../../src/server/agent/built-in-actions";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { openConnection, toOrmHandle } from "../../src/server/db/connection";
 import { rankedMemoryCandidates } from "../../src/server/db/context-repository";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
-import { rebuildMemorySearchProjection } from "../../src/server/db/memory-repository";
+import { correctMemory } from "../../src/server/db/memory-content-repository";
+import {
+  claim,
+  enqueue,
+  jobOwned,
+  publish,
+  rebuildMemorySearchProjection,
+} from "../../src/server/db/memory-repository";
 import { recordObservation } from "../../src/server/db/qq-observation-intake";
 import {
   createSession,
@@ -24,6 +32,7 @@ import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import { createSqliteQueryFactory } from "../../src/server/modules/composition";
 import { evidenceQueryPage, type MemoryQuery } from "../../src/server/modules/contracts";
+import { evidenceCatalogCost } from "../../src/server/modules/evidence-pagination";
 import { SqliteKnowledgeModule } from "../../src/server/modules/knowledge-module";
 import { SqliteMemoryModule } from "../../src/server/modules/memory-module";
 import { KnowledgeOrganizer } from "../../src/server/services/knowledge-organizer";
@@ -97,7 +106,6 @@ function memoryInput(extra: Partial<MemoryQuery> = {}): MemoryQuery {
     owner,
     sessionId,
     scopes: null,
-    mode: "standard",
     query: "",
     budget: 65536,
     ...extra,
@@ -201,6 +209,134 @@ async function organize() {
 }
 
 describe("tool evidence backends", () => {
+  it("preserves published and manually corrected content origin in ranked, browsed and freshly read memory", async () => {
+    const sourceTurn = seedMemory("origin-source", "Source text is not the correction");
+    const job = immediate(business.db, () =>
+      enqueue(business.orm, DEFAULT_AGENT_ID, "origin-publish", {
+        kind: "manual",
+        sessionId,
+        turnIds: [sourceTurn],
+      }),
+    );
+    const claimed = immediate(business.db, () => claim(business.orm, job.id));
+    if (!claimed?.token) throw new Error("Missing claimed memory job");
+    immediate(business.db, () =>
+      publish(business.orm, DEFAULT_AGENT_ID, job.id, claimed.token!, {
+        name: "origin needle",
+        summary: "Published memory",
+        tags: [],
+        kinds: ["semantic"],
+        body: "甲𠮷乙",
+      }),
+    );
+    const id = jobOwned(business.orm, DEFAULT_AGENT_ID, job.id).resultId;
+    if (!id) throw new Error("Missing published memory");
+    immediate(business.db, () =>
+      rebuildMemorySearchProjection(business.orm, DEFAULT_AGENT_ID, { limit: 10 }),
+    );
+    for (const query of ["", "needle"]) {
+      const page = evidenceQueryPage(await memory.query(memoryInput({ query })));
+      const item = page.items.find((candidate) => candidate.id === id);
+      expect(item).toMatchObject({ metadata: { content_origin: "derived" } });
+      if (!item) throw new Error("Missing published query item");
+      const priced = { ...item, metadata: { content_origin: "derived" as const } };
+      const noMetadata = {
+        id: item.id,
+        text: item.text,
+        preview: item.preview,
+        score: item.score,
+        sources: item.sources,
+        scope: item.scope,
+      };
+      expect(evidenceCatalogCost([priced])).toBeGreaterThan(evidenceCatalogCost([noMetadata]));
+      const read = await readMemory(item, 0, 2);
+      expect(read).toMatchObject({
+        text: "甲𠮷",
+        offset: 0,
+        nextOffset: 2,
+        metadata: { content_origin: "derived" },
+      });
+    }
+    const old = first(
+      evidenceQueryPage(await memory.query(memoryInput({ query: "needle" }))).items,
+    );
+    const corrected = immediate(business.db, () =>
+      correctMemory(business.orm, DEFAULT_AGENT_ID, id, {
+        expected_revision: old.sources[0]!.revision,
+        name: "origin needle correction",
+        summary: "Human correction, not an original speaker confirmation",
+        tags: [],
+        body: "更正𠮷正文",
+      }),
+    );
+    await expect(readMemory(old)).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+    for (const query of ["", "needle"]) {
+      const page = evidenceQueryPage(await memory.query(memoryInput({ query })));
+      expect(page.items.some((item) => item.id === id)).toBe(false);
+      const fresh = page.items.find((item) => item.id === corrected.content.id);
+      expect(fresh).toMatchObject({ metadata: { content_origin: "manual_correction" } });
+      if (!fresh) throw new Error("Missing corrected query item");
+      const forgedSnapshot = { ...fresh, metadata: { content_origin: "derived" as const } };
+      expect(await readMemory(forgedSnapshot, 0, 2)).toMatchObject({
+        text: "更正",
+        offset: 0,
+        nextOffset: 2,
+        metadata: { content_origin: "manual_correction" },
+      });
+    }
+    const actions = createBuiltInActions(
+      {
+        memory: {
+          query: (query, action) =>
+            memory.query({ ...memoryInput(), ...query, signal: action.signal }),
+          read: (read, action) => memory.read({ ...memoryInput(), ...read, signal: action.signal }),
+        },
+      },
+      { assertSources() {}, fit: async () => () => true },
+    );
+    const ctx = { owner, runId: "origin-tools", signal: new AbortController().signal };
+    const query = actions.find((action) => action.description.name === "memory.query")!;
+    const read = actions.find((action) => action.description.name === "memory.read")!;
+    const traced: string[] = [];
+    const originalQuery = business.db.query;
+    const originalPrepare = business.db.prepare;
+    business.db.query = ((sql: string, ...rest: unknown[]) => {
+      traced.push(sql);
+      return Reflect.apply(originalQuery, business.db, [sql, ...rest]);
+    }) as typeof originalQuery;
+    business.db.prepare = ((sql: string, ...rest: unknown[]) => {
+      traced.push(sql);
+      return Reflect.apply(originalPrepare, business.db, [sql, ...rest]);
+    }) as typeof originalPrepare;
+    try {
+      const direct = evidenceQueryPage(
+        await memory.query(memoryInput({ query: "needle", limit: 1 })),
+      );
+      const directReads = [...traced];
+      traced.length = 0;
+      const result = await query.execute({ query: "needle", limit: 1 }, ctx);
+      expect(traced).toEqual(directReads);
+      expect(directReads.length).toBeGreaterThan(0);
+      const item = (result.value as { items: { bodyRef: string }[] }).items[0]!;
+      expect(item).toMatchObject({ metadata: { content_origin: "manual_correction" } });
+      traced.length = 0;
+      await readMemory(first(direct.items), 0, 2);
+      const directBodyReads = [...traced];
+      traced.length = 0;
+      const page = await read.execute({ bodyRef: item.bodyRef, offset: 0, limit: 2 }, ctx);
+      expect(traced).toEqual(directBodyReads);
+      expect(page.value).toMatchObject({
+        items: [{ text: "更正", nextOffset: 2, metadata: { content_origin: "manual_correction" } }],
+      });
+    } finally {
+      business.db.query = originalQuery;
+      business.db.prepare = originalPrepare;
+      for (const action of actions) action.release?.(ctx);
+    }
+    expect(capacity).not.toHaveBeenCalled();
+    expect(leaf).not.toHaveBeenCalled();
+  });
+
   it("queries metadata and lazily reads without any selector or gateway call", async () => {
     seedMemory("m1", "不应预取的记忆正文");
     addDocument("不应预取的资料正文");
@@ -219,7 +355,10 @@ describe("tool evidence backends", () => {
     const page = evidenceQueryPage(await memory.query(memoryInput()));
     expect(page.items).toHaveLength(1);
     expect(evidenceQueryPage(await memory.query(memoryInput({ scopes: [] }))).items).toEqual([]);
-    expect(evidenceQueryPage(await memory.query(memoryInput({ mode: "off" }))).items).toEqual([]);
+    const active = runtime.p5_config.memory_read;
+    runtime.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
+    expect(evidenceQueryPage(await memory.query(memoryInput())).items).toEqual([]);
+    runtime.p5_config.memory_read = active;
     await expect(
       memory.read?.({
         ...memoryInput({ scopes: [] }),
@@ -228,7 +367,7 @@ describe("tool evidence backends", () => {
         limit: 100,
       }),
     ).rejects.toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
-    runtime.p5_config.retrieval_mode = "off";
+    runtime.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
     expect(evidenceQueryPage(await memory.query(memoryInput())).items).toEqual([]);
     await expect(readMemory(first(page.items))).rejects.toMatchObject({
       code: "CONTEXT_SOURCE_INVALID",
@@ -255,7 +394,7 @@ describe("tool evidence backends", () => {
     immediate(business.db, () =>
       rebuildMemorySearchProjection(business.orm, DEFAULT_AGENT_ID, { limit: 10 }),
     );
-    const input = memoryInput({ mode: "full_body", query: "needle" });
+    const input = memoryInput({ query: "needle" });
     const one = evidenceQueryPage(await memory.query(input));
     expect(one.items.map((item) => item.id)).toEqual(["m3"]);
     expect(one.nextCursor).toBeString();
@@ -582,7 +721,7 @@ describe("tool evidence backends", () => {
     );
     expect(ranked).toBeDefined();
     expect(ranked?.params).toContain(301);
-    const input = memoryInput({ mode: "full_catalog", query: "needle" });
+    const input = memoryInput({ query: "needle" });
     const seen = new Set<string>();
     const fixtureCount = 301;
     const pageSize = Math.min(runtime.p5_config.retrieval_presets.broad.max_entries, 20);
@@ -752,6 +891,22 @@ describe("tool evidence backends", () => {
       memory.read({ ...input, evidence: item, offset: 0, limit: 4096 }),
     ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
     expect(evidenceQueryPage(await memory.query(input)).items).toEqual([]);
+    business.db
+      .query("UPDATE qq_events SET peer_id=? WHERE event_key=?")
+      .run("20001", event.observation.eventKey);
+    business.db
+      .query("UPDATE qq_events SET account_id=? WHERE event_key=?")
+      .run("foreign", event.observation.eventKey);
+    await expect(
+      memory.read({ ...input, evidence: item, offset: 0, limit: 4096 }),
+    ).rejects.toMatchObject({ code: "CONTEXT_SOURCE_INVALID" });
+    expect(evidenceQueryPage(await memory.query(input)).items).toEqual([]);
+    business.db
+      .query("UPDATE qq_events SET account_id=? WHERE event_key=?")
+      .run("10001", event.observation.eventKey);
+    expect((await memory.read({ ...input, evidence: item, offset: 0, limit: 4096 })).text).toBe(
+      "群资料",
+    );
   });
 
   it("checks cancellation before and after backend work and rejects foreign owners", async () => {

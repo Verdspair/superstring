@@ -1569,5 +1569,7 @@
   "记忆共享设置未能加载：{0}": "Could not load memory visibility settings: {0}",
   "记忆共享设置需要单独确认发布，请在记忆详情中完成或放弃后再继续。": "Memory visibility settings require individual publication confirmation; please complete or discard them in memory details before continuing.",
   "记忆可见性已更新。": "Memory visibility updated.",
-  "远端记忆版本已更新为 rev {0}，请核对最新状态或刷新重试。": "Remote memory version updated to rev {0}; please check latest state or refresh to retry."
+  "远端记忆版本已更新为 rev {0}，请核对最新状态或刷新重试。": "Remote memory version updated to rev {0}; please check latest state or refresh to retry.",
+  "知识库远端内容已更改；本地草稿保留，未自动推进保存版本。请刷新并核对后重试。": "The knowledge item changed remotely. Your draft and original save revision are preserved. Refresh and review the latest values before trying again.",
+  "远端设置已更改；本地草稿保留，未自动推进保存版本。请显式刷新并核对后重试。": "Settings changed remotely. Your draft and original save revision are preserved. Explicitly refresh and review before trying again."
 }

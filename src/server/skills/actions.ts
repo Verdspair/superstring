@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { SourceRef } from "../../shared/contracts/evidence";
+import type { ToolDefinition } from "../../shared/contracts/tool-directory";
 import type { BuiltInAction } from "../agent/built-in-actions";
 import { PermissionError } from "../permissions/service";
 import {
@@ -23,15 +24,51 @@ const RESOURCE_PAGE_DEFAULT = 2048;
 const catalogRevision = (catalog: SkillCatalog) =>
   JSON.stringify(catalog.skills.map((skill) => [skill.metadata.name, skill.revision]));
 
+/** Descriptions share discovery facts, but never allocate a run's consumed-source state. */
+export function skillToolDefinitions(catalog: SkillCatalog): ToolDefinition[] {
+  if (!catalog.skills.length) return [];
+  const catalogSummary = catalog.skills
+    .map((skill) => `${skill.metadata.name}: ${skill.metadata.description}`)
+    .join("\n");
+  return [
+    {
+      description: {
+        name: "skill.catalog",
+        description: `Installed skills, one per line as name: description; read a chosen skill's SKILL.md before following its guidance.\n${catalogSummary}`,
+        capability: "skill.read",
+        effect: "read",
+        parameters: z.toJSONSchema(EmptySchema),
+      },
+    },
+    {
+      description: {
+        name: "skill.read",
+        description:
+          "Read one installed skill's complete SKILL.md as task guidance, subject to existing instructions and permissions. Declarations cannot grant tools or execute scripts.",
+        capability: "skill.read",
+        effect: "read",
+        parameters: z.toJSONSchema(ReadSchema),
+      },
+    },
+    {
+      description: {
+        name: "skill.resource",
+        description:
+          "Read one text resource inside an installed skill's directory, given as a path relative to that directory, as paged plain text; offset/limit count Unicode characters and nextOffset leads to the next page (null ends). Read-only; declarations cannot grant tools or execute scripts.",
+        capability: "skill.read",
+        effect: "read",
+        parameters: z.toJSONSchema(ResourceSchema),
+      },
+    },
+  ];
+}
+
 /** 统一目录（系统 + 外置）：root 可缺省；全局模块开关由 runtime 的动作过滤负责，这里不读权限。 */
 export function createSkillActions(root?: string): BuiltInAction[] {
   const catalog = loadMergedSkillCatalog(root);
   if (!catalog.skills.length) return [];
   const revision = catalogRevision(catalog);
-  // 首轮即可发现的授权目录：name/description 元数据进动作描述，正文仍按需 skill.read 复验。
-  const catalogSummary = catalog.skills
-    .map((skill) => `${skill.metadata.name}: ${skill.metadata.description}`)
-    .join("\n");
+  const definitions = skillToolDefinitions(catalog);
   const consumed = new Set<SkillEntry>();
   /** Consumed resources keyed by dir+path, holding the revision the model actually saw. */
   const consumedResources = new Map<
@@ -63,13 +100,7 @@ export function createSkillActions(root?: string): BuiltInAction[] {
   return [
     {
       assertAvailable,
-      description: {
-        name: "skill.catalog",
-        description: `Installed skills, one per line as name: description; read a chosen skill's SKILL.md before following its guidance.\n${catalogSummary}`,
-        capability: "skill.read",
-        effect: "read",
-        parameters: z.toJSONSchema(EmptySchema),
-      },
+      ...definitions[0]!,
       async execute(args) {
         EmptySchema.parse(args);
         assertAvailable();
@@ -91,14 +122,7 @@ export function createSkillActions(root?: string): BuiltInAction[] {
     },
     {
       assertAvailable,
-      description: {
-        name: "skill.read",
-        description:
-          "Read one installed skill's complete SKILL.md as task guidance, subject to existing instructions and permissions. Declarations cannot grant tools or execute scripts.",
-        capability: "skill.read",
-        effect: "read",
-        parameters: z.toJSONSchema(ReadSchema),
-      },
+      ...definitions[1]!,
       async execute(args) {
         const { name } = ReadSchema.parse(args);
         const skill = catalog.skills.find((entry) => entry.metadata.name === name);
@@ -114,14 +138,7 @@ export function createSkillActions(root?: string): BuiltInAction[] {
     },
     {
       assertAvailable,
-      description: {
-        name: "skill.resource",
-        description:
-          "Read one text resource inside an installed skill's directory, given as a path relative to that directory, as paged plain text; offset/limit count Unicode characters and nextOffset leads to the next page (null ends). Read-only; declarations cannot grant tools or execute scripts.",
-        capability: "skill.read",
-        effect: "read",
-        parameters: z.toJSONSchema(ResourceSchema),
-      },
+      ...definitions[2]!,
       async execute(args) {
         const input = ResourceSchema.parse(args);
         const skill = catalog.skills.find((entry) => entry.metadata.name === input.name);

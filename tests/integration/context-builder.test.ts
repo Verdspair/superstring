@@ -6,28 +6,26 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { eq } from "drizzle-orm";
 import { createAgentRuntime } from "../../src/server/agent/agent-runtime";
 import { evidenceCatalogEntry } from "../../src/server/agent/built-in-actions";
+import { sourceAccess } from "../../src/server/agent/context-access";
 import { ContextEngine } from "../../src/server/agent/context-engine";
 import {
   ContextBuilder,
   type ContextDiagnostic,
-  contextKeywords,
-  estimateMessages,
-  estimateTokens,
   SUMMARY_RESULT_JSON_SCHEMA,
-  validateContextIds,
 } from "../../src/server/agent/conversation-context";
 import { createApp } from "../../src/server/app";
 import { WebChannel } from "../../src/server/channels/web-channel";
 import { WebContextSource } from "../../src/server/channels/web-context-source";
 import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import {
-  catalog,
-  catalogFingerprint,
   history,
-  memoryBodies,
+  memoryBodiesByScopeKeys,
+  memoryRevisionsForSession,
+  scanMemoryCandidates,
   summaries,
   systemPrompt,
 } from "../../src/server/db/context-repository";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { contextDumps } from "../../src/server/db/json-text";
 import { KnowledgeRepository } from "../../src/server/db/knowledge-repository";
 import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
@@ -53,12 +51,18 @@ import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { SqliteKnowledgeModule } from "../../src/server/modules/knowledge-module";
 import { SqliteMemoryModule } from "../../src/server/modules/memory-module";
 import {
+  contextKeywords,
+  estimateMessages,
+  validateContextIds,
+} from "../../src/server/modules/memory-query";
+import { memoryAccessRefs, memoryConversationAccess } from "../../src/server/services/memory-scope";
+import { estimateTokens } from "../../src/server/services/token-estimate";
+import {
   DEFAULT_MEMORY_CONSOLIDATION_PROMPT,
   DEFAULT_MEMORY_RETRIEVAL_PROMPT,
 } from "../../src/shared/contracts";
 import { unicodeStrip } from "../../src/shared/contracts/code-point-string";
 import type { Evidence, SourceRef } from "../../src/shared/contracts/evidence";
-import { SELECTION_JSON_SCHEMA } from "../fixtures/legacy-qq/memory-query";
 import { runtimeFixtureBusiness } from "../harness/business-db";
 
 const MODEL = "qwen/qwen3-4b-2507";
@@ -310,9 +314,40 @@ describe("0.2.1 corrected memory context", () => {
       expect(JSON.stringify(result)).toContain("餐费80元");
       expect(JSON.stringify(result)).toContain("manual_correction");
       expect(JSON.stringify(result)).not.toContain("餐费999元错误");
-      expect(sources.filter((source) => source.kind === "memory")).toEqual([
-        { kind: "memory", id: corrected.content.id, revision: corrected.content.revision },
+      const canonical = new ConversationEventRepository(ctx.business.db).ensureWeb(
+        chatSession,
+        DEFAULT_USER_ID,
+      )!;
+      const access = memoryConversationAccess(
+        ctx.orm,
+        canonical.id,
+        DEFAULT_AGENT_ID,
+        DEFAULT_USER_ID,
+      )!;
+      const expectedRef = memoryAccessRefs(ctx.orm, access, [corrected.content.id]).get(
+        corrected.content.id,
+      )!;
+      expect(expectedRef.kind).toBe("memory_access");
+      expect(JSON.parse(expectedRef.id)).toEqual([
+        DEFAULT_AGENT_ID,
+        canonical.id,
+        corrected.content.id,
       ]);
+      expect(sources.filter((source) => source.kind === "memory_access")).toEqual([expectedRef]);
+      expect(
+        sourceAccess(
+          ctx.business.db,
+          expectedRef,
+          {
+            kind: "web_turn",
+            id: current.turn.id,
+            userId: DEFAULT_USER_ID,
+            agentId: DEFAULT_AGENT_ID,
+          },
+          { userId: DEFAULT_USER_ID },
+          nowIso(),
+        ),
+      ).toBe("available");
       expect(usage?.components.long_term_memory).toBe(
         estimateMessages(constraint ? [constraint] : []) - 3,
       );
@@ -322,7 +357,8 @@ describe("0.2.1 corrected memory context", () => {
         usage.input_units,
       );
       expect(
-        memoryBodies(ctx.orm, DEFAULT_AGENT_ID, chatSession, [corrected.content.id])[0].source_type,
+        memoryBodiesByScopeKeys(ctx.orm, DEFAULT_AGENT_ID, [corrected.content.id], null)[0]
+          .source_type,
       ).toBe("memory");
     } finally {
       ctx.business.close();
@@ -520,7 +556,7 @@ describe("0.2.1 disabled memory isolation", () => {
         }),
       );
       const current = activeTurn(ctx.orm, sessionId, "off-now");
-      current.prepared.runtime.p5_config.retrieval_mode = "off";
+      current.prepared.runtime.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
       const context = builder(ctx);
       let sources: SourceRef[] = [];
       let usage: import("../../src/shared/contracts/context-usage").ContextUsage | undefined;
@@ -555,7 +591,7 @@ describe("0.2.1 disabled memory isolation", () => {
       const source = completedTurn(ctx.orm, session, "source");
       const id = seedMemory(ctx.orm, source.id, 1, "旧错误");
       const current = activeTurn(ctx.orm, session, "ask");
-      current.prepared.runtime.p5_config.retrieval_mode = "off";
+      current.prepared.runtime.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
       ctx.gateway.onCapacity = (count) => {
         if (count !== 2) return;
         immediate(ctx.business.db, () =>
@@ -645,10 +681,26 @@ describe("0.2.1 corrected summary lifecycle", () => {
             .map((source) => source.id)
             .sort(),
         ).toEqual([current.turn.id, recent.id, ...(keepFact ? [old.id] : [])].sort());
-        expect(sources.filter((source) => source.kind === "memory")).toEqual(
-          keepFact
-            ? [{ kind: "memory", id: corrected.content.id, revision: corrected.content.revision }]
-            : [],
+        const canonical = new ConversationEventRepository(ctx.business.db).ensureWeb(
+          sessionId,
+          DEFAULT_USER_ID,
+        )!;
+        const access = memoryConversationAccess(
+          ctx.orm,
+          canonical.id,
+          DEFAULT_AGENT_ID,
+          DEFAULT_USER_ID,
+        )!;
+        const expectedRef = memoryAccessRefs(ctx.orm, access, [corrected.content.id]).get(
+          corrected.content.id,
+        )!;
+        expect(JSON.parse(expectedRef.id)).toEqual([
+          DEFAULT_AGENT_ID,
+          canonical.id,
+          corrected.content.id,
+        ]);
+        expect(sources.filter((source) => source.kind === "memory_access")).toEqual(
+          keepFact ? [expectedRef] : [],
         );
         expect(JSON.stringify(messages).includes("纠正约束")).toBe(keepFact);
         expect(JSON.stringify(messages)).not.toContain("wrong old claim");
@@ -799,8 +851,6 @@ describe("R4 pure context contract", () => {
   });
 
   it("freezes the exact auxiliary JSON-schema shapes", () => {
-    expect(SELECTION_JSON_SCHEMA.additionalProperties).toBe(false);
-    expect(SELECTION_JSON_SCHEMA.required).toEqual(["ids"]);
     expect(SUMMARY_RESULT_JSON_SCHEMA.$defs.SummaryFact.properties.kind.pattern).toBe(
       "^(fact|decision|todo|uncertainty)$",
     );
@@ -833,35 +883,42 @@ describe("R4 context repository authorization", () => {
     );
   });
 
-  it("searches memory metadata/body case-insensitively and returns metadata only", () => {
+  it("scans memory metadata without returning the body and loads only the selected task body", () => {
     const { orm } = setup();
     const sessionId = newSession(orm);
     const source = completedTurn(orm, sessionId, "m1");
     const id = seedMemory(orm, source.id, 1, "偏好正文");
-    const rows = catalog(orm, DEFAULT_AGENT_ID, sessionId, { keywords: ["qwen", "strasse"] });
+    const rows = scanMemoryCandidates(orm, DEFAULT_AGENT_ID, null, {
+      sessionId,
+      limit: 30,
+    }).items.map((candidate) => candidate.item);
     expect(rows.map((item) => item.id)).toEqual([id]);
     expect(rows[0].body).toBeUndefined();
-    expect(memoryBodies(orm, DEFAULT_AGENT_ID, sessionId, [id])[0].body).toBe("偏好正文");
+    expect(memoryBodiesByScopeKeys(orm, DEFAULT_AGENT_ID, [id], null)[0].body).toBe("偏好正文");
   });
 
-  it("changes the catalog fingerprint for metadata/status, not for the body alone", () => {
+  it("changes a retained source revision when its body or metadata changes", () => {
     const { orm } = setup();
     const sessionId = newSession(orm);
     const source = completedTurn(orm, sessionId, "f1");
     const id = seedMemory(orm, source.id, 1, "正文A");
-    const before = catalogFingerprint(orm, DEFAULT_AGENT_ID, sessionId);
+    const revision = () =>
+      memoryRevisionsForSession(orm, DEFAULT_AGENT_ID, sessionId, [id]).get(id);
+    const before = revision();
+    expect(before).toBeDefined();
     orm
       .update(schema.memoryEntries)
       .set({ body: "正文B" })
       .where(eq(schema.memoryEntries.id, id))
       .run();
-    expect(catalogFingerprint(orm, DEFAULT_AGENT_ID, sessionId)).toBe(before);
+    expect(revision()).not.toBe(before);
+    const bodyRevision = revision();
     orm
       .update(schema.memoryEntries)
       .set({ summary: "新摘要" })
       .where(eq(schema.memoryEntries.id, id))
       .run();
-    expect(catalogFingerprint(orm, DEFAULT_AGENT_ID, sessionId)).not.toBe(before);
+    expect(revision()).not.toBe(bodyRevision);
   });
 
   it("batched source integrity fails closed on context-valid loss, message deletion and retirement", () => {
@@ -877,9 +934,13 @@ describe("R4 context repository authorization", () => {
     const messageId = seedMemory(orm, messageTurn.id, 5);
     const retireTurn = completedTurn(orm, sessionId, "r1");
     const retireId = seedMemory(orm, retireTurn.id, 6);
-    expect(new Set(catalog(orm, DEFAULT_AGENT_ID, sessionId).map((item) => item.id))).toEqual(
-      new Set([keepId, sourceValidId, contextValidId, messageId, retireId]),
-    );
+    expect(
+      new Set(
+        scanMemoryCandidates(orm, DEFAULT_AGENT_ID, null, { sessionId, limit: 30 }).items.map(
+          (candidate) => candidate.item.id,
+        ),
+      ),
+    ).toEqual(new Set([keepId, sourceValidId, contextValidId, messageId, retireId]));
     orm
       .update(schema.turns)
       .set({ sourceValid: 0 })
@@ -903,16 +964,26 @@ describe("R4 context repository authorization", () => {
       .set({ configSnapshot: JSON.stringify({ correction_retired: true }) })
       .where(eq(schema.memoryEntries.id, retireId))
       .run();
-    expect(new Set(catalog(orm, DEFAULT_AGENT_ID, sessionId).map((item) => item.id))).toEqual(
-      new Set([keepId]),
+    expect(
+      new Set(
+        scanMemoryCandidates(orm, DEFAULT_AGENT_ID, null, { sessionId, limit: 30 }).items.map(
+          (candidate) => candidate.item.id,
+        ),
+      ),
+    ).toEqual(new Set([keepId]));
+    expect(memoryRevisionsForSession(orm, DEFAULT_AGENT_ID, sessionId, [contextValidId]).size).toBe(
+      0,
     );
-    const fingerprint = catalogFingerprint(orm, DEFAULT_AGENT_ID, sessionId);
     orm
       .update(schema.turns)
       .set({ contextValid: 1 })
       .where(eq(schema.turns.id, contextValidTurn.id))
       .run();
-    expect(catalogFingerprint(orm, DEFAULT_AGENT_ID, sessionId)).not.toBe(fingerprint);
+    expect(
+      memoryRevisionsForSession(orm, DEFAULT_AGENT_ID, sessionId, [contextValidId]).has(
+        contextValidId,
+      ),
+    ).toBe(true);
   });
 
   it("does not leak another agent's session identity through a cross-agent chat source", () => {
@@ -980,7 +1051,7 @@ describe("R4 context repository authorization", () => {
     const chat = detail.content.sources.find((source) => source.type === "chat");
     if (!chat || chat.type !== "chat") throw new Error("chat source missing");
     expect(chat.session_id).toBeNull();
-    expect(detail.source_messages[0]?.session_title).toBeNull();
+    expect(detail).not.toHaveProperty("source_messages");
     expect(JSON.stringify(detail)).not.toContain("private-secret");
     expect(detail.content.validity).toBe("invalid");
   });

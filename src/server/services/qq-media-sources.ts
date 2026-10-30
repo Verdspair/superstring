@@ -1,3 +1,4 @@
+import { ownerScope } from "../conversation/evidence-scope";
 // `qq_media_source` 的 mint、修订与访问复验。
 //
 // 来源契约：
@@ -20,10 +21,9 @@ import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { QqConversationScope } from "../../shared/contracts/qq-message";
 import type { ContextPrincipal } from "../agent/context-access";
+import { evidenceScopeExists, inTimeline } from "../conversation/evidence-scope";
 import { DEFAULT_USER_ID } from "../db/repositories";
-import { evidenceScopeExists } from "../modules/conversation-evidence";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
-import { inTimeline } from "../modules/conversation-evidence-store";
 
 /** The actual media/asset/link values the revision hash freezes. The projection is an
  * INNER JOIN against the real DDL (0052: link/asset expires_at NOT NULL, one live link
@@ -153,86 +153,6 @@ export function createQqMediaSourceRef(
  * Two open conversations for one binding cannot happen (uq_conversations_current_source),
  * and a binding row is unique — anything else fails closed instead of LIMIT 1 guessing.
  */
-export function ownerScope(
-  db: Database,
-  owner: RunOwner,
-): { scope: QqConversationScope } | null | "ambiguous" {
-  if (owner.kind === "conversation") {
-    const row = db
-      .query(`SELECT c.id AS conversationId,c.binding_epoch AS bindingEpoch,
-      c.agent_id AS agentId,c.source_id AS bindingId,b.account_id AS accountId,
-      b.authority_revision AS authorityRevision,b.conversation_kind AS conversationKind,
-      b.peer_id AS peerId,b.agent_id AS bindingAgentId
-      FROM conversations c JOIN qq_bindings b ON b.id=c.source_id
-      WHERE c.id=? AND c.channel='onebot11' AND c.closed_at IS NULL`)
-      .get(owner.id) as {
-      conversationId: string;
-      accountId: string;
-      bindingEpoch: number;
-      agentId: string;
-      bindingId: string;
-      authorityRevision: number;
-      conversationKind: string;
-      peerId: string;
-      bindingAgentId: string;
-    } | null;
-    if (!row) return null;
-    // Owner identity is four-dimensional: kind/id/userId/agentId — an owner without an
-    // explicit agentId does not pass (dispatch ruling, not the optional RunOwner field).
-    if (!owner.agentId || owner.agentId !== row.agentId || owner.agentId !== row.bindingAgentId)
-      return null;
-    return {
-      scope: {
-        conversationId: row.conversationId,
-        accountId: row.accountId,
-        conversationKind: row.conversationKind === "private" ? "private" : "group",
-        peerId: row.peerId,
-        agentId: row.agentId,
-        bindingId: row.bindingId,
-        bindingEpoch: row.bindingEpoch,
-        authorityRevision: row.authorityRevision,
-      },
-    };
-  }
-  if (owner.kind === "qq_binding") {
-    const row = db
-      .query(`SELECT b.id AS bindingId,b.account_id AS accountId,b.authority_revision AS authorityRevision,
-      b.conversation_kind AS conversationKind,b.peer_id AS peerId,b.agent_id AS agentId
-      FROM qq_bindings b WHERE b.id=?`)
-      .get(owner.id) as {
-      bindingId: string;
-      accountId: string;
-      authorityRevision: number;
-      conversationKind: string;
-      peerId: string;
-      agentId: string;
-    } | null;
-    if (!row) return null;
-    if (!owner.agentId || owner.agentId !== row.agentId) return null;
-    // The live conversation this binding currently owns; zero (not yet activated) or one
-    // is fine, more than one open row cannot be resolved and fails closed.
-    const conversations = db
-      .query(`SELECT id,binding_epoch FROM conversations
-      WHERE channel='onebot11' AND source_id=? AND closed_at IS NULL`)
-      .all(owner.id) as { id: string; binding_epoch: number }[];
-    if (conversations.length > 1) return "ambiguous";
-    const conversation = conversations[0];
-    if (!conversation) return null;
-    return {
-      scope: {
-        conversationId: conversation.id,
-        accountId: row.accountId,
-        conversationKind: row.conversationKind === "private" ? "private" : "group",
-        peerId: row.peerId,
-        agentId: row.agentId,
-        bindingId: row.bindingId,
-        bindingEpoch: conversation.binding_epoch,
-        authorityRevision: row.authorityRevision,
-      },
-    };
-  }
-  return null;
-}
 
 /**
  * Re-verify a `qq_media_source` ref: owner authorization first (cross-owner states

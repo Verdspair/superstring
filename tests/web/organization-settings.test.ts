@@ -82,7 +82,13 @@ describe("default organization and independent scopes", () => {
     await store.getState().loadOrganization();
     store.getState().patchOrganization("shared");
     store.getState().openSettingsRoute("knowledge-config");
-    expect(store.getState().pendingNavigation).toBeNull();
+    expect(store.getState().pendingNavigation).toMatchObject({
+      kind: "page",
+      settingsRoute: "knowledge-config",
+    });
+    expect(store.getState().settingsRoute).toBe("management");
+    store.getState().cancelPendingNavigation();
+    expect(store.getState().organizationEditor?.modelName).toBe("shared");
     store.getState().openChat();
     expect(store.getState().navigationConfirmOpen).toBe(true);
     vi.mocked(client.saveOrganizationSettings).mockRejectedValueOnce(new Error("conflict"));

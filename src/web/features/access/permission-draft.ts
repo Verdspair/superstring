@@ -15,32 +15,40 @@ export interface GrantDraft {
   agentOverrides?: Record<string, AgentOverrideDraft>;
 }
 
-export function grantDraftOf(
-  policy: PermissionPolicy,
-  resource: string,
+export function grantDraftOfEntry(
+  grant: PermissionGrant | undefined,
+  paused: boolean,
   revision?: string,
 ): GrantDraft {
-  const grant = policy.grants.find((entry) => entry.resource === resource);
   const agentOverrides = grant?.agentOverrides
     ? Object.fromEntries(
-        Object.entries(grant.agentOverrides).map(([id, ov]) => [
+        Object.entries(grant.agentOverrides).map(([id, override]) => [
           id,
           {
-            ...(ov.enabled !== undefined ? { enabled: ov.enabled } : {}),
-            approved: ov.approved,
-            ...(ov.revision !== undefined ? { revision: ov.revision } : {}),
-            directories: [...ov.directories],
+            ...override,
+            directories: [...override.directories],
           },
         ]),
       )
     : undefined;
   return {
-    enabled: !!grant && !executionPolicy(policy).pausedTools.includes(resource),
+    enabled: !!grant && !paused,
     approved: !!grant?.approved && (revision === undefined || grant.revision === revision),
     agentIds: grant?.agentIds ? [...grant.agentIds] : null,
     directories: grant?.directories ? [...grant.directories] : [],
     ...(agentOverrides ? { agentOverrides } : {}),
   };
+}
+export function grantDraftOf(
+  policy: PermissionPolicy,
+  resource: string,
+  revision?: string,
+): GrantDraft {
+  return grantDraftOfEntry(
+    policy.grants.find((entry) => entry.resource === resource),
+    executionPolicy(policy).pausedTools.includes(resource),
+    revision,
+  );
 }
 
 export function sameAgentOverrides(

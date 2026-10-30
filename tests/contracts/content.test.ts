@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { contentBlocks } from "../../src/server/services/content-format";
+import { evidenceCatalogEntry } from "../../src/server/agent/built-in-actions";
 import {
   ContentItemSchema,
   ContentSourceSchema,
@@ -43,16 +43,23 @@ describe("shared content contract", () => {
       expect(ContentSourceSchema.safeParse({ ...source, ...range }).success).toBe(false);
     }
   });
-  it("projects only necessary content and provenance to the model", () => {
-    const blocks = contentBlocks([ContentItemSchema.parse({ ...catalog, body: "只作为资料" })]);
-    expect(blocks[0]).toEqual({
-      id,
-      source_type: "knowledge",
-      content_origin: "original",
-      body: "只作为资料",
-      sources: [{ type: "document", document_id: id, version: 1, start: 0, end: 3 }],
+  it("projects only the advertised evidence preview, not backend body, grants or locators", () => {
+    const projected = evidenceCatalogEntry("knowledge", {
+      id: "opaque-evidence",
+      text: "private backend body",
+      scope: "private signed locator",
+      preview: { title: "资料", summary: "摘要" },
+      sources: [
+        { kind: "knowledge_grant", id: "private grant identity", revision: "private token" },
+      ],
     });
-    expect(JSON.stringify(blocks)).not.toContain("revision");
+    expect(projected).toEqual({
+      id: "opaque-evidence",
+      title: "资料",
+      summary: "摘要",
+      bodyRef: expect.any(String),
+    });
+    expect(JSON.stringify(projected)).not.toContain("private");
   });
   it("requires a revision and refuses whitespace corrections", () => {
     const input = {

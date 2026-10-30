@@ -1839,17 +1839,12 @@ it("[S28_3] a questionMessageId outside the focus scope is refused by the host a
     code: "CONTEXT_INVALID_SELECTION",
     recoverable: true,
   });
-  expect(observations[0]?.value.sources).toEqual([
-    {
-      kind: "qq_group_capability",
-      id: JSON.stringify([
-        "11111111-1111-4111-8111-111111111111",
-        "00000000-0000-0000-0000-000000000001",
-        "media",
-      ]),
-      revision: "0",
-    },
-  ]);
+  expect(observations[0]?.value.sources).not.toContainEqual(
+    expect.objectContaining({ kind: "qq_group_capability" }),
+  );
+  expect(fullRunSourcesOf(h)).toContainEqual(
+    expect.objectContaining({ kind: "qq_group_capability" }),
+  );
   expect(
     observations[0]?.value.sources.some((source) =>
       ["qq_message_fact", "qq_media_source", "qq_media_note", "qq_media_read_task"].includes(
@@ -1901,6 +1896,13 @@ interface ActionObservationEnvelope {
  * joint3 实测：一次工具执行的结果在后续 request 里被重复承载——按实际 observation id 去重，
  * 同一 id 只计一次（重复承载不是两次执行）；不同 id 不合并；同 id 不同 body 不猜，直接抛出留现场。
  */
+const fullRunSourcesOf = (
+  h: OneBotHarness,
+): readonly { kind: string; id: string; revision?: string }[] =>
+  h.runs
+    .listRuns({ ownerKind: "conversation", ownerId: h.conversationId })
+    .flatMap((run) => run.steps.flatMap((step) => h.runs.getContext(step.context)?.sources ?? []));
+
 const actionObservationsOf = (h: OneBotHarness, name: string): ActionObservationEnvelope[] => {
   const envelopes = (h.model?.receivedMessages ?? [])
     .flatMap((call) => call.messages)
@@ -2186,17 +2188,12 @@ it("[S28_5] a legal focus question cannot read an out-of-scope image from the sa
     code: "CONTEXT_INVALID_SELECTION",
     recoverable: true,
   });
-  expect(observations[0]?.value.sources).toEqual([
-    {
-      kind: "qq_group_capability",
-      id: JSON.stringify([
-        "11111111-1111-4111-8111-111111111111",
-        "00000000-0000-0000-0000-000000000001",
-        "media",
-      ]),
-      revision: "0",
-    },
-  ]);
+  expect(observations[0]?.value.sources).not.toContainEqual(
+    expect.objectContaining({ kind: "qq_group_capability" }),
+  );
+  expect(fullRunSourcesOf(h)).toContainEqual(
+    expect.objectContaining({ kind: "qq_group_capability" }),
+  );
   expect(
     observations[0]?.value.sources.some((source) =>
       ["qq_message_fact", "qq_media_source", "qq_media_note", "qq_media_read_task"].includes(

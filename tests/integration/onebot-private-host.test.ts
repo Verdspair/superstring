@@ -44,10 +44,6 @@ import {
 } from "../../src/server/services/memory-contract";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import { QQ_CONTEXT_DEFAULT as fixtureLegacyContext } from "../../src/server/services/qq-context-contract";
-import {
-  nextQqImmediateReplyTask,
-  peekQqImmediateReplyTask,
-} from "../../src/server/services/qq-dispatch";
 import { recordInbound } from "../../src/server/services/qq-intake";
 import { QQ_RHYTHM_DEFAULT as fixtureLegacyRhythm } from "../../src/server/services/qq-rhythm-contract";
 import { qqStickerSelectionForScheme } from "../../src/server/services/qq-sticker-candidates";
@@ -475,14 +471,12 @@ describe("OneBot private common host", () => {
       mentions: [],
     });
   });
-  it("group-only legacy selection cannot consume a private wake", () => {
+  it("keeps a private canonical wake out of shared-conversation claims", () => {
     const h = setup();
     h.receive("1");
-    expect(peekQqImmediateReplyTask(h.orm, { nowSeconds }, ["group"])).toBeNull();
-    expect(nextQqImmediateReplyTask(h.orm, { nowSeconds }, ["group"])).toBeNull();
-    expect(
-      h.wakes.peek({ at: new Date(nowSeconds * 1000).toISOString(), topology: "direct" })?.cause,
-    ).toBe("direct_reply");
+    const at = new Date(nowSeconds * 1000).toISOString();
+    expect(h.wakes.peek({ at, topology: "shared" })).toBeNull();
+    expect(h.wakes.peek({ at, topology: "direct" })?.cause).toBe("direct_reply");
   });
   it("keeps the private observation when post-commit wake scheduling fails", () => {
     const h = setup();
@@ -1602,7 +1596,8 @@ describe("Bot production knowledge reading settings", () => {
             ).toBe(true);
             expect(
               (data.value?.sources ?? []).some((source) => source.kind === "knowledge_grant"),
-            ).toBe(true);
+            ).toBe(false);
+            expect(data.value?.value?.nextCursor).toBeNull();
           }
       }
       expect(deliveredEnvelopes).toBeGreaterThan(0);

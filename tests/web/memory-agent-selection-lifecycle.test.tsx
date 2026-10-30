@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import { useSuperstringStore as store } from "../../src/web/store";
-import { agent, B, setupLibrary } from "./helpers/library-fixture";
+import { agent, B, memory, setupLibrary } from "./helpers/library-fixture";
 import { render } from "./helpers/render-with-providers";
 
 afterEach(() => {
@@ -128,7 +128,7 @@ describe("memory management foreground integration", () => {
     );
     const bCall = listMemoryEntries.mock.calls.find(([id]) => id === B)!;
     expect(bCall[1]).toBe(0);
-    expect(bCall[3]).toEqual({});
+    expect(bCall[3]).toEqual({ view: "owned" });
     expect(listMemoryJobs.mock.calls.filter(([id]) => id === B)).toHaveLength(1);
   });
 
@@ -210,7 +210,7 @@ describe("memory management foreground integration", () => {
 describe("memory Agent selection lifecycle", () => {
   it("loads management metadata before its page and keeps both results", async () => {
     let resolveJobs!: (value: []) => void;
-    const page = vi.fn().mockResolvedValue({ items: [{ id: "entry" }], total: 1 });
+    const page = vi.fn().mockResolvedValue({ items: [{ ...memory, id: "entry" }], total: 1 });
     setupLibrary({
       listMemoryJobs: () =>
         new Promise((done) => {
@@ -225,7 +225,7 @@ describe("memory Agent selection lifecycle", () => {
     resolveJobs([]);
     await expect(loading).resolves.toBe(true);
     expect(page).toHaveBeenCalledTimes(1);
-    expect(store.getState().memoryEntries).toEqual([{ id: "entry" }]);
+    expect(store.getState().memoryEntries).toEqual([{ ...memory, id: "entry" }]);
     expect(store.getState().memoryManagementLoading).toBe(false);
   });
 

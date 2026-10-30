@@ -1,26 +1,14 @@
 import { ChevronLeft, ChevronRight, MessagesSquare, Search } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { executionPolicy } from "../../../shared/contracts/permissions";
 import { CatalogItem } from "../../components/catalog-item";
-import { Field } from "../../components/form-field";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { NativeSelect } from "../../components/ui/native-select";
 import type { PermissionEditor } from "../../features/access/permission-state";
-import { dirtyPages } from "../../features/agents/page-drafts";
-import { knowledgeReadDirty } from "../../features/knowledge/types";
 import { translateNotice } from "../../i18n";
 import {
   useMcpServersResource,
@@ -38,6 +26,7 @@ import {
   SKILL_HUMAN_LABELS,
   TOOL_HUMAN_LABELS,
 } from "../../workspace/capability-catalog";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { ExecutionSettings } from "../runs/execution-settings";
 import { CapabilityPolicyPanel } from "./capability-policy-panel";
@@ -93,6 +82,7 @@ function CapabilityDirectory({
   hidden?: boolean;
 } = {}) {
   const { t, i18n } = useTranslation();
+  const searchHintId = useId();
   const apiClient = useSuperstringStore((s) => s.apiClient);
   const s = useSuperstringStore(
     useShallow((state) => ({
@@ -199,11 +189,7 @@ function CapabilityDirectory({
   return (
     <section
       hidden={hidden}
-      className={
-        hidden
-          ? "hidden"
-          : "mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
-      }
+      className={hidden ? "hidden" : "workspace-page flex h-full min-h-0 flex-col"}
       style={hidden ? { display: "none" } : undefined}
       aria-label={t("workspace.capabilities")}
     >
@@ -212,23 +198,31 @@ function CapabilityDirectory({
         title={t("workspace.capabilities")}
         description={t("capabilities.directory.description")}
       />
-      <div className="border-b px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2 border-b py-3">
         <div className="relative max-w-md">
           <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
           <Input
             className="pl-9"
             aria-label={t("capabilities.directory.search")}
-            placeholder={t("capabilities.directory.search")}
+            placeholder={t("capabilities.directory.searchPlaceholder")}
+            aria-describedby={searchHintId}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
+        <WorkspaceHelp
+          title={t("capabilities.directory.searchPlaceholder")}
+          description={t("capabilities.directory.search")}
+        />
+        <span id={searchHintId} className="sr-only">
+          {t("capabilities.directory.search")}
+        </span>
       </div>
       <p className="px-4 pt-3 text-xs leading-relaxed text-muted-foreground">
         {t("capabilities.factNote")}
       </p>
       {s.permissionError && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b py-3">
           <p role="alert" className="text-sm text-destructive">
             {translateNotice(s.permissionError)}
           </p>
@@ -346,433 +340,38 @@ function CapabilityDetailShell({
 }: {
   entry: BuiltInCapabilityEntry;
   active?: boolean;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
   const { t } = useTranslation();
   const navigate = useSuperstringStore((s) => s.openSettingsRoute);
-  const back = () => navigate("system-capabilities");
+  const returnTarget = useSuperstringStore((s) => s.returnWorkspaceTarget);
+  const hasReturn = useSuperstringStore((s) => s.workspaceReturns.length > 0);
+  const back = () => (hasReturn ? returnTarget() : navigate("system-capabilities"));
   return (
-    <section
-      className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
-      aria-label={t(entry.nameKey)}
-    >
-      <header className="mb-[24px] flex flex-wrap items-center gap-[8px] border-b border-border pb-[20px]">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={t("capabilities.back")}
-          tooltip={t("hints.system.capabilitiesBack")}
-          onClick={back}
-        >
-          <ChevronLeft />
-        </Button>
-        <nav
-          aria-label={t("workspace.capabilities")}
-          className="workspace-page-location flex min-w-0 flex-wrap items-center gap-[6px]"
-        >
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={back}
-                className="rounded-md px-1 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {t("workspace.capabilities")}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>{t("hints.system.capabilitiesBack")}</TooltipContent>
-          </Tooltip>
-          <ChevronRight className="size-3.5 shrink-0" />
-          <span className="truncate font-medium text-foreground">{t(entry.nameKey)}</span>
-        </nav>
-      </header>
+    <section className="workspace-page flex h-full min-h-0 flex-col" aria-label={t(entry.nameKey)}>
+      <WorkspacePageHeader
+        location={t("workspace.capabilities")}
+        title={t(entry.nameKey)}
+        description={t(entry.descriptionKey)}
+        backAction={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t("capabilities.back")}
+            tooltip={t("hints.system.capabilitiesBack")}
+            onClick={back}
+          >
+            <ChevronLeft />
+          </Button>
+        }
+      />
       <div className="min-h-0 flex-1 overflow-y-auto" data-workspace-scroll>
-        <div className="px-4 pt-5">
+        <div className="pt-5">
           <SystemComponents entry={entry} active={active} />
         </div>
         {children}
       </div>
     </section>
-  );
-}
-
-function capabilityGuards(state: {
-  editorLoading: boolean;
-  settingsSaving: boolean;
-  knowledgeReadLoading: boolean;
-  knowledgeBusy: boolean;
-  memoryCorrectionSaving: boolean;
-  qqMemoryBatchSaving: boolean;
-  permissionSaving: boolean;
-  webAccessSaving: boolean;
-  organizationLoading: boolean;
-  knowledgeModelLoading: boolean;
-  qqAccessSaving: boolean;
-  qqSchemeSaving: boolean;
-  qqStickerSaving: boolean;
-}): boolean {
-  return [
-    state.editorLoading,
-    state.settingsSaving,
-    state.knowledgeReadLoading,
-    state.knowledgeBusy,
-    state.memoryCorrectionSaving,
-    state.qqMemoryBatchSaving,
-    state.permissionSaving,
-    state.webAccessSaving,
-    state.organizationLoading,
-    state.knowledgeModelLoading,
-    state.qqAccessSaving,
-    state.qqSchemeSaving,
-    state.qqStickerSaving,
-  ].some(Boolean);
-}
-
-function autoLoadTarget(state: {
-  agents: { id: string }[];
-  editorAgentId: string;
-  selectedNewSessionAgentId: string | null;
-}): string | null {
-  const edited = state.agents.find((item) => item.id === state.editorAgentId);
-  if (edited) return edited.id;
-  const preferred = state.agents.find((item) => item.id === state.selectedNewSessionAgentId);
-  return preferred?.id ?? state.agents[0]?.id ?? null;
-}
-
-function useAgentAutoLoad(active = true) {
-  const targetId = useSuperstringStore((s) => autoLoadTarget(s));
-  const pageEditor = useSuperstringStore((s) => s.pageEditor);
-  const editorLoading = useSuperstringStore((s) => s.editorLoading);
-  const attempted = useRef<string | null>(null);
-  useEffect(() => {
-    if (!active || !targetId || attempted.current === targetId || pageEditor || editorLoading)
-      return;
-    attempted.current = targetId;
-    void useSuperstringStore.getState().requestAgentNavigation(targetId);
-  }, [active, targetId, pageEditor, editorLoading]);
-  return useCallback((id?: string) => {
-    const state = useSuperstringStore.getState();
-    const next = id ?? autoLoadTarget(state);
-    if (next) void state.requestAgentNavigation(next);
-  }, []);
-}
-
-function AgentScopedDetail({
-  entry,
-  active = true,
-}: {
-  entry: BuiltInCapabilityEntry;
-  active?: boolean;
-}) {
-  const { t } = useTranslation();
-  const s = useSuperstringStore(
-    useShallow((state) => ({
-      agents: state.agents,
-      dirty: state.dirty,
-      editorAgentId: state.editorAgentId,
-      editorLoading: state.editorLoading,
-      error: state.error,
-      knowledgeBusy: state.knowledgeBusy,
-      knowledgeModelLoading: state.knowledgeModelLoading,
-      knowledgeReadEditor: state.knowledgeReadEditor,
-      knowledgeReadLoading: state.knowledgeReadLoading,
-      memoryCorrectionDirty: state.memoryCorrectionDirty,
-      memoryCorrectionSaving: state.memoryCorrectionSaving,
-      openAgentSettings: state.openAgentSettings,
-      organizationLoading: state.organizationLoading,
-      pageEditor: state.pageEditor,
-      permissionSaving: state.permissionSaving,
-      qqAccessSaving: state.qqAccessSaving,
-      qqMemoryBatchDrafts: state.qqMemoryBatchDrafts,
-      qqMemoryBatchSaving: state.qqMemoryBatchSaving,
-      qqSchemeSaving: state.qqSchemeSaving,
-      qqStickerSaving: state.qqStickerSaving,
-      requestAgentNavigation: state.requestAgentNavigation,
-      settingsSaving: state.settingsSaving,
-      webAccessSaving: state.webAccessSaving,
-    })),
-  );
-  const attempt = useAgentAutoLoad(active);
-  const busy = capabilityGuards(s);
-  const pendingDraft =
-    s.dirty ||
-    s.memoryCorrectionDirty ||
-    Object.keys(s.qqMemoryBatchDrafts).length > 0 ||
-    dirtyPages(s.pageEditor).length > 0 ||
-    knowledgeReadDirty(s.knowledgeReadEditor);
-  const ready = s.editorAgentId !== "__new__" && !!s.pageEditor && !s.editorLoading;
-  return (
-    <div className="w-full space-y-6 px-4 py-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <entry.icon className="size-5 text-primary" />
-            <h1 className="workspace-page-title">{t(entry.nameKey)}</h1>
-          </div>
-          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{t(entry.descriptionKey)}</p>
-        </div>
-        {s.agents.length > 0 && (
-          <Field label="library.agent.owner" tooltip={t("hints.fieldExtra.fieldAssistant")}>
-            <NativeSelect
-              aria-label={t("library.select.an.assistant")}
-              value={s.editorAgentId}
-              disabled={busy}
-              onChange={(event) => s.requestAgentNavigation(event.target.value)}
-            >
-              {s.agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                </option>
-              ))}
-            </NativeSelect>
-          </Field>
-        )}
-      </div>
-      <p className="text-sm text-muted-foreground">
-        {t(
-          entry.detail === "memory"
-            ? "capabilities.memory.scopeNote"
-            : "capabilities.knowledge.scopeNote",
-        )}
-      </p>
-      {s.agents.length === 0 ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
-          <p className="text-sm text-muted-foreground">{t("capabilities.memory.noAgent")}</p>
-          <Button tooltip={t("hints.system.createAgent")} onClick={() => s.openAgentSettings()}>
-            {t("library.create.assistant")}
-          </Button>
-        </div>
-      ) : ready ? (
-        <Card className="min-w-0 border">
-          <CardHeader>
-            <CardTitle className="text-foreground flex items-center gap-2">
-              <entry.icon className="size-4 text-primary" />
-              <span>{t(entry.nameKey)}</span>
-            </CardTitle>
-            <CardDescription className="text-xs text-muted-foreground mt-1">
-              {t(entry.descriptionKey)}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              {t(
-                entry.detail === "memory"
-                  ? "capabilities.memory.canonicalNotice"
-                  : "capabilities.knowledge.canonicalNotice",
-                {
-                  defaultValue:
-                    "本项能力规则已收敛至智能体工作区专属管理。点击下方按钮即可前往当前助手的独立配置视图。",
-                },
-              )}
-            </p>
-          </CardContent>
-          <CardFooter className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-            <span className="text-xs text-muted-foreground">
-              {t("library.agent.owner")}：
-              <strong className="text-foreground">
-                {s.agents.find((a) => a.id === s.editorAgentId)?.name ?? s.editorAgentId}
-              </strong>
-            </span>
-            <Button
-              data-testid={
-                entry.detail === "memory"
-                  ? "capability-canonical-memory-link"
-                  : "capability-canonical-knowledge-link"
-              }
-              tooltip={t("hints.system.canonicalLink")}
-              onClick={() =>
-                s.requestAgentNavigation(
-                  s.editorAgentId,
-                  entry.detail === "memory" ? "memory-tools" : "knowledge-tools",
-                )
-              }
-              className="flex items-center gap-1.5"
-            >
-              <span>
-                {entry.detail === "memory"
-                  ? t("capabilities.memory.canonicalLink", { defaultValue: "前往助手记忆配置" })
-                  : t("capabilities.knowledge.canonicalLink", { defaultValue: "前往助手资料配置" })}
-              </span>
-              <ChevronRight className="size-4" />
-            </Button>
-          </CardFooter>
-        </Card>
-      ) : (
-        <div className="space-y-3">
-          {s.error && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/40 p-4">
-              <p role="alert" className="text-sm text-destructive">
-                {translateNotice(s.error)}
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                tooltip={t("hints.system.retryLoad")}
-                onClick={() => attempt()}
-              >
-                {t("capabilities.retry")}
-              </Button>
-            </div>
-          )}
-          {pendingDraft && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
-              <p className="text-sm text-muted-foreground">{t("capabilities.pendingDraft")}</p>
-              <Button
-                variant="outline"
-                size="sm"
-                tooltip={t("hints.system.pendingDraftSwitch")}
-                onClick={() => attempt()}
-              >
-                {t("capabilities.pendingDraftAction")}
-              </Button>
-            </div>
-          )}
-          {!s.error && !pendingDraft && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
-              <p role="status" className="text-sm text-muted-foreground">
-                {t("library.loading")}
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                tooltip={t("hints.system.retryLoad")}
-                disabled={busy}
-                onClick={() => attempt()}
-              >
-                {t("capabilities.retry")}
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SessionLinkDetail({
-  entry,
-  active = true,
-}: {
-  entry: BuiltInCapabilityEntry;
-  active?: boolean;
-}) {
-  const { t } = useTranslation();
-  const s = useSuperstringStore(
-    useShallow((state) => ({
-      agents: state.agents,
-      editorAgentId: state.editorAgentId,
-      editorLoading: state.editorLoading,
-      error: state.error,
-      knowledgeBusy: state.knowledgeBusy,
-      knowledgeModelLoading: state.knowledgeModelLoading,
-      knowledgeReadLoading: state.knowledgeReadLoading,
-      memoryCorrectionSaving: state.memoryCorrectionSaving,
-      openAgentSettings: state.openAgentSettings,
-      openSettingsRoute: state.openSettingsRoute,
-      organizationLoading: state.organizationLoading,
-      pageEditor: state.pageEditor,
-      permissionSaving: state.permissionSaving,
-      qqAccessSaving: state.qqAccessSaving,
-      qqMemoryBatchSaving: state.qqMemoryBatchSaving,
-      qqSchemeSaving: state.qqSchemeSaving,
-      qqStickerSaving: state.qqStickerSaving,
-      requestAgentNavigation: state.requestAgentNavigation,
-      settingsSaving: state.settingsSaving,
-      webAccessSaving: state.webAccessSaving,
-    })),
-  );
-  const [selectedId, setSelectedId] = useState(
-    () => s.agents.find((agent) => agent.id === s.editorAgentId)?.id ?? s.agents[0]?.id ?? "",
-  );
-  const busy = capabilityGuards(s);
-  const ready =
-    selectedId !== "" && s.editorAgentId === selectedId && !!s.pageEditor && !s.editorLoading;
-  const attempted = useRef<string | null>(null);
-  useEffect(() => {
-    if (!active || !selectedId || attempted.current === selectedId || ready || s.editorLoading)
-      return;
-    attempted.current = selectedId;
-    void s.requestAgentNavigation(selectedId);
-  }, [active, selectedId, ready, s.editorLoading, s.requestAgentNavigation]);
-  return (
-    <div className="w-full space-y-6 px-4 py-6">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <entry.icon className="size-5 text-primary" />
-          <h1 className="workspace-page-title">{t(entry.nameKey)}</h1>
-        </div>
-        <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{t(entry.descriptionKey)}</p>
-      </div>
-      <p className="text-sm text-muted-foreground">{t("capabilities.session.note")}</p>
-      {s.agents.length === 0 ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
-          <p className="text-sm text-muted-foreground">{t("capabilities.memory.noAgent")}</p>
-          <Button tooltip={t("hints.system.createAgent")} onClick={() => s.openAgentSettings()}>
-            {t("library.create.assistant")}
-          </Button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-end gap-3 rounded-xl border p-4">
-            <Field label="library.agent.owner" tooltip={t("hints.fieldExtra.fieldAssistant")}>
-              <NativeSelect
-                aria-label={t("library.select.an.assistant")}
-                value={selectedId}
-                disabled={busy}
-                onChange={(event) => setSelectedId(event.target.value)}
-              >
-                {s.agents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </option>
-                ))}
-              </NativeSelect>
-            </Field>
-            <Button
-              variant="outline"
-              tooltip={t("hints.system.openContext")}
-              className="h-auto min-h-8 max-w-full whitespace-normal break-words"
-              disabled={!ready}
-              onClick={() => s.openSettingsRoute("context")}
-            >
-              <MessagesSquare />
-              {t("capabilities.session.open")}
-            </Button>
-          </div>
-          {!!s.error && !ready && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/40 p-4">
-              <p role="alert" className="text-sm text-destructive">
-                {translateNotice(s.error)}
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                tooltip={t("hints.system.retryLoad")}
-                onClick={() => s.requestAgentNavigation(selectedId)}
-              >
-                {t("capabilities.retry")}
-              </Button>
-            </div>
-          )}
-          {!ready && !s.error && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-4">
-              <p role="status" className="text-sm text-muted-foreground">
-                {t("library.loading")}
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                tooltip={t("hints.system.retryLoad")}
-                disabled={busy}
-                onClick={() => s.requestAgentNavigation(selectedId)}
-              >
-                {t("capabilities.retry")}
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -785,34 +384,69 @@ function CapabilityDetail({
 }) {
   const { t } = useTranslation();
   const openSettingsRoute = useSuperstringStore((state) => state.openSettingsRoute);
-  if (entry.detail === "memory" || entry.detail === "knowledge")
+  const agents = useSuperstringStore((state) => state.agents);
+  const openAgent = useSuperstringStore((state) => state.openWorkspaceTarget);
+  const [agentId, setAgentId] = useState("");
+  const agentSelectId = useId();
+  if (entry.detail === "memory" || entry.detail === "knowledge" || entry.detail === "link")
     return (
       <CapabilityDetailShell entry={entry} active={active}>
-        <AgentScopedDetail entry={entry} active={active} />
+        <div className="space-y-3 py-5">
+          <p className="text-sm text-muted-foreground">{t("agent.materials.globalCapability")}</p>
+          <div className="space-y-2 text-sm">
+            <label htmlFor={agentSelectId}>{t("agent.materials.chooseAgent")}</label>
+            <NativeSelect
+              id={agentSelectId}
+              value={agentId}
+              aria-label={t("agent.materials.chooseAgent")}
+              onChange={(event) => setAgentId(event.target.value)}
+            >
+              <option value="">{t("agent.materials.chooseAgent")}</option>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </NativeSelect>
+          </div>
+          <Button
+            variant="outline"
+            className="h-auto min-h-8 max-w-full whitespace-normal break-words"
+            disabled={!agents.some((agent) => agent.id === agentId)}
+            onClick={() =>
+              openAgent(
+                entry.detail === "link"
+                  ? "context"
+                  : entry.detail === "memory"
+                    ? "memory-tools"
+                    : "knowledge-tools",
+                agentId,
+              )
+            }
+          >
+            {entry.detail === "link" && <MessagesSquare />}
+            {t(
+              entry.detail === "link"
+                ? "capabilities.session.open"
+                : "agent.materials.configureAgent",
+            )}
+          </Button>
+        </div>
       </CapabilityDetailShell>
     );
   if (entry.detail === "web")
     return (
       <CapabilityDetailShell entry={entry} active={active}>
-        <p className="border-b px-4 py-3 text-sm text-muted-foreground">
+        <p className="border-b py-3 text-sm text-muted-foreground">
           {t("capabilities.web.scopeNote")}
         </p>
-        <WebAccessPanel active={active} />
+        <WebAccessPanel active={active} embedded />
       </CapabilityDetailShell>
     );
   if (entry.detail === "media")
     return (
       <CapabilityDetailShell entry={entry} active={active}>
-        <div className="w-full space-y-6 px-4 py-6">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <entry.icon className="size-5 text-primary" />
-              <h1 className="workspace-page-title">{t(entry.nameKey)}</h1>
-            </div>
-            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              {t(entry.descriptionKey)}
-            </p>
-          </div>
+        <div className="w-full space-y-6 py-6">
           <p className="text-sm text-muted-foreground">{t("capabilities.media.scopeNote")}</p>
           <CapabilityPolicyPanel modules={["qqMedia", "qqStickers"]} active={active} />
           <div className="flex flex-wrap gap-2 border-t pt-4">
@@ -838,7 +472,7 @@ function CapabilityDetail({
               tooltip={t("hints.system.openModelServices")}
               onClick={() => openSettingsRoute("models")}
             >
-              {t("library.open.model.services")}
+              {t("models.title")}
             </Button>
           </div>
         </div>
@@ -847,16 +481,7 @@ function CapabilityDetail({
   if (entry.detail === "members")
     return (
       <CapabilityDetailShell entry={entry} active={active}>
-        <div className="w-full space-y-6 px-4 py-6">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <entry.icon className="size-5 text-primary" />
-              <h1 className="workspace-page-title">{t(entry.nameKey)}</h1>
-            </div>
-            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              {t(entry.descriptionKey)}
-            </p>
-          </div>
+        <div className="w-full space-y-6 py-6">
           <p className="text-sm text-muted-foreground">{t("capabilities.members.scopeNote")}</p>
           <CapabilityPolicyPanel modules={["qqMembers"]} active={active} />
           <div className="flex flex-wrap gap-2 border-t pt-4">
@@ -883,7 +508,7 @@ function CapabilityDetail({
   if (entry.detail === "execution")
     return (
       <CapabilityDetailShell entry={entry} active={active}>
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b py-3">
           <p className="text-sm text-muted-foreground">{t("capabilities.execution.scopeNote")}</p>
           <Button
             variant="outline"
@@ -894,12 +519,12 @@ function CapabilityDetail({
             {t("capabilities.execution.openTasks")}
           </Button>
         </div>
-        <ExecutionSettings active={active} />
+        <ExecutionSettings active={active} embedded />
       </CapabilityDetailShell>
     );
   return (
     <CapabilityDetailShell entry={entry} active={active}>
-      <SessionLinkDetail entry={entry} active={active} />
+      <p className="py-6 text-sm text-muted-foreground">{t("capabilities.session.note")}</p>
     </CapabilityDetailShell>
   );
 }

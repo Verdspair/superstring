@@ -83,4 +83,26 @@ describe("R5 记忆 API 客户端", () => {
       `/agents/${AGENT_ID}/memory/jobs/${JOB_ID}`,
     ]);
   });
+  it("sends explicit revalidation only on the existing visibility PUT", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        respond({ visibility: "public", visibility_revision: 3, recipient_agent_ids: [AGENT_ID] }),
+      );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    await api.saveMemoryVisibility(AGENT_ID, MEMORY_ID, {
+      expected_revision: 2,
+      visibility: "public",
+      recipient_agent_ids: [AGENT_ID],
+      revalidate_publication: true,
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`/agents/${AGENT_ID}/memory/entries/${MEMORY_ID}/visibility`);
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      expected_revision: 2,
+      visibility: "public",
+      recipient_agent_ids: [AGENT_ID],
+      revalidate_publication: true,
+    });
+  });
 });

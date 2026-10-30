@@ -95,6 +95,14 @@ afterEach(() => {
 });
 
 describe("S3知识库读取页面", () => {
+  it("task discard restores a loaded baseline but leaving clears the editor rather than reviving the dirty read", () => {
+    state().patchKnowledgeRead({ enabled: false });
+    state().discardSettingsTask("materials");
+    expect(state().knowledgeReadEditor?.draft).toEqual(saved.config);
+    expect(dirty()).toBe(false);
+    state().discardKnowledgeRead();
+    expect(state().knowledgeReadEditor).toBeNull();
+  });
   it("默认值真实读取且同值改回不误报dirty", () => {
     expect(state().knowledgeReadEditor?.draft).toEqual(saved.config);
     state().patchKnowledgeRead({ enabled: false });
@@ -148,9 +156,14 @@ describe("S3知识库读取页面", () => {
   it("跨页及通用页保稿，离开统一提醒，取消保留输入", () => {
     state().patchKnowledgeRead({ enabled: false });
     state().openSettingsRoute("basic");
+    expect(state().navigationConfirmOpen).toBe(true);
+    expect(state().settingsRoute).toBe("knowledge-config");
+    state().cancelPendingNavigation();
     state().requestPageNavigation("settings", "general");
-    expect(state().navigationConfirmOpen).toBe(false);
+    expect(state().navigationConfirmOpen).toBe(true);
+    expect(state().settingsRoute).toBe("knowledge-config");
     expect(dirty()).toBe(true);
+    state().cancelPendingNavigation();
     state().openChat();
     expect(state().navigationConfirmOpen).toBe(true);
     state().cancelPendingNavigation();
@@ -287,5 +300,50 @@ describe("S3知识库读取页面", () => {
     expect(state().knowledgeReadLoading).toBe(false);
     await state().loadKnowledgeRead();
     expect(state().knowledgeReadEditor?.source.revision).toBe(1);
+  });
+});
+
+describe("Agent knowledge automatic resume CAS", () => {
+  it("preserves the original selected-set revision and local IDs until explicit refresh", async () => {
+    let hidden = false;
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() =>
+      hidden ? "hidden" : "visible",
+    );
+    const second = "22222222-2222-4222-8222-222222222222",
+      third = "33333333-3333-4333-8333-333333333333";
+    saved = {
+      revision: 2,
+      config: AgentKnowledgeReadConfigSchema.parse({ scope: "selected", document_ids: [DOC] }),
+    };
+    await state().refreshKnowledgeRead();
+    state().patchKnowledgeRead({ document_ids: [DOC, second] });
+    vi.mocked(client.saveAgentKnowledgeRead).mockImplementation(async (_id, body) => {
+      if (body.expected_revision !== saved.revision)
+        throw new ApiError(409, "KNOWLEDGE_REVISION_CONFLICT", "conflict");
+      saved = { revision: saved.revision + 1, config: body.config };
+      return saved;
+    });
+    hidden = true;
+    state().cancelKnowledgeRead();
+    saved = {
+      revision: 3,
+      config: AgentKnowledgeReadConfigSchema.parse({
+        scope: "selected",
+        document_ids: [DOC, third],
+      }),
+    };
+    hidden = false;
+    await state().loadKnowledgeRead();
+    expect(state().knowledgeReadEditor?.source.revision).toBe(2);
+    expect(state().knowledgeReadEditor?.draft.document_ids).toEqual([DOC, second]);
+    expect(state().knowledgeReadError).toBeTruthy();
+    expect(await state().saveKnowledgeRead()).toBe(false);
+    expect(saved.config.document_ids).toEqual([DOC, third]);
+    expect(dirty()).toBe(true);
+    await state().refreshKnowledgeRead();
+    expect(state().knowledgeReadEditor?.source.revision).toBe(3);
+    expect(state().knowledgeReadEditor?.draft.document_ids).toEqual([DOC, second]);
+    expect(await state().saveKnowledgeRead()).toBe(true);
+    expect(client.saveAgentKnowledgeRead).toHaveBeenCalledTimes(2);
   });
 });

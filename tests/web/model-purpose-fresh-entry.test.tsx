@@ -50,6 +50,7 @@ afterEach(() => {
 
 it("hydrates the current Agent through the assistant capability entry without a preloaded editor", async () => {
   const client = coldStore();
+  store.setState({ editorAgentId: A });
   render(<AssistantWorkspace active={true} />);
   await waitFor(() => expect(store.getState().pageEditor?.agent.id).toBe(A));
   expect(screen.getByLabelText("对话模型")).toBeTruthy();

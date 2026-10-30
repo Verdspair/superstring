@@ -1,9 +1,10 @@
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ExecutionPolicySchema } from "../../src/shared/contracts/permissions";
 import type { ToolDirectoryEntry } from "../../src/shared/contracts/tool-directory";
 import { api } from "../../src/web/api";
-import { selectLocale } from "../../src/web/i18n";
+import { selectLocale, translate } from "../../src/web/i18n";
 import { ToolDirectoryPanel } from "../../src/web/screens/connections/tool-directory-panel";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { render } from "./helpers/render-with-providers";
@@ -19,6 +20,8 @@ const tool = (
   capability: "read",
   effect: "read",
   sandboxCallable: true,
+  invocation: "action" as const,
+  scope: name.startsWith("media.") ? "qq-conversation" : "conversation",
   origin: "system",
   globalEnabled,
   functionId: "memory-query",
@@ -98,6 +101,54 @@ it("filters by human label, technical id and resource id without dropping the ot
   expect(screen.getByText("web.fetch")).toBeTruthy();
 });
 
+it.each(["zh-CN", "en"] as const)(
+  "%s keeps the full search name, short placeholder and origin filtering with accessible help",
+  async (locale) => {
+    selectLocale(locale);
+    const save = setup([
+      tool("memory.query"),
+      {
+        ...tool("external.lookup", true, "lookup-resource"),
+        origin: "mcp",
+        description: "External reference lookup",
+      },
+    ]);
+    await screen.findByText("memory.query");
+    const search = screen.getByRole("textbox", { name: translate("connections.tools.search") });
+    expect(search.getAttribute("placeholder")).toBe(
+      translate("connections.tools.searchPlaceholder"),
+    );
+    const description = document.getElementById(search.getAttribute("aria-describedby") ?? "");
+    expect(description?.textContent).toBe(translate("connections.tools.directorySearchHelp"));
+    const help = screen.getByRole("button", {
+      name: translate("hints.field.learnAbout", translate("connections.tools.searchPlaceholder")),
+    });
+    help.focus();
+    await userEvent.keyboard("{Enter}");
+    expect((await screen.findByRole("tooltip")).textContent).toContain(
+      translate("connections.tools.directorySearchHelp"),
+    );
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(help);
+    expect((await screen.findByRole("tooltip")).textContent).toContain(
+      translate("connections.tools.directorySearchHelp"),
+    );
+    await userEvent.keyboard("{Escape}");
+    fireEvent.change(search, { target: { value: "lookup-resource" } });
+    expect(screen.getByText("external.lookup")).toBeTruthy();
+    expect(screen.queryByText("memory.query")).toBeNull();
+    fireEvent.change(search, { target: { value: "" } });
+    const origin = screen.getByRole("combobox", { name: translate("connections.tools.origin") });
+    await userEvent.selectOptions(origin, "system");
+    expect(screen.getByText("memory.query")).toBeTruthy();
+    expect(screen.queryByText("external.lookup")).toBeNull();
+    await userEvent.selectOptions(origin, "mcp");
+    expect(screen.getByText("external.lookup")).toBeTruthy();
+    expect(screen.queryByText("memory.query")).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+  },
+);
+
 it("shows literal input rules without definition edits or deletions", async () => {
   const save = setup([tool("memory.query")]);
   await screen.findByText("memory.query");
@@ -135,4 +186,32 @@ it("keeps grant actions reachable from every row that owns a resource", async ()
   expect(within(rowOf("memory.query")).queryByRole("button", { name: "管理授权" })).toBeNull();
   fireEvent.click(within(rowOf("web.fetch")).getByRole("button", { name: "管理授权" }));
   expect(await screen.findByRole("heading", { name: "web" })).toBeTruthy();
+});
+
+it("shows QQ host submission scope and schema without a fake resource grant", async () => {
+  const terminal: ToolDirectoryEntry = {
+    ...tool("reply.text"),
+    effect: "write",
+    sandboxCallable: false,
+    invocation: "host-terminal",
+    scope: "qq-conversation",
+    functionId: "qq-reply",
+    parameters: { type: "object", properties: { outputs: { type: "array" } } },
+  };
+  const save = setup([terminal, { ...terminal, name: "reply.sticker", globalEnabled: false }]);
+  await screen.findByText("reply.text");
+  const row = rowOf("reply.text");
+  expect(row.textContent).toContain("QQ 会话");
+  expect(row.textContent).toContain("宿主提交");
+  expect(row.textContent).toContain("目录不代表当前可发送");
+  expect(within(row).queryByRole("button", { name: "管理授权" })).toBeNull();
+  expect(rowOf("reply.sticker").textContent).toContain("全局已关闭");
+  fireEvent.click(within(row).getByRole("button", { name: "查看详情" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog.textContent).toContain('"outputs"');
+  expect(dialog.textContent).toContain("不支持");
+  expect(within(dialog).queryByRole("checkbox")).toBeNull();
+  expect(save).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "前往功能配置" }));
+  expect(store.getState().settingsRoute).toBe("qq-app-schemes");
 });

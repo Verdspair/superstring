@@ -3,12 +3,10 @@ import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { QqConversationScope, QqMessagePart } from "../../shared/contracts/qq-message";
 import type { ContextPrincipal } from "../agent/context-access";
+import { evidenceScopeExists, inTimeline, ownerScope } from "../conversation/evidence-scope";
 import { bodyRevision } from "../db/conversation-event-repository";
 import type { QqMessageFactRow } from "../db/qq-message-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
-import { evidenceScopeExists } from "../modules/conversation-evidence";
-import { inTimeline } from "../modules/conversation-evidence-store";
-import { ownerScope } from "./qq-media-sources";
 import { isObservationExpired } from "./qq-retention";
 
 export interface QqMessageFactVisibleState {
@@ -259,4 +257,78 @@ export function qqMessageFactConsumableCap(
     if (body) caps.push(body.expiresAt);
   }
   return caps.reduce((min, value) => (Date.parse(value) < Date.parse(min) ? value : min));
+}
+
+export interface QqPublicationMaterialMetadata {
+  factExists: boolean;
+  factCap: string | null;
+  producerRevision: string | null;
+  bodyExists: boolean;
+  bodyCap: string | null;
+}
+/** Non-sensitive metadata only. Retained publication must decide caps before any payload read. */
+export function qqPublicationMaterialMetadata(
+  db: Database,
+  ids: readonly string[],
+): ReadonlyMap<string, QqPublicationMaterialMetadata> {
+  if (!ids.length) return new Map();
+  const rows = db
+    .query(`SELECT requested.value AS id,f.event_key AS factId,f.expires_at AS factCap,
+    f.revision AS producerRevision,t.event_key AS bodyId,t.expires_at AS bodyCap
+    FROM json_each(?) requested LEFT JOIN qq_message_facts f ON f.event_key=requested.value
+    LEFT JOIN qq_observation_text t ON t.event_key=requested.value`)
+    .all(JSON.stringify([...new Set(ids)])) as Array<{
+    id: string;
+    factId: string | null;
+    factCap: string | null;
+    producerRevision: number | null;
+    bodyId: string | null;
+    bodyCap: string | null;
+  }>;
+  return new Map(
+    rows.map((row) => [
+      row.id,
+      {
+        factExists: row.factId !== null,
+        factCap: row.factCap,
+        producerRevision: row.producerRevision === null ? null : String(row.producerRevision),
+        bodyExists: row.bodyId !== null,
+        bodyCap: row.bodyCap,
+      },
+    ]),
+  );
+}
+/** Selected, currently readable fact rows; the raw dependency is independently cap-filtered in SQL. */
+export function publicationFactStates(
+  db: Database,
+  scope: QqConversationScope,
+  ids: readonly string[],
+  now: string,
+): ReadonlyMap<string, QqMessageFactVisibleState> {
+  if (!ids.length) return new Map();
+  const rows = db
+    .query(`SELECT f.event_key AS eventKey,f.group_card AS groupCard,f.group_card_source AS groupCardSource,
+    f.personal_nickname AS personalNickname,f.personal_nickname_source AS personalNicknameSource,
+    f.legacy_display_name AS legacyDisplayName,f.name_state AS nameState,f.parts AS parts,
+    f.reply_to_message_id AS replyToMessageId,f.revision,f.expires_at AS expiresAt,f.recorded_at AS recordedAt,
+    CASE WHEN t.expires_at>? THEN t.body END AS body,CASE WHEN t.expires_at>? THEN t.expires_at END AS bodyExpiresAt
+    FROM json_each(?) requested JOIN qq_message_facts f ON f.event_key=requested.value
+    JOIN qq_events e ON e.event_key=f.event_key LEFT JOIN qq_observation_text t ON t.event_key=f.event_key
+    WHERE f.expires_at>? AND e.account_id=? AND e.conversation_kind=? AND e.peer_id=? AND e.agent_id=?`)
+    .all(
+      now,
+      now,
+      JSON.stringify([...new Set(ids)]),
+      now,
+      scope.accountId,
+      scope.conversationKind,
+      scope.peerId,
+      scope.agentId,
+    ) as Array<QqMessageFactRow & { body: string | null; bodyExpiresAt: string | null }>;
+  return new Map(
+    rows.map(({ body, bodyExpiresAt, ...fact }) => [
+      fact.eventKey,
+      visibleFactStateOf({ fact, body, bodyExpiresAt }, now),
+    ]),
+  );
 }

@@ -15,7 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
-import { ConfirmDialog } from "@/components/confirmation";
+import { AlertDialog, ConfirmDialog } from "@/components/confirmation";
 import { Field } from "@/components/form-field";
 import { SettingsGroup } from "@/components/settings-group";
 import { Badge } from "@/components/ui/badge";
@@ -52,6 +52,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       agents: state.agents,
+      conversations: state.summaryById,
       apiClient: state.apiClient,
       clearMemoryDetail: state.clearMemoryDetail,
       clearMemoryTurns: state.clearMemoryTurns,
@@ -83,6 +84,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
       memoryTurns: state.memoryTurns,
       mergeMemories: state.mergeMemories,
       openSettingsRoute: state.openSettingsRoute,
+      openWorkspaceTarget: state.openWorkspaceTarget,
       pageEditor: state.pageEditor,
       patchMemoryCorrection: state.patchMemoryCorrection,
       patchPageAgent: state.patchPageAgent,
@@ -100,6 +102,10 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
     })),
   );
   const { t, i18n } = useTranslation();
+  const [view, setView] = useState<"owned" | "received" | "all">("owned");
+  const [visibility, setVisibility] = useState("all");
+  const [originConversation, setOriginConversation] = useState("");
+  const [principalConversation, setPrincipalConversation] = useState("");
   const [scope, setScope] = useState(""),
     [search, setSearch] = useState(""),
     [query, setQuery] = useState(""),
@@ -168,6 +174,10 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
     setSearch("");
     setQuery("");
     setStatus("all");
+    setView("owned");
+    setVisibility("all");
+    setOriginConversation("");
+    setPrincipalConversation("");
   }, [agentId]);
   // 切 Agent 或换设置分区时收起重试确认并作废在途重试：迟到响应不得写当前 Agent/列表/feedback。
   const retryAttempt = useRef(0);
@@ -185,25 +195,77 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
       retryAttempt.current += 1;
     };
   }, [agentId, s.settingsRoute]);
-  const managementSelection = useRef({ agentId, page, scope, query, status });
+  const managementSelection = useRef({
+    agentId,
+    page,
+    scope,
+    query,
+    status,
+    view,
+    visibility,
+    originConversation,
+    principalConversation,
+  });
   managementSelection.current =
     managementSelection.current.agentId === agentId
-      ? { agentId, page, scope, query, status }
-      : { agentId, page: 1, scope: "", query: "", status: "all" };
+      ? {
+          agentId,
+          page,
+          scope,
+          query,
+          status,
+          view,
+          visibility,
+          originConversation,
+          principalConversation,
+        }
+      : {
+          agentId,
+          page: 1,
+          scope: "",
+          query: "",
+          status: "all",
+          view: "owned",
+          visibility: "all",
+          originConversation: "",
+          principalConversation: "",
+        };
   // biome-ignore lint/correctness/useExhaustiveDependencies: API and Agent identity own this foreground read; filters reuse it without resetting metadata.
-  const readManagement = useCallback(() => {
-    const selection = managementSelection.current;
-    void s.loadMemoryManagement(
-      selection.page,
-      {
-        ...(selection.scope ? { scope_key: selection.scope } : {}),
-        ...(selection.query ? { search: selection.query } : {}),
-        ...(selection.status !== "all" ? { status: selection.status } : {}),
-      },
-      { metadata: false },
-    );
-  }, [agentId, s.apiClient, s.loadMemoryManagement]);
-  useForegroundRead(readManagement, s.cancelMemoryManagementRead, {
+  const readManagement = useCallback(
+    (preserveDetail = true) => {
+      const selection = managementSelection.current;
+      void s.loadMemoryManagement(
+        selection.page,
+        {
+          view: selection.view as "owned" | "received" | "all",
+          ...(selection.scope ? { scope_key: selection.scope } : {}),
+          ...(selection.visibility !== "all"
+            ? {
+                visibility: selection.visibility as
+                  | "session_private"
+                  | "agent_shared"
+                  | "public"
+                  | "unclassified",
+              }
+            : {}),
+          ...(selection.originConversation
+            ? { origin_conversation_id: selection.originConversation }
+            : {}),
+          ...(selection.principalConversation
+            ? { conversation_id: selection.principalConversation }
+            : {}),
+          ...(selection.query ? { search: selection.query } : {}),
+          ...(selection.status !== "all"
+            ? { status: selection.status as "active" | "suppressed" | "replaced" | "invalid" }
+            : {}),
+        },
+        { metadata: false, preserveDetail },
+      );
+    },
+    [agentId, s.apiClient, s.loadMemoryManagement],
+  );
+  const resumeManagement = useCallback(() => readManagement(true), [readManagement]);
+  useForegroundRead(resumeManagement, s.cancelMemoryManagementRead, {
     enabled: ready && !!agentId && agentId !== "__new__",
     paused: !active,
     intervalMs: null,
@@ -221,11 +283,27 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
       previous.page === current.page &&
       previous.scope === current.scope &&
       previous.query === current.query &&
-      previous.status === current.status
+      previous.status === current.status &&
+      previous.view === current.view &&
+      previous.visibility === current.visibility &&
+      previous.originConversation === current.originConversation &&
+      previous.principalConversation === current.principalConversation
     )
       return;
-    if (active && ready && document.visibilityState !== "hidden") readManagement();
-  }, [active, ready, page, scope, query, status, readManagement]);
+    if (active && ready && document.visibilityState !== "hidden") readManagement(false);
+  }, [
+    active,
+    ready,
+    page,
+    scope,
+    query,
+    status,
+    view,
+    visibility,
+    originConversation,
+    principalConversation,
+    readManagement,
+  ]);
   const selectedScope = scopes.find((item) => item.scope_key === scope);
   const binding = connectionData?.bindings.find((item) => item.id === selectedScope?.binding?.id);
   const owner = connectionData?.owner;
@@ -242,7 +320,10 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
   const mergeable =
     selectedRows.length >= 2 &&
     selectedRows.every(
-      (row) => row.status === "active" && row.scope_key === selectedRows[0]?.scope_key,
+      (row) =>
+        row.owner_agent_id === agentId &&
+        row.status === "active" &&
+        row.scope_key === selectedRows[0]?.scope_key,
     );
   const locked =
     s.memoryCorrectionDirty ||
@@ -280,9 +361,23 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
     await s.loadMemoryManagement(
       page,
       {
+        view,
         ...(scope ? { scope_key: scope } : {}),
+        ...(visibility !== "all"
+          ? {
+              visibility: visibility as
+                | "session_private"
+                | "agent_shared"
+                | "public"
+                | "unclassified",
+            }
+          : {}),
+        ...(originConversation ? { origin_conversation_id: originConversation } : {}),
+        ...(principalConversation ? { conversation_id: principalConversation } : {}),
         ...(query ? { search: query } : {}),
-        ...(status !== "all" ? { status } : {}),
+        ...(status !== "all"
+          ? { status: status as "active" | "suppressed" | "replaced" | "invalid" }
+          : {}),
       },
       { metadata: true },
     );
@@ -326,9 +421,23 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
         await s.loadMemoryManagement(
           page,
           {
+            view,
             ...(scope ? { scope_key: scope } : {}),
+            ...(visibility !== "all"
+              ? {
+                  visibility: visibility as
+                    | "session_private"
+                    | "agent_shared"
+                    | "public"
+                    | "unclassified",
+                }
+              : {}),
+            ...(originConversation ? { origin_conversation_id: originConversation } : {}),
+            ...(principalConversation ? { conversation_id: principalConversation } : {}),
             ...(query ? { search: query } : {}),
-            ...(status !== "all" ? { status } : {}),
+            ...(status !== "all"
+              ? { status: status as "active" | "suppressed" | "replaced" | "invalid" }
+              : {}),
           },
           { metadata: true },
         );
@@ -401,7 +510,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
             variant="outline"
             className="h-auto min-h-8 max-w-full whitespace-normal break-words"
             tooltip={t("hints.library.memory.tools")}
-            onClick={() => s.openSettingsRoute("memory-tools")}
+            onClick={() => s.openWorkspaceTarget("memory-tools", agentId)}
           >
             <SlidersHorizontal />
             {t("capabilities.resources.openMemoryTools")}
@@ -432,18 +541,100 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
           <div className="grid items-start gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
             {/* 左侧：分区与隔离侧栏 */}
             <aside className="space-y-4">
-              <div className="space-y-4 rounded-xl border border-border/80 bg-card p-4">
-                <div className="flex items-center gap-2 px-2 py-1">
-                  <Database className="size-4 text-muted-foreground" />
-                  <span className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-                    {t("library.all.partitions")}
-                  </span>
-                </div>
-                <div className="space-y-1">
+              <SettingsGroup
+                title={t("agent.memory.inventory")}
+                containerClassName="space-y-4 divide-y-0 settings-content-padding"
+              >
+                <Field label="agent.memory.view">
+                  <NativeSelect
+                    value={view}
+                    disabled={locked}
+                    onChange={(event) => {
+                      setView(event.target.value as "owned" | "received" | "all");
+                      setPage(1);
+                      setSelected([]);
+                    }}
+                  >
+                    <option value="owned">{t("agent.memory.owned")}</option>
+                    <option value="received">{t("agent.memory.received")}</option>
+                    <option value="all">{t("agent.memory.all")}</option>
+                  </NativeSelect>
+                </Field>
+                <Field label="library.memory.accessTitle">
+                  <NativeSelect
+                    value={visibility}
+                    disabled={locked}
+                    onChange={(event) => {
+                      setVisibility(event.target.value);
+                      setPage(1);
+                      setSelected([]);
+                    }}
+                  >
+                    <option value="all">{t("agent.memory.allVisibility")}</option>
+                    {["session_private", "agent_shared", "public", "unclassified"].map((value) => (
+                      <option value={value} key={value}>
+                        {t(`library.memory.visibility.${value}`)}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                </Field>
+                <Field label="agent.memory.origin">
+                  <NativeSelect
+                    aria-label={t("agent.memory.origin")}
+                    value={originConversation}
+                    disabled={locked}
+                    onChange={(event) => {
+                      setOriginConversation(event.target.value);
+                      setPage(1);
+                      setSelected([]);
+                    }}
+                  >
+                    <option value="">{t("agent.memory.allOrigins")}</option>
+                    {[
+                      ...new Set([
+                        ...Object.values(s.conversations)
+                          .filter((conversation) => conversation.agentId === agentId)
+                          .map((conversation) => conversation.id),
+                        ...s.memoryEntries.flatMap((entry) =>
+                          entry.origins.flatMap((origin) =>
+                            origin.conversation_id ? [origin.conversation_id] : [],
+                          ),
+                        ),
+                      ]),
+                    ].map((id) => (
+                      <option key={id} value={id}>
+                        {s.conversations[id]?.title ?? id}
+                      </option>
+                    ))}
+                  </NativeSelect>
+                </Field>
+                <Field label="agent.memory.principal">
+                  <NativeSelect
+                    aria-label={t("agent.memory.principal")}
+                    value={principalConversation}
+                    disabled={locked}
+                    onChange={(event) => {
+                      setPrincipalConversation(event.target.value);
+                      setPage(1);
+                      setSelected([]);
+                    }}
+                  >
+                    <option value="">{t("agent.memory.noPrincipal")}</option>
+                    {Object.values(s.conversations)
+                      .filter((conversation) => conversation.agentId === agentId)
+                      .map((conversation) => (
+                        <option key={conversation.id} value={conversation.id}>
+                          {conversation.title}
+                        </option>
+                      ))}
+                  </NativeSelect>
+                </Field>
+                <p className="text-xs text-muted-foreground">{t("agent.memory.discoveryOnly")}</p>
+                <div className="space-y-2">
+                  <p className="text-xs font-medium">{t("agent.memory.maintenanceScope")}</p>
                   <Button
-                    tooltip={<Trans i18nKey="hints.complete.memoryAll" />}
                     variant={scope === "" ? "secondary" : "ghost"}
-                    className="w-full justify-between font-medium"
+                    className="h-auto min-h-8 w-full justify-start whitespace-normal text-left"
                     disabled={locked}
                     onClick={() => {
                       setScope("");
@@ -451,17 +642,13 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                       setSelected([]);
                     }}
                   >
-                    <span>{t("library.all.partitions")}</span>
-                    <Badge variant="outline" className="tabular-nums">
-                      {scopes.reduce((sum, row) => sum + row.count, 0)}
-                    </Badge>
+                    {t("library.all.partitions")}
                   </Button>
                   {scopes.map((item) => (
                     <Button
-                      tooltip={<Trans i18nKey="hints.complete.memoryScope" />}
                       key={item.scope_key}
                       variant={scope === item.scope_key ? "secondary" : "ghost"}
-                      className="h-auto w-full justify-between gap-3 py-2.5 text-left"
+                      className="h-auto min-h-8 w-full justify-between gap-2 whitespace-normal text-left"
                       disabled={locked}
                       onClick={() => {
                         setScope(item.scope_key);
@@ -469,22 +656,23 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                         setSelected([]);
                       }}
                     >
-                      <span className="min-w-0 flex-1 whitespace-normal text-xs leading-relaxed">
-                        {memoryScopeLabel(item.scope_key, agentId, t)}
-                      </span>
-                      <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                      <span>{memoryScopeLabel(item.scope_key, agentId, t)}</span>
+                      <span className="tabular-nums text-xs text-muted-foreground">
                         {item.count}
                       </span>
                     </Button>
                   ))}
+                  <p className="text-xs text-muted-foreground">
+                    {t("agent.memory.maintenanceScopeHelp")}
+                  </p>
                 </div>
-              </div>
+              </SettingsGroup>
 
               {selectedScope && (
                 <Card className="rounded-xl border-border/80">
                   <CardHeader className="p-4 pb-2">
                     <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-                      {t("library.read.partitions")}
+                      {t("agent.memory.technical")}
                     </p>
                     <CardDescription className="text-xs">
                       {t("library.value.active.value.total", {
@@ -494,31 +682,11 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4 p-4 pt-2">
-                    <div className="space-y-1.5 text-xs">
-                      <p className="font-medium text-foreground">{t("library.read.partitions")}</p>
-                      {selectedScope.read_scope_keys === null ? (
-                        <p className="rounded-md bg-muted/60 p-2 text-muted-foreground">
-                          {t("library.reading.scope.unavailable")}
-                        </p>
-                      ) : (
-                        <div className="space-y-1">
-                          {selectedScope.read_scope_keys.map((key) => (
-                            <p
-                              key={key}
-                              className="break-all rounded-md bg-muted/50 p-1.5 text-muted-foreground"
-                            >
-                              {memoryScopeLabel(key, agentId, t)}
-                            </p>
-                          ))}
-                        </div>
-                      )}
-                      <p className="pt-2 font-medium text-foreground">
-                        {t("library.write.partition")}
-                      </p>
-                      <p className="break-all rounded-md bg-muted/50 p-1.5 text-muted-foreground">
-                        {memoryScopeLabel(selectedScope.write_scope_key, agentId, t)}
-                      </p>
-                    </div>
+                    <p className="break-all text-xs text-muted-foreground">
+                      {t("agent.memory.discoveryOnly")}
+                      <br />
+                      {selectedScope.scope_key}
+                    </p>
 
                     {binding && (
                       <div className="border-t border-border/60 pt-3">
@@ -532,6 +700,9 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
 
                     {binding && shareEligible && (
                       <div className="border-t border-border/60 pt-3">
+                        <p className="mb-2 text-xs text-muted-foreground">
+                          {t("agent.memory.qqTargetHelp")}
+                        </p>
                         <Field
                           label="library.share.with.web.memories"
                           info="library.turning.sharing.off.does.not.move.or.delete.existing"
@@ -544,14 +715,32 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                             checked={binding.share_web_memory}
                             onCheckedChange={(value) => {
                               setShareBusy(true);
-                              void s.apiClient
+                              const api = s.apiClient,
+                                targetAgent = agentId,
+                                targetBinding = binding.id;
+                              const matches = () => {
+                                const state = useSuperstringStore.getState();
+                                return (
+                                  state.apiClient === api &&
+                                  state.editorAgentId === targetAgent &&
+                                  state.settingsRoute === "long-memory" &&
+                                  binding.id === targetBinding
+                                );
+                              };
+                              void api
                                 .updateQqBinding(binding.id, {
                                   expected_revision: binding.revision,
                                   share_web_memory: value === true,
                                 })
-                                .then(refresh)
-                                .catch((error) => s.setNotice({ error: errorText(error) }))
-                                .finally(() => setShareBusy(false));
+                                .then(() => {
+                                  if (matches()) return refresh();
+                                })
+                                .catch((error) => {
+                                  if (matches()) s.setNotice({ error: errorText(error) });
+                                })
+                                .finally(() => {
+                                  if (matches()) setShareBusy(false);
+                                });
                             }}
                           />
                         </Field>
@@ -624,7 +813,13 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                     className="text-xs text-muted-foreground"
                     disabled={locked || !s.memoryEntries.length}
                     disabledReason={t("hints.library.memory.selectAllDisabled")}
-                    onClick={() => setSelected(s.memoryEntries.map((entry) => entry.id))}
+                    onClick={() =>
+                      setSelected(
+                        s.memoryEntries
+                          .filter((entry) => entry.owner_agent_id === agentId)
+                          .map((entry) => entry.id),
+                      )
+                    }
                   >
                     <ListFilter className="mr-1.5 size-3.5" />
                     {t("library.select.current.results")}
@@ -714,7 +909,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                       className="mt-1"
                       aria-label={t("library.select.value", { "0": entry.name })}
                       checked={selected.includes(entry.id)}
-                      disabled={locked}
+                      disabled={locked || entry.owner_agent_id !== agentId}
                       onCheckedChange={(v) =>
                         setSelected((ids) =>
                           v === true ? [...ids, entry.id] : ids.filter((id) => id !== entry.id),
@@ -728,7 +923,12 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                           variant="link"
                           className="h-auto p-0 text-left font-semibold text-foreground hover:underline"
                           disabled={locked}
-                          onClick={() => void s.loadMemoryEntryDetail(entry.id)}
+                          onClick={() =>
+                            void s.loadMemoryEntryDetail(
+                              entry.id,
+                              principalConversation || undefined,
+                            )
+                          }
                         >
                           {entry.name}
                         </Button>
@@ -749,7 +949,14 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                         </div>
                       )}
                       <p className="text-2xs text-muted-foreground">
-                        {memoryScopeLabel(entry.scope_key, agentId, t)} ·{" "}
+                        {t(`library.memory.visibility.${entry.visibility ?? "unclassified"}`)} ·{" "}
+                        {entry.origins
+                          .map(
+                            (origin) => origin.conversation_id ?? t("library.memory.originUnknown"),
+                          )
+                          .join(", ")}{" "}
+                        · {t(`agent.memory.source.${entry.source_validity}`)} ·{" "}
+                        {t(`agent.memory.read.${entry.runtime_eligibility}`)} ·{" "}
                         {formatDate(entry.created_at, i18n.resolvedLanguage ?? i18n.language, {
                           year: "numeric",
                           month: "numeric",
@@ -779,7 +986,7 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
                 <span className="text-xs text-muted-foreground">
                   {t("library.value.entries.page.value", { "0": s.memoryEntryTotal, "1": page })}
                 </span>
-                <div className="flex gap-2">
+                <div className="workspace-actions">
                   <Button
                     size="icon"
                     variant="outline"
@@ -1046,7 +1253,256 @@ export function MemoryLibrary({ active = true }: { active?: boolean } = {}) {
   );
 }
 
+function MemorySources({ active }: { active: boolean }) {
+  const { t } = useTranslation();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      selection: state.memoryReadSelection,
+      entry: state.memoryEntryDetail,
+      api: state.apiClient,
+      agentId: state.editorAgentId,
+      sources: state.memorySources,
+      preview: state.memorySourcePreview,
+      loading: state.memoryReadLoading,
+      error: state.memoryReadError,
+      load: state.loadMemorySources,
+      read: state.loadMemorySourcePreview,
+      back: state.clearMemorySourcePreview,
+      cancel: state.cancelMemoryDetailRead,
+    })),
+  );
+  const allowed =
+    !s.selection || s.selection.entry.owner_agent_id === s.agentId || !!s.selection.conversationId;
+  if (!active) return null;
+  if (!allowed) return <p>{t("memoryPreview.selectConversation")}</p>;
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">{t("memoryPreview.independentUser")}</p>
+      {s.error && (
+        <p role="alert" className="text-sm text-destructive">
+          {translateNotice(s.error)}
+        </p>
+      )}
+      {s.loading && <p role="status">{t("library.loading")}</p>}
+      {s.preview ? (
+        <>
+          <Button
+            variant="outline"
+            onClick={() => {
+              s.back();
+              void s.load();
+            }}
+          >
+            {t("memoryPreview.backSources")}
+          </Button>
+          {s.preview.corrected && <p role="status">{t("memoryPreview.correctedOriginal")}</p>}
+          <pre className="whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-sm">
+            {s.preview.text}
+          </pre>
+          <p className="text-xs text-muted-foreground">
+            {s.preview.offset}–{s.preview.offset + [...s.preview.text].length} / {s.preview.total}
+          </p>
+          {s.preview.nextOffset !== null && (
+            <Button
+              variant="outline"
+              disabled={s.loading}
+              onClick={() =>
+                void s.read(s.preview!.source_key, s.preview!.revision, s.preview!.nextOffset!)
+              }
+            >
+              {t("memoryPreview.nextPage")}
+            </Button>
+          )}
+        </>
+      ) : (
+        <>
+          <Button variant="outline" disabled={s.loading} onClick={() => void s.load()}>
+            {t("memoryPreview.checkSources")}
+          </Button>
+          {s.sources && (
+            <p role="status" className="text-xs">
+              {t(`agent.memory.source.${s.sources.source_validity}`)} ·{" "}
+              {t(`agent.memory.read.${s.sources.raw_preview}`)}
+            </p>
+          )}
+          {s.sources?.items.map((item, index) => (
+            <div key={item.source_key ?? index} className="space-y-2 rounded-lg border p-3">
+              <p>
+                {item.channel} · {t(`agent.memory.read.${item.state}`)}
+              </p>
+              {item.participant && (
+                <p className="text-sm">
+                  {item.participant} · {item.occurred_at}
+                </p>
+              )}
+              {item.reason && (
+                <p className="text-xs text-muted-foreground">
+                  {t(`memoryPreview.reason.${item.reason}`)}
+                </p>
+              )}
+              {item.source_key && item.revision && (
+                <Button
+                  variant="outline"
+                  disabled={s.loading}
+                  onClick={() => void s.read(item.source_key!, item.revision!)}
+                >
+                  {t("memoryPreview.openOriginal")}
+                </Button>
+              )}
+            </div>
+          ))}
+          {s.sources?.nextOffset !== null && s.sources?.nextOffset !== undefined && (
+            <Button
+              variant="outline"
+              disabled={s.loading}
+              onClick={() => void s.load(s.sources!.nextOffset!)}
+            >
+              {t("memoryPreview.nextSources")}
+            </Button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+function ReceivedMemoryDetail({ active }: { active: boolean }) {
+  const { t } = useTranslation();
+  const s = useSuperstringStore(
+    useShallow((state) => ({
+      selection: state.memoryReadSelection,
+      page: state.memoryReadable,
+      api: state.apiClient,
+      conversations: state.summaryById,
+      agentId: state.editorAgentId,
+      loadConversations: state.loadConversations,
+      moreConversations: state.directoryCursor !== null,
+      loading: state.memoryReadLoading,
+      error: state.memoryReadError,
+      load: state.loadMemoryReadable,
+      sources: state.resumeMemorySources,
+      select: state.selectMemoryReadConversation,
+      close: state.clearMemoryDetail,
+      cancel: state.cancelMemoryDetailRead,
+    })),
+  );
+  const selection = s.selection;
+  const [tab, setTab] = useState("content");
+  const load = useCallback(() => {
+    if (useSuperstringStore.getState().apiClient !== s.api || !selection?.conversationId) return;
+    if (tab === "sources") void s.sources();
+    else void s.load();
+  }, [selection, tab, s.api, s.load, s.sources]);
+  useForegroundRead(load, s.cancel, {
+    enabled: !!selection?.conversationId,
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: s.cancel,
+  });
+  if (!selection) return null;
+  return (
+    <Sheet
+      open={active}
+      onOpenChange={(open) => {
+        if (!open) s.close();
+      }}
+    >
+      <SheetContent scrollMode="body" className="w-full sm:max-w-3xl">
+        <SheetHeader>
+          <SheetTitle>{selection.entry.name}</SheetTitle>
+          <SheetDescription>{t("memoryPreview.receivedReadOnly")}</SheetDescription>
+        </SheetHeader>
+        <div data-slot="sheet-body" className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
+          <Field label="agent.memory.principal">
+            <NativeSelect
+              aria-label={t("agent.memory.principal")}
+              value={selection.conversationId ?? ""}
+              onChange={(event) => void s.select(event.target.value)}
+            >
+              <option value="">{t("agent.memory.noPrincipal")}</option>
+              {Object.values(s.conversations)
+                .filter((c) => c.agentId === s.agentId)
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title}
+                  </option>
+                ))}
+            </NativeSelect>
+          </Field>
+          {s.moreConversations && (
+            <Button variant="outline" onClick={() => void s.loadConversations("more")}>
+              {t("memoryPreview.moreConversations")}
+            </Button>
+          )}
+          {!selection.conversationId && (
+            <p role="status">{t("memoryPreview.selectConversation")}</p>
+          )}
+          <Tabs value={tab} onValueChange={setTab}>
+            <TabsList presentation="compact" flow="wrap">
+              <TabsTrigger value="content">{t("library.content")}</TabsTrigger>
+              <TabsTrigger value="sources">{t("library.sources")}</TabsTrigger>
+            </TabsList>
+            <TabsContent value="content" className="space-y-4">
+              <p className="text-sm text-muted-foreground">{selection.entry.summary}</p>
+              {s.error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {translateNotice(s.error)}
+                </p>
+              )}
+              {s.loading && <p role="status">{t("library.loading")}</p>}
+              {s.page && (
+                <>
+                  <pre className="whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-sm">
+                    {s.page.text}
+                  </pre>
+                  <p className="text-xs">
+                    {s.page.offset}–{s.page.offset + [...s.page.text].length} / {s.page.total}
+                  </p>
+                  {s.page.nextOffset !== null && (
+                    <Button
+                      variant="outline"
+                      disabled={s.loading}
+                      onClick={() => void s.load(s.page!.nextOffset!)}
+                    >
+                      {t("memoryPreview.nextPage")}
+                    </Button>
+                  )}
+                </>
+              )}
+              {selection.conversationId && (
+                <Button variant="outline" disabled={s.loading} onClick={() => void s.load()}>
+                  {t("library.refresh")}
+                </Button>
+              )}
+            </TabsContent>
+            <TabsContent value="sources">
+              <MemorySources active={active && tab === "sources"} />
+            </TabsContent>
+          </Tabs>
+        </div>
+        <SheetFooter>
+          <Button variant="outline" onClick={s.close}>
+            {t("memoryPreview.backMemory")}
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
+  const recipient = useSuperstringStore(
+    (state) =>
+      !!state.memoryReadSelection &&
+      state.memoryReadSelection.entry.owner_agent_id !== state.editorAgentId,
+  );
+  return recipient ? (
+    <ReceivedMemoryDetail active={active} />
+  ) : (
+    <OwnerMemoryDetail active={active} />
+  );
+}
+function OwnerMemoryDetail({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
       useShallow((state) => ({
         clearMemoryDetail: state.clearMemoryDetail,
@@ -1057,6 +1513,12 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
         memoryCorrectionDraft: state.memoryCorrectionDraft,
         memoryCorrectionSaving: state.memoryCorrectionSaving,
         memoryEntryDetail: state.memoryEntryDetail,
+        readSelection: state.memoryReadSelection,
+        cancelDetailRead: state.cancelMemoryPayloadRead,
+        acquireMetadata: state.acquireMemoryMetadataRead,
+        releaseMetadata: state.releaseMemoryMetadataRead,
+        readError: state.memoryReadError,
+        loadSources: state.resumeMemorySources,
         patchMemoryCorrection: state.patchMemoryCorrection,
         saveMemoryCorrection: state.saveMemoryCorrection,
         metadata: state.memoryMetadata,
@@ -1081,17 +1543,36 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
     content = s.memoryContent,
     draft = s.memoryCorrectionDraft;
   const [discard, setDiscard] = useState(false);
+  const [detailTab, setDetailTab] = useState("content");
+  const [revalidateDraftGuard, setRevalidateDraftGuard] = useState<{
+    agentId: string;
+    entryId: string;
+    api: unknown;
+    revision: number;
+  } | null>(null);
   const [confirmSnapshot, setConfirmSnapshot] = useState<{
     agentId: string;
     entryId: string;
     api: unknown;
     revision: number;
+    operation: "save" | "revalidate";
     visibility: "session_private" | "agent_shared" | "public" | null;
     recipient_agent_ids: string[];
   } | null>(null);
   const [tagText, setTagText] = useState(draft?.tags.join(", ") ?? "");
   const correctionRevision = draft?.expected_revision;
   const entryId = entry?.id;
+
+  useEffect(() => {
+    if (
+      revalidateDraftGuard &&
+      (revalidateDraftGuard.agentId !== s.editorAgentId ||
+        revalidateDraftGuard.entryId !== entryId ||
+        revalidateDraftGuard.api !== s.apiClient ||
+        revalidateDraftGuard.revision !== s.metadataBaseline?.revision)
+    )
+      setRevalidateDraftGuard(null);
+  }, [revalidateDraftGuard, s.editorAgentId, entryId, s.apiClient, s.metadataBaseline]);
 
   const hasValidBaseline =
     s.metadataBaseline !== null &&
@@ -1117,6 +1598,7 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
       !base ||
       confirmSnapshot.revision !== base.revision ||
       !current ||
+      (confirmSnapshot.operation === "revalidate" && s.visibilityDirty) ||
       confirmSnapshot.visibility !== current.visibility ||
       !equalRecipients(confirmSnapshot.recipient_agent_ids, current.recipient_agent_ids)
     ) {
@@ -1129,19 +1611,98 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
     s.apiClient,
     s.metadataBaseline,
     s.visibilityDraft,
+    s.visibilityDirty,
   ]);
 
   useEffect(() => {
     if (correctionRevision)
       setTagText(useSuperstringStore.getState().memoryCorrectionDraft?.tags.join(", ") ?? "");
   }, [correctionRevision]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: The same entry on another API requires fresh content and access metadata.
-  useEffect(() => {
-    if (active && entryId) {
-      void s.loadMemoryContent();
-      void s.loadMetadata(entryId);
+  const guardedPublicationDraft = () =>
+    revalidateDraftGuard !== null &&
+    revalidateDraftGuard.agentId === s.editorAgentId &&
+    revalidateDraftGuard.entryId === entryId &&
+    revalidateDraftGuard.api === s.apiClient &&
+    revalidateDraftGuard.revision === s.metadataBaseline?.revision;
+  const currentDetailTab = useRef(detailTab);
+  currentDetailTab.current = detailTab;
+  const ownerRead = useCallback(() => {
+    if (useSuperstringStore.getState().apiClient !== s.apiClient) return;
+    if (entryId) {
+      const state = useSuperstringStore.getState();
+      if (
+        state.memoryCorrectionDirty ||
+        state.memoryCorrectionSaving ||
+        state.memoryVisibilityDirty ||
+        state.memoryVisibilitySaving
+      )
+        return;
+      if (currentDetailTab.current === "sources") void s.loadSources();
+      else void s.loadMemoryContent();
     }
-  }, [active, entryId, s.apiClient, s.loadMemoryContent, s.loadMetadata]);
+  }, [entryId, s.apiClient, s.loadMemoryContent, s.loadSources]);
+  const metadataConsumer = useRef({});
+  const metadataConversation = s.readSelection?.conversationId ?? null;
+  const metadataOwner = s.readSelection?.entry.owner_agent_id;
+  const readMetadata = useCallback(() => {
+    const state = useSuperstringStore.getState();
+    if (
+      entryId &&
+      state.apiClient === s.apiClient &&
+      state.editorAgentId === s.editorAgentId &&
+      state.memoryEntryDetail?.id === entryId &&
+      (state.memoryReadSelection?.conversationId ?? null) === metadataConversation &&
+      state.memoryReadSelection?.entry.owner_agent_id === metadataOwner
+    )
+      void s.acquireMetadata(metadataConsumer.current, entryId);
+  }, [
+    entryId,
+    s.apiClient,
+    s.editorAgentId,
+    metadataConversation,
+    metadataOwner,
+    s.acquireMetadata,
+  ]);
+  const releaseMetadata = useCallback(
+    () => s.releaseMetadata(metadataConsumer.current),
+    [s.releaseMetadata],
+  );
+  useForegroundRead(readMetadata, releaseMetadata, {
+    enabled: !!entryId,
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: releaseMetadata,
+  });
+  const previousDetailTab = useRef(detailTab);
+  useEffect(() => {
+    const changed = previousDetailTab.current !== detailTab;
+    previousDetailTab.current = detailTab;
+    if (changed && active && entryId && document.visibilityState !== "hidden") {
+      if (detailTab === "sources") void s.loadSources();
+      else if (
+        (detailTab === "content" || detailTab === "edit") &&
+        !s.memoryCorrectionDirty &&
+        !s.visibilityDirty
+      )
+        void s.loadMemoryContent();
+    }
+  }, [
+    active,
+    detailTab,
+    entryId,
+    s.loadSources,
+    s.loadMemoryContent,
+    s.memoryCorrectionDirty,
+    s.visibilityDirty,
+  ]);
+  useForegroundRead(ownerRead, s.cancelDetailRead, {
+    enabled: !!entryId,
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: s.cancelDetailRead,
+  });
   const close = () => {
     if (s.memoryCorrectionSaving || s.visibilitySaving) return;
     setConfirmSnapshot(null);
@@ -1159,7 +1720,7 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
           if (!open) close();
         }}
       >
-        <SheetContent className="w-full sm:max-w-3xl">
+        <SheetContent scrollMode="body" className="w-full sm:max-w-3xl">
           <SheetHeader>
             <SheetTitle>{entry?.name}</SheetTitle>
             <SheetDescription>
@@ -1169,7 +1730,7 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
             </SheetDescription>
           </SheetHeader>
           {entry && (
-            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-6">
+            <div data-slot="sheet-body" className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
               <div className="flex flex-wrap gap-2">
                 <Badge>{t(`library.status.${entry.status}`)}</Badge>
                 {content?.corrected && (
@@ -1177,8 +1738,8 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                 )}
                 {content?.retired && <Badge variant="secondary">{t("library.retired")}</Badge>}
               </div>
-              <Tabs defaultValue="content">
-                <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
+              <Tabs value={detailTab} onValueChange={setDetailTab}>
+                <TabsList presentation="compact" flow="wrap" className="max-w-full gap-1">
                   <TabsTrigger value="content">{t("library.content")}</TabsTrigger>
                   <TabsTrigger value="sources">{t("library.sources")}</TabsTrigger>
                   <TabsTrigger value="edit">{t("library.correct")}</TabsTrigger>
@@ -1187,46 +1748,17 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                 </TabsList>
                 <TabsContent value="content" className="space-y-4">
                   <p className="text-sm text-muted-foreground">{entry.summary}</p>
+                  {s.readError && (
+                    <p role="alert" className="text-sm text-destructive">
+                      {translateNotice(s.readError)}
+                    </p>
+                  )}
                   <pre className="whitespace-pre-wrap break-words rounded-lg bg-muted p-4 text-sm font-mono leading-relaxed">
-                    {content?.content.body ?? entry.body}
+                    {content?.content.body ?? ""}
                   </pre>
                 </TabsContent>
                 <TabsContent value="sources" className="space-y-4">
-                  {content?.content.sources.map((source) => (
-                    <div
-                      key={
-                        source.type === "chat"
-                          ? source.turn_id
-                          : source.type === "qq_observation"
-                            ? source.event_key
-                            : `${source.document_id}:${source.version}:${source.start}:${source.end}`
-                      }
-                      className="space-y-2 rounded-lg border p-4"
-                    >
-                      <div className="flex gap-2">
-                        <Badge variant="outline">{source.type}</Badge>
-                        <Badge variant={source.valid ? "secondary" : "destructive"}>
-                          {t(source.valid ? "library.valid" : "library.invalid")}
-                        </Badge>
-                      </div>
-                      <pre className="overflow-auto text-xs">{JSON.stringify(source, null, 2)}</pre>
-                      {source.type === "chat" &&
-                        content.source_messages
-                          .filter((message) => message.turn_id === source.turn_id)
-                          .map((message) => (
-                            <div key={message.turn_id} className="space-y-3 text-sm">
-                              <p className="font-medium">{message.session_title}</p>
-                              <p className="whitespace-pre-wrap">
-                                {message.user ?? t("library.source.content.is.no.longer.available")}
-                              </p>
-                              <p className="whitespace-pre-wrap text-muted-foreground">
-                                {message.assistant ??
-                                  t("library.source.content.is.no.longer.available")}
-                              </p>
-                            </div>
-                          ))}
-                    </div>
-                  ))}
+                  <MemorySources active={active && detailTab === "sources"} />
                 </TabsContent>
                 <TabsContent value="edit" className="space-y-4">
                   {draft ? (
@@ -1337,7 +1869,14 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                           )}
                         </Badge>
                         <Badge variant="outline" className="text-[10px]">
-                          {t("library.memory.notEvaluated")}
+                          {t(`agent.memory.source.${s.metadata?.source_validity ?? "unknown"}`)} ·{" "}
+                          {t(`agent.memory.read.${s.metadata?.runtime_eligibility ?? "unknown"}`)}
+                          {(s.metadata?.runtime_eligibility ?? "unknown") === "unknown" && (
+                            <>
+                              {" · "}
+                              <span>{t("library.memory.notEvaluated")}</span>
+                            </>
+                          )}
                         </Badge>
                       </div>
                       <div className="space-y-1">
@@ -1460,6 +1999,41 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                         </div>
                       )}
 
+                      {(s.metadataBaseline?.visibility === "agent_shared" ||
+                        s.metadataBaseline?.visibility === "public") && (
+                        <div className="space-y-2">
+                          <Button
+                            variant="outline"
+                            disabled={!hasValidBaseline || s.metadataLoading || s.visibilitySaving}
+                            onClick={() => {
+                              if (!hasValidBaseline || !s.metadataBaseline || !entryId) return;
+                              if (s.visibilityDirty) {
+                                setRevalidateDraftGuard({
+                                  agentId: s.editorAgentId,
+                                  entryId,
+                                  api: s.apiClient,
+                                  revision: s.metadataBaseline.revision,
+                                });
+                                return;
+                              }
+                              setConfirmSnapshot({
+                                agentId: s.editorAgentId,
+                                entryId,
+                                api: s.apiClient,
+                                revision: s.metadataBaseline.revision,
+                                operation: "revalidate",
+                                visibility: s.metadataBaseline.visibility,
+                                recipient_agent_ids: [...s.metadataBaseline.recipient_agent_ids],
+                              });
+                            }}
+                          >
+                            {t("library.memory.revalidatePublication")}
+                          </Button>
+                          <p className="text-xs text-muted-foreground">
+                            {t("library.memory.revalidateHelp")}
+                          </p>
+                        </div>
+                      )}
                       <div className="flex items-center justify-end gap-2 pt-2">
                         <Button
                           size="sm"
@@ -1491,6 +2065,7 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
                                 entryId,
                                 api: s.apiClient,
                                 revision: s.metadataBaseline.revision,
+                                operation: "save",
                                 visibility: s.visibilityDraft.visibility,
                                 recipient_agent_ids: [...s.visibilityDraft.recipient_agent_ids],
                               });
@@ -1507,7 +2082,7 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
             </div>
           )}
           <SheetFooter className="border-t">
-            <div className="flex justify-end gap-2">
+            <div className="workspace-actions justify-end">
               <Button
                 variant="outline"
                 disabled={s.memoryCorrectionSaving}
@@ -1553,19 +2128,69 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
           setDiscard(false);
         }}
       />
+      <AlertDialog
+        open={active && revalidateDraftGuard !== null}
+        title={t("library.memory.revalidateDirty")}
+        busy={s.visibilitySaving}
+        onCancel={() => setRevalidateDraftGuard(null)}
+      >
+        <div className="workspace-actions">
+          <Button
+            variant="outline"
+            data-dialog-cancel
+            onClick={() => setRevalidateDraftGuard(null)}
+          >
+            {t("connections.cancel")}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (guardedPublicationDraft()) s.discardVisibilityDraft();
+              setRevalidateDraftGuard(null);
+            }}
+          >
+            {t("library.memory.discardVisibility")}
+          </Button>
+          <Button
+            onClick={() => {
+              if (!guardedPublicationDraft()) {
+                setRevalidateDraftGuard(null);
+                return;
+              }
+              setRevalidateDraftGuard(null);
+              if (s.metadataBaseline && s.visibilityDraft && entryId)
+                setConfirmSnapshot({
+                  agentId: s.editorAgentId,
+                  entryId,
+                  api: s.apiClient,
+                  revision: s.metadataBaseline.revision,
+                  operation: "save",
+                  visibility: s.visibilityDraft.visibility,
+                  recipient_agent_ids: [...s.visibilityDraft.recipient_agent_ids],
+                });
+            }}
+          >
+            {t("library.memory.saveVisibility")}
+          </Button>
+        </div>
+      </AlertDialog>
       <ConfirmDialog
         open={active && confirmSnapshot !== null}
-        message={t("library.memory.publicationConfirm", {
-          "0": confirmSnapshot?.visibility
-            ? t(`library.memory.visibility.${confirmSnapshot.visibility}`)
-            : t("library.memory.visibility.unclassified"),
-          "1":
-            confirmSnapshot?.visibility === "public"
-              ? confirmSnapshot.recipient_agent_ids.length
-              : confirmSnapshot?.visibility === "agent_shared"
-                ? 1
-                : 0,
-        })}
+        message={
+          confirmSnapshot?.operation === "revalidate"
+            ? t("library.memory.revalidateConfirm")
+            : t("library.memory.publicationConfirm", {
+                "0": confirmSnapshot?.visibility
+                  ? t(`library.memory.visibility.${confirmSnapshot.visibility}`)
+                  : t("library.memory.visibility.unclassified"),
+                "1":
+                  confirmSnapshot?.visibility === "public"
+                    ? confirmSnapshot.recipient_agent_ids.length
+                    : confirmSnapshot?.visibility === "agent_shared"
+                      ? 1
+                      : 0,
+              })
+        }
         busy={s.visibilitySaving}
         onCancel={() => setConfirmSnapshot(null)}
         onConfirm={() => {
@@ -1587,15 +2212,18 @@ export function MemoryDetail({ active = true }: { active?: boolean } = {}) {
             !base ||
             snapshot.revision !== base.revision ||
             !current ||
+            (snapshot.operation === "revalidate" && s.visibilityDirty) ||
             snapshot.visibility !== current.visibility ||
             !equalRecipients(snapshot.recipient_agent_ids, current.recipient_agent_ids)
           ) {
             setConfirmSnapshot(null);
             return;
           }
-          return s.saveVisibility().then(() => {
-            setConfirmSnapshot(null);
-          });
+          return s
+            .saveVisibility({ revalidatePublication: snapshot.operation === "revalidate" })
+            .then(() => {
+              setConfirmSnapshot(null);
+            });
         }}
       />
     </>
@@ -1628,14 +2256,14 @@ function ManualMemory({ onClose, active }: { onClose: () => void; active: boolea
         if (!open) onClose();
       }}
     >
-      <SheetContent className="w-full sm:max-w-3xl">
+      <SheetContent scrollMode="body" className="w-full sm:max-w-3xl">
         <SheetHeader>
           <SheetTitle>{t("library.organize.memories.from.a.conversation")}</SheetTitle>
           <SheetDescription>
             {t("library.select.completed.turns.that.have.not.been.organized.organization")}
           </SheetDescription>
         </SheetHeader>
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6">
+        <div data-slot="sheet-body" className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
           <Field
             label="library.source.conversation"
             tooltip={t("hints.library.memory.sourceConversationField")}
@@ -1896,12 +2524,15 @@ export function RebuildSearchProjectionSheet({
         if (!open) handleClose();
       }}
     >
-      <SheetContent className="w-full sm:max-w-xl">
+      <SheetContent scrollMode="body" className="w-full sm:max-w-xl">
         <SheetHeader>
           <SheetTitle>{t("library.rebuild.title")}</SheetTitle>
           <SheetDescription>{t("library.rebuild.description")}</SheetDescription>
         </SheetHeader>
-        <div className="space-y-4 py-4">
+        <div
+          data-slot="sheet-body"
+          className="min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto p-4"
+        >
           <Field label={t("library.rebuild.batchSize")}>
             <Input
               type="number"

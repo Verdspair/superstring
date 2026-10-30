@@ -147,6 +147,81 @@ describe("scheme studio task layout", () => {
     }
   });
 
+  it("keeps the common bounded viewport, management and draft while visiting the message preview", async () => {
+    const view = render(<SchemeStudio active={false} embedded />);
+    const name = screen.getByLabelText(translate("connections.schemeName"));
+    fireEvent.change(name, { target: { value: "Retained scheme draft" } });
+    const root = view.container.querySelector('[data-slot="scroll-area"]');
+    const viewport = root?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
+    if (!root || !viewport) throw new Error("Missing common scheme scroll owner");
+    expect(root.getAttribute("data-content-sizing")).toBe("bounded");
+    expect(viewport.className).toContain("[&>div]:block!");
+    expect(viewport.className).toContain("[&>div]:w-full!");
+    expect(viewport.className).toContain("[&>div]:min-w-0!");
+    const tabs = screen.getAllByRole("tab");
+    const participation = screen.getByRole("tabpanel");
+    const previewTab = screen.getByRole("tab", {
+      name: translate("schemes.sections.contextReading"),
+    });
+    viewport.scrollTop = 83;
+    await userEvent.click(previewTab);
+    expect(view.container.querySelector('[data-slot="scroll-area-viewport"]')).toBe(viewport);
+    expect(viewport.scrollTop).toBe(0);
+    const preview = screen.getByRole("region", {
+      name: translate("schemes.studio.messagePreviewAriaLabel"),
+    });
+    expect(preview.textContent).toContain("msg=");
+    expect(preview.textContent).toContain("focus=");
+    for (const key of ["schemes.studio.refresh", "connections.create", "connections.saveAs"]) {
+      const button = screen.getByRole("button", { name: translate(key) });
+      expect(viewport.contains(button)).toBe(true);
+    }
+    expect(screen.getByLabelText(translate("connections.schemeName"))).toBe(name);
+    expect((name as HTMLInputElement).value).toBe("Retained scheme draft");
+    viewport.scrollTop = 31;
+    await userEvent.click(tabs[0]!);
+    expect(participation.isConnected).toBe(true);
+    expect(viewport.scrollTop).toBe(83);
+    expect((name as HTMLInputElement).value).toBe("Retained scheme draft");
+    await userEvent.click(previewTab);
+    expect(viewport.scrollTop).toBe(31);
+    expect(
+      screen.getByRole("region", {
+        name: translate("schemes.studio.messagePreviewAriaLabel"),
+      }),
+    ).toBe(preview);
+  });
+
+  it("keeps the standalone breadcrumb and task title in the original scroll owner", () => {
+    const view = render(<SchemeStudio active={false} breadcrumb={<p>Scheme breadcrumb</p>} />);
+    const viewport = view.container.querySelector('[data-slot="scroll-area-viewport"]');
+    if (!viewport) throw new Error("Missing standalone scheme scroll owner");
+    expect(viewport.contains(screen.getByText("Scheme breadcrumb"))).toBe(true);
+    expect(viewport.contains(screen.getByRole("heading", { level: 1 }))).toBe(true);
+    expect(
+      viewport.contains(screen.getByRole("button", { name: translate("connections.saveScheme") })),
+    ).toBe(true);
+  });
+
+  it("scrolls the parent task header and save actions with the task content", () => {
+    const view = render(
+      <SchemeStudio active={false} embedded pageHeader={<h1>Current scheme</h1>} />,
+    );
+    const viewport = view.container.querySelector('[data-slot="scroll-area-viewport"]');
+    if (!viewport) throw new Error("Missing scheme task scroll owner");
+    for (const control of [
+      screen.getByRole("heading", { name: "Current scheme" }),
+      screen.getByRole("button", { name: translate("connections.saveScheme") }),
+      screen.getByRole("button", { name: translate("connections.reviewChanges") }),
+      screen.getByRole("button", { name: translate("connections.discardChanges") }),
+      screen.getByLabelText(translate("connections.schemeName")),
+      screen.getByRole("tablist"),
+    ]) {
+      expect(viewport.contains(control)).toBe(true);
+    }
+    expect(viewport.querySelector('[data-slot="scroll-area-viewport"]')).toBeNull();
+  });
+
   it("keeps scheme selection and refresh on their existing guarded actions", () => {
     const navigate = vi.fn();
     const refresh = vi.fn().mockResolvedValue(true);

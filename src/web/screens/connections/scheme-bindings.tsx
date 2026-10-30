@@ -1,5 +1,5 @@
 import { Plus, RefreshCw, Search, Shield } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import type { QqBindingResponse, QqConversationListItem } from "../../../shared/contracts/qq";
@@ -45,11 +45,13 @@ export function SchemeBindingsView({
   active?: boolean;
 }) {
   const { t, i18n } = useTranslation();
+  const searchHintId = useId();
   const state = useSuperstringStore(
     useShallow((s) => ({
       // 数据字段按实际读取面窄订阅；无关 store 更新不再重渲染看板。
       agents: s.agents,
       qqAccessSaving: s.qqAccessSaving,
+      bindingSchemeConfirmationId: s.qqInputs.bindingSchemeConfirmationId,
       qqBindings: s.qqBindings,
       qqBindingsError: s.qqBindingsError,
       qqBindingsLoaded: s.qqBindingsLoaded,
@@ -256,11 +258,19 @@ export function SchemeBindingsView({
             <Input
               className="pl-9"
               aria-label={t("connections.searchConversationBindings")}
-              placeholder={t("connections.searchByNumberAgentOrScheme")}
+              placeholder={t("connections.bindingsSearchPlaceholder")}
+              aria-describedby={searchHintId}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
+          <WorkspaceHelp
+            title={t("connections.searchConversationBindings")}
+            description={t("connections.searchByNumberAgentOrScheme")}
+          />
+          <span id={searchHintId} className="sr-only">
+            {t("connections.searchByNumberAgentOrScheme")}
+          </span>
           <NativeSelect
             className="min-w-0 w-full sm:w-auto sm:min-w-36"
             aria-label={t("connections.conversationType")}
@@ -382,7 +392,7 @@ export function SchemeBindingsView({
                 : t("connections.noConversationUsesThisSchemeYet")}
         </p>
       )}
-      {editingBinding && (
+      {editingBinding && !state.bindingSchemeConfirmationId && (
         <BindingEditor
           conversation={conversationOf(editingBinding, state.qqConversations)}
           binding={editingBinding}

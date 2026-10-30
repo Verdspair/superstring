@@ -10,16 +10,23 @@
 
 import { createHash } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
+import { z } from "zod";
 import type { ContentSource, MemoryAccessMetadata } from "../../shared/contracts";
 import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
+import { normalizeOneBotAccountId } from "../../shared/contracts/onebot-identity";
 import { fail } from "../errors";
+import { memoryJobScopes } from "../services/memory-contract";
 import { correctionMetadata, memoryRevision } from "../services/memory-revision";
 import { qqConversationKey, qqMemoryScopeKey } from "../services/qq-binding-contract";
 import {
+  collectQqEntryPublicationSources,
+  type PublicationMaterial,
   qqBlockedJobScope,
-  qqEntryPublicationSourcesBatch,
+  qqPublicationRouteAuthority,
+  verifyRetainedQqMaterials,
 } from "../services/qq-memory-fact-input";
+import { bodyRevision } from "./conversation-event-repository";
 import type { Orm } from "./repositories";
 import { DEFAULT_USER_ID } from "./repositories";
 import * as schema from "./schema";
@@ -259,11 +266,241 @@ export function observationSourcesIntact(orm: Orm, rows: QqMemorySourceRow[]): b
   });
 }
 
+interface WebSourceIntegrity {
+  turnId: string;
+  sessionId: string;
+  sourceValid: number;
+  generationStatus: string;
+  sessionAgentId: string;
+  sessionUserId: string;
+  userTurnId: string | null;
+  userSessionId: string | null;
+  userRole: string | null;
+  userStatus: string | null;
+  assistantTurnId: string | null;
+  assistantSessionId: string | null;
+  assistantRole: string | null;
+  assistantStatus: string | null;
+}
+/** Source validity does not grant private context or raw-message access. */
+function webSourceIntact(
+  agentId: string,
+  userId: string,
+  row: WebSourceIntegrity | undefined,
+): boolean {
+  return (
+    !!row &&
+    row.sessionAgentId === agentId &&
+    row.sessionUserId === userId &&
+    row.sourceValid === 1 &&
+    row.generationStatus === "completed" &&
+    row.userTurnId === row.turnId &&
+    row.userSessionId === row.sessionId &&
+    row.userRole === "user" &&
+    row.userStatus === "completed" &&
+    row.assistantTurnId === row.turnId &&
+    row.assistantSessionId === row.sessionId &&
+    row.assistantRole === "assistant" &&
+    row.assistantStatus === "completed"
+  );
+}
+
+export interface MemorySourceFactAssessment {
+  readonly webSources: ReadonlyMap<string, readonly (typeof schema.memorySources.$inferSelect)[]>;
+  readonly observationSources: ReadonlyMap<string, readonly QqMemorySourceRow[]>;
+  readonly states: ReadonlyMap<string, "valid" | "invalid" | "unknown">;
+  readonly revisions: ReadonlyMap<string, string>;
+  readonly observationValidity: ReadonlyMap<string, boolean>;
+  readonly webSessions: ReadonlyMap<string, readonly (string | null)[]>;
+  readonly webValidity: ReadonlyMap<string, boolean>;
+}
+
+/** Durable provenance facts. Original-body expiry and live read authority are separate. */
+export function memorySourceFactAssessment(
+  orm: Orm,
+  entries: readonly Pick<typeof schema.memoryEntries.$inferSelect, "id" | "agentId" | "userId">[],
+): MemorySourceFactAssessment {
+  const db = (orm as Orm & { $client: import("bun:sqlite").Database }).$client;
+  const webSources = new Map<string, (typeof schema.memorySources.$inferSelect)[]>();
+  const observations = new Map<string, QqMemorySourceRow[]>();
+  const webSessions = new Map<string, (string | null)[]>();
+  const webValidity = new Map<string, boolean>();
+  const observationsValid = new Map<string, boolean>();
+  const validByMemory = new Map<string, boolean>();
+  const proofByMemory = new Map<string, unknown[]>();
+  const ownerById = new Map(entries.map((entry) => [entry.id, entry]));
+  chunked([...ownerById.keys()], (ids) => {
+    const web = db
+      .query(`SELECT m.memory_id AS memoryId,m.turn_id AS turnId,m.user_message_id AS userMessageId,
+      m.assistant_message_id AS assistantMessageId,m.sequence_no AS sequenceNo,
+      t.id AS actualTurnId,t.session_id AS sessionId,t.source_valid AS sourceValid,t.generation_status AS generationStatus,
+      s.agent_id AS sessionAgentId,s.user_id AS sessionUserId,
+      u.turn_id AS userTurnId,u.session_id AS userSessionId,u.role AS userRole,u.status AS userStatus,
+      a.turn_id AS assistantTurnId,a.session_id AS assistantSessionId,a.role AS assistantRole,a.status AS assistantStatus
+      FROM memory_sources m LEFT JOIN turns t ON t.id=m.turn_id LEFT JOIN sessions s ON s.id=t.session_id
+      LEFT JOIN messages u ON u.id=m.user_message_id LEFT JOIN messages a ON a.id=m.assistant_message_id
+      WHERE m.memory_id IN (SELECT value FROM json_each(?))`)
+      .all(JSON.stringify(ids)) as Array<
+      typeof schema.memorySources.$inferSelect &
+        WebSourceIntegrity & { actualTurnId: string | null; sessionId: string | null }
+    >;
+    for (const row of web) {
+      const entry = ownerById.get(row.memoryId)!;
+      const source = {
+        memoryId: row.memoryId,
+        turnId: row.turnId,
+        userMessageId: row.userMessageId,
+        assistantMessageId: row.assistantMessageId,
+        sequenceNo: row.sequenceNo,
+      };
+      const list = webSources.get(row.memoryId) ?? [];
+      list.push(source);
+      webSources.set(row.memoryId, list);
+      const sessions = webSessions.get(row.memoryId) ?? [];
+      sessions.push(row.sessionId);
+      webSessions.set(row.memoryId, sessions);
+      const valid =
+        !!row.actualTurnId &&
+        !!row.sessionId &&
+        webSourceIntact(entry.agentId, entry.userId, {
+          ...row,
+          turnId: row.actualTurnId,
+          sessionId: row.sessionId,
+        });
+      webValidity.set(JSON.stringify([row.memoryId, row.turnId]), valid);
+      validByMemory.set(row.memoryId, (validByMemory.get(row.memoryId) ?? true) && valid);
+      const proof = proofByMemory.get(row.memoryId) ?? [];
+      proof.push([
+        "web",
+        source,
+        row.sessionId,
+        row.sourceValid,
+        row.generationStatus,
+        row.userStatus,
+        row.assistantStatus,
+      ]);
+      proofByMemory.set(row.memoryId, proof);
+    }
+    const qq = db
+      .query(`SELECT q.memory_id AS memoryId,q.event_key AS eventKey,q.scope_key AS scopeKey,
+      q.conversation_key AS conversationKey,q.message_id AS messageId,q.occurred_at_seconds AS occurredAtSeconds,
+      q.speaker_kind AS speakerKind,q.speaker_id AS speakerId,e.event_key AS actualEventKey,
+      e.agent_id AS eventAgentId,e.message_id AS eventMessageId,e.occurred_at_seconds AS eventTime,
+      e.speaker_kind AS eventSpeakerKind,e.speaker_id AS eventSpeakerId,e.account_id AS accountId,
+      e.conversation_kind AS conversationKind,e.peer_id AS peerId
+      FROM qq_memory_sources q LEFT JOIN qq_events e ON e.event_key=q.event_key
+      WHERE q.memory_id IN (SELECT value FROM json_each(?))`)
+      .all(JSON.stringify(ids)) as Array<
+      QqMemorySourceRow & {
+        actualEventKey: string | null;
+        eventAgentId: string | null;
+        eventMessageId: string | null;
+        eventTime: number | null;
+        eventSpeakerKind: string | null;
+        eventSpeakerId: string | null;
+        accountId: string;
+        conversationKind: "group" | "private";
+        peerId: string;
+      }
+    >;
+    for (const row of qq) {
+      const entry = ownerById.get(row.memoryId)!;
+      const source = {
+        memoryId: row.memoryId,
+        eventKey: row.eventKey,
+        scopeKey: row.scopeKey,
+        conversationKey: row.conversationKey,
+        messageId: row.messageId,
+        occurredAtSeconds: row.occurredAtSeconds,
+        speakerKind: row.speakerKind,
+        speakerId: row.speakerId,
+      };
+      const list = observations.get(row.memoryId) ?? [];
+      list.push(source);
+      observations.set(row.memoryId, list);
+      let identityValid = false;
+      if (
+        row.actualEventKey &&
+        row.eventAgentId === entry.agentId &&
+        normalizeOneBotAccountId(row.accountId) === row.accountId &&
+        normalizeOneBotAccountId(row.peerId) === row.peerId &&
+        (row.conversationKind === "group" || row.conversationKind === "private")
+      ) {
+        const conversation = qqConversationKey({
+          accountId: row.accountId,
+          kind: row.conversationKind,
+          peerId: row.peerId,
+        });
+        let scopeConsistent = true;
+        try {
+          const key: unknown = JSON.parse(row.scopeKey);
+          if (Array.isArray(key) && key[0] === "qq")
+            scopeConsistent =
+              row.scopeKey ===
+              qqMemoryScopeKey({
+                kind: "qq",
+                accountId: row.accountId,
+                conversationKind: row.conversationKind,
+                peerId: row.peerId,
+                agentId: entry.agentId,
+              });
+        } catch {
+          /* Historical opaque labels are not runtime authorization. */
+        }
+        identityValid =
+          scopeConsistent &&
+          row.conversationKey === conversation &&
+          row.messageId === row.eventMessageId &&
+          row.occurredAtSeconds === row.eventTime &&
+          row.speakerKind === row.eventSpeakerKind &&
+          row.speakerId === row.eventSpeakerId;
+      }
+      observationsValid.set(JSON.stringify([row.memoryId, row.eventKey]), identityValid);
+      validByMemory.set(row.memoryId, (validByMemory.get(row.memoryId) ?? true) && identityValid);
+      const proof = proofByMemory.get(row.memoryId) ?? [];
+      proof.push(["qq", source, row.accountId, row.conversationKind, row.peerId, row.eventAgentId]);
+      proofByMemory.set(row.memoryId, proof);
+    }
+  });
+  const states = new Map<string, "valid" | "invalid" | "unknown">(),
+    revisions = new Map<string, string>();
+  for (const entry of entries) {
+    const parts = proofByMemory.get(entry.id) ?? [];
+    const state =
+      parts.length === 0 ? "unknown" : validByMemory.get(entry.id) ? "valid" : "invalid";
+    states.set(entry.id, state);
+    if (state === "valid")
+      revisions.set(
+        entry.id,
+        createHash("sha256")
+          .update(
+            JSON.stringify([
+              "memory-source-facts-v1",
+              entry.id,
+              parts.map((part) => JSON.stringify(part)).sort(),
+            ]),
+          )
+          .digest("hex"),
+      );
+  }
+  return {
+    webSources,
+    observationSources: observations,
+    states,
+    revisions,
+    observationValidity: observationsValid,
+    webSessions,
+    webValidity,
+  };
+}
+
 export function memoryPublicationSourceRevisions(
   orm: Orm,
-  entries: readonly (typeof schema.memoryEntries.$inferSelect)[],
+  entries: readonly Pick<typeof schema.memoryEntries.$inferSelect, "id" | "agentId" | "userId">[],
   contentRevisions: ReadonlyMap<string, string>,
   now: string,
+  captured?: Map<string, PublicationMaterial[]>,
+  capturedAuthority?: Map<string, unknown[]>,
 ): ReadonlyMap<string, string> {
   const unique = [...new Map(entries.map((entry) => [entry.id, entry])).values()];
   const webById = new Map<string, (typeof schema.memorySources.$inferSelect)[]>();
@@ -297,16 +534,23 @@ export function memoryPublicationSourceRevisions(
     web.flatMap((source) => [source.userMessageId, source.assistantMessageId]),
   );
   const db = (orm as Orm & { $client: import("bun:sqlite").Database }).$client;
-  const qqProof = qqEntryPublicationSourcesBatch({
-    db,
-    orm,
-    now,
-    entries: unique.map((entry) => ({
-      id: entry.id,
-      agentId: entry.agentId,
-      sources: qqById.get(entry.id) ?? [],
-    })),
-  });
+  const qqCollected = collectQqEntryPublicationSources(
+    {
+      db,
+      orm,
+      now,
+      entries: unique.map((entry) => ({
+        id: entry.id,
+        agentId: entry.agentId,
+        sources: qqById.get(entry.id) ?? [],
+      })),
+    },
+    false,
+    captured !== undefined,
+  );
+  const qqProof = qqCollected.proof;
+  if (capturedAuthority)
+    for (const [id, parts] of qqCollected.authority) capturedAuthority.set(id, parts);
   const result = new Map<string, string>();
   for (const entry of unique) {
     const sources = webById.get(entry.id) ?? [];
@@ -314,45 +558,58 @@ export function memoryPublicationSourceRevisions(
     const qqParts = qqProof.get(entry.id);
     if (sources.length + qq.length === 0 || !qqParts) continue;
     const proof: unknown[] = [...qqParts];
+    const materials: PublicationMaterial[] = [...(qqCollected.materials.get(entry.id) ?? [])];
     let valid = true;
     for (const source of sources) {
       const turn = turns.get(source.turnId);
       const session = turn && sessions.get(turn.sessionId);
       const user = messages.get(source.userMessageId);
       const assistant = messages.get(source.assistantMessageId);
-      if (
-        !turn ||
-        !session ||
-        session.agentId !== entry.agentId ||
-        session.userId !== entry.userId ||
-        turn.sourceValid !== 1 ||
-        turn.generationStatus !== "completed" ||
-        !user ||
-        user.turnId !== turn.id ||
-        user.sessionId !== session.id ||
-        user.role !== "user" ||
-        user.status !== "completed" ||
-        !assistant ||
-        assistant.turnId !== turn.id ||
-        assistant.sessionId !== session.id ||
-        assistant.role !== "assistant" ||
-        assistant.status !== "completed"
-      ) {
+      const integrity =
+        turn && session
+          ? {
+              turnId: turn.id,
+              sessionId: session.id,
+              sourceValid: turn.sourceValid,
+              generationStatus: turn.generationStatus,
+              sessionAgentId: session.agentId,
+              sessionUserId: session.userId,
+              userTurnId: user?.turnId ?? null,
+              userSessionId: user?.sessionId ?? null,
+              userRole: user?.role ?? null,
+              userStatus: user?.status ?? null,
+              assistantTurnId: assistant?.turnId ?? null,
+              assistantSessionId: assistant?.sessionId ?? null,
+              assistantRole: assistant?.role ?? null,
+              assistantStatus: assistant?.status ?? null,
+            }
+          : undefined;
+      if (!webSourceIntact(entry.agentId, entry.userId, integrity)) {
         valid = false;
         break;
       }
+      for (const message of [user!, assistant!])
+        materials.push({
+          kind: "web_message",
+          id: message.id,
+          revision: bodyRevision(message.content),
+          own_cap: null,
+          consumable_cap: null,
+          producer_revision: null,
+        });
       proof.push([
         "web",
         source.turnId,
-        session.id,
+        session!.id,
         source.userMessageId,
         source.assistantMessageId,
         source.sequenceNo,
-        user.content,
-        assistant.content,
+        user!.content,
+        assistant!.content,
       ]);
     }
     if (!valid) continue;
+    captured?.set(entry.id, materials);
     const ordered = proof.map((item) => JSON.stringify(item)).sort();
     const contentRevision = contentRevisions.get(entry.id);
     if (contentRevision === undefined) continue;
@@ -362,6 +619,392 @@ export function memoryPublicationSourceRevisions(
         .update(JSON.stringify(["memory-publication-v1", entry.id, contentRevision, ordered]))
         .digest("hex"),
     );
+  }
+  return result;
+}
+
+const PUBLICATION_V2_PREFIX = "mempub:v2:";
+const digestPattern = /^[a-f0-9]{64}$/;
+const capSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(?:\d{3})?Z$/)
+  .refine((value) => Number.isFinite(Date.parse(value)))
+  .nullable();
+const materialSchema = z.strictObject({
+  kind: z.enum(["web_message", "qq_message_fact", "qq_observation"]),
+  id: z.string().min(1),
+  revision: z.string().min(1),
+  own_cap: capSchema,
+  consumable_cap: capSchema,
+  producer_revision: z.string().nullable(),
+});
+const publicationV2Schema = z.strictObject({
+  v: z.literal(2),
+  issuance: z.string().regex(digestPattern),
+  basis: z.string().regex(digestPattern),
+  facts: z.string().regex(digestPattern),
+  authority: z.string().regex(digestPattern),
+  sources: z.array(materialSchema).min(1),
+});
+export type MemoryPublicationV2 = z.infer<typeof publicationV2Schema>;
+function orderedMaterials(materials: readonly PublicationMaterial[]): PublicationMaterial[] {
+  const byKey = new Map<string, PublicationMaterial>();
+  for (const item of materials) {
+    const key = JSON.stringify([item.kind, item.id]),
+      previous = byKey.get(key);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(item))
+      fail("MEMORY_SOURCE_INVALID", "发布材料不一致");
+    byKey.set(key, item);
+  }
+  return [...byKey.values()].sort(
+    (a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id),
+  );
+}
+export function parseMemoryPublication(raw: string | null): MemoryPublicationV2 | "legacy" | null {
+  if (raw === null) return null;
+  if (digestPattern.test(raw)) return "legacy";
+  if (!raw.startsWith(PUBLICATION_V2_PREFIX)) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw.slice(PUBLICATION_V2_PREFIX.length));
+  } catch {
+    return null;
+  }
+  const parsed = publicationV2Schema.safeParse(value);
+  if (!parsed.success) return null;
+  const manifest = parsed.data;
+  if (
+    manifest.sources.some((item) =>
+      item.kind === "web_message"
+        ? item.own_cap !== null || item.consumable_cap !== null || item.producer_revision !== null
+        : item.own_cap === null ||
+          item.consumable_cap === null ||
+          Date.parse(item.consumable_cap) > Date.parse(item.own_cap) ||
+          (item.kind === "qq_observation" && item.producer_revision !== null) ||
+          (item.kind === "qq_message_fact" &&
+            (item.producer_revision === null || !/^[1-9]\d*$/.test(item.producer_revision))),
+    )
+  )
+    return null;
+  const keys = manifest.sources.map((item) => JSON.stringify([item.kind, item.id]));
+  if (new Set(keys).size !== keys.length) return null;
+  const ordered = orderedMaterials(manifest.sources);
+  if (
+    ordered.length !== manifest.sources.length ||
+    JSON.stringify(ordered) !== JSON.stringify(manifest.sources)
+  )
+    return null;
+  return PUBLICATION_V2_PREFIX + JSON.stringify(manifest) === raw ? manifest : null;
+}
+function publicationBasis(
+  entry: typeof schema.memoryEntries.$inferSelect,
+  manifest: Omit<MemoryPublicationV2, "basis" | "v">,
+): string {
+  return bodyRevision(
+    JSON.stringify([
+      "memory-publication-retained-v2",
+      entry.id,
+      entry.userId,
+      entry.agentId,
+      memoryRevision(entry),
+      manifest.facts,
+      manifest.authority,
+      manifest.issuance,
+      manifest.sources,
+    ]),
+  );
+}
+/** Current source authority only; original source identities stay separate from raw retention. */
+function publicationAuthorities(
+  orm: Orm,
+  entries: readonly (typeof schema.memoryEntries.$inferSelect)[],
+  facts: MemorySourceFactAssessment,
+  qqAuthority?: ReadonlyMap<string, unknown[]>,
+): ReadonlyMap<string, string> {
+  const db = (orm as Orm & { $client: import("bun:sqlite").Database }).$client;
+  const qq =
+    qqAuthority ??
+    collectQqEntryPublicationSources(
+      {
+        db,
+        orm,
+        now: new Date().toISOString(),
+        entries: entries.map((entry) => ({
+          id: entry.id,
+          agentId: entry.agentId,
+          sources: facts.observationSources.get(entry.id) ?? [],
+        })),
+      },
+      true,
+    ).authority;
+  const sessionIds = [
+    ...new Set([...facts.webSessions.values()].flat().filter((id): id is string => id !== null)),
+  ];
+  const conversations = new Map<
+    string,
+    Array<{ id: string; sourceId: string; userId: string; agentId: string; epoch: number }>
+  >();
+  chunked(sessionIds, (ids) => {
+    const rows = db
+      .query(`SELECT id,source_id AS sourceId,user_id AS userId,agent_id AS agentId,binding_epoch AS epoch FROM conversations
+      WHERE channel='web' AND closed_at IS NULL AND source_id IN (SELECT value FROM json_each(?))`)
+      .all(JSON.stringify(ids)) as Array<{
+      id: string;
+      sourceId: string;
+      userId: string;
+      agentId: string;
+      epoch: number;
+    }>;
+    for (const row of rows) {
+      const list = conversations.get(row.sourceId) ?? [];
+      list.push(row);
+      conversations.set(row.sourceId, list);
+    }
+  });
+  const result = new Map<string, string>();
+  const routes = new Map<string, unknown[] | null>();
+  for (const entry of entries) {
+    if (facts.states.get(entry.id) !== "valid") continue;
+    const parts = qq.get(entry.id);
+    if (!parts) continue;
+    const web: unknown[] = [];
+    let valid = true;
+    for (const id of facts.webSessions.get(entry.id) ?? []) {
+      const matched =
+        id === null
+          ? []
+          : (conversations.get(id) ?? []).filter(
+              (row) => row.userId === entry.userId && row.agentId === entry.agentId,
+            );
+      if (matched.length !== 1) {
+        valid = false;
+        break;
+      }
+      web.push(matched[0]);
+    }
+    const routeKey = JSON.stringify([
+      entry.agentId,
+      entry.scopeKey,
+      memoryJobScopes(JSON.parse(entry.configSnapshot)).route ?? null,
+    ]);
+    if (!routes.has(routeKey))
+      routes.set(routeKey, qqPublicationRouteAuthority({ db, orm }, entry));
+    const route = routes.get(routeKey)!;
+    if (!valid || route === null) continue;
+    result.set(
+      entry.id,
+      bodyRevision(
+        JSON.stringify([
+          parts.map((part) => JSON.stringify(part)).sort(),
+          web.map((part) => JSON.stringify(part)).sort(),
+          route,
+        ]),
+      ),
+    );
+  }
+  return result;
+}
+export function issueMemoryPublications(
+  orm: Orm,
+  entries: readonly (typeof schema.memoryEntries.$inferSelect)[],
+  now: string,
+): ReadonlyMap<string, string> {
+  if (!Number.isFinite(Date.parse(now))) return new Map();
+  const materials = new Map<string, PublicationMaterial[]>(),
+    qqAuthority = new Map<string, unknown[]>();
+  const live = memoryPublicationSourceRevisions(
+    orm,
+    entries,
+    new Map(entries.map((entry) => [entry.id, memoryRevision(entry)])),
+    now,
+    materials,
+    qqAuthority,
+  );
+  const facts = memorySourceFactAssessment(orm, entries),
+    authority = publicationAuthorities(orm, entries, facts, qqAuthority);
+  const result = new Map<string, string>();
+  for (const entry of entries) {
+    const issuance = live.get(entry.id),
+      sourceFacts = facts.revisions.get(entry.id),
+      sourceAuthority = authority.get(entry.id);
+    if (!issuance || !sourceFacts || !sourceAuthority) continue;
+    const sources = orderedMaterials(materials.get(entry.id) ?? []);
+    const content = { issuance, facts: sourceFacts, authority: sourceAuthority, sources };
+    const manifest: MemoryPublicationV2 = {
+      v: 2,
+      issuance,
+      basis: publicationBasis(entry, content),
+      facts: sourceFacts,
+      authority: sourceAuthority,
+      sources,
+    };
+    const encoded = PUBLICATION_V2_PREFIX + JSON.stringify(manifest);
+    if (parseMemoryPublication(encoded)) result.set(entry.id, encoded);
+  }
+  return result;
+}
+/** Batch read qualification. No writes and no regeneration of a lost issuance receipt. */
+export function retainedMemoryPublications(
+  orm: Orm,
+  entries: readonly (typeof schema.memoryEntries.$inferSelect)[],
+  now: string,
+): ReadonlyMap<string, string> {
+  if (!Number.isFinite(Date.parse(now))) return new Map();
+  const parsed = new Map<string, MemoryPublicationV2>();
+  const legacy: (typeof schema.memoryEntries.$inferSelect)[] = [];
+  for (const entry of entries) {
+    const value = parseMemoryPublication(entry.publicationSourceRevision);
+    if (value === "legacy") legacy.push(entry);
+    else if (value) parsed.set(entry.id, value);
+  }
+  const result = new Map<string, string>();
+  const legacyProof = memoryPublicationSourceRevisions(
+    orm,
+    legacy,
+    new Map(legacy.map((entry) => [entry.id, memoryRevision(entry)])),
+    now,
+  );
+  for (const entry of legacy)
+    if (legacyProof.get(entry.id) === entry.publicationSourceRevision)
+      result.set(entry.id, entry.publicationSourceRevision!);
+  const candidates = entries.filter((entry) => parsed.has(entry.id));
+  if (!candidates.length) return result;
+  const facts = memorySourceFactAssessment(orm, candidates);
+  const db = (orm as Orm & { $client: import("bun:sqlite").Database }).$client;
+  const qqAuthority = collectQqEntryPublicationSources(
+    {
+      db,
+      orm,
+      now,
+      entries: candidates.map((entry) => ({
+        id: entry.id,
+        agentId: entry.agentId,
+        sources: facts.observationSources.get(entry.id) ?? [],
+      })),
+    },
+    true,
+  ).authority;
+  const authorities = publicationAuthorities(orm, candidates, facts, qqAuthority);
+  const descriptors = new Map<string, readonly PublicationMaterial[]>();
+  const validCandidates = candidates.filter((entry) => {
+    const value = parsed.get(entry.id)!;
+    if (
+      value.facts !== facts.revisions.get(entry.id) ||
+      value.authority !== authorities.get(entry.id) ||
+      publicationBasis(entry, value) !== value.basis
+    )
+      return false;
+    const webIds = new Set(
+      (facts.webSources.get(entry.id) ?? []).flatMap((source) => [
+        source.userMessageId,
+        source.assistantMessageId,
+      ]),
+    );
+    const qqIds = new Set(
+      (facts.observationSources.get(entry.id) ?? []).map((source) => source.eventKey),
+    );
+    const coveredQqIds = new Set<string>();
+    for (const item of value.sources) {
+      if (item.kind === "web_message") {
+        if (!webIds.delete(item.id)) return false;
+      } else {
+        if (!qqIds.has(item.id)) return false;
+        coveredQqIds.add(item.id);
+      }
+    }
+    if (webIds.size || coveredQqIds.size !== qqIds.size) return false;
+    descriptors.set(entry.id, value.sources);
+    return true;
+  });
+  const qqValid = verifyRetainedQqMaterials(
+    {
+      db,
+      orm,
+      now,
+      entries: validCandidates.map((entry) => ({
+        id: entry.id,
+        agentId: entry.agentId,
+        sources: facts.observationSources.get(entry.id) ?? [],
+      })),
+    },
+    descriptors,
+    qqAuthority,
+  );
+  const webMaterials = [...descriptors.values()]
+    .flat()
+    .filter((item) => item.kind === "web_message");
+  const messages = loadMessageIntegrity(
+    orm,
+    webMaterials.map((item) => item.id),
+  );
+  for (const entry of validCandidates) {
+    const manifest = parsed.get(entry.id)!;
+    if (
+      !qqValid.has(entry.id) ||
+      manifest.sources.some(
+        (item) =>
+          item.kind === "web_message" &&
+          (!messages.has(item.id) ||
+            bodyRevision(messages.get(item.id)!.content) !== item.revision),
+      )
+    )
+      continue;
+    result.set(entry.id, entry.publicationSourceRevision!);
+  }
+  return result;
+}
+
+/** Revisions for tasks consuming derived memory, not original transcripts or new public publication. */
+export function memoryDerivedSourceRevisions(
+  orm: Orm,
+  entries: readonly (typeof schema.memoryEntries.$inferSelect)[],
+  now: string,
+  facts: MemorySourceFactAssessment = memorySourceFactAssessment(orm, entries),
+): ReadonlyMap<string, string> {
+  const routed = entries.filter(
+    (entry) =>
+      memoryJobScopes(
+        JSON.parse(entry.configSnapshot) as { scope_key?: unknown; qq_route?: unknown },
+      ).route !== undefined,
+  );
+  const publications = memoryPublicationSourceRevisions(
+    orm,
+    routed,
+    new Map(routed.map((entry) => [entry.id, memoryRevision(entry)])),
+    now,
+  );
+  const result = new Map<string, string>();
+  for (const entry of entries) {
+    if (facts.states.get(entry.id) !== "valid") continue;
+    const web = facts.webSources.get(entry.id) ?? [],
+      qq = facts.observationSources.get(entry.id) ?? [];
+    const scopes = memoryJobScopes(
+      JSON.parse(entry.configSnapshot) as { scope_key?: unknown; qq_route?: unknown },
+    );
+    if (scopes.route) {
+      if (
+        scopes.destination !== entry.scopeKey ||
+        !qq.length ||
+        qq.some((source) => source.scopeKey !== scopes.source)
+      )
+        continue;
+      const proof = publications.get(entry.id);
+      if (proof) result.set(entry.id, proof);
+    } else if (!(qq.length && !web.length && entry.scopeKey === entry.agentId)) {
+      result.set(
+        entry.id,
+        createHash("sha256")
+          .update(
+            JSON.stringify([
+              "memory-derived-source-v1",
+              entry.id,
+              memoryRevision(entry),
+              facts.revisions.get(entry.id),
+            ]),
+          )
+          .digest("hex"),
+      );
+    }
   }
   return result;
 }
@@ -406,9 +1049,7 @@ export function mergeJobSourceSet(
     )
   )
     return null;
-  const revisions = new Map(parents.map((row) => [row.id, memoryRevision(row)]));
-  if (memoryPublicationSourceRevisions(orm, parents, revisions, now).size !== parents.length)
-    return null;
+  if (memoryDerivedSourceRevisions(orm, parents, now).size !== parents.length) return null;
   const web = db
     .query(
       "SELECT memory_id,turn_id FROM memory_sources WHERE memory_id IN (SELECT value FROM json_each(?))",
@@ -528,13 +1169,19 @@ export function blockedMemorySourceRefs(
           q.every((source) => source.scopeKey === qq.sourceKey);
   });
   const revisions = new Map(eligible.map((row) => [row.id, memoryRevision(row)]));
-  const proofs = memoryPublicationSourceRevisions(orm, eligible, revisions, now);
+  const proofs = merge
+    ? memoryDerivedSourceRevisions(orm, eligible, now)
+    : memoryPublicationSourceRevisions(orm, eligible, revisions, now);
   for (const row of eligible) {
     const proof = proofs.get(row.id);
     if (!proof) continue;
-    const expiry = (qqBy.get(row.id) ?? []).flatMap((source) =>
-      [source.bodyExpires, source.factExpires].filter((value): value is string => value !== null),
-    );
+    const expiry = merge
+      ? []
+      : (qqBy.get(row.id) ?? []).flatMap((source) =>
+          [source.bodyExpires, source.factExpires].filter(
+            (value): value is string => value !== null,
+          ),
+        );
     const expiresAt = expiry.sort((a, b) => Date.parse(a) - Date.parse(b))[0];
     const id = JSON.stringify([jobId, row.id]);
     const revision = createHash("sha256")
@@ -612,49 +1259,118 @@ export function blockedMemorySourceStates(
   return result;
 }
 
-/** Single-entry management wrapper over the same proof algorithm. */
-export function memoryPublicationSourceRevision(
+export interface MemoryPreviewTarget {
+  channel: "web" | "onebot11";
+  id: string;
+  turnId: string | null;
+  role: "user" | "assistant" | null;
+  conversationId: string | null;
+  valid: boolean;
+}
+/** Page recorded identities first. Only the requested targets resolve canonical identities. */
+export function memoryPreviewTargets(
   orm: Orm,
-  entry: typeof schema.memoryEntries.$inferSelect,
-  contentRevision: string,
-  now: string,
-): string {
-  const revision = memoryPublicationSourceRevisions(
-    orm,
-    [entry],
-    new Map([[entry.id, contentRevision]]),
-    now,
-  ).get(entry.id);
-  if (revision === undefined) fail("MEMORY_SOURCE_INVALID", "记忆来源已失效");
-  return revision;
+  entry: Pick<typeof schema.memoryEntries.$inferSelect, "id" | "agentId" | "userId">,
+  page: { offset: number; limit: number } | { target: MemoryPreviewTarget },
+) {
+  const db = (orm as Orm & { $client: import("bun:sqlite").Database }).$client;
+  const total = (
+    db
+      .query(`SELECT (SELECT count(*)*2 FROM memory_sources WHERE memory_id=?) +
+    (SELECT count(*) FROM qq_memory_sources WHERE memory_id=?) AS total`)
+      .get(entry.id, entry.id) as { total: number }
+  ).total;
+  const exact = "target" in page;
+  const predicate = exact ? "WHERE channel=? AND id=? AND turnId IS ? AND role IS ?" : "";
+  const selected = db
+    .query(`WITH links AS (
+    SELECT 'web' AS channel,user_message_id AS id,turn_id AS turnId,'user' AS role FROM memory_sources WHERE memory_id=?
+    UNION ALL SELECT 'web',assistant_message_id,turn_id,'assistant' FROM memory_sources WHERE memory_id=?
+    UNION ALL SELECT 'onebot11',event_key,NULL,NULL FROM qq_memory_sources WHERE memory_id=?
+  ) SELECT * FROM links ${predicate} ORDER BY channel,turnId,id LIMIT ? OFFSET ?`)
+    .all(
+      entry.id,
+      entry.id,
+      entry.id,
+      ...(exact ? [page.target.channel, page.target.id, page.target.turnId, page.target.role] : []),
+      exact ? 2 : page.limit,
+      exact ? 0 : page.offset,
+    ) as Array<Omit<MemoryPreviewTarget, "conversationId" | "valid">>;
+  if (!selected.length) return { total, targets: [] as MemoryPreviewTarget[] };
+  const targets = db
+    .query(`WITH selected AS (SELECT value FROM json_each(?)), resolved AS (
+    SELECT selected.value AS item,
+      CASE WHEN json_extract(selected.value,'$.channel')='web' THEN (
+        SELECT CASE WHEN count(*)=1 THEN min(c.id) END FROM conversations c JOIN turns t ON t.session_id=c.source_id
+        WHERE t.id=json_extract(selected.value,'$.turnId') AND c.channel='web' AND c.agent_id=?
+      ) ELSE (
+        SELECT CASE WHEN count(*)=1 THEN min(c.id) END FROM conversation_events ce JOIN conversations c ON c.id=ce.conversation_id
+        WHERE ce.source_kind='qq_event' AND ce.kind='inbound' AND ce.source_id=json_extract(selected.value,'$.id')
+          AND c.channel='onebot11' AND c.agent_id=?
+      ) END AS conversationId,
+      CASE WHEN json_extract(selected.value,'$.channel')='web' THEN EXISTS (
+        SELECT 1 FROM memory_sources ms JOIN turns t ON t.id=ms.turn_id JOIN sessions s ON s.id=t.session_id
+        JOIN messages u ON u.id=ms.user_message_id JOIN messages a ON a.id=ms.assistant_message_id
+        WHERE ms.memory_id=? AND ms.turn_id=json_extract(selected.value,'$.turnId')
+          AND s.agent_id=? AND s.user_id=? AND t.source_valid=1 AND t.generation_status='completed'
+          AND u.turn_id=t.id AND a.turn_id=t.id AND u.session_id=s.id AND a.session_id=s.id
+          AND u.role='user' AND a.role='assistant' AND u.status='completed' AND a.status='completed'
+          AND u.sequence_no=ms.sequence_no
+          AND ((json_extract(selected.value,'$.role')='user' AND u.id=json_extract(selected.value,'$.id'))
+            OR (json_extract(selected.value,'$.role')='assistant' AND a.id=json_extract(selected.value,'$.id')))
+      ) ELSE EXISTS (
+        SELECT 1 FROM qq_memory_sources qs JOIN qq_events e ON e.event_key=qs.event_key
+        WHERE qs.memory_id=? AND qs.event_key=json_extract(selected.value,'$.id') AND e.agent_id=?
+          AND qs.message_id=e.message_id AND qs.occurred_at_seconds=e.occurred_at_seconds
+          AND qs.speaker_kind=e.speaker_kind AND qs.speaker_id IS e.speaker_id
+          AND qs.conversation_key=json_array('qq',e.account_id,e.conversation_kind,e.peer_id)
+          AND CASE WHEN json_valid(qs.scope_key) THEN CASE WHEN json_type(qs.scope_key)='array'
+            THEN json_extract(qs.scope_key,'$[0]') IS NOT 'qq'
+              OR qs.scope_key=json_array('qq',e.account_id,e.conversation_kind,e.peer_id,e.agent_id)
+            ELSE 1 END ELSE 1 END
+      ) END AS valid FROM selected
+  ) SELECT item,conversationId,valid FROM resolved`)
+    .all(
+      JSON.stringify(selected),
+      entry.agentId,
+      entry.agentId,
+      entry.id,
+      entry.agentId,
+      entry.userId,
+      entry.id,
+      entry.agentId,
+    ) as Array<{ item: string; conversationId: string | null; valid: number }>;
+  return {
+    total,
+    targets: targets.map(({ item, conversationId, valid }) => ({
+      ...JSON.parse(item),
+      conversationId,
+      valid: valid === 1,
+    })) as MemoryPreviewTarget[],
+  };
 }
 
 /** Metadata only: source identities and grants, never message bodies or read authorization. */
 export function memoryAccessMetadataBatch(
   orm: Orm,
-  entries: readonly (typeof schema.memoryEntries.$inferSelect)[],
+  entries: readonly Pick<
+    typeof schema.memoryEntries.$inferSelect,
+    "id" | "agentId" | "userId" | "visibility" | "visibilityRevision"
+  >[],
 ): ReadonlyMap<string, MemoryAccessMetadata> {
   const result = new Map<string, MemoryAccessMetadata>();
   if (!entries.length) return result;
   const db = (orm as Orm & { $client: import("bun:sqlite").Database }).$client;
-  const web = new Map<string, Array<{ sessionId: string | null }>>();
-  const qq = new Map<
-    string,
-    Array<{ eventKey: string; scopeKey: string; conversationKey: string }>
-  >();
+  const facts = memorySourceFactAssessment(orm, entries);
+  const web = new Map(
+    [...facts.webSessions].map(([id, sessions]) => [
+      id,
+      sessions.map((sessionId) => ({ sessionId })),
+    ]),
+  );
+  const qq = facts.observationSources;
   const grants = new Map<string, string[]>();
   chunked([...new Set(entries.map((entry) => entry.id))], (ids) => {
-    const webRows = db
-      .query(`SELECT m.memory_id AS memoryId,t.session_id AS sessionId
-      FROM memory_sources m LEFT JOIN turns t ON t.id=m.turn_id
-      WHERE m.memory_id IN (SELECT value FROM json_each(?))`)
-      .all(JSON.stringify(ids)) as Array<{ memoryId: string; sessionId: string | null }>;
-    for (const row of webRows) {
-      const list = web.get(row.memoryId) ?? [];
-      list.push(row);
-      web.set(row.memoryId, list);
-    }
-    for (const [id, rows] of observationSources(orm, ids)) qq.set(id, rows);
     const recipientRows = orm
       .select()
       .from(schema.memoryReadGrants)
@@ -799,15 +1515,18 @@ export function memoryAccessMetadataBatch(
         (a.conversation_id ?? "").localeCompare(b.conversation_id ?? ""),
       ),
       origin_complete: complete,
-      source_validity: "not_evaluated",
-      runtime_eligibility: "not_evaluated",
-      raw_preview: "not_evaluated",
+      source_validity: facts.states.get(entry.id) ?? "unknown",
+      runtime_eligibility: "unknown",
+      raw_preview: "unknown",
     });
   }
   return result;
 }
 
-export function observationContentSources(rows: QqMemorySourceRow[]): ContentSource[] {
+export function observationContentSources(
+  rows: QqMemorySourceRow[],
+  validity?: ReadonlyMap<string, boolean>,
+): ContentSource[] {
   return rows.map((row) => ({
     type: "qq_observation" as const,
     scope_key: row.scopeKey,
@@ -817,7 +1536,7 @@ export function observationContentSources(rows: QqMemorySourceRow[]): ContentSou
     occurred_at_seconds: row.occurredAtSeconds,
     speaker_kind: row.speakerKind as "member" | "anonymous" | "system",
     speaker_id: row.speakerId,
-    valid: true,
+    valid: validity?.get(JSON.stringify([row.memoryId, row.eventKey])) ?? true,
   }));
 }
 

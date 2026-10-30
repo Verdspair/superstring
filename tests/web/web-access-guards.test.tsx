@@ -140,11 +140,12 @@ describe("web access guards", () => {
 });
 
 describe("web access panel guards", () => {
-  it("uses the full-width single container", async () => {
+  it("uses the full-width single body without duplicating the workspace horizontal gutter", async () => {
     const { container } = await renderPanel();
     const root = container.firstElementChild as HTMLElement;
     expect(root.className).toContain("w-full");
-    expect(root.className).toContain("px-4");
+    expect(root.className).not.toContain("px-4");
+    expect(root.className).toContain("min-w-0");
     expect(root.className).not.toContain("max-w-6xl");
   });
 

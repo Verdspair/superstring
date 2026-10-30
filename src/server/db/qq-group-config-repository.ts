@@ -3,6 +3,7 @@
 // 共享契约里的 `mergeQqGroupScheme`）；写路径整份提交，在一个 IMMEDIATE 事务里做四重比较交换：
 // 绑定修订、当前 Agent 身份、目标基础方案修订、配置修订；没有内容变化不写库、不涨修订。
 
+import type { Database } from "bun:sqlite";
 import { type QqSchemeRhythm, QqSchemeRhythmSchema } from "../../shared/contracts/qq";
 import {
   isBothTrueInteractionPair,
@@ -251,9 +252,10 @@ export function updateQqGroupConfig(
   args: UpdateQqGroupConfigArgs,
 ): QqGroupConfigResponse {
   const payload = args.payload;
-  return orm.transaction(
-    (tx) => {
-      const binding = requireGroupBinding(tx, args.bindingId);
+  const db = (orm as unknown as { $client: Database }).$client;
+  return db
+    .transaction(() => {
+      const binding = requireGroupBinding(orm, args.bindingId);
       if (binding.revision !== payload.expected_binding_revision) {
         fail("MEMORY_STATE_CONFLICT", "QQ绑定已变化，请重新加载后保存");
       }
@@ -262,7 +264,7 @@ export function updateQqGroupConfig(
         fail("MEMORY_STATE_CONFLICT", "本群配置属于另一个助手，请重新加载后保存");
       }
       const schemeId = payload.scheme_id ?? binding.schemeId;
-      const scheme = readQqScheme(tx, schemeId);
+      const scheme = readQqScheme(orm, schemeId);
       if (scheme === null) fail("MEMORY_NOT_FOUND", "方案不存在", 404);
       if (scheme.revision !== payload.expected_scheme_revision) {
         fail("MEMORY_STATE_CONFLICT", "方案已变化，请重新加载后保存");
@@ -272,7 +274,7 @@ export function updateQqGroupConfig(
         fail("MEMORY_STATE_CONFLICT", "换方案需要明确保留还是重置本群方案差异");
       }
 
-      const current = readQqGroupAgentConfig(tx, binding);
+      const current = readQqGroupAgentConfig(orm, binding);
       if (current.revision !== payload.expected_revision) {
         fail("MEMORY_STATE_CONFLICT", "本群配置已变化，请重新加载后保存");
       }
@@ -289,7 +291,7 @@ export function updateQqGroupConfig(
       ) {
         fail("MEMORY_SOURCE_INVALID", "私聊不支持群聊专属的能力停用和按发言人拆分设置");
       }
-      assertQqGroupStickerSelection(tx, schemeId, current.overrides, overrides);
+      assertQqGroupStickerSelection(orm, schemeId, current.overrides, overrides);
 
       // 模式互斥在保存边界一次校验，用 raw 组合而不是 legacy 归一后的读值：
       // 差异显式双 true 直接拒绝；否则把差异覆盖到基础方案上解析出 raw 生效对，
@@ -319,10 +321,10 @@ export function updateQqGroupConfig(
         if (result.kind !== "saved") {
           fail("MEMORY_STATE_CONFLICT", "QQ绑定已变化，请重新加载后保存");
         }
-        saveQqBindingRow(tx, { binding: result.binding, expectedRevision: binding.revision });
+        saveQqBindingRow(orm, { binding: result.binding, expectedRevision: binding.revision });
       }
 
-      writeQqGroupAgentConfigRow(tx, {
+      writeQqGroupAgentConfigRow(orm, {
         bindingId: binding.id,
         agentId: binding.agentId,
         overrides,
@@ -331,8 +333,7 @@ export function updateQqGroupConfig(
       });
 
       // 事务内重读：回的就是落库后的状态（含绑定与配置两个修订）。
-      return readQqGroupConfig(tx, binding.id);
-    },
-    { behavior: "immediate" },
-  );
+      return readQqGroupConfig(orm, binding.id);
+    })
+    .immediate();
 }

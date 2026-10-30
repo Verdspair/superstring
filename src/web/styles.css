@@ -340,6 +340,39 @@ html[data-interface-size="comfortable"] {
   }
 }
 
+/* Shared geometry does not own a page's viewport or retained scroll state. */
+.workspace-page {
+  width: 100%;
+  min-width: 0;
+  max-width: 1160px;
+  margin-inline: auto;
+  padding: 28px 36px 64px;
+}
+.workspace-actions {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.settings-content-padding {
+  padding: 12px;
+}
+@media (max-width: 768px) {
+  .workspace-page {
+    padding: 20px 16px 48px;
+  }
+  .settings-content-padding {
+    padding: 10px;
+  }
+  .workspace-page-actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+}
+
 /* Shared page hierarchy follows the library workspace without owning page state. */
 .workspace-page-header {
   flex-shrink: 0;
@@ -386,21 +419,6 @@ html[data-interface-size="comfortable"] {
   color: var(--muted-foreground);
 }
 
-/* Scoped un-boxed card presentation for agent workspace studio tabs */
-.agent-workspace-content [data-slot="card"] {
-  border: 0;
-  border-radius: 0;
-  background-color: transparent;
-  box-shadow: none;
-  padding-top: 0;
-  padding-bottom: 0;
-  gap: 16px;
-}
-.agent-workspace-content [data-slot="card-header"],
-.agent-workspace-content [data-slot="card-content"] {
-  padding-left: 0;
-  padding-right: 0;
-}
 /* =========================================================================
    Nordic Tonal Themes: Lavender, Fjord, Birch
    Complete 39 Reference Literal Tokens -> Product Semantic Role Aliases
@@ -1451,6 +1469,13 @@ html[data-theme="blossom"] [data-slot="conversation-surface"] {
     color: var(--muted-foreground);
     opacity: 0.6;
   }
+}
+
+/* The positioning wrapper must share its tooltip's temporary trigger-press hit boundary. */
+[data-radix-popper-content-wrapper]:has(
+  > [data-slot="tooltip-content"][data-trigger-press="true"]
+) {
+  pointer-events: none;
 }
 
 /* Enter only: hidden/visited workspaces keep their own DOM, drafts and scroll owner. */

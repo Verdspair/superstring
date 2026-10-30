@@ -53,6 +53,8 @@ const toolEntry: ToolDirectoryEntry = {
   capability: "read",
   effect: "read",
   sandboxCallable: true,
+  invocation: "action" as const,
+  scope: "conversation" as const,
   origin: "system",
   globalEnabled: true,
   functionId: "memory-query",

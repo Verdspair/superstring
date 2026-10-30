@@ -12,6 +12,7 @@ import path from "node:path";
 import { getTableConfig } from "drizzle-orm/sqlite-core";
 import { createApp } from "../../src/server/app";
 import { toOrmHandle } from "../../src/server/db/connection";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import {
   insertQqBinding,
   parseQqGroupAgentConfigRow,
@@ -23,6 +24,7 @@ import {
   readEffectiveQqScheme,
   readQqGroupCapabilityRevision,
   readQqGroupCapabilityRevisions,
+  updateQqGroupConfig,
 } from "../../src/server/db/qq-group-config-repository";
 import {
   createQqScheme,
@@ -1176,7 +1178,8 @@ describe("模式互斥：legacy 双 true 绑定的保存边界", () => {
       }
       const SCHEME = "20000000-0000-4000-8000-000000000054";
       const BINDING = "30000000-0000-4000-8000-000000000054";
-      const AGENT = "10000000-0000-4000-8000-000000000054";
+      const AGENT = DEFAULT_AGENT_ID;
+      ensureDefaults(toOrmHandle(db).orm, "fixture");
       db.exec(`
         INSERT INTO qq_schemes (id, name, revision, created_at, updated_at)
           VALUES ('${SCHEME}', '存量方案', 1, 'then', 'then');
@@ -1250,5 +1253,116 @@ describe("模式互斥：legacy 双 true 绑定的保存边界", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("binding and canonical writes share the native transaction", () => {
+  it("commits explicit initial switches, config and canonical epoch together and leaves no-op byte-stable", () => {
+    const h = setup();
+    const binding = groupBinding(h.orm, h.scheme.id, "49990", {
+      direct_reply: true,
+      follow_up: false,
+      chiming_in: false,
+      idle_topic: false,
+    });
+    const journal = new ConversationEventRepository(h.db);
+    const first = journal.ensureOneBotActivation(binding.id)!;
+    expect(first.binding_epoch).toBe(1);
+    expect(configRows(h.orm, binding.id)).toHaveLength(1);
+    expect(readQqGroupConfigRow(h.orm, binding.id, binding.agentId)?.revision).toBe(1);
+    const beforeBinding = bindingRow(h.orm, binding.id);
+    const beforeConfig = configRows(h.orm, binding.id);
+    const beforeConversations = h.db
+      .query("SELECT * FROM conversations WHERE source_id=?")
+      .all(binding.id);
+    expect(saveQqBinding(h.orm, { binding, expectedRevision: binding.revision })).toEqual(binding);
+    expect(bindingRow(h.orm, binding.id)).toEqual(beforeBinding);
+    expect(configRows(h.orm, binding.id)).toEqual(beforeConfig);
+    expect(h.db.query("SELECT * FROM conversations WHERE source_id=?").all(binding.id)).toEqual(
+      beforeConversations,
+    );
+  });
+
+  it("rolls back a group insert and its canonical activation when initial config persistence fails", () => {
+    const h = setup();
+    h.db.exec(`CREATE TRIGGER reject_initial_group_config BEFORE INSERT ON qq_group_agent_configs
+      BEGIN SELECT RAISE(ABORT,'synthetic initial config failure'); END`);
+    const draft = createQqBinding({
+      id: crypto.randomUUID(),
+      accountId: "10001",
+      kind: "group",
+      peerId: "49991",
+      agentId: DEFAULT_AGENT_ID,
+      schemeId: h.scheme.id,
+      paused: false,
+      shareWebMemory: false,
+      triggers: { direct_reply: true, follow_up: false, chiming_in: false, idle_topic: false },
+    });
+    if (draft.kind !== "saved") throw new Error("fixture binding rejected");
+    expect(() => insertQqBinding(h.orm, draft.binding)).toThrow("synthetic initial config failure");
+    expect(readQqBinding(h.orm, draft.binding.id)).toBeNull();
+    expect(
+      h.db.query("SELECT id FROM conversations WHERE source_id=?").get(draft.binding.id),
+    ).toBeNull();
+    expect(configRows(h.orm, draft.binding.id)).toEqual([]);
+  });
+
+  it("rolls back binding mirror and config together after the row-only savepoint succeeds", () => {
+    const h = setup();
+    const binding = groupBinding(h.orm, h.scheme.id, "49992");
+    const beforeBinding = bindingRow(h.orm, binding.id);
+    const beforeConversations = h.db
+      .query("SELECT * FROM conversations WHERE source_id=?")
+      .all(binding.id);
+    h.db.exec(`CREATE TRIGGER reject_group_config BEFORE INSERT ON qq_group_agent_configs
+      BEGIN SELECT RAISE(ABORT,'synthetic config commit failure'); END`);
+    expect(() =>
+      updateQqGroupConfig(h.orm, {
+        bindingId: binding.id,
+        payload: {
+          agent_id: binding.agentId,
+          expected_binding_revision: binding.revision,
+          expected_scheme_revision: h.scheme.revision,
+          expected_revision: 0,
+          overrides: { triggers: { direct_reply: true } },
+          disabled_capabilities: [],
+        },
+      }),
+    ).toThrow("synthetic config commit failure");
+    expect(bindingRow(h.orm, binding.id)).toEqual(beforeBinding);
+    expect(configRows(h.orm, binding.id)).toEqual([]);
+    expect(h.db.query("SELECT * FROM conversations WHERE source_id=?").all(binding.id)).toEqual(
+      beforeConversations,
+    );
+  });
+
+  it("keeps the old activation and binding when a rebind cannot create its canonical successor", () => {
+    const h = setup();
+    const binding = groupBinding(h.orm, h.scheme.id, "49993");
+    const otherAgent = crypto.randomUUID();
+    h.db
+      .query(`INSERT INTO agents SELECT ?,name,system_prompt,description,additional_instructions,p5_config,
+      model_name,temperature,memory_consolidation_model_name,memory_consolidation_prompt,
+      memory_consolidation_additional_instructions,memory_retrieval_model_name,memory_retrieval_prompt,
+      context_compression_model_name,persona_intensity,is_active,config_version,updated_at,created_at
+      FROM agents WHERE id=?`)
+      .run(otherAgent, DEFAULT_AGENT_ID);
+    const journal = new ConversationEventRepository(h.db);
+    const beforeBinding = bindingRow(h.orm, binding.id);
+    const beforeConversations = h.db
+      .query("SELECT * FROM conversations WHERE source_id=?")
+      .all(binding.id);
+    h.db.exec(`CREATE TRIGGER reject_successor BEFORE INSERT ON conversations
+      WHEN new.binding_epoch>1 BEGIN SELECT RAISE(ABORT,'synthetic successor failure'); END`);
+    const changed = updateQqBinding(binding, { agentId: otherAgent }, binding.revision);
+    if (changed.kind !== "saved") throw new Error("fixture rebind rejected");
+    expect(() =>
+      saveQqBinding(h.orm, { binding: changed.binding, expectedRevision: binding.revision }),
+    ).toThrow("synthetic successor failure");
+    expect(bindingRow(h.orm, binding.id)).toEqual(beforeBinding);
+    expect(h.db.query("SELECT * FROM conversations WHERE source_id=?").all(binding.id)).toEqual(
+      beforeConversations,
+    );
+    expect(journal.ensureOneBotActivation(binding.id)?.agent_id).toBe(binding.agentId);
   });
 });

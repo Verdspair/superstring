@@ -18,7 +18,6 @@ import {
   inputUnits,
   textMessage,
 } from "../../src/server/agent/context-engine";
-import { estimateMessages } from "../../src/server/agent/conversation-context";
 import {
   createModelAdmission,
   type ModelPort,
@@ -28,11 +27,15 @@ import { AgentRunRepository } from "../../src/server/db/agent-run-repository";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { createLmStudioVisionClient } from "../../src/server/llm/vision-client";
-import { SPEECH_REPLY_DESCRIPTION } from "../../src/shared/contracts/agent-action-descriptions";
+import { estimateMessages } from "../../src/server/modules/memory-query";
 import {
+  REPLY_STICKER_DESCRIPTION,
+  REPLY_TEXT_DESCRIPTION,
+} from "../../src/shared/contracts/agent-action-descriptions";
+import {
+  InlineOutputDraftSchema,
   ReplyStickerArgumentsSchema,
   ReplyTextArgumentsSchema,
-  SpeechReplyArgumentsSchema,
 } from "../../src/shared/contracts/agent-output";
 import {
   type RunEvent,
@@ -86,12 +89,22 @@ const direct = {
   },
 };
 
+const terminalArgumentsSchema = z.strictObject({
+  outputs: z.array(InlineOutputDraftSchema).min(1),
+});
+const terminalDescription: ActionDescription = {
+  name: "test.terminal",
+  capability: "conversation.reply",
+  effect: "write",
+  description: "Submit inline output to the host.",
+  parameters: z.toJSONSchema(terminalArgumentsSchema),
+};
 const terminalAction = {
-  descriptions: [SPEECH_REPLY_DESCRIPTION],
+  descriptions: [terminalDescription],
   parse: (calls: readonly { name: string; arguments: Record<string, unknown> }[]) => {
-    if (calls.length !== 1 || calls[0]?.name !== SPEECH_REPLY_DESCRIPTION.name)
+    if (calls.length !== 1 || calls[0]?.name !== terminalDescription.name)
       throw new Error("invalid terminal reply contribution");
-    return SpeechReplyArgumentsSchema.parse(calls[0].arguments).outputs;
+    return terminalArgumentsSchema.parse(calls[0].arguments).outputs;
   },
 };
 function setup(
@@ -1857,12 +1870,12 @@ describe("retained carrier action assertions", () => {
 });
 
 describe("legacy single terminal reply target handling", () => {
-  it("preserves per-target unauthorized outcomes for one speech.reply contribution", async () => {
+  it("preserves per-target unauthorized outcomes for one test.terminal contribution", async () => {
     const { runtime } = setup({
       async complete() {
         return JSON.stringify({
           kind: "invoke",
-          name: "speech.reply",
+          name: "test.terminal",
           arguments: {
             outputs: [
               { targetId: "allowed", kind: "inline", text: "ok" },
@@ -1887,10 +1900,7 @@ describe("legacy single terminal reply target handling", () => {
 
 describe("composable terminal reply action", () => {
   const terminalComposition = {
-    descriptions: [
-      { ...SPEECH_REPLY_DESCRIPTION, name: "reply.text", description: "Contribute text" },
-      { ...SPEECH_REPLY_DESCRIPTION, name: "reply.sticker", description: "Contribute one sticker" },
-    ],
+    descriptions: [REPLY_TEXT_DESCRIPTION, REPLY_STICKER_DESCRIPTION],
     parse(
       calls: readonly { name: string; arguments: Record<string, unknown> }[],
       authorizedTargets?: readonly string[],
@@ -2278,7 +2288,7 @@ describe("terminal reply action", () => {
         calls++;
         return JSON.stringify({
           kind: "invoke",
-          name: "speech.reply",
+          name: "test.terminal",
           arguments: {
             outputs: [{ kind: "inline", targetId: "web", text: "hi there" }],
           },
@@ -2313,7 +2323,7 @@ describe("terminal reply action", () => {
           });
         return JSON.stringify({
           kind: "invoke",
-          name: "speech.reply",
+          name: "test.terminal",
           arguments: {
             outputs: [{ kind: "inline", targetId: "web", text: "after tool" }],
           },
@@ -2342,7 +2352,7 @@ describe("terminal reply action", () => {
           kind: "invoke",
           calls: [
             {
-              name: "speech.reply",
+              name: "test.terminal",
               arguments: { outputs: [{ kind: "inline", targetId: "web", text: "x" }] },
             },
             { name: "records.query", arguments: { query: "x" } },
@@ -2689,5 +2699,223 @@ describe("trusted host terminal gate", () => {
     expect(
       repository.listEvents(run.runId).filter((event) => event.type === "action_result"),
     ).toHaveLength(2);
+  });
+});
+
+describe("model-visible observations keep internal authority", () => {
+  for (const structured of [false, true]) {
+    it(`preserves full guards and result data while projecting authority for ${structured ? "structured" : "streamed"} output`, async () => {
+      const authority = [
+        "memory_access",
+        "knowledge_grant",
+        "tool_permission",
+        "qq_group_capability",
+        "execution_module",
+      ].map((kind) => ({ kind, id: `${kind}:owner`, revision: `${kind}:revision` }));
+      const visible = [
+        { kind: "test_business_source", id: "document", revision: "content-1" },
+        { kind: "future_source", id: "unclassified", revision: "future-1" },
+      ];
+      const sources = [...authority, ...visible];
+      const value = {
+        status: "ok",
+        kind: "task_guidance",
+        items: [
+          {
+            id: "entry",
+            bodyRef: "opaque-body-reference",
+            text: "A source reported a plan, not a confirmed result.",
+            source_ids: ["event-1"],
+            speaker: "person-1",
+            source_time: { kind: "utterance", unix_seconds: 1_900_000_000 },
+            sources: authority,
+            images: [{ sourceId: "image-1", revision: "image-revision", sha256: "image-hash" }],
+          },
+        ],
+        nextCursor: "opaque-next-page",
+      };
+      const original = structuredClone({ value, sources });
+      const requests: ModelRequest[] = [];
+      const observed: ActionObservation[] = [];
+      const renderedSources: ActionObservation["sources"][] = [];
+      const guardCalls: ActionObservation["sources"][] = [];
+      const beforeEffects: ActionObservation[][] = [];
+      let writes = 0;
+      let decisions = 0;
+      const reader = boundAction();
+      reader.execute = async () => ({ value, sources });
+      const writer = boundAction("records.append");
+      writer.description.effect = "write";
+      writer.execute = async () => {
+        writes++;
+        return { value: { status: "ok" }, sources: [] };
+      };
+      const { runtime, repository } = setup({
+        async complete(request) {
+          requests.push(request);
+          if (++decisions === 1)
+            return JSON.stringify({
+              kind: "invoke",
+              name: reader.description.name,
+              arguments: { query: "event" },
+            });
+          if (decisions === 2)
+            return JSON.stringify({
+              kind: "invoke",
+              calls: [
+                { name: reader.description.name, arguments: { query: "event" } },
+                { name: writer.description.name, arguments: { query: "record result" } },
+              ],
+            });
+          if (decisions === 3)
+            return '{"kind":"final","outputs":[{"kind":"generate","targetId":"web","instructions":"Use the returned evidence"}]}';
+          return '{"text":"supported response"}';
+        },
+        async *streamText(request) {
+          requests.push(request);
+          yield "supported response";
+        },
+      });
+      const run = await runtime.run(
+        { ...spec, availableActions: [reader.description, writer.description] },
+        {
+          ...direct,
+          outputMode: structured ? "buffered" : "stream",
+          actions: [reader, writer],
+          context: {
+            async read(input) {
+              observed.splice(0, observed.length, ...input.observations);
+              return { pending: [textMessage("user", "Use this source.")] };
+            },
+            assertSources(refs) {
+              for (const ref of refs) {
+                expect(sources).toContainEqual(ref);
+              }
+              guardCalls.push(structuredClone(refs));
+            },
+            assertBeforeActionEffects(input) {
+              expect(writes).toBe(0);
+              beforeEffects.push(structuredClone([...input.observations]));
+            },
+          },
+          onContext(context) {
+            renderedSources.push(structuredClone(context.sources));
+          },
+          ...(structured
+            ? {
+                prepareGeneration: async () => ({
+                  responseEnvelope: {
+                    responseSchema: { type: "object", properties: { text: { type: "string" } } },
+                    parse: (raw: string) => ({ text: String(JSON.parse(raw).text) }),
+                  },
+                }),
+              }
+            : {}),
+          async commitOutputs(outputs) {
+            expect(outputs[0]?.text).toBe("supported response");
+            expect(observed.filter((item) => item.name === reader.description.name)).toHaveLength(
+              2,
+            );
+            expect(observed[0].sources).toEqual(sources);
+          },
+        },
+      );
+      expect(run.status).toBe("completed");
+      expect(writes).toBe(1);
+      expect(requests).toHaveLength(4);
+      expect(beforeEffects).toHaveLength(1);
+      expect(
+        beforeEffects[0]
+          .filter((item) => item.name === reader.description.name)
+          .every((item) => JSON.stringify(item.sources) === JSON.stringify(sources)),
+      ).toBe(true);
+      expect(guardCalls.some((refs) => JSON.stringify(refs) === JSON.stringify(sources))).toBe(
+        true,
+      );
+      expect(
+        renderedSources.slice(1).every((refs) => JSON.stringify(refs) === JSON.stringify(sources)),
+      ).toBe(true);
+      expect({ value, sources }).toEqual(original);
+      const fullReads = observed.filter((item) => item.name === reader.description.name);
+      for (const request of requests.slice(1)) {
+        const projected = request.messages.flatMap((message) =>
+          message.content.flatMap((part) => {
+            if (part.kind !== "text") return [];
+            try {
+              const envelope = JSON.parse(part.text);
+              return envelope.kind === "action_observation" &&
+                envelope.value.name === reader.description.name
+                ? [envelope.value]
+                : [];
+            } catch {
+              return [];
+            }
+          }),
+        );
+        expect(projected.length).toBeGreaterThan(0);
+        for (const item of projected) {
+          expect(item.value).toEqual(original.value);
+          expect(item.arguments).toEqual({ query: "event" });
+          expect(item.sources).toEqual(visible);
+        }
+        if (projected.length === 2)
+          expect(projected[1]).toMatchObject({
+            repeatWarning: "同一个调用这是第 2 次：换个做法，不要原样重试",
+          });
+      }
+      expect(fullReads[0].sources).toEqual(original.sources);
+      const finalStep = repository.getRun(run.runId)?.steps.at(-1);
+      if (!finalStep) throw new Error("missing generation step");
+      expect(repository.getContext(finalStep.context)?.sources).toEqual(sources);
+      repository.redactSource(authority[0].kind, authority[0].id, "revoked");
+      expect(repository.getContext(finalStep.context)?.messages).toBeNull();
+    });
+  }
+});
+
+describe("evidence budget refusals remain ordinary observations", () => {
+  it("completes a visible scripted answer after an unavailable query without a special finalization path", async () => {
+    const requests: ModelRequest[] = [];
+    let backendCalls = 0;
+    const actions = createBuiltInActions(
+      {
+        memory: {
+          query: async () => {
+            backendCalls++;
+            return [];
+          },
+        },
+      },
+      {
+        assertSources: () => {},
+        fit: async () => () => true,
+        budget: () => 0,
+      },
+    );
+    const { runtime } = setup({
+      async complete(request) {
+        requests.push(request);
+        return requests.length === 1
+          ? '{"kind":"invoke","name":"memory.query","arguments":{"query":"event"}}'
+          : '{"kind":"final","outputs":[{"kind":"generate","targetId":"web","instructions":"Explain the current evidence limit"}]}';
+      },
+      async *streamText(request) {
+        requests.push(request);
+        yield "The currently readable records are insufficient to confirm that.";
+      },
+    });
+    const run = await runtime.run(
+      { ...spec, availableActions: actions.map((action) => action.description) },
+      { ...direct, actions },
+    );
+    expect(run.status).toBe("completed");
+    expect(run.outputs[0]?.text).toBe(
+      "The currently readable records are insufficient to confirm that.",
+    );
+    expect(requests).toHaveLength(3);
+    expect(backendCalls).toBe(1);
+    for (const request of requests.slice(1)) {
+      expect(JSON.stringify(request.messages)).toContain("CONTEXT_BUDGET_EXCEEDED");
+    }
   });
 });

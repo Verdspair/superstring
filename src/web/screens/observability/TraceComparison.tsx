@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { RuntimeSpanFilters } from "../../../shared/contracts/runtime-observability";
 import { useRuntimeWaterfall } from "../../features/observability/use-runtime-traces";
+import { RunWorkspace } from "../runs/RunEntry";
 import { EvidenceWorkbench } from "./EvidenceWorkbench";
 import { ModelCallsTable } from "./ModelCallsTable";
 import { milliseconds, ReadError, StatusMark, traceTask } from "./presentation";
@@ -81,7 +82,11 @@ function ComparisonColumn({ id, filters }: { id: string; filters: RuntimeSpanFil
             />
           </ScrollArea>
           {item ? (
-            <EvidenceWorkbench key={item.spanId} item={item} />
+            <EvidenceWorkbench
+              key={item.spanId}
+              item={item}
+              renderRun={(runId) => <RunWorkspace runId={runId} />}
+            />
           ) : (
             <p className="border-t pt-4 text-sm text-muted-foreground">
               {t("observability.selectACallToInspectItsEvidence")}

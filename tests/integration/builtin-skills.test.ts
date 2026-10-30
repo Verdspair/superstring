@@ -117,6 +117,9 @@ describe("bundled system skills", () => {
       .value as { status: string; kind?: string; instructions: string };
     expect(value).toMatchObject({ status: "ok", kind: "task_guidance" });
     expect(value.instructions).toContain("memory.query");
+    expect(value.instructions).toContain("metadata.content_origin");
+    expect(value.instructions).toContain("human correction");
+    expect(value.instructions).toContain("Neither establishes independent truth");
     await expect(
       executor.execute(
         actionNamed(actions, "skill.resource"),

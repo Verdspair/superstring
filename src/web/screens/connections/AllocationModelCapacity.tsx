@@ -1,7 +1,9 @@
 import { ExternalLink } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/button";
+import { type ReadTask, startRead } from "../../services/read-task";
+import { useForegroundRead } from "../../services/use-foreground-read";
 import { useSuperstringStore } from "../../store";
 
 export function AllocationModelCapacity({
@@ -17,26 +19,51 @@ export function AllocationModelCapacity({
   const api = useSuperstringStore((s) => s.apiClient);
   const navigate = useSuperstringStore((s) => s.requestContextAllocation);
   const target = useSuperstringStore((s) => s.contextAllocationTarget);
-  const [reading, setReading] = useState<{ model: string; capacity: number | null } | null>(null);
-  useEffect(() => {
-    if (!active || !model || controlledCapacity !== undefined) return;
-    let current = true;
-    void api
-      .getModelCapacity(model)
-      .then((value) => {
-        if (current) setReading({ model, capacity: value.context_length });
-      })
-      .catch(() => {
-        if (current) setReading({ model, capacity: null });
-      });
-    return () => {
-      current = false;
-    };
-  }, [active, api, model, controlledCapacity]);
+  const [reading, setReading] = useState<{
+    api: typeof api;
+    model: string;
+    capacity: number | null;
+  } | null>(null);
+  const task = useRef<ReadTask | null>(null);
+  const generation = useRef(0);
+  const cancel = useCallback(() => {
+    generation.current++;
+    task.current?.cancel();
+    task.current = null;
+  }, []);
+  const load = useCallback(() => {
+    if (
+      !model ||
+      controlledCapacity !== undefined ||
+      useSuperstringStore.getState().apiClient !== api
+    )
+      return;
+    const request = ++generation.current;
+    const matches = () =>
+      request === generation.current && useSuperstringStore.getState().apiClient === api;
+    task.current = startRead((signal) => api.getModelCapacity(model, signal), {
+      success: (value) => {
+        if (matches()) setReading({ api, model, capacity: value.context_length });
+      },
+      failure: () => {
+        if (matches()) setReading({ api, model, capacity: null });
+      },
+      settled: () => {
+        if (matches()) task.current = null;
+      },
+    });
+  }, [api, model, controlledCapacity]);
+  useForegroundRead(load, cancel, {
+    enabled: !!model && controlledCapacity === undefined,
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: cancel,
+  });
   const capacity =
     controlledCapacity !== undefined
       ? controlledCapacity
-      : reading !== null && reading.model === model
+      : reading !== null && reading.api === api && reading.model === model
         ? reading.capacity
         : null;
   return (

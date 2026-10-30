@@ -108,6 +108,8 @@ function streamReader(response: Response) {
 }
 
 async function openChanges(app: ReturnType<typeof createApp>, signal: AbortSignal) {
+  // Finish fixture source creation before subscribing to message-arrival changes.
+  await tick();
   const response = await app.request("http://synthetic.invalid/v2/conversations/changes", {
     signal,
   });

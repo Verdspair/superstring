@@ -36,6 +36,9 @@ export function QqConversationEntry({
   const load = useSuperstringStore((s) => s.loadQqBindingDirectory);
   const binding = useSuperstringStore((s) => s.qqBindings.find((b) => b.id === editing));
   const conversations = useSuperstringStore((s) => s.qqConversations);
+  const bindingSchemeConfirmationId = useSuperstringStore(
+    (s) => s.qqInputs.bindingSchemeConfirmationId,
+  );
   useEffect(() => {
     if (open && loadDirectory) void load();
   }, [open, load, loadDirectory]);
@@ -67,7 +70,7 @@ export function QqConversationEntry({
           onCloseAutoFocus={editing ? (event) => event.preventDefault() : restoreFocus}
         />
       )}
-      {binding && (
+      {binding && !bindingSchemeConfirmationId && (
         <BindingEditor
           binding={binding}
           conversation={

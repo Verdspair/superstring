@@ -148,9 +148,8 @@ export function executionPolicy(policy: PermissionPolicy): ExecutionPolicy {
 export type PermissionPolicy = z.infer<typeof PermissionPolicySchema>;
 export type PermissionGrant = z.infer<typeof PermissionGrantSchema>;
 
-export function selectEffectivePermissionGrant(
-  policy: PermissionPolicy,
-  resource: string,
+export function selectEffectivePermissionGrantEntry(
+  entry: PermissionGrant | undefined,
   ownerAgentId?: string,
 ):
   | {
@@ -158,8 +157,8 @@ export function selectEffectivePermissionGrant(
       identity: unknown;
     }
   | undefined {
-  const entry = policy.grants.find((grant) => grant.resource === resource);
   if (!entry) return undefined;
+  const resource = entry.resource;
   const override =
     ownerAgentId !== undefined &&
     entry.agentOverrides &&
@@ -170,6 +169,17 @@ export function selectEffectivePermissionGrant(
   return override === undefined
     ? { grant: base, identity: base }
     : { grant: { resource, ...override }, identity: [resource, ownerAgentId, override] };
+}
+
+export function selectEffectivePermissionGrant(
+  policy: PermissionPolicy,
+  resource: string,
+  ownerAgentId?: string,
+) {
+  return selectEffectivePermissionGrantEntry(
+    policy.grants.find((grant) => grant.resource === resource),
+    ownerAgentId,
+  );
 }
 
 // 联网动作共用 web 授权资源，暂停须同时匹配资源名与动作名。

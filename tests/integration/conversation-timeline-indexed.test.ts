@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite";
 import { expect, it } from "bun:test";
-import type { BotEvidenceScope } from "../../src/server/modules/conversation-evidence";
-import { inTimeline } from "../../src/server/modules/conversation-evidence-store";
+import { type BotEvidenceScope, inTimeline } from "../../src/server/conversation/evidence-scope";
 
 it("preserves direct, nested, alias and confirmed-send timeline ownership on indexed reads", () => {
   const db = new Database(":memory:");

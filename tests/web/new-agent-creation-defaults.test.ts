@@ -201,9 +201,9 @@ describe("New Agent Creation Defaults (Web Store & Actions)", () => {
     });
 
     await store.getState().editAgent("__new__");
-    store.getState().patchDraft({ name: "新建未修改参数助手" });
+    store.getState().patchNewAgentDraft({ name: "新建未修改参数助手" });
 
-    const saved = await store.getState().saveCurrentSection();
+    const saved = await store.getState().createAgent();
     expect(saved).toBe(true);
     expect(client.createAgent).toHaveBeenCalledTimes(1);
 
@@ -246,7 +246,7 @@ describe("New Agent Creation Defaults (Web Store & Actions)", () => {
     if (!currentDraft) return;
 
     // User explicitly adjusts temperature, persona_intensity, and partial P5 settings
-    store.getState().patchDraft({
+    store.getState().patchNewAgentDraft({
       name: "显式定制助手",
       temperature: 0.25,
       persona_intensity: 75,
@@ -258,7 +258,7 @@ describe("New Agent Creation Defaults (Web Store & Actions)", () => {
       },
     });
 
-    const saved = await store.getState().saveCurrentSection();
+    const saved = await store.getState().createAgent();
     expect(saved).toBe(true);
     expect(client.createAgent).toHaveBeenCalledTimes(1);
 
@@ -324,9 +324,14 @@ describe("New Agent Creation Defaults (Web Store & Actions)", () => {
     expect(legacyDraft?.p5_config.retrieval_mode).toBe("standard");
     expect(legacyDraft?.p5_config.allocation?.mode).toBe("fixed");
 
-    // 2. Save section A for the existing agent: updateAgent is called, NOT createAgent
-    store.getState().patchDraft({ description: "更新既有描述" });
-    const savedExisting = await store.getState().saveCurrentSection();
+    // Existing records use the original page owner; the creation action cannot update them.
+    expect(await store.getState().createAgent()).toBe(false);
+    const pageEditorBefore = store.getState().pageEditor;
+    store.getState().patchNewAgentDraft({ description: "must not edit an existing record" });
+    expect(store.getState().pageEditor).toBe(pageEditorBefore);
+    expect(store.getState().editorDraft?.description).toBe(existingAgent.description);
+    store.getState().patchPageAgent("basic", { description: "更新既有描述" });
+    const savedExisting = await store.getState().saveSettingsPage("basic");
     expect(savedExisting).toBe(true);
     expect(client.createAgent).not.toHaveBeenCalled();
     expect(client.updateAgent).toHaveBeenCalledWith(
@@ -334,7 +339,6 @@ describe("New Agent Creation Defaults (Web Store & Actions)", () => {
       expect.objectContaining({
         description: "更新既有描述",
         expected_version: 5,
-        temperature: 0.7,
       }),
     );
 
@@ -366,7 +370,7 @@ describe("New Agent Creation Defaults (Web Store & Actions)", () => {
     if (!draft1) return;
 
     // Mutate nested properties in draft1
-    store.getState().patchDraft({
+    store.getState().patchNewAgentDraft({
       p5_config: {
         ...draft1.p5_config,
         recent_turns: 888,

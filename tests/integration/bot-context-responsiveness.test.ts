@@ -58,7 +58,7 @@ function fixture(overrides: Partial<BotContextSourceOptions> = {}) {
   const agent = getAgentRow(h.orm, DEFAULT_AGENT_ID);
   if (!agent) throw new Error("agent");
   const runtime = runtimeFromAgent(agent);
-  runtime.p5_config.retrieval_mode = "off";
+  runtime.p5_config.memory_read = { enabled: false, max_bytes: 8192 };
   runtime.p5_config.compression_enabled = false;
   runtime.p5_config.recent_turns = 1;
   const journal = new ConversationEventRepository(h.db),

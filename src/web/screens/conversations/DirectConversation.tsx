@@ -1,5 +1,5 @@
 import { ArrowRight, MessageCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { ConfirmDialog } from "../../components/confirmation";
 import { Button } from "../../components/ui/button";
@@ -22,17 +22,33 @@ export function DirectConversation({ active = true }: { active?: boolean }) {
   const conversation = useSuperstringStore(selectedConversation);
   const session = useSuperstringStore(currentSessionId);
   const chat = useSuperstringStore(currentChat);
-  const [deletion, setDeletion] = useState<{ session: string | null; message: string } | null>(
-    null,
+  const api = useSuperstringStore((s) => s.apiClient);
+  const [deletion, setDeletion] = useState<{
+    api: typeof api;
+    session: string | null;
+    message: string;
+  } | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The retained view must invalidate a previous identity's return target rather than refocus it after a session, API or active-view change.
+  const deletionOrigin = useMemo(
+    () => ({ current: null as HTMLElement | null }),
+    [api, session, active],
   );
   const remove = useSuperstringStore((s) => s.deleteMessage);
   const loadOlder = useSuperstringStore((s) => s.loadOlderMessages);
   const resend = useSuperstringStore((s) => s.resendKnowledgeChat);
   const cancelResend = useSuperstringStore((s) => s.cancelKnowledgeResend);
-  const visibleDeletion = deletion?.session === session ? deletion : null;
+  const visibleDeletion =
+    active &&
+    deletion !== null &&
+    deletion.api === api &&
+    deletion.session === session &&
+    chat.messages.some((message) => message.id === deletion.message)
+      ? deletion
+      : null;
   useEffect(() => {
-    if (deletion && deletion.session !== session) setDeletion(null);
-  }, [deletion, session]);
+    if (deletion && !visibleDeletion)
+      setDeletion((current) => (current === deletion ? null : current));
+  }, [deletion, visibleDeletion]);
   return (
     <section
       data-slot="conversation-surface"
@@ -61,7 +77,10 @@ export function DirectConversation({ active = true }: { active?: boolean }) {
           hasOlder={chat.hasOlderMessages}
           loadingOlder={chat.loadingOlderMessages}
           onLoadOlder={loadOlder}
-          onDelete={(message) => setDeletion({ session, message })}
+          onDelete={(message, origin) => {
+            deletionOrigin.current = origin;
+            setDeletion({ api, session, message });
+          }}
         />
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-6 py-10">
@@ -108,14 +127,22 @@ export function DirectConversation({ active = true }: { active?: boolean }) {
       <ChatComposer />
       {/* 弹窗会挂到主文档之外，常挂载由 open 控制；页签隐藏时不显示，状态本身保留。 */}
       <ConfirmDialog
+        returnFocusRef={deletionOrigin}
         open={active && visibleDeletion !== null}
         message={t("workspace.delete_this_message")}
         confirmLabel={t("workspace.delete")}
         onCancel={() => setDeletion(null)}
         onConfirm={() => {
-          if (!visibleDeletion) return;
           const target = visibleDeletion;
-          setDeletion(null);
+          const current = useSuperstringStore.getState();
+          if (
+            !target ||
+            current.apiClient !== target.api ||
+            currentSessionId(current) !== target.session ||
+            !currentChat(current).messages.some((message) => message.id === target.message)
+          )
+            return;
+          setDeletion((value) => (value === target ? null : value));
           void remove(target.session, target.message);
         }}
       />

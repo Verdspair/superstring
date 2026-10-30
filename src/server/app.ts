@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { BrowserStateConfig } from "../shared/contracts";
 import { executionPolicy, toolExecutionEnabled } from "../shared/contracts/permissions";
-import type { ToolDirectoryEntry } from "../shared/contracts/tool-directory";
+import type { ToolDefinition, ToolDirectoryEntry } from "../shared/contracts/tool-directory";
 import { ActionExecutor } from "./agent/action-executor";
 import { type AgentRuntime, createAgentRuntime } from "./agent/agent-runtime";
 import type { BuiltInAction } from "./agent/built-in-actions";
@@ -53,9 +53,10 @@ import {
   createQqStickerAnnotator,
   type QqStickerAnnotator,
 } from "./services/qq-sticker-annotation";
-import { createSkillActions } from "./skills/actions";
+import { createSkillActions, skillToolDefinitions } from "./skills/actions";
+import { loadMergedSkillCatalog } from "./skills/config";
 import { skillSourceAccess } from "./skills/sources";
-import { createWebActions } from "./web-access/actions";
+import { createWebActions, createWebToolDefinitions } from "./web-access/actions";
 import type { WebAccessConfigStore } from "./web-access/config";
 
 export interface CreateAppOptions {
@@ -94,6 +95,8 @@ export interface CreateAppOptions {
   napcatEvents?: QqManagedEventsPort;
   /** 外部（MCP）动作：每轮现取；没有登记时返回空表。 */
   externalActions?: () => readonly BuiltInAction[];
+  /** Declaration projection; false excludes unpermissioned builtin Skill descriptions. */
+  externalToolDefinitions?: (includeSkills: boolean) => readonly ToolDefinition[];
   toolDirectory?: () => readonly ToolDirectoryEntry[];
   permissions?: PermissionService;
   tasks?: AgentTaskService;
@@ -133,6 +136,14 @@ export function createApp(opts: CreateAppOptions): Hono {
       ...createSkillActions(opts.skillsRoot),
       ...createWebActions(webAccess ? { config: () => webAccess.read().config } : {}),
     ]);
+  const externalToolDefinitions = (includeSkills: boolean): readonly ToolDefinition[] => {
+    if (opts.externalToolDefinitions) return opts.externalToolDefinitions(includeSkills);
+    if (opts.externalActions) return opts.externalActions();
+    return [
+      ...(includeSkills ? skillToolDefinitions(loadMergedSkillCatalog(opts.skillsRoot)) : []),
+      ...createWebToolDefinitions(),
+    ];
+  };
   const conversationActions = () => {
     const execution = executionPolicy(permissions.snapshot().policy);
     return externalActions().filter(
@@ -165,7 +176,10 @@ export function createApp(opts: CreateAppOptions): Hono {
       .where(eq(schema.agents.id, DEFAULT_AGENT_ID))
       .get();
     if (!defaultAgent) {
-      const requirements = snapshotAgentCreationRequirements(externalActions, opts.mcpManagement);
+      const requirements = snapshotAgentCreationRequirements(
+        () => externalToolDefinitions(false),
+        opts.mcpManagement,
+      );
       initializeDefaultAgent(business.orm, gateway.config.model, {
         permissions,
         requirements,
@@ -175,8 +189,8 @@ export function createApp(opts: CreateAppOptions): Hono {
       "/agents",
       agentRoutes(business.orm, gateway.config.model, {
         permissions,
-        // Creation grants the installed catalog, including globally paused actions.
-        externalActions,
+        // Creation grants installed requirements, including globally paused tools.
+        externalActions: () => externalToolDefinitions(false),
         mcpManagement: opts.mcpManagement,
       }),
     );
@@ -217,7 +231,10 @@ export function createApp(opts: CreateAppOptions): Hono {
     );
     app.route("/v2/deliveries", deliveryRoutes(business.db, { includeShared: true }));
     if (opts.permissions)
-      app.route("/v2/permissions", permissionRoutes(opts.permissions, externalActions, opts.tasks));
+      app.route(
+        "/v2/permissions",
+        permissionRoutes(opts.permissions, () => externalToolDefinitions(false), opts.tasks),
+      );
     app.route(
       "/v2/tools",
       toolDirectoryRoutes(
@@ -226,7 +243,7 @@ export function createApp(opts: CreateAppOptions): Hono {
             const execution = executionPolicy(permissions.snapshot().policy);
             return projectToolDirectory(
               systemToolDefinitions(execution),
-              externalActions(),
+              externalToolDefinitions(true),
               execution,
             );
           }),
@@ -274,7 +291,7 @@ export function createApp(opts: CreateAppOptions): Hono {
       qqManagedComponentRoutes(opts.napcatManagement, opts.napcatEvents),
     );
     app.route("/", desktopRoutes(business));
-    app.route("/", memoryRoutes(business.orm));
+    app.route("/", memoryRoutes(business.orm, { includeShared: true }));
     app.route("/", knowledgeRoutes(business, modules.knowledge));
     app.route("/", healthRoutes(business.db, gateway));
     app.route(

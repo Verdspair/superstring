@@ -18,7 +18,6 @@ import {
 import { updateQqSettings } from "../../src/server/db/qq-settings-repository";
 import { ensureDefaults, nowIso, type Orm } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
-import { nextQqImmediateReplyTask } from "../../src/server/services/qq-dispatch";
 import { prepareQqJudgement } from "../../src/server/services/qq-judgement-preparation";
 import type { QqBindingResponse } from "../../src/shared/contracts/qq";
 import {
@@ -124,8 +123,6 @@ describe("the switches resolve per conversation, not per scheme", () => {
       expect(
         prepareQqJudgement(h.orm, { bindingId, path: "direct_reply", nowSeconds: now }),
       ).toEqual({ kind: "blocked", reason: "trigger_off" });
-      // The immediate finder reads the same answer: no direct reply is even proposed.
-      expect(nextQqImmediateReplyTask(h.orm, { nowSeconds: now })).toBeNull();
     } finally {
       h.close();
     }
@@ -142,9 +139,6 @@ describe("the switches resolve per conversation, not per scheme", () => {
       expect(
         prepareQqJudgement(h.orm, { bindingId, path: "direct_reply", nowSeconds: now }).kind,
       ).toBe("prepared");
-      expect(nextQqImmediateReplyTask(h.orm, { nowSeconds: now })).toMatchObject({
-        path: "direct_reply",
-      });
     } finally {
       h.close();
     }

@@ -1,4 +1,4 @@
-// Durable P4 memory worker
+// Durable memory worker
 // Source invariant, quoted from its module docstring: "Model calls never hold a
 // transaction or publish directly." Everything below is arranged to keep that
 // true:
@@ -37,7 +37,10 @@ import {
 import {
   blockedMemorySourceRefs,
   blockedMemorySourceStates,
+  loadSessionIntegrity,
+  loadTurnIntegrity,
   mergeJobSourceSet,
+  observationSources,
   ownedObservations,
   type QqEventRow,
 } from "../db/memory-source-repository";
@@ -434,14 +437,66 @@ export class MemoryService {
         if (selected.some((item) => item.status !== "active")) {
           fail("MEMORY_STATE_CONFLICT", "来源记忆已变化");
         }
-        validateEntrySources(this.orm, selected);
+        const webSources = validateEntrySources(this.orm, selected);
         sourceRefs = memoryEntrySources(this.orm, selected);
+        const turnRows = loadTurnIntegrity(
+          this.orm,
+          webSources.map((source) => source.turnId),
+        );
+        const sessionRows = loadSessionIntegrity(
+          this.orm,
+          [...turnRows.values()].map((turn) => turn.sessionId),
+        );
+        const qqSources = observationSources(
+          this.orm,
+          selected.map((entry) => entry.id),
+        );
+        const messageIds = [
+          ...new Set(
+            webSources.flatMap((source) => [source.userMessageId, source.assistantMessageId]),
+          ),
+        ];
+        const messageRows = this.db
+          .query(
+            "SELECT id,role,created_at FROM messages WHERE id IN (SELECT value FROM json_each(?))",
+          )
+          .all(JSON.stringify(messageIds)) as { id: string; role: string; created_at: string }[];
+        const messageById = new Map(messageRows.map((row) => [row.id, row]));
         sources = selected.map((entry) => ({
           name: entry.name,
           summary: entry.summary,
           body: entry.body,
           tags: JSON.parse(entry.tags),
           kinds: JSON.parse(entry.kinds),
+          source_context: {
+            web: webSources
+              .filter((source) => source.memoryId === entry.id)
+              .map((source) => {
+                const turn = turnRows.get(source.turnId)!;
+                const session = sessionRows.get(turn.sessionId)!;
+                const messages = [
+                  messageById.get(source.userMessageId),
+                  messageById.get(source.assistantMessageId),
+                ];
+                return {
+                  session_id: turn.sessionId,
+                  turn_id: source.turnId,
+                  participants: [
+                    { kind: "user", id: session.userId },
+                    { kind: "agent", id: session.agentId },
+                  ],
+                  message_records: messages,
+                };
+              }),
+            qq: (qqSources.get(entry.id) ?? []).map((source) => ({
+              conversation_key: source.conversationKey,
+              event_key: source.eventKey,
+              speaker_kind: source.speakerKind,
+              speaker_id: source.speakerId,
+              utterance_time: { unix_seconds: source.occurredAtSeconds },
+            })),
+            event_time: "unknown unless explicitly supported by the original content",
+          },
         }));
       } else if ((snapshot.source_event_ids ?? []).length > 0) {
         // QQ 文字事实输入（T06）：每个 selected event 走统一事实投影（真 live full facts →

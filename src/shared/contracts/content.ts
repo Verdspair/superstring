@@ -73,14 +73,6 @@ export const MemoryContentResponseSchema = z.strictObject({
   status: z.enum(["active", "suppressed", "replaced", "invalid"]),
   corrected: z.boolean(),
   retired: z.boolean(),
-  source_messages: z.array(
-    z.strictObject({
-      turn_id: UuidSchema,
-      session_title: z.string().nullable(),
-      user: z.string().nullable(),
-      assistant: z.string().nullable(),
-    }),
-  ),
 });
 export type MemoryContentResponse = z.infer<typeof MemoryContentResponseSchema>;
 

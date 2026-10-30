@@ -260,6 +260,7 @@ describe("canonical directory bounded read work", () => {
         f.h.db.run("PRAGMA query_only=OFF");
       }
       expect(samples.every((s) => s.writes === 0)).toBe(true);
+      expect(samples.every((s) => s.statements <= 3)).toBe(true);
     });
   }
 
@@ -297,7 +298,7 @@ describe("canonical directory bounded read work", () => {
     );
   });
 
-  it("discovers never-run sources, rebinds, and advances only Web source activity", async () => {
+  it("repairs legacy never-run sources before reads, rebinds, and advances only Web source activity", async () => {
     const f = fixture(10);
     const missingWeb = f.session(101);
     const missingQq = f.binding(102, "private");
@@ -305,6 +306,7 @@ describe("canonical directory bounded read work", () => {
     f.h.db.query("UPDATE sessions SET updated_at=? WHERE id=?").run(later, id(1, 2));
     f.h.db.query("UPDATE conversations SET updated_at=? WHERE id=?").run(later, id(3, 3));
     const qqBefore = f.journal.row(id(4, 2))!;
+    f.journal.reconcileSources(DEFAULT_USER_ID);
     const response = await f.app.request("/v2/conversations?limit=100");
     expect(response.status).toBe(200);
     const body = await response.json();

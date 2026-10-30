@@ -13,7 +13,7 @@ import { fixtureStore as store } from "./helpers/chat-fixture";
 
 const originalActions = {
   reloadMemory: store.getState().reloadMemory,
-  saveCurrentSection: store.getState().saveCurrentSection,
+  createAgent: store.getState().createAgent,
 };
 const agent = (id: string) =>
   ({
@@ -190,10 +190,11 @@ describe("task-based workspace navigation", () => {
   it("旧页未保存导航被拦截，取消保持原页和目标路由", () => {
     store.setState({
       settingsView: "agents",
+      editorAgentId: "__new__",
       dirty: true,
       settingsRoute: "basic",
     });
-    store.getState().openSettingsRoute("expression");
+    store.getState().openSettingsRoute("management");
     expect(store.getState()).toMatchObject({
       settingsView: "agents",
       settingsRoute: "basic",
@@ -201,23 +202,26 @@ describe("task-based workspace navigation", () => {
       pendingNavigation: {
         kind: "page",
         settingsView: "workspace",
-        settingsRoute: "expression",
+        settingsRoute: "models",
       },
     });
     store.getState().cancelPendingNavigation();
     expect(store.getState()).toMatchObject({
       settingsView: "agents",
+      editorAgentId: "__new__",
       dirty: true,
       settingsRoute: "basic",
+      pendingNavigation: null,
     });
   });
   it("放弃旧页草稿后到达准确的新二级页", async () => {
-    store.setState({ settingsView: "agents", dirty: true });
-    store.getState().openSettingsRoute("context");
+    store.setState({ settingsView: "agents", editorAgentId: "__new__", dirty: true });
+    store.getState().openSettingsRoute("knowledge-model");
+    expect(store.getState().pendingNavigation).toMatchObject({ settingsRoute: "models" });
     await store.getState().confirmDiscardAndContinue();
     expect(store.getState()).toMatchObject({
       settingsView: "workspace",
-      settingsRoute: "context",
+      settingsRoute: "models",
       dirty: false,
       editorDraft: null,
     });
@@ -226,18 +230,51 @@ describe("task-based workspace navigation", () => {
     const save = vi.fn().mockResolvedValue(false);
     store.setState({
       settingsView: "agents",
+      editorAgentId: "__new__",
       dirty: true,
-      saveCurrentSection: save,
+      createAgent: save,
     });
-    store.getState().openSettingsRoute("context");
+    store.getState().openSettingsRoute("models");
+    const pending = store.getState().pendingNavigation;
     await store.getState().confirmSaveAndContinue();
     expect(save).toHaveBeenCalledOnce();
     expect(store.getState()).toMatchObject({
       settingsView: "agents",
       dirty: true,
       navigationConfirmOpen: true,
+      settingsRoute: "basic",
     });
+    expect(store.getState().pendingNavigation).toBe(pending);
   });
+  it.each(["identity", "expression", "context", "memory-tools", "agent-tools"] as const)(
+    "新建 Agent 内部任务 %s 保留同一草稿，不隐式创建或放弃",
+    async (route) => {
+      const createAgent = vi.fn().mockResolvedValue(false);
+      const draft = { name: "new Agent draft" } as never;
+      store.setState({
+        settingsView: "agents",
+        editorAgentId: "__new__",
+        editorDraft: draft,
+        dirty: true,
+        settingsRoute: "basic",
+        createAgent,
+      });
+      store.getState().openSettingsRoute(route);
+      expect(store.getState()).toMatchObject({
+        settingsView: "workspace",
+        settingsRoute: route,
+        editorAgentId: "__new__",
+        dirty: true,
+        navigationConfirmOpen: false,
+        pendingNavigation: null,
+      });
+      expect(store.getState().editorDraft).toBe(draft);
+      store.getState().openAgentSettings();
+      expect(store.getState().settingsView).toBe("agents");
+      expect(store.getState().editorDraft).toBe(draft);
+      expect(createAgent).not.toHaveBeenCalled();
+    },
+  );
   it("资料草稿跨设置页保留，离开设置走独立守卫", () => {
     store.setState({ settingsView: "knowledge", knowledgeDirty: true });
     store.getState().openSettingsRoute("knowledge-config");
@@ -248,6 +285,12 @@ describe("task-based workspace navigation", () => {
       pendingNavigation: null,
     });
     store.getState().openSettingsRoute("management");
+    expect(store.getState()).toMatchObject({
+      settingsRoute: "knowledge-config",
+      knowledgeDirty: true,
+      pendingNavigation: { kind: "page", settingsRoute: "models" },
+    });
+    store.getState().cancelPendingNavigation();
     expect(store.getState().knowledgeDirty).toBe(true);
     store.getState().openChat();
     expect(store.getState()).toMatchObject({

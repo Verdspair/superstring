@@ -361,7 +361,9 @@ export function StorageInventory({ active = true }: { active?: boolean } = {}) {
             >
               <TabsList
                 aria-label={t("connections.storage.manage.categoryLabel")}
-                className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-auto [&_[role=tab]]:min-h-8 [&_[role=tab]]:max-w-full [&_[role=tab]]:flex-none [&_[role=tab]]:whitespace-normal"
+                presentation="compact"
+                flow="wrap"
+                className="max-w-full gap-1"
               >
                 {CATEGORIES.map((value) => (
                   <TabsTrigger key={value} value={value} disabled={saving}>

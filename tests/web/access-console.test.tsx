@@ -667,91 +667,98 @@ describe("tool grants", () => {
 
 describe("task ledger", () => {
   it("lists tasks, pages the result body and approves once with the ticket", async () => {
-    const approve = vi.fn().mockResolvedValue({ ok: true });
-    await renderWith(
-      {
-        listTasks: vi.fn().mockResolvedValue({
-          items: [
-            {
-              id: "44444444-4444-4444-8444-444444444444",
-              conversationId: PROVIDER.conversationId,
-              agentId: PROVIDER.agentId,
-              originRunId: null,
-              status: "waiting_approval",
-              createdAt: "2026-09-28T00:00:00.000Z",
-              updatedAt: "2026-09-28T00:00:00.000Z",
-              expiresAt: "2026-09-29T00:00:00.000Z",
-              errorCode: null,
-              callCount: 1,
-              completedCallCount: 0,
-              waitingOrdinal: 0,
-              waitingReason: "approval",
-            },
-          ],
-          nextCursor: null,
-          hasMore: false,
-        }),
-        getTask: vi.fn().mockResolvedValue({
-          id: "44444444-4444-4444-8444-444444444444",
-          conversationId: PROVIDER.conversationId,
-          agentId: PROVIDER.agentId,
-          originRunId: null,
-          status: "waiting_approval",
-          createdAt: "2026-09-28T00:00:00.000Z",
-          updatedAt: "2026-09-28T00:00:00.000Z",
-          expiresAt: "2026-09-29T00:00:00.000Z",
-          errorCode: null,
-          callCount: 1,
-          completedCallCount: 0,
-          waitingOrdinal: 0,
-          waitingReason: "approval",
-          dataStatus: "available",
-          calls: [
-            {
-              ordinal: 0,
-              name: "fixture.write",
-              revision: "v1",
-              effect: "write",
-              status: "waiting_approval",
-              approvalRevision: "ticket-1",
-              errorCode: null,
-              argumentsPreview: {
-                status: "available",
-                text: '{"note":"synthetic"}',
-                offset: 0,
-                total: 20,
-                nextOffset: null,
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T12:00:00.000Z"));
+    try {
+      const approve = vi.fn().mockResolvedValue({ ok: true });
+      await renderWith(
+        {
+          listTasks: vi.fn().mockResolvedValue({
+            items: [
+              {
+                id: "44444444-4444-4444-8444-444444444444",
+                conversationId: PROVIDER.conversationId,
+                agentId: PROVIDER.agentId,
+                originRunId: null,
+                status: "waiting_approval",
+                createdAt: "2026-09-28T00:00:00.000Z",
+                updatedAt: "2026-09-28T00:00:00.000Z",
+                expiresAt: "2026-09-29T00:00:00.000Z",
+                errorCode: null,
+                callCount: 1,
+                completedCallCount: 0,
+                waitingOrdinal: 0,
+                waitingReason: "approval",
               },
-              resultStatus: "pending",
-            },
-          ],
-        }),
-        getTaskBody: vi.fn().mockResolvedValue({
-          status: "available",
-          text: '{"note":"synthetic"}',
-          offset: 0,
-          total: 20,
-          nextOffset: null,
-        }),
-        approveTask: approve,
-      },
-      <TaskLedger />,
-    );
-    expect(within(screen.getByRole("table")).getByText("等待批准")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
-    await act(async () => {});
-    expect(screen.getByText("fixture.write")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "参数" }));
-    await act(async () => {});
-    expect(screen.getByText('{"note":"synthetic"}')).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "核对并批准" }));
-    fireEvent.click(screen.getByRole("button", { name: "批准这一次" }));
-    await act(async () => {});
-    expect(approve).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444", {
-      ordinal: 0,
-      expectedApproval: "ticket-1",
-      approve: true,
-    });
+            ],
+            nextCursor: null,
+            hasMore: false,
+          }),
+          getTask: vi.fn().mockResolvedValue({
+            id: "44444444-4444-4444-8444-444444444444",
+            conversationId: PROVIDER.conversationId,
+            agentId: PROVIDER.agentId,
+            originRunId: null,
+            status: "waiting_approval",
+            createdAt: "2026-09-28T00:00:00.000Z",
+            updatedAt: "2026-09-28T00:00:00.000Z",
+            expiresAt: "2026-09-29T00:00:00.000Z",
+            errorCode: null,
+            callCount: 1,
+            completedCallCount: 0,
+            waitingOrdinal: 0,
+            waitingReason: "approval",
+            dataStatus: "available",
+            calls: [
+              {
+                ordinal: 0,
+                name: "fixture.write",
+                revision: "v1",
+                effect: "write",
+                status: "waiting_approval",
+                approvalRevision: "ticket-1",
+                errorCode: null,
+                argumentsPreview: {
+                  status: "available",
+                  text: '{"note":"synthetic"}',
+                  offset: 0,
+                  total: 20,
+                  nextOffset: null,
+                },
+                resultStatus: "pending",
+              },
+            ],
+          }),
+          getTaskBody: vi.fn().mockResolvedValue({
+            status: "available",
+            text: '{"note":"synthetic"}',
+            offset: 0,
+            total: 20,
+            nextOffset: null,
+          }),
+          approveTask: approve,
+        },
+        <TaskLedger />,
+      );
+      expect(within(screen.getByRole("table")).getByText("等待批准")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "详情" }));
+      await act(async () => {});
+      expect(screen.getByText("fixture.write")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "参数" }));
+      await act(async () => {});
+      expect(screen.getByText('{"note":"synthetic"}')).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "核对并批准" }));
+      fireEvent.click(screen.getByRole("button", { name: "批准这一次" }));
+      await act(async () => {});
+      expect(approve).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444", {
+        ordinal: 0,
+        expectedApproval: "ticket-1",
+        approve: true,
+      });
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 });
 

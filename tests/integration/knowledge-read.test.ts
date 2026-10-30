@@ -15,7 +15,7 @@ import {
   saveFailedAssistantMessage,
 } from "../../src/server/db/repositories";
 import { ensureBusinessSchema, openBusinessDb } from "../../src/server/db/schema-gate";
-import { KnowledgeContext } from "../../src/server/modules/knowledge-module";
+import { SqliteKnowledgeModule } from "../../src/server/modules/knowledge-module";
 import { createAgent } from "../../src/server/services/agent-service";
 import {
   AgentKnowledgeReadConfigSchema,
@@ -56,15 +56,15 @@ function turn() {
   if (!row || !prepared.generationToken) throw new Error("Missing fixture");
   return { session, request, prepared, row, token: prepared.generationToken };
 }
-function snapshot(t: ReturnType<typeof turn>) {
-  new KnowledgeContext(h.db).begin(t.row.id, agent, t.token, "启动条件");
-  return JSON.parse(
-    (
-      h.db.query("SELECT items FROM turn_knowledge_snapshots WHERE turn_id = ?").get(t.row.id) as {
-        items: string;
-      }
-    ).items,
-  );
+function knowledge(t: ReturnType<typeof turn>) {
+  const module = new SqliteKnowledgeModule({ db: h.db, runtime: () => t.prepared.runtime });
+  const input = {
+    agentId: agent,
+    owner: { kind: "web_turn", id: t.row.id, agentId: agent },
+    query: "启动",
+    budget: 65536,
+  };
+  return { module, input, query: () => module.query(input) };
 }
 async function req(id: string, body?: unknown) {
   return createApp({ business: h }).request(
@@ -157,8 +157,8 @@ describe("S3 per-assistant reading persistence and API", () => {
   });
 });
 
-describe("S3 new-turn reading snapshot", () => {
-  it("freezes inherited budget and rules before delayed context assembly", () => {
+describe("frozen knowledge reading through the current query/read module", () => {
+  it("freezes inherited rules and budget before assembly and applies changes to the next turn", async () => {
     add();
     const t = turn();
     update({ enabled: false, context_budget: 1, scope: "selected", document_ids: [] });
@@ -168,134 +168,152 @@ describe("S3 new-turn reading snapshot", () => {
       auto_enabled: false,
       expected_revision: library.settings().revision,
     });
-    const saved = snapshot(t);
-    expect(saved.budget).toBe(16384);
-    expect(saved.candidates.length).toBeGreaterThan(0);
+    expect(t.prepared.runtime.knowledge_read?.budget).toBe(16384);
     expect(t.prepared.runtime.knowledge_read?.auto_enabled).toBe(true);
-    expect(snapshot(turn()).candidates).toEqual([]);
+    expect((await knowledge(t).query()).items.length).toBeGreaterThan(0);
+    expect((await knowledge(turn()).query()).items).toEqual([]);
+    expect(h.db.query("SELECT * FROM turn_knowledge_snapshots").all()).toEqual([]);
   });
-  it("assistant override can exceed global default and remains frozen", () => {
-    // 32768 is twice the global default (16384), so "override exceeds global"
-    // stays meaningful whatever the default becomes.
+  it("preserves an assistant override and same-request retry without adopting latest rules", async () => {
+    add();
     update({ context_budget: 32768 });
     const t = turn();
-    expect(t.prepared.runtime.knowledge_read?.budget_source).toBe("assistant");
-    update({ context_budget: null });
-    expect(snapshot(t).budget).toBe(32768);
+    saveFailedAssistantMessage(h.orm, t.session.id, t.request, "MODEL_ERROR", t.token);
+    update({ enabled: false, context_budget: null });
+    const retry = prepareTurn(h.orm, t.session.id, "启动条件", t.request);
+    expect(retry.runtime.knowledge_read).toEqual(t.prepared.runtime.knowledge_read);
+    expect(retry.runtime.knowledge_read?.budget).toBe(32768);
+    expect(retry.runtime.knowledge_read?.budget_source).toBe("assistant");
+    expect((await knowledge({ ...t, prepared: retry }).query()).items.length).toBeGreaterThan(0);
     expect(turn().prepared.runtime.knowledge_read?.budget).toBe(16384);
   });
-  it("disabled and empty selected make zero selector calls", async () => {
+  it("does no document scan for disabled or empty selected settings", async () => {
     add();
     for (const patch of [
       { enabled: false },
       { enabled: true, scope: "selected" as const, document_ids: [] },
     ]) {
       update(patch);
-      const t = turn();
-      const ctx = new KnowledgeContext(h.db);
-      snapshot(t);
-      let calls = 0;
-      expect(
-        await ctx.finish({
-          turnId: t.row.id,
-          agentId: agent,
-          generationToken: t.token,
-          available: 4096,
-          select: async () => {
-            calls++;
-            return [];
-          },
-        }),
-      ).toEqual([]);
-      expect(calls).toBe(0);
+      const k = knowledge(turn());
+      const original = h.db.query;
+      let scans = 0;
+      h.db.query = ((sql: string) => {
+        if (sql.includes("FROM knowledge_documents")) scans++;
+        return original.call(h.db, sql);
+      }) as typeof h.db.query;
+      try {
+        expect((await k.query()).items).toEqual([]);
+        expect(scans).toBe(0);
+      } finally {
+        h.db.query = original;
+      }
     }
   });
-  it("selected intersects live authorization without falling back", () => {
-    const chosen = add();
-    const other = add();
+  it("intersects selected documents with live grants, while new all-scope turns see new grants", async () => {
+    const chosen = add(),
+      other = add();
     update({ scope: "selected", document_ids: [chosen.id] });
     const t = turn();
     library.replaceGrants(chosen.id, library.detail(chosen.id).revision, []);
-    const saved = snapshot(t);
-    expect(saved.candidates).toEqual([]);
-    expect(JSON.stringify(saved)).not.toContain(other.id);
+    expect((await knowledge(t).query()).items).toEqual([]);
     expect(read.settings(agent).config.document_ids).toEqual([chosen.id]);
+    update({ scope: "all", document_ids: [] });
+    const page = await knowledge(turn()).query();
+    expect(page.items.length).toBeGreaterThan(0);
+    expect(JSON.stringify(page.items)).toContain(other.id);
   });
-  it("all includes newly authorized documents on new turns", () => {
-    expect(snapshot(turn()).candidates).toEqual([]);
-    const doc = add();
-    expect(
-      snapshot(turn()).candidates.some((c: { document_id: string }) => c.document_id === doc.id),
-    ).toBe(true);
-  });
-  it("same-request retry before begin reuses frozen values", () => {
-    add();
-    const t = turn();
-    saveFailedAssistantMessage(h.orm, t.session.id, t.request, "MODEL_ERROR", t.token);
-    update({ enabled: false, context_budget: 1 });
-    const retry = prepareTurn(h.orm, t.session.id, "启动条件", t.request);
-    expect(retry.runtime.knowledge_read).toEqual(t.prepared.runtime.knowledge_read);
-    if (!retry.generationToken) throw new Error("Missing retry token");
-    expect(snapshot({ ...t, token: retry.generationToken }).candidates.length).toBeGreaterThan(0);
-  });
-  it("finished snapshot remains byte-identical after config changes; revoke/regrant still conflicts", async () => {
+  it("keeps frozen configuration but rejects an old body after revoke/regrant and content edits", async () => {
     const doc = add();
     const t = turn();
-    snapshot(t);
-    const ctx = new KnowledgeContext(h.db);
-    const messages = await ctx.finish({
-      turnId: t.row.id,
-      agentId: agent,
-      generationToken: t.token,
-      available: 4096,
-      select: async (items) => items.map((i) => String(i.id)),
-    });
-    const before = h.db.query("SELECT items FROM turn_knowledge_snapshots").get();
+    const k = knowledge(t);
+    const evidence = (await k.query()).items[0];
+    if (!evidence) throw new Error("missing authorized evidence");
+    const readInput = { ...k.input, evidence, offset: 0, limit: 4096 };
+    expect((await k.module.read(readInput)).text).toContain("禁止启动");
     update({ enabled: false });
-    expect(
-      await ctx.finish({
-        turnId: t.row.id,
-        agentId: agent,
-        generationToken: t.token,
-        available: 4096,
-        select: async () => [],
-      }),
-    ).toEqual(messages);
-    expect(h.db.query("SELECT items FROM turn_knowledge_snapshots").get()).toEqual(before);
+    expect((await k.module.read(readInput)).text).toContain("禁止启动");
     library.replaceGrants(doc.id, library.detail(doc.id).revision, []);
     library.replaceGrants(doc.id, library.detail(doc.id).revision, [agent]);
-    expect(() => ctx.assertAccess(t.row.id, agent)).toThrow();
+    await expect(k.module.read(readInput)).rejects.toMatchObject({
+      code: "KNOWLEDGE_ACCESS_CHANGED",
+    });
+    update({ enabled: true });
+    const next = knowledge(turn());
+    const current = (await next.query()).items[0];
+    if (!current) throw new Error("missing regranted evidence");
+    library.updateDocument(doc.id, {
+      expected_revision: library.detail(doc.id).revision,
+      original_text: "新版规则",
+      content_mode: "original",
+    });
+    await expect(
+      next.module.read({ ...next.input, evidence: current, offset: 0, limit: 4096 }),
+    ).rejects.toMatchObject({ code: "KNOWLEDGE_ACCESS_CHANGED" });
   });
-  it("legacy runtime without S3 config reads its existing v1 snapshot", () => {
+  it("uses current authorized tool reads for a legacy runtime without inventing a content snapshot", async () => {
     add();
     const t = turn();
-    const saved = snapshot(t);
     const legacy = { ...t.prepared.runtime };
     delete legacy.knowledge_read;
-    h.db
-      .query("UPDATE turns SET runtime_config_snapshot = ? WHERE id = ?")
-      .run(JSON.stringify(legacy), t.row.id);
-    update({ enabled: false, context_budget: 1 });
-    expect(snapshot(t)).toEqual(saved);
-  });
-  it("legacy runtime without any knowledge snapshot keeps former initialization semantics", () => {
-    add();
-    const t = turn();
-    const legacy = { ...t.prepared.runtime };
-    delete legacy.knowledge_read;
-    h.db
-      .query("UPDATE turns SET runtime_config_snapshot = ? WHERE id = ?")
-      .run(JSON.stringify(legacy), t.row.id);
-    update({ enabled: false });
-    expect(snapshot(t).candidates.length).toBeGreaterThan(0);
-  });
-  it("invalid frozen rules reject rather than consulting latest settings", () => {
-    const t = turn();
-    h.db
-      .query("UPDATE turns SET runtime_config_snapshot = ? WHERE id = ?")
-      .run(JSON.stringify({ ...t.prepared.runtime, knowledge_read: { budget: 0 } }), t.row.id);
-    expect(() => snapshot(t)).toThrow();
+    const module = new SqliteKnowledgeModule({ db: h.db, runtime: () => legacy });
+    const input = knowledge(t).input;
+    expect((await module.query(input)).items.length).toBeGreaterThan(0);
+    const settings = library.settings();
+    library.updateSettings({
+      ...settings,
+      context_budget: 1,
+      expected_revision: settings.revision,
+    });
+    expect(await module.query(input)).toMatchObject({
+      status: "unavailable",
+      code: "KNOWLEDGE_CONTEXT_BUDGET",
+      items: [],
+    });
     expect(h.db.query("SELECT * FROM turn_knowledge_snapshots").all()).toEqual([]);
+  });
+  it("rejects caller cancellation and a forged owner without creating a content snapshot", async () => {
+    add();
+    const k = knowledge(turn());
+    const controller = new AbortController();
+    const reason = new Error("synthetic read cancelled");
+    controller.abort(reason);
+    await expect(k.module.query({ ...k.input, signal: controller.signal })).rejects.toBe(reason);
+    await expect(
+      k.module.query({ ...k.input, owner: { ...k.input.owner, agentId: crypto.randomUUID() } }),
+    ).rejects.toMatchObject({ code: "CONTEXT_INVALID_SELECTION" });
+    expect(h.db.query("SELECT * FROM turn_knowledge_snapshots").all()).toEqual([]);
+  });
+  it("rejects corrupt persisted frozen rules on same-request retry instead of consulting current settings", () => {
+    const t = turn();
+    saveFailedAssistantMessage(h.orm, t.session.id, t.request, "MODEL_ERROR", t.token);
+    update({ enabled: true, context_budget: 32768 });
+    h.db
+      .query("UPDATE turns SET runtime_config_snapshot=? WHERE id=?")
+      .run(JSON.stringify({ ...t.prepared.runtime, knowledge_read: { budget: 0 } }), t.row.id);
+    let failure: unknown;
+    try {
+      prepareTurn(h.orm, t.session.id, "启动条件", t.request);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: "INVALID_TURN_CONFIG" });
+    expect(h.db.query("SELECT * FROM turn_knowledge_snapshots").all()).toEqual([]);
+    expect(read.settings(agent).config.context_budget).toBe(32768);
+  });
+  it("preserves historical stored snapshots byte-for-byte without reading or appending them", async () => {
+    add();
+    const t = turn();
+    const raw = '{"version":1,"budget":4096,"candidates":[],"final":null}';
+    h.db
+      .query(
+        "INSERT INTO turn_knowledge_snapshots(turn_id,agent_id,settings_revision,items,created_at) VALUES(?,?,1,?,'historical')",
+      )
+      .run(t.row.id, agent, raw);
+    const before = h.db.query("SELECT * FROM turn_knowledge_snapshots").all();
+    expect((await knowledge(t).query()).items.length).toBeGreaterThan(0);
+    expect(h.db.query("SELECT * FROM turn_knowledge_snapshots").all()).toEqual(before);
+    expect((await knowledge(turn()).query()).items.length).toBeGreaterThan(0);
+    expect(h.db.query("SELECT * FROM turn_knowledge_snapshots").all()).toEqual(before);
   });
 });
 

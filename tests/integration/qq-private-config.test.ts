@@ -6,7 +6,11 @@ import {
   saveQqBinding,
 } from "../../src/server/db/qq-binding-repository";
 import { readEffectiveQqScheme } from "../../src/server/db/qq-group-config-repository";
-import { createQqScheme, schemeRhythm } from "../../src/server/db/qq-scheme-repository";
+import {
+  createQqScheme,
+  schemeRhythm,
+  updateQqScheme,
+} from "../../src/server/db/qq-scheme-repository";
 import { DEFAULT_AGENT_ID, ensureDefaults } from "../../src/server/db/repositories";
 import { createAgent } from "../../src/server/services/agent-service";
 import { createQqBinding, updateQqBinding } from "../../src/server/services/qq-binding-contract";
@@ -135,4 +139,202 @@ it("private overrides remain isolated by Agent and survive switching back; schem
   });
   expect(accepted.status).toBe(200);
   expect((await config(h)).overrides).toEqual({});
+});
+
+for (const kind of ["group", "private"] as const) {
+  for (const decision of ["keep", "reset"] as const) {
+    it(`${kind} binding ${decision} rejects a stale config or target scheme preview without partial writes`, async () => {
+      const h = setup();
+      let binding = h.binding;
+      if (kind === "group") {
+        const created = createQqBinding({
+          id: crypto.randomUUID(),
+          accountId: h.binding.accountId,
+          kind,
+          peerId: "50005",
+          agentId: h.binding.agentId,
+          schemeId: h.binding.schemeId,
+          paused: false,
+        });
+        if (created.kind !== "saved") throw new Error("group fixture rejected");
+        binding = insertQqBinding(h.business.orm, created.binding);
+      }
+      const app = h.app;
+      const read = async () => {
+        const response = await app.request(`/qq/bindings/${binding.id}/config`);
+        expect(response.status).toBe(200);
+        return (await response.json()) as QqGroupConfigResponse;
+      };
+      const configure = async (before: QqGroupConfigResponse, overrides: unknown) => {
+        const response = await app.request(`/qq/bindings/${binding.id}/config`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            agent_id: before.binding.agent_id,
+            expected_binding_revision: before.binding.revision,
+            expected_scheme_revision: before.base_scheme.revision,
+            expected_revision: before.revision,
+            overrides,
+            disabled_capabilities: kind === "group" ? ["web"] : [],
+          }),
+        });
+        expect(response.status).toBe(200);
+        return (await response.json()) as QqGroupConfigResponse;
+      };
+      const first = await configure(await read(), {
+        prompts: { scene: "previewed prompt" },
+        stickers: { sticker_min_repeat_minutes: 0 },
+        sticker_collections: { collection_ids: [] },
+        media_input: { ordinary_still_max_dimension: null },
+        rhythm: { initiative_queue_on_busy: false },
+      });
+      const target = createQqScheme(h.business.orm, { name: "preview target" });
+      const input = {
+        agent_id: binding.agentId,
+        scheme_id: target.id,
+        scheme_change: decision,
+        expected_revision: first.binding.revision,
+        scheme_change_baseline: {
+          config_revision: first.revision,
+          scheme_revision: target.revision,
+        },
+        task_limits: { mention_task_limit: 2, ordinary_task_limit: null },
+      };
+      const submit = (payload = input) =>
+        app.request(`/qq/bindings/${binding.id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      // Non-trigger edits do not move the binding revision.
+      const concurrent = await configure(first, {
+        ...first.overrides,
+        prompts: { scene: "other editor prompt" },
+      });
+      expect(concurrent.binding.revision).toBe(first.binding.revision);
+      const snapshot = () => ({
+        binding: h.business.db.query("SELECT * FROM qq_bindings WHERE id=?").get(binding.id),
+        config: h.business.db
+          .query("SELECT * FROM qq_group_agent_configs WHERE binding_id=? ORDER BY agent_id")
+          .all(binding.id),
+        conversations: h.business.db
+          .query("SELECT * FROM conversations WHERE source_id=? ORDER BY binding_epoch")
+          .all(binding.id),
+      });
+      const beforeConflict = snapshot();
+      expect((await submit()).status).toBe(409);
+      expect(snapshot()).toEqual(beforeConflict);
+      expect((await read()).overrides.prompts?.scene).toBe("other editor prompt");
+      const freshInput = {
+        ...input,
+        scheme_change_baseline: {
+          config_revision: concurrent.revision,
+          scheme_revision: target.revision,
+        },
+      };
+      const changedTarget = updateQqScheme(h.business.orm, target.id, {
+        name: "new target name",
+        expectedRevision: target.revision,
+      });
+      expect((await submit(freshInput)).status).toBe(409);
+      expect(snapshot()).toEqual(beforeConflict);
+      const accepted = await submit({
+        ...freshInput,
+        scheme_change_baseline: {
+          config_revision: concurrent.revision,
+          scheme_revision: changedTarget.revision,
+        },
+      });
+      expect(accepted.status).toBe(200);
+      const saved = await read();
+      expect(saved.binding.scheme_id).toBe(target.id);
+      expect(saved.binding.task_limits.mention_task_limit).toBe(2);
+      expect(saved.disabled_capabilities).toEqual(kind === "group" ? ["web"] : []);
+      expect(saved.overrides).toEqual(decision === "keep" ? concurrent.overrides : {});
+      expect(saved.effective_scheme.sticker_collections.collection_ids).toEqual([]);
+    });
+  }
+}
+
+it("empty private preview rejects a concurrent config change; legacy switches reset even with no stored config", async () => {
+  const h = setup();
+  const target = createQqScheme(h.business.orm, { name: "new private base" });
+  const preview = await config(h);
+  expect(preview.revision).toBe(0);
+  const response = await h.app.request(`/qq/bindings/${h.binding.id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      scheme_id: target.id,
+      scheme_change: "reset",
+      expected_revision: preview.binding.revision,
+      scheme_change_baseline: { config_revision: 0, scheme_revision: target.revision },
+    }),
+  });
+  expect(response.status).toBe(200);
+  expect((await config(h)).binding.triggers).toEqual({
+    direct_reply: null,
+    follow_up: null,
+    chiming_in: null,
+    idle_topic: null,
+  });
+  const empty = await config(h);
+  const back = {
+    scheme_id: h.scheme.id,
+    expected_revision: empty.binding.revision,
+    scheme_change_baseline: { config_revision: empty.revision, scheme_revision: h.scheme.revision },
+  };
+  const concurrent = await put(h, empty, { prompts: { scene: "newly created difference" } });
+  expect(concurrent.status).toBe(200);
+  const before = await config(h);
+  const refused = await h.app.request(`/qq/bindings/${h.binding.id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(back),
+  });
+  expect(refused.status).toBe(409);
+  expect(await config(h)).toEqual(before);
+});
+
+it("binding confirmation without preview revisions is invalid and never clears private differences", async () => {
+  const h = setup();
+  const first = await config(h);
+  expect((await put(h, first, { prompts: { scene: "must survive" } })).status).toBe(200);
+  const before = await config(h);
+  const target = createQqScheme(h.business.orm, { name: "unconfirmed target" });
+  const rejected = await h.app.request(`/qq/bindings/${h.binding.id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      scheme_id: target.id,
+      scheme_change: "reset",
+      expected_revision: before.binding.revision,
+    }),
+  });
+  expect(rejected.status).toBe(422);
+  expect(await config(h)).toEqual(before);
+});
+
+it("virtual config revision zero cannot authorize a scheme move after another editor creates differences", async () => {
+  const h = setup();
+  const target = createQqScheme(h.business.orm, { name: "empty preview target" });
+  const preview = await config(h);
+  expect(preview.revision).toBe(0);
+  expect(
+    (await put(h, preview, { ...preview.overrides, prompts: { scene: "concurrent first record" } }))
+      .status,
+  ).toBe(200);
+  const before = await config(h);
+  expect(before.binding.revision).toBe(preview.binding.revision);
+  const response = await h.app.request(`/qq/bindings/${h.binding.id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      scheme_id: target.id,
+      expected_revision: before.binding.revision,
+      scheme_change_baseline: { config_revision: 0, scheme_revision: target.revision },
+    }),
+  });
+  expect(response.status).toBe(409);
+  expect(await config(h)).toEqual(before);
 });

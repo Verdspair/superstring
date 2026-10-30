@@ -1,6 +1,7 @@
 // 运行数据与保留：统计/保护范围展示、列表筛选与分页、行内可清理范围、
 // 预览 → 确认的清理流程（取消 0 写、快照锁定、防双写）以及迟到响应与读失败处理。
-import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ExecutionPolicySchema,
@@ -250,6 +251,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
@@ -716,4 +718,175 @@ describe("runtime storage catalogs", () => {
     // Page data is still visible
     expect(screen.getByText(traceEligible.traceId)).toBeTruthy();
   });
+});
+
+describe("delayed cleanup confirmation opener", () => {
+  it.each(["cleanSelected", "cleanCategory"] as const)(
+    "%s returns to the exact action button after delayed preview and cancel",
+    async (entry) => {
+      const pending = Promise.withResolvers<RuntimeStorageCleanupResult>();
+      const preview = vi.fn().mockReturnValue(pending.promise);
+      const run = vi.fn();
+      await renderPanel({ preview, run });
+      if (entry === "cleanSelected")
+        await userEvent.click(
+          screen.getByRole("checkbox", { name: selectRowLabel(traceEligible.traceId) }),
+        );
+      const opener = screen.getByRole("button", { name: T(`${P}.${entry}`) }) as HTMLButtonElement;
+      await userEvent.click(opener);
+      expect(opener.disabled).toBe(true);
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(preview).toHaveBeenCalledTimes(1);
+      expect(preview).toHaveBeenCalledWith(
+        entry === "cleanSelected"
+          ? { category: "traces", ids: [traceEligible.traceId] }
+          : { category: "traces" },
+      );
+      await userEvent.click(opener);
+      expect(preview).toHaveBeenCalledTimes(1);
+      await act(async () => pending.resolve(cleanupResult()));
+      const dialog = await screen.findByRole("alertdialog");
+      const cancel = within(dialog).getByRole("button", { name: "取消" });
+      expect(document.activeElement).toBe(cancel);
+      await userEvent.click(cancel);
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(opener));
+      expect(opener.isConnected).toBe(true);
+      expect(opener.disabled).toBe(false);
+      expect(run).not.toHaveBeenCalled();
+    },
+  );
+
+  it("failed preview then another action captures its own opener without executing cleanup", async () => {
+    const first = Promise.withResolvers<RuntimeStorageCleanupResult>();
+    const second = Promise.withResolvers<RuntimeStorageCleanupResult>();
+    const preview = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const run = vi.fn();
+    await renderPanel({ preview, run });
+    const category = screen.getByRole("button", { name: T(`${P}.cleanCategory`) });
+    await userEvent.click(category);
+    await act(async () => first.reject(new Error("preview failed")));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: selectRowLabel(traceEligible.traceId) }),
+    );
+    const selected = screen.getByRole("button", { name: T(`${P}.cleanSelected`) });
+    await userEvent.click(selected);
+    await act(async () => second.resolve(cleanupResult()));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(document.activeElement).toBe(selected));
+    expect(document.activeElement).not.toBe(category);
+    expect(preview).toHaveBeenCalledTimes(2);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("unmounted preview cannot open or restore focus after its response arrives", async () => {
+    const pending = Promise.withResolvers<RuntimeStorageCleanupResult>();
+    const preview = vi.fn().mockReturnValue(pending.promise);
+    const run = vi.fn();
+    await renderPanel({ preview, run });
+    const opener = screen.getByRole("button", { name: T(`${P}.cleanCategory`) });
+    await userEvent.click(opener);
+    const focus = vi.spyOn(opener, "focus");
+    cleanup();
+    await act(async () => pending.resolve(cleanupResult()));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(opener.isConnected).toBe(false);
+    expect(focus).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+});
+
+it.each(["preview-pending", "before-confirm", "execution-pending"] as const)(
+  "API replacement invalidates %s cleanup ownership without old focus or new API execution",
+  async (stage) => {
+    const previewPending = Promise.withResolvers<RuntimeStorageCleanupResult>();
+    const runPending = Promise.withResolvers<RuntimeStorageCleanupResult>();
+    const preview = vi.fn().mockReturnValue(previewPending.promise);
+    const run = vi.fn().mockReturnValue(runPending.promise);
+    await renderPanel({ preview, run });
+    const opener = screen.getByRole("button", {
+      name: T(`${P}.cleanCategory`),
+    }) as HTMLButtonElement;
+    await userEvent.click(opener);
+    if (stage !== "preview-pending") {
+      await act(async () => previewPending.resolve(cleanupResult()));
+      const dialog = await screen.findByRole("alertdialog");
+      if (stage === "execution-pending")
+        await userEvent.click(within(dialog).getByRole("button", { name: T(`${P}.confirm`) }));
+    }
+    const oldFocus = vi.spyOn(opener, "focus");
+    const newPreviewPending = Promise.withResolvers<RuntimeStorageCleanupResult>();
+    const newPreview = vi.fn().mockReturnValue(newPreviewPending.promise);
+    const newRun = vi.fn();
+    const nextApi = {
+      ...api,
+      getRuntimeStorage: vi.fn().mockResolvedValue(summaryFixture()),
+      listRuntimeStorageItems: vi.fn().mockResolvedValue(pageFixture([traceEligible])),
+      previewRuntimeStorageCleanup: newPreview,
+      runRuntimeStorageCleanup: newRun,
+    };
+    await act(async () => store.setState({ apiClient: nextApi }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(opener.disabled).toBe(false);
+    expect(oldFocus).not.toHaveBeenCalled();
+    expect(newRun).not.toHaveBeenCalled();
+    const selected = screen.getByRole("checkbox", { name: selectRowLabel(traceEligible.traceId) });
+    await userEvent.click(selected);
+    const newOpener = screen.getByRole("button", {
+      name: T(`${P}.cleanSelected`),
+    }) as HTMLButtonElement;
+    await userEvent.click(newOpener);
+    expect(newOpener.disabled).toBe(true);
+    await act(async () => {
+      if (stage === "preview-pending") previewPending.resolve(cleanupResult());
+      else if (stage === "execution-pending") runPending.reject(new Error("old execution failure"));
+    });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByText(/old execution failure/)).toBeNull();
+    expect(newOpener.disabled).toBe(true);
+    expect(newPreview).toHaveBeenCalledTimes(1);
+    expect(newRun).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(stage === "execution-pending" ? 1 : 0);
+    oldFocus.mockRestore();
+    await act(async () => newPreviewPending.resolve(cleanupResult()));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(document.activeElement).toBe(newOpener));
+    expect(newRun).not.toHaveBeenCalled();
+  },
+);
+
+it("a replacement API confirmation can cancel while the prior API execution is still pending", async () => {
+  const oldRun = Promise.withResolvers<RuntimeStorageCleanupResult>();
+  const run = vi.fn().mockReturnValue(oldRun.promise);
+  await renderPanel({ run });
+  await userEvent.click(screen.getByRole("button", { name: T(`${P}.cleanCategory`) }));
+  const original = await screen.findByRole("alertdialog");
+  await userEvent.click(within(original).getByRole("button", { name: T(`${P}.confirm`) }));
+  const newRun = vi.fn();
+  await act(async () =>
+    store.setState({
+      apiClient: {
+        ...api,
+        getRuntimeStorage: vi.fn().mockResolvedValue(summaryFixture()),
+        listRuntimeStorageItems: vi.fn().mockResolvedValue(pageFixture([traceEligible])),
+        previewRuntimeStorageCleanup: vi.fn().mockResolvedValue(cleanupResult()),
+        runRuntimeStorageCleanup: newRun,
+      },
+    }),
+  );
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  const opener = screen.getByRole("button", { name: T(`${P}.cleanCategory`) });
+  await userEvent.click(opener);
+  const current = await screen.findByRole("alertdialog");
+  const cancel = within(current).getByRole("button", { name: "取消" }) as HTMLButtonElement;
+  expect(cancel.disabled).toBe(false);
+  await userEvent.click(cancel);
+  await waitFor(() => expect(document.activeElement).toBe(opener));
+  expect(newRun).not.toHaveBeenCalled();
+  await act(async () => oldRun.resolve(cleanupResult({ dryRun: false, removed: 1 })));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.queryByText(T("connections.storage.cleaned"))).toBeNull();
 });

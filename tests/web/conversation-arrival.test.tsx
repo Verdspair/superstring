@@ -906,44 +906,51 @@ describe("conversation arrival instant update", () => {
   });
 
   it("automatically updates open task detail with waiting approval on matching event", async () => {
-    const listTasksSpy = vi.fn().mockResolvedValue({
-      items: [mockTaskSummary("t-appr", "conv-appr", "waiting_approval")],
-      nextCursor: null,
-    });
-    const getTaskSpy = vi
-      .fn()
-      .mockResolvedValueOnce(mockTaskDetail("t-appr", "conv-appr", "waiting_approval"))
-      .mockResolvedValueOnce(mockTaskDetail("t-appr", "conv-appr", "completed"));
-
-    setupApi({
-      listTasks: listTasksSpy,
-      getTask: getTaskSpy,
-    });
-
-    const view = render(<TaskLedger conversationId="conv-appr" />);
-    expect(listTasksSpy).toHaveBeenCalledTimes(1);
-
-    // Click open button to open task detail sheet
-    const openBtn = await screen.findByRole("button", {
-      name: i18n.t("connections.tasks.open"),
-    });
-    await act(async () => {
-      fireEvent.click(openBtn);
-    });
-    expect(getTaskSpy).toHaveBeenCalledTimes(1);
-
-    // Event arrives for conv-appr: triggers detail re-read
-    await act(async () => {
-      notifyConversationChange({
-        event: "conversation_changed",
-        conversationId: "conv-appr",
-        seq: 2,
-        bindingEpoch: 1,
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-06T12:00:00.000Z"));
+    try {
+      const listTasksSpy = vi.fn().mockResolvedValue({
+        items: [mockTaskSummary("t-appr", "conv-appr", "waiting_approval")],
+        nextCursor: null,
       });
-    });
-    expect(getTaskSpy).toHaveBeenCalledTimes(2);
+      const getTaskSpy = vi
+        .fn()
+        .mockResolvedValueOnce(mockTaskDetail("t-appr", "conv-appr", "waiting_approval"))
+        .mockResolvedValueOnce(mockTaskDetail("t-appr", "conv-appr", "completed"));
 
-    view.unmount();
+      setupApi({
+        listTasks: listTasksSpy,
+        getTask: getTaskSpy,
+      });
+
+      const view = render(<TaskLedger conversationId="conv-appr" />);
+      expect(listTasksSpy).toHaveBeenCalledTimes(1);
+
+      // Click open button to open task detail sheet
+      const openBtn = await screen.findByRole("button", {
+        name: i18n.t("connections.tasks.open"),
+      });
+      await act(async () => {
+        fireEvent.click(openBtn);
+      });
+      expect(getTaskSpy).toHaveBeenCalledTimes(1);
+
+      // Event arrives for conv-appr: triggers detail re-read
+      await act(async () => {
+        notifyConversationChange({
+          event: "conversation_changed",
+          conversationId: "conv-appr",
+          seq: 2,
+          bindingEpoch: 1,
+        });
+      });
+      expect(getTaskSpy).toHaveBeenCalledTimes(2);
+
+      view.unmount();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it("cancels trailing revalidation when paused before in-flight read settles in useLiveResource", async () => {
@@ -1001,44 +1008,51 @@ describe("conversation arrival instant update", () => {
   });
 
   it("task detail background refresh failure displays an error", async () => {
-    const listTasksSpy = vi.fn().mockResolvedValue({
-      items: [mockTaskSummary("t-fail", "conv-fail", "waiting_approval")],
-      nextCursor: null,
-    });
-    const getTaskSpy = vi
-      .fn()
-      .mockResolvedValueOnce(mockTaskDetail("t-fail", "conv-fail", "waiting_approval"))
-      .mockRejectedValueOnce(new Error("TASK_REVOKED"));
-
-    setupApi({
-      listTasks: listTasksSpy,
-      getTask: getTaskSpy,
-    });
-
-    const view = render(<TaskLedger conversationId="conv-fail" />);
-    const openBtn = await screen.findByRole("button", {
-      name: i18n.t("connections.tasks.open"),
-    });
-    await act(async () => {
-      fireEvent.click(openBtn);
-    });
-    expect(getTaskSpy).toHaveBeenCalledTimes(1);
-
-    // Event arrives for conv-fail; background refresh fails (revoked/unauthorized)
-    await act(async () => {
-      notifyConversationChange({
-        event: "conversation_changed",
-        conversationId: "conv-fail",
-        seq: 2,
-        bindingEpoch: 1,
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-06T12:00:00.000Z"));
+    try {
+      const listTasksSpy = vi.fn().mockResolvedValue({
+        items: [mockTaskSummary("t-fail", "conv-fail", "waiting_approval")],
+        nextCursor: null,
       });
-    });
-    expect(getTaskSpy).toHaveBeenCalledTimes(2);
+      const getTaskSpy = vi
+        .fn()
+        .mockResolvedValueOnce(mockTaskDetail("t-fail", "conv-fail", "waiting_approval"))
+        .mockRejectedValueOnce(new Error("TASK_REVOKED"));
 
-    // The background refresh error is rendered.
-    expect(await screen.findByRole("alert")).toBeTruthy();
+      setupApi({
+        listTasks: listTasksSpy,
+        getTask: getTaskSpy,
+      });
 
-    view.unmount();
+      const view = render(<TaskLedger conversationId="conv-fail" />);
+      const openBtn = await screen.findByRole("button", {
+        name: i18n.t("connections.tasks.open"),
+      });
+      await act(async () => {
+        fireEvent.click(openBtn);
+      });
+      expect(getTaskSpy).toHaveBeenCalledTimes(1);
+
+      // Event arrives for conv-fail; background refresh fails (revoked/unauthorized)
+      await act(async () => {
+        notifyConversationChange({
+          event: "conversation_changed",
+          conversationId: "conv-fail",
+          seq: 2,
+          bindingEpoch: 1,
+        });
+      });
+      expect(getTaskSpy).toHaveBeenCalledTimes(2);
+
+      // The background refresh error is rendered.
+      expect(await screen.findByRole("alert")).toBeTruthy();
+
+      view.unmount();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it("ConversationRuntimeSummary triggers instant status read on matching event and ignores unrelated", async () => {

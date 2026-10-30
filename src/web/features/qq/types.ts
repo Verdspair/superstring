@@ -13,6 +13,7 @@ import {
   QQ_RETENTION_MAX_DAYS,
   QQ_RETENTION_MIN_DAYS,
   type QqBindingResponse,
+  type QqBindingSchemeChangeBaseline,
   type QqConversationListItem,
   type QqMemoryOrganiseResponse,
   type QqParticipationTiming,
@@ -81,19 +82,59 @@ export function qqStickerEditorTags(value: string): string[] {
   ];
 }
 
-export function qqStickerEditorDirty(editor: QqStickerEditor | null): boolean {
-  if (!editor) return false;
+export function qqStickerContentDirty(editor: QqStickerEditor): boolean {
   const source = editor.source;
-  const sameSet =
-    editor.collectionIds.length === source.collection_ids.length &&
-    editor.collectionIds.every((id) => source.collection_ids.includes(id));
   return (
     editor.name.trim() !== source.name ||
     editor.description.trim() !== (source.description ?? "") ||
     qqStickerEditorTags(editor.tags).join("\u0000") !== source.tags.join("\u0000") ||
-    editor.usageNote.trim() !== (source.usage_note ?? "") ||
-    !sameSet
+    editor.usageNote.trim() !== (source.usage_note ?? "")
   );
+}
+
+function sameStickerCollections(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id) => right.includes(id));
+}
+
+export function qqStickerCollectionsDirty(editor: QqStickerEditor): boolean {
+  return !sameStickerCollections(editor.collectionIds, editor.source.collection_ids);
+}
+
+export function qqStickerEditorDirty(editor: QqStickerEditor | null): boolean {
+  return !!editor && (qqStickerContentDirty(editor) || qqStickerCollectionsDirty(editor));
+}
+
+/** Advance acknowledged fields without replacing a later edit or an unsaved group. */
+export function acceptQqStickerSave(
+  editor: QqStickerEditor,
+  submitted: QqStickerEditor,
+  saved: QqStickerAssetResponse,
+  group: "content" | "collections" | "enabled",
+): QqStickerEditor {
+  const baseline = qqStickerEditorFrom(editor.source);
+  const content = group === "content" ? submitted : baseline;
+  const collections = group === "collections" ? submitted.collectionIds : baseline.collectionIds;
+  return {
+    ...editor,
+    source: saved,
+    name: editor.name.trim() === content.name.trim() ? saved.name : editor.name,
+    description:
+      editor.description.trim() === content.description.trim()
+        ? (saved.description ?? "")
+        : editor.description,
+    tags:
+      qqStickerEditorTags(editor.tags).join("\u0000") ===
+      qqStickerEditorTags(content.tags).join("\u0000")
+        ? saved.tags.join("、")
+        : editor.tags,
+    usageNote:
+      editor.usageNote.trim() === content.usageNote.trim()
+        ? (saved.usage_note ?? "")
+        : editor.usageNote,
+    collectionIds: sameStickerCollections(editor.collectionIds, collections)
+      ? [...saved.collection_ids]
+      : editor.collectionIds,
+  };
 }
 
 /** One import's answer, kept in state so the page can say which reason applied (§9.2). */
@@ -119,7 +160,10 @@ export interface QqStickerState {
   openQqStickerEditor: (id: string) => void;
   closeQqStickerEditor: () => void;
   patchQqStickerEditor: (patch: Partial<Omit<QqStickerEditor, "source">>) => void;
-  saveQqStickerEditor: (options?: { readonly enableAfterSave: boolean }) => Promise<boolean>;
+  saveQqStickerEditor: (options?: {
+    readonly enableAfterSave?: boolean;
+    readonly isCurrent?: () => boolean;
+  }) => Promise<boolean>;
   setQqStickerEnabled: (id: string, enabled: boolean) => Promise<boolean>;
   importQqStickerFile: (file: File) => Promise<boolean>;
   /** §9.2's batch selection: ids only, cleared by a successful batch and by leaving the page. */
@@ -649,10 +693,11 @@ export interface QqAccessState {
       /** 记忆整理：攒够多少条观察自动整理一次；`null`＝关。 */
       memory_batch_size?: number | null;
       /**
-       * 改绑且目标方案自带本群覆盖时的显式决定（ADR0019 §13.2 G）：`keep` 保留覆盖、`reset`
-       * 回到方案基线；缺省＝这不是一次「移动到其他方案」的保存，服务端不做方案切换处理。
+       * Same-Agent scheme changes retain or reset this conversation's sparse overrides.
+       * Both decisions carry the config and target scheme revisions actually previewed.
        */
       scheme_change?: "keep" | "reset";
+      scheme_change_baseline?: QqBindingSchemeChangeBaseline;
       /** 0059 并行任务上限覆盖：成员 null＝跟随方案。 */
       task_limits?: QqBindingResponse["task_limits"];
       /** 0059 输入防抖覆盖：null＝跟随方案。 */

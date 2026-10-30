@@ -7,25 +7,25 @@ import type {
 } from "../../shared/contracts/conversation";
 import type { SourceRef } from "../../shared/contracts/evidence";
 import { publishConversationChange } from "../conversation/conversation-changes";
-import { readQqGroupName } from "./qq-group-name-repository";
+import {
+  type ConversationRow,
+  ensureConversationIdentity,
+  ensureWebConversationIdentity,
+} from "./conversation-identity-repository";
 import { DEFAULT_USER_ID } from "./repositories";
 
-type ConversationRow = {
-  id: string;
-  channel: "web" | "onebot11";
-  topology: "direct" | "shared";
-  source_id: string;
-  agent_id: string;
-  user_id: string;
-  binding_epoch: number;
-  source_watermark: number;
-  next_seq: number;
-  consumed_seq: number;
-  created_at: string;
-  updated_at: string;
-  closed_at: string | null;
-  memory_read_mode: "current_conversation" | "agent_shared";
-  memory_config_revision: number;
+type SummaryRow = ConversationRow & {
+  web_title?: string | null;
+  peer_id?: string | null;
+  agent_name?: string | null;
+  qq_name?: string | null;
+  custom_name?: string | null;
+};
+type HistoryProjection = SummaryRow & {
+  requested_id: string;
+  history_id: string;
+  last_seq: number;
+  history_consumed: number;
 };
 export type ConversationActivation = Pick<
   ConversationRow,
@@ -176,6 +176,49 @@ export class ConversationEventRepository {
       .query("SELECT * FROM conversations WHERE id=?")
       .get(id) as ConversationRow | null;
   }
+  activeHistoryIdentity(id: string, userId: string): ConversationRow | null {
+    const anchor = this.row(id);
+    if (!anchor || anchor.user_id !== userId) return null;
+    const rows = this.db
+      .query(`SELECT * FROM conversations WHERE channel=? AND source_id=?
+      AND agent_id=? AND user_id=? AND closed_at IS NULL LIMIT 2`)
+      .all(anchor.channel, anchor.source_id, anchor.agent_id, userId) as ConversationRow[];
+    return rows.length === 1 ? rows[0]! : null;
+  }
+  inspectionSources(
+    targets: readonly {
+      conversationId: string;
+      kind: "web_message" | "qq_observation";
+      id: string;
+      turnId?: string | null;
+      role?: "user" | "assistant" | null;
+    }[],
+  ) {
+    if (!targets.length) return [];
+    return this.db
+      .query(`SELECT selected.key AS ordinal,c.binding_epoch AS bindingEpoch,b.authority_revision AS authorityRevision,
+      ce.*, CASE WHEN json_extract(selected.value,'$.kind')<>'web_message' THEN 1 ELSE EXISTS (
+        SELECT 1 FROM messages m JOIN turns t ON t.id=m.turn_id JOIN sessions s ON s.id=t.session_id
+        WHERE m.id=ce.source_id AND m.turn_id=json_extract(selected.value,'$.turnId')
+          AND m.role=json_extract(selected.value,'$.role') AND m.session_id=s.id AND s.id=c.source_id
+          AND s.agent_id=c.agent_id AND s.user_id=c.user_id AND m.status='completed') END AS member
+      FROM json_each(?) selected JOIN conversations c ON c.id=json_extract(selected.value,'$.conversationId')
+      LEFT JOIN qq_bindings b ON c.channel='onebot11' AND b.id=c.source_id
+      JOIN conversation_events ce ON ce.conversation_id=c.id AND ce.source_id=json_extract(selected.value,'$.id')
+        AND ce.source_kind=CASE WHEN json_extract(selected.value,'$.kind')='qq_observation' THEN 'qq_event' ELSE 'web_message' END
+        AND ce.kind IN ('inbound','outbound')`)
+      .all(JSON.stringify(targets)) as Array<
+      EventRow & {
+        ordinal: number;
+        bindingEpoch: number;
+        authorityRevision: number | null;
+        member: number;
+      }
+    >;
+  }
+  inspectionEvent(row: EventRow): ConversationEvent {
+    return eventFromRow(row);
+  }
   memoryReadMode(
     id: string,
     userId: string,
@@ -219,24 +262,8 @@ export class ConversationEventRepository {
       .immediate();
   }
   ensureWeb(sessionId: string, userId?: string): ConversationSummary | null {
-    const s = this.db
-      .query("SELECT id,user_id,agent_id,created_at FROM sessions WHERE id=?")
-      .get(sessionId) as {
-      id: string;
-      user_id: string;
-      agent_id: string;
-      created_at: string;
-    } | null;
-    if (!s || (userId !== undefined && userId !== s.user_id)) return null;
-    const row = this.ensure({
-      channel: "web",
-      topology: "direct",
-      sourceId: s.id,
-      agentId: s.agent_id,
-      userId: s.user_id,
-      at: s.created_at,
-    });
-    return this.summary(row);
+    const row = ensureWebConversationIdentity(this.db, sessionId, userId);
+    return row ? this.summary(row) : null;
   }
   ensureOneBot(bindingId: string): ConversationSummary | null {
     const row = this.ensureOneBotRow(bindingId);
@@ -256,86 +283,27 @@ export class ConversationEventRepository {
       : null;
   }
   private ensureOneBotRow(bindingId: string): ConversationRow | null {
-    const b = this.db.query("SELECT b.* FROM qq_bindings b WHERE b.id=?").get(bindingId) as {
-      id: string;
-      conversation_kind: string;
-      agent_id: string;
-      user_id: string;
-      created_at: string;
-    } | null;
-    return b
-      ? this.ensure({
-          channel: "onebot11",
-          topology: b.conversation_kind === "private" ? "direct" : "shared",
-          sourceId: b.id,
-          agentId: b.agent_id,
-          userId: DEFAULT_USER_ID,
-          at: b.created_at,
-        })
-      : null;
-  }
-  private ensure(input: {
-    channel: ConversationRow["channel"];
-    topology: ConversationRow["topology"];
-    sourceId: string;
-    agentId: string;
-    userId: string;
-    at: string;
-  }): ConversationRow {
     return this.db.transaction(() => {
-      let row = this.db
-        .query("SELECT * FROM conversations WHERE channel=? AND source_id=? AND closed_at IS NULL")
-        .get(input.channel, input.sourceId) as ConversationRow | null;
-      if (row && row.agent_id !== input.agentId) {
-        this.db
-          .query("UPDATE conversations SET closed_at=? WHERE id=?")
-          .run(new Date().toISOString(), row.id);
-        row = null;
-      }
-      if (!row) {
-        const previous = this.db
-          .query(
-            "SELECT MAX(binding_epoch) AS n FROM conversations WHERE channel=? AND source_id=?",
-          )
-          .get(input.channel, input.sourceId) as { n: number | null };
-        const id = crypto.randomUUID();
-        this.db
-          .query(
-            "INSERT INTO conversations(id,channel,topology,source_id,agent_id,user_id,binding_epoch,created_at,updated_at,source_watermark) VALUES(?,?,?,?,?,?,?,?,?,?)",
-          )
-          .run(
-            id,
-            input.channel,
-            input.topology,
-            input.sourceId,
-            input.agentId,
-            input.userId,
-            (previous.n ?? 0) + 1,
-            previous.n ? new Date().toISOString() : input.at,
-            previous.n ? new Date().toISOString() : input.at,
-            previous.n
-              ? (
-                  this.db.query("SELECT COALESCE(MAX(rowid),0) AS n FROM qq_events").get() as {
-                    n: number;
-                  }
-                ).n
-              : 0,
-          );
-        row = this.row(id)!;
-        publishConversationChange(this.db, id);
-        if (input.channel === "onebot11" && previous.n && this.historyRows(id).length === 1) {
-          // Upgrade may have indexed B while legacy source tables still contain A.
-          // At A's first real activation, import its retained references as an already
-          // consumed prefix. The original source watermark still rejects these facts
-          // on ingress/scan, so old addressed messages cannot become fresh opportunities.
-          const binding = this.db
-            .query("SELECT * FROM qq_bindings WHERE id=?")
-            .get(input.sourceId) as OneBotBindingSource;
-          this.backfillOneBot(binding, row, this.agentName(row.agent_id), true);
-          row = this.row(id)!;
-          this.acknowledge(id, row.next_seq - 1);
-          row = this.row(id)!;
-        }
+      const binding = this.db.query("SELECT * FROM qq_bindings WHERE id=?").get(bindingId) as
+        | (OneBotBindingSource & { created_at: string })
+        | null;
+      if (!binding) return null;
+      const ensured = ensureConversationIdentity(this.db, {
+        channel: "onebot11",
+        topology: binding.conversation_kind === "private" ? "direct" : "shared",
+        sourceId: binding.id,
+        agentId: binding.agent_id,
+        userId: DEFAULT_USER_ID,
+        at: binding.created_at,
+      });
+      let row = ensured.row;
+      if (ensured.created && row.binding_epoch > 1 && this.historyRows(row.id).length === 1) {
+        // A returning Agent may have retained legacy sources but no indexed activation.
+        // Import them as consumed history; the activation watermark still rejects fresh work.
+        this.backfillOneBot(binding, row, this.agentName(row.agent_id), true);
+        row = this.row(row.id)!;
+        this.acknowledge(row.id, row.next_seq - 1);
+        row = this.row(row.id)!;
       }
       return row;
     })();
@@ -344,8 +312,8 @@ export class ConversationEventRepository {
     const r = this.row(id);
     return r && (!userId || r.user_id === userId) ? this.summary(r) : null;
   }
-  /** Canonical directory includes sources that have never produced an Agent run. */
-  discover(userId: string): void {
+  /** Bootstrap repair for legacy source writers; ordinary GETs never reconcile or write. */
+  reconcileSources(userId: string): void {
     this.db.transaction(() => {
       const sessions = this.db
         .query(`SELECT s.id FROM sessions s WHERE s.user_id=? AND NOT EXISTS (
@@ -353,7 +321,7 @@ export class ConversationEventRepository {
             AND c.closed_at IS NULL AND c.agent_id=s.agent_id
         )`)
         .all(userId) as { id: string }[];
-      for (const session of sessions) this.ensureWeb(session.id, userId);
+      for (const session of sessions) ensureWebConversationIdentity(this.db, session.id, userId);
       // Source edits can advance Web activity without a new journal event. Probe first
       // so an unchanged directory does not even attempt a write on a read-only handle.
       const changed = this.db
@@ -388,36 +356,90 @@ export class ConversationEventRepository {
         ORDER BY c.binding_epoch`)
       .all(id) as ConversationRow[];
   }
-  private historyPosition(id: string): {
-    current: ConversationRow;
-    id: string;
-    lastSeq: number;
-    consumedSeq: number;
-  } | null {
-    const rows = this.historyRows(id);
-    const current = rows.at(-1);
-    if (!current || current.closed_at !== null) return null;
-    const offset = rows.slice(0, -1).reduce((total, row) => total + row.next_seq - 1, 0);
-    return {
-      current,
-      id: rows[0]!.id,
-      lastSeq: offset + current.next_seq - 1,
-      // Sealed activations have no actionable input. This is a read-view position,
-      // never a watermark passed to acknowledge(), WakeRepository or an output intent.
-      consumedSeq: offset + current.consumed_seq,
-    };
+  /** One selected-identity projection, shared by directory, exact reads and notifications. */
+  historyMetadataMany(
+    ids: readonly string[],
+    access?: { userId: string; includeShared: boolean },
+  ): Map<string, Pick<ConversationSummary, "id" | "lastSeq" | "bindingEpoch">> {
+    return new Map(
+      this.historyProjection(ids, false, access).map((row) => [
+        row.requested_id,
+        {
+          id: row.history_id,
+          lastSeq: row.last_seq,
+          bindingEpoch: row.binding_epoch,
+        },
+      ]),
+    );
   }
+
+  historySummaries(
+    ids: readonly string[],
+    access?: { userId: string; includeShared: boolean },
+  ): Map<string, ConversationSummary> {
+    return new Map(
+      this.historyProjection(ids, true, access).map((row) => [
+        row.requested_id,
+        {
+          ...this.projectSummary(row),
+          id: row.history_id,
+          lastSeq: row.last_seq,
+          consumedSeq: row.history_consumed,
+        },
+      ]),
+    );
+  }
+
+  private historyProjection(
+    ids: readonly string[],
+    display: boolean,
+    access?: { userId: string; includeShared: boolean },
+  ): HistoryProjection[] {
+    if (!ids.length) return [];
+    const guard = access
+      ? `AND anchor.user_id=? AND (? OR anchor.topology<>'shared')
+      AND CASE WHEN anchor.channel='web' THEN EXISTS (
+        SELECT 1 FROM sessions s WHERE s.id=anchor.source_id AND s.user_id=anchor.user_id AND s.agent_id=anchor.agent_id
+      ) ELSE EXISTS (
+        SELECT 1 FROM qq_bindings b JOIN agents a ON a.id=b.agent_id
+        WHERE b.id=anchor.source_id AND b.agent_id=anchor.agent_id
+      ) END`
+      : "";
+    const displayFields = display
+      ? `,session.title AS web_title,binding.peer_id,
+      agent.name AS agent_name,group_name.qq_name,group_name.custom_name`
+      : "";
+    const displayJoins = display
+      ? `LEFT JOIN sessions session ON latest.channel='web' AND session.id=latest.source_id
+      LEFT JOIN qq_bindings binding ON latest.channel='onebot11' AND binding.id=latest.source_id
+      LEFT JOIN agents agent ON agent.id=latest.agent_id
+      LEFT JOIN qq_group_names group_name ON latest.topology='shared'
+        AND group_name.account_id=binding.account_id AND group_name.group_id=binding.peer_id`
+      : "";
+    return this.db
+      .query(`WITH epochs AS (
+      SELECT selected.value AS requested_id,c.*,
+        first_value(c.id) OVER (PARTITION BY selected.key ORDER BY c.binding_epoch) AS history_id,
+        sum(c.next_seq-1) OVER (PARTITION BY selected.key) AS last_seq,
+        row_number() OVER (PARTITION BY selected.key ORDER BY c.binding_epoch DESC) AS position
+      FROM json_each(?) selected CROSS JOIN conversations anchor ON anchor.id=selected.value
+      JOIN conversations c ON c.channel=anchor.channel AND c.source_id=anchor.source_id
+        AND c.agent_id=anchor.agent_id AND c.user_id=anchor.user_id
+      WHERE 1=1 ${guard}
+    ) SELECT latest.*,latest.last_seq-latest.next_seq+1+latest.consumed_seq AS history_consumed
+      ${displayFields} FROM epochs latest ${displayJoins}
+      WHERE latest.position=1 AND latest.closed_at IS NULL`)
+      .all(
+        JSON.stringify([...new Set(ids)]),
+        ...(access ? [access.userId, access.includeShared ? 1 : 0] : []),
+      ) as HistoryProjection[];
+  }
+
   historyMetadata(id: string): Pick<ConversationSummary, "id" | "lastSeq" | "bindingEpoch"> | null {
-    const position = this.historyPosition(id);
-    return position
-      ? { id: position.id, lastSeq: position.lastSeq, bindingEpoch: position.current.binding_epoch }
-      : null;
+    return this.historyMetadataMany([id]).get(id) ?? null;
   }
   historySummary(id: string): ConversationSummary | null {
-    const position = this.historyPosition(id);
-    if (!position) return null;
-    const { current, ...metadata } = position;
-    return { ...this.summary(current), ...metadata };
+    return this.historySummaries([id]).get(id) ?? null;
   }
   /**
    * Stable history cursor: sealed epochs cannot append, so their seq ranges never move.
@@ -482,39 +504,30 @@ export class ConversationEventRepository {
     } | null;
     return agent?.name ?? agentId;
   }
-  private summary(r: ConversationRow): ConversationSummary {
-    let title = "";
-    let peerId = r.user_id;
-    let qqGroup: ConversationSummary["qqGroup"];
-    if (r.channel === "web") {
-      title =
-        (
-          this.db.query("SELECT title FROM sessions WHERE id=?").get(r.source_id) as {
-            title: string;
-          } | null
-        )?.title ?? "";
-    } else {
-      const b = this.db
-        .query("SELECT account_id, peer_id FROM qq_bindings WHERE id=?")
-        .get(r.source_id) as { account_id: string; peer_id: string } | null;
-      peerId = b?.peer_id ?? r.source_id;
-      // 0053：群显示名 = 备注 ?? 群本名 ?? 既有"群聊 群号"回退；群号始终独立可见。
-      // 名字尚未取得也要能备注、能看群号：已绑定的群一律出块，未知字段为 null。
-      const group =
-        r.topology === "shared" && b ? readQqGroupName(this.db, b.account_id, b.peer_id) : null;
-      if (r.topology === "shared") {
-        title = group?.customName ?? group?.qqName ?? `群聊 ${peerId}`;
-        qqGroup = b
-          ? {
-              number: peerId,
-              originalName: group?.qqName ?? null,
-              customName: group?.customName ?? null,
-            }
-          : undefined;
-      } else {
-        title = `私聊 ${peerId}`;
-      }
-    }
+  private summary(row: ConversationRow): ConversationSummary {
+    return this.summaries([row.id]).get(row.id)!;
+  }
+  private summaries(ids: readonly string[]): Map<string, ConversationSummary> {
+    if (!ids.length) return new Map();
+    const selected = this.db
+      .query(`SELECT c.*,s.title AS web_title,b.peer_id,a.name AS agent_name,
+      g.qq_name,g.custom_name FROM json_each(?) selected CROSS JOIN conversations c ON c.id=selected.value
+      LEFT JOIN sessions s ON c.channel='web' AND s.id=c.source_id
+      LEFT JOIN qq_bindings b ON c.channel='onebot11' AND b.id=c.source_id
+      LEFT JOIN agents a ON a.id=c.agent_id
+      LEFT JOIN qq_group_names g ON c.topology='shared' AND g.account_id=b.account_id AND g.group_id=b.peer_id`)
+      .all(JSON.stringify([...new Set(ids)])) as SummaryRow[];
+    return new Map(selected.map((row) => [row.id, this.projectSummary(row)]));
+  }
+  private projectSummary(r: SummaryRow): ConversationSummary {
+    const peerId = r.channel === "web" ? r.user_id : (r.peer_id ?? r.source_id);
+    const hasBinding = r.peer_id !== null && r.peer_id !== undefined;
+    const title =
+      r.channel === "web"
+        ? (r.web_title ?? "")
+        : r.topology === "shared"
+          ? (r.custom_name ?? r.qq_name ?? `群聊 ${peerId}`)
+          : `私聊 ${peerId}`;
     return {
       id: r.id,
       channel: r.channel,
@@ -523,9 +536,17 @@ export class ConversationEventRepository {
       agentId: r.agent_id,
       bindingEpoch: r.binding_epoch,
       title,
-      ...(qqGroup ? { qqGroup } : {}),
+      ...(r.channel === "onebot11" && r.topology === "shared" && hasBinding
+        ? {
+            qqGroup: {
+              number: peerId,
+              originalName: r.qq_name ?? null,
+              customName: r.custom_name ?? null,
+            },
+          }
+        : {}),
       participants: [
-        { id: r.agent_id, label: this.agentName(r.agent_id), role: "agent" },
+        { id: r.agent_id, label: r.agent_name ?? r.agent_id, role: "agent" },
         ...(r.topology === "direct" ? [{ id: peerId, label: peerId, role: "user" as const }] : []),
       ],
       updatedAt: r.updated_at,
@@ -533,13 +554,13 @@ export class ConversationEventRepository {
       consumedSeq: r.consumed_seq,
     };
   }
-  list(input: {
+  directoryPage(input: {
     userId: string;
     channel?: ConversationRow["channel"];
     sourceId?: string;
     cursor?: string;
     limit?: number;
-  }): { items: ConversationSummary[]; nextCursor: string | null } {
+  }): { ids: string[]; nextCursor: string | null } {
     const where = ["user_id=?", "closed_at IS NULL"];
     const args: (string | number)[] = [input.userId];
     if (input.channel) {
@@ -565,14 +586,28 @@ export class ConversationEventRepository {
         `SELECT * FROM conversations WHERE ${where.join(" AND ")} ORDER BY updated_at DESC,id DESC LIMIT ?`,
       )
       .all(...args) as ConversationRow[];
-    const items = rows.slice(0, limit).map((r) => this.summary(r));
+    const ids = rows.slice(0, limit).map((row) => row.id);
     const last = rows[limit - 1];
     return {
-      items,
+      ids,
       nextCursor:
         rows.length > limit && last
           ? Buffer.from(JSON.stringify([last.updated_at, last.id])).toString("base64url")
           : null,
+    };
+  }
+  list(input: Parameters<ConversationEventRepository["directoryPage"]>[0]): {
+    items: ConversationSummary[];
+    nextCursor: string | null;
+  } {
+    const page = this.directoryPage(input);
+    const summaries = this.summaries(page.ids);
+    return {
+      items: page.ids.flatMap((id) => {
+        const item = summaries.get(id);
+        return item ? [item] : [];
+      }),
+      nextCursor: page.nextCursor,
     };
   }
   /**

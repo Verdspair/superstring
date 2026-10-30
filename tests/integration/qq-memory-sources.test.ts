@@ -8,8 +8,12 @@
 
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
-import { catalog, memoryBodies } from "../../src/server/db/context-repository";
-import { correctMemory, memoryContent } from "../../src/server/db/memory-content-repository";
+import { memoryBodiesByScopeKeys } from "../../src/server/db/context-repository";
+import {
+  correctMemory,
+  memoryContent,
+  setMemoryVisibility,
+} from "../../src/server/db/memory-content-repository";
 import {
   claim,
   enqueue,
@@ -19,14 +23,18 @@ import {
   publish,
   validateEntrySources,
 } from "../../src/server/db/memory-repository";
+import { memorySourceFactAssessment } from "../../src/server/db/memory-source-repository";
 import { insertQqBinding } from "../../src/server/db/qq-binding-repository";
 import { createQqScheme } from "../../src/server/db/qq-scheme-repository";
 import {
   createSession,
   DEFAULT_USER_ID,
   ensureDefaults,
+  getTurnByRequest,
   nowIso,
   type Orm,
+  prepareTurn,
+  saveCompletedAssistantMessage,
 } from "../../src/server/db/repositories";
 import * as schema from "../../src/server/db/schema";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
@@ -183,10 +191,7 @@ describe("observation-backed memory sources", () => {
     try {
       seedObservation(h.orm, "evt_1");
       seedMemory(h.orm, "m_qq", qqMemoryScopeKeyset(GROUP_A).write, ["evt_1"]);
-      const items = catalog(h.orm, AGENT_ID, h.sessionId, {
-        allEntries: true,
-        scopeKeys: qqMemoryScopeKeyset(GROUP_A).read,
-      });
+      const items = [memoryContent(h.orm, AGENT_ID, "m_qq").content];
       expect(items.map((item) => item.id)).toEqual(["m_qq"]);
       const source = items[0]?.sources[0];
       expect(source?.type).toBe("qq_observation");
@@ -194,7 +199,10 @@ describe("observation-backed memory sources", () => {
       // the sources are validated here: a catalog item also carries `createdAt`, which
       // the strict content item deliberately does not allow.
       expect(ContentSourceSchema.safeParse(source).success).toBe(true);
-      expect(memoryBodies(h.orm, AGENT_ID, h.sessionId, ["m_qq"])[0]?.id).toBe("m_qq");
+      expect(
+        memoryBodiesByScopeKeys(h.orm, AGENT_ID, ["m_qq"], qqMemoryScopeKeyset(GROUP_A).read)[0]
+          ?.id,
+      ).toBe("m_qq");
     } finally {
       h.business.close();
     }
@@ -245,12 +253,9 @@ describe("observation-backed memory sources", () => {
       h.business.db.run("PRAGMA foreign_keys = ON");
       // Validation is the second line of defence and must not trust the row.
       expect(() => validateEntrySources(h.orm, entries(h.orm, AGENT_ID, ["m_qq"]))).toThrow();
-      expect(
-        catalog(h.orm, AGENT_ID, h.sessionId, {
-          allEntries: true,
-          scopeKeys: qqMemoryScopeKeyset(GROUP_A).read,
-        }),
-      ).toEqual([]);
+      expect(() =>
+        memoryBodiesByScopeKeys(h.orm, AGENT_ID, ["m_qq"], qqMemoryScopeKeyset(GROUP_A).read),
+      ).toThrow();
     } finally {
       h.business.close();
     }
@@ -281,8 +286,8 @@ describe("observation-backed memory sources", () => {
       seedMemory(h.orm, "m_qq", qqMemoryScopeKeyset(GROUP_A).write, ["evt_1"]);
       const before = memoryContent(h.orm, AGENT_ID, "m_qq");
       expect(before.content.validity).toBe("valid");
-      // A QQ memory has no original transcript to recap.
-      expect(before.source_messages).toEqual([]);
+      // Original bodies use the independently authorized, paged preview route.
+      expect(before).not.toHaveProperty("source_messages");
       const after = correctMemory(h.orm, AGENT_ID, "m_qq", {
         expected_revision: before.content.revision,
         name: "改名",
@@ -322,14 +327,10 @@ describe("observation-backed memory sources", () => {
       seedObservation(h.orm, "evt_1");
       seedMemory(h.orm, "m_qq", qqMemoryScopeKeyset(GROUP_A).write, ["evt_1"]);
       const other = access("20002");
-      expect(
-        catalog(h.orm, AGENT_ID, h.sessionId, {
-          allEntries: true,
-          scopeKeys: qqMemoryScopeKeyset(other).read,
-        }),
-      ).toEqual([]);
-      // No scope at all is still the whole agent, i.e. today's governance behaviour.
-      expect(catalog(h.orm, AGENT_ID, h.sessionId, { allEntries: true })).toHaveLength(1);
+      expect(() =>
+        memoryBodiesByScopeKeys(h.orm, AGENT_ID, ["m_qq"], qqMemoryScopeKeyset(other).read),
+      ).toThrow();
+      expect(memoryContent(h.orm, AGENT_ID, "m_qq").content.id).toBe("m_qq");
     } finally {
       h.business.close();
     }
@@ -431,6 +432,109 @@ describe("observation-backed memory sources", () => {
       // Both parents' events are attached to the child, so it stays usable.
       expect(forChild.map((row) => row.eventKey).sort()).toEqual(["evt_1", "evt_2"]);
       expect(validateEntrySources(h.orm, entries(h.orm, AGENT_ID, [child.id]))).toEqual([]);
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("keeps durable provenance governable without a current binding or raw body, but does not authorize public publication", () => {
+    const h = setup();
+    try {
+      seedObservation(h.orm, "durable");
+      seedMemory(h.orm, "durable-memory", qqMemoryScopeKeyset(GROUP_A).write, ["durable"]);
+      h.business.db.query("DELETE FROM qq_bindings WHERE peer_id=?").run("20001");
+      const row = entries(h.orm, AGENT_ID, ["durable-memory"])[0]!;
+      const facts = memorySourceFactAssessment(h.orm, [row]);
+      expect(facts.states.get(row.id)).toBe("valid");
+      expect(facts.revisions.get(row.id)).toMatch(/^[a-f0-9]{64}$/);
+      expect(validateEntrySources(h.orm, [row])).toEqual([]);
+      expect(memoryContent(h.orm, AGENT_ID, row.id).content.validity).toBe("valid");
+      govern(h.orm, AGENT_ID, [row.id], "suppress");
+      govern(h.orm, AGENT_ID, [row.id], "enable");
+      const corrected = correctMemory(h.orm, AGENT_ID, row.id, {
+        expected_revision: memoryContent(h.orm, AGENT_ID, row.id).content.revision,
+        name: "corrected durable",
+        summary: "corrected",
+        tags: [],
+        body: "corrected derived body",
+      });
+      expect(corrected.content.validity).toBe("valid");
+      expect(() =>
+        setMemoryVisibility(h.orm, AGENT_ID, corrected.content.id, {
+          expected_revision: 1,
+          visibility: "public",
+          recipient_agent_ids: [AGENT_ID],
+        }),
+      ).toThrow();
+      expect(h.orm.select().from(schema.qqObservationText).all()).toEqual([]);
+      expect(h.orm.select().from(schema.qqEvents).all()).toHaveLength(1);
+    } finally {
+      h.business.close();
+    }
+  });
+  it("checks every retained source instead of allowing one valid Web source to hide a tampered QQ source", () => {
+    const h = setup();
+    try {
+      seedObservation(h.orm, "mixed-event");
+      seedMemory(h.orm, "mixed-memory", qqMemoryScopeKeyset(GROUP_A).write, ["mixed-event"]);
+      const prepared = prepareTurn(h.orm, h.sessionId, "question", "mixed-turn");
+      saveCompletedAssistantMessage(
+        h.orm,
+        h.sessionId,
+        "answer",
+        "mixed-turn",
+        prepared.generationToken!,
+      );
+      const sourceTurn = getTurnByRequest(h.orm, h.sessionId, "mixed-turn")!;
+      const messages = h.orm
+        .select()
+        .from(schema.messages)
+        .where(eq(schema.messages.turnId, sourceTurn.id))
+        .all();
+      const user = messages.find((message) => message.role === "user")!,
+        assistant = messages.find((message) => message.role === "assistant")!;
+      h.orm
+        .insert(schema.memorySources)
+        .values({
+          memoryId: "mixed-memory",
+          turnId: sourceTurn.id,
+          userMessageId: user.id,
+          assistantMessageId: assistant.id,
+          sequenceNo: user.sequenceNo,
+        })
+        .run();
+      expect(validateEntrySources(h.orm, entries(h.orm, AGENT_ID, ["mixed-memory"]))).toHaveLength(
+        1,
+      );
+      h.business.db
+        .query("UPDATE qq_events SET speaker_id=? WHERE event_key=?")
+        .run("tampered", "mixed-event");
+      expect(() =>
+        validateEntrySources(h.orm, entries(h.orm, AGENT_ID, ["mixed-memory"])),
+      ).toThrow();
+      expect(memoryContent(h.orm, AGENT_ID, "mixed-memory").content.validity).toBe("invalid");
+    } finally {
+      h.business.close();
+    }
+  });
+
+  it("does not let a matching message and speaker hide a changed event conversation identity", () => {
+    const h = setup();
+    try {
+      seedObservation(h.orm, "scope-fact");
+      seedMemory(h.orm, "scope-memory", qqMemoryScopeKeyset(GROUP_A).write, ["scope-fact"]);
+      expect(validateEntrySources(h.orm, entries(h.orm, AGENT_ID, ["scope-memory"]))).toEqual([]);
+      h.business.db
+        .query("UPDATE qq_events SET peer_id=? WHERE event_key=?")
+        .run("20002", "scope-fact");
+      expect(
+        memorySourceFactAssessment(h.orm, entries(h.orm, AGENT_ID, ["scope-memory"])).states.get(
+          "scope-memory",
+        ),
+      ).toBe("invalid");
+      expect(() =>
+        validateEntrySources(h.orm, entries(h.orm, AGENT_ID, ["scope-memory"])),
+      ).toThrow();
     } finally {
       h.business.close();
     }

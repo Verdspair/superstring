@@ -28,16 +28,14 @@ import {
   correctionMetadata,
   correctionSnapshot,
   isCorrectionRetired,
-  memoryRevision,
 } from "../services/memory-revision";
 import type { MemoryScopeKeys } from "../services/memory-scope";
 import { resolveQqMemoryAccess } from "../services/qq-binding-contract";
 import {
-  acceptsObservationSources,
-  memoryPublicationSourceRevisions,
+  memoryDerivedSourceRevisions,
+  memorySourceFactAssessment,
   observationSourceRows,
   observationSources,
-  observationSourcesIntact,
   ownedObservations,
 } from "./memory-source-repository";
 import { readOrganizationSettings } from "./organization-repository";
@@ -362,110 +360,23 @@ export function entries(
   return items;
 }
 
-/**
- * a memory is only reusable while EVERY one of
- * its source turns is still intact. Note this checks `source_valid` and the
- * generation status but deliberately not `context_valid`: a turn that merely
- * scrolled out of the context window has not lost its meaning as a source.
- *
- * A QQ memory may instead be backed by conversation observations, so an entry is
- * acceptable when its turn sources are intact OR its observation sources are — but
- * observation evidence never validates a web (agent-level) memory.
+/** Validate every durable source of derived content; original-body TTL is not provenance validity.
+ * Routed publications keep their stronger frozen-route/source proof contract.
  */
 export function validateEntrySources(
   orm: Orm,
   items: MemoryEntryRow[],
 ): Array<typeof schema.memorySources.$inferSelect> {
   if (items.length === 0) return [];
-  const ids = items.map((i) => i.id);
-  const sources = orm
-    .select()
-    .from(schema.memorySources)
-    .where(inArray(schema.memorySources.memoryId, ids))
-    .all();
-  const observations = observationSources(orm, ids);
-
-  const routed: MemoryEntryRow[] = [];
-  const invalid = new Set<string>();
-  const sourcesById = new Map<string, typeof sources>();
-  for (const source of sources) {
-    const list = sourcesById.get(source.memoryId) ?? [];
-    list.push(source);
-    sourcesById.set(source.memoryId, list);
-  }
+  const facts = memorySourceFactAssessment(orm, items);
+  const revisions = memoryDerivedSourceRevisions(orm, items, nowIso(), facts);
+  const sources: Array<typeof schema.memorySources.$inferSelect> = [];
   for (const item of items) {
-    let stored: ConsolidationConfig;
-    try {
-      stored = JSON.parse(item.configSnapshot) as ConsolidationConfig;
-    } catch {
-      invalid.add(item.id);
-      continue;
-    }
-    const scopes = memoryJobScopes(stored);
-    const turnSources = sourcesById.get(item.id) ?? [];
-    const observationRows = observations.get(item.id) ?? [];
-    if (scopes.route !== undefined) {
-      if (
-        scopes.destination !== item.scopeKey ||
-        !isQqMemoryScopeKey(scopes.source) ||
-        observationRows.length === 0 ||
-        observationRows.some((source) => source.scopeKey !== scopes.source)
-      ) {
-        invalid.add(item.id);
-      } else routed.push(item);
-      continue;
-    }
-    if (turnSources.length > 0 && turnSources.every((source) => turnSourceIntact(orm, source)))
-      continue;
-    if (
-      !(
-        acceptsObservationSources(item.scopeKey, item.agentId) &&
-        observationSourcesIntact(orm, observationRows)
-      )
-    )
-      invalid.add(item.id);
-  }
-  const proofs = memoryPublicationSourceRevisions(
-    orm,
-    routed,
-    new Map(routed.map((item) => [item.id, memoryRevision(item)])),
-    nowIso(),
-  );
-  for (const item of routed) if (!proofs.has(item.id)) invalid.add(item.id);
-  const broken = items.filter((item) => invalid.has(item.id));
-  if (broken.length > 0) {
-    fail("MEMORY_SOURCE_INVALID", "记忆来源缺失或已失效");
+    if (!revisions.has(item.id)) fail("MEMORY_SOURCE_INVALID", "记忆来源缺失或已失效");
+    sources.push(...(facts.webSources.get(item.id) ?? []));
   }
   return sources;
 }
-
-/** One turn source is intact when its turn and both messages are still complete. */
-function turnSourceIntact(orm: Orm, source: typeof schema.memorySources.$inferSelect): boolean {
-  const t = orm.select().from(schema.turns).where(eq(schema.turns.id, source.turnId)).get();
-  const u = orm
-    .select()
-    .from(schema.messages)
-    .where(eq(schema.messages.id, source.userMessageId))
-    .get();
-  const a = orm
-    .select()
-    .from(schema.messages)
-    .where(eq(schema.messages.id, source.assistantMessageId))
-    .get();
-  return (
-    t !== undefined &&
-    t.sourceValid === 1 &&
-    t.generationStatus === "completed" &&
-    u !== undefined &&
-    a !== undefined &&
-    u.turnId === t.id &&
-    a.turnId === t.id &&
-    u.status === "completed" &&
-    a.status === "completed"
-  );
-}
-
-// Jobs
 
 export interface EnqueueArgs {
   /**

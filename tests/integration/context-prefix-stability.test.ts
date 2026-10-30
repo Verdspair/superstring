@@ -51,4 +51,45 @@ describe("QQ history prefixes across tool decisions", () => {
     expect(third.filter((message) => kind(message) === "action_observation")).toHaveLength(2);
     expect(h.sent).toHaveLength(0);
   });
+
+  it("keeps the QQ message prefix and business identity when authority is absent from model observations", async () => {
+    const h = createOneBotHarness({
+      model: [decideInvoke("memory.query", { query: "" }), decideNone()],
+      mediaInput: { stages: { decision: false, evaluation: false, generation: false } },
+    });
+    const id = h.memory("A sourced tentative plan.", {
+      name: "Plan",
+      summary: "Tentative, not confirmed",
+    });
+    h.receive({ id: "80001", text: "Remember the plan?", speaker: "20002", addressed: true });
+    await h.activate("direct_reply");
+    const requests = h.model?.receivedMessages.filter((entry) => entry.phase === "next") ?? [];
+    expect(requests).toHaveLength(2);
+    const at = requests[1].messages.findIndex((message) => kind(message) === "action_observation");
+    expect(at).toBeGreaterThan(0);
+    const facts = requests[1].messages.findIndex((message) => kind(message) === "qq_message_facts");
+    expect(facts).toBeGreaterThan(0);
+    expect(facts).toBeLessThan(at);
+    expect(requests[1].messages.slice(0, facts + 1)).toEqual(
+      requests[0].messages.slice(0, facts + 1),
+    );
+    const part = requests[1].messages[at].content[0];
+    if (part?.kind !== "text") throw new Error("missing memory observation");
+    const observation = JSON.parse(part.text).value;
+    expect(observation.value.items[0]).toMatchObject({
+      id,
+      title: "Plan",
+      summary: "Tentative, not confirmed",
+    });
+    expect(observation.value.items[0].bodyRef).toBeString();
+    const runs = h.runs.listRuns({ ownerKind: "conversation", ownerId: h.conversationId });
+    const refs = runs.flatMap((run) =>
+      run.steps.flatMap((step) => h.runs.getContext(step.context)?.sources ?? []),
+    );
+    expect(refs.some((ref) => ref.kind === "memory_access")).toBe(true);
+    expect(observation.sources.some((ref: { kind: string }) => ref.kind === "memory_access")).toBe(
+      false,
+    );
+    expect(h.sent).toHaveLength(0);
+  });
 });

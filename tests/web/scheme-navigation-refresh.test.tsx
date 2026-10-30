@@ -5,13 +5,25 @@
 // deleted scheme never silently takes the draft away, and late API answers cannot overwrite a
 // newer selection.
 
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgentResponseSchema } from "../../src/shared/contracts";
 import type { QqBindingResponse, QqSchemeResponse } from "../../src/shared/contracts/qq";
-import { QqBindingResponseSchema } from "../../src/shared/contracts/qq";
+import {
+  QqBindingResponseSchema,
+  UpdateQqBindingRequestSchema,
+} from "../../src/shared/contracts/qq";
+import {
+  mergeQqGroupScheme,
+  QqGroupConfigResponseSchema,
+} from "../../src/shared/contracts/qq-group-config";
 import { api } from "../../src/web/api";
 import { qqSchemeEditorFrom } from "../../src/web/features/qq/types";
-import { msg } from "../../src/web/i18n";
+import { msg, selectLocale } from "../../src/web/i18n";
+import { i18n } from "../../src/web/i18n/runtime";
 import { useSuperstringStore as store } from "../../src/web/store";
+import { NavigationGuard } from "../../src/web/workspace/NavigationGuard";
+import { render } from "./helpers/render-with-providers";
 
 const NOW = "2026-09-24T00:00:00.000Z";
 const FIRST = "22222222-2222-4222-8222-222222222222";
@@ -162,10 +174,42 @@ beforeEach(() => {
   reset();
 });
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
 });
 
 describe("方案切换守卫", () => {
+  it("离开配置工作区的整体放弃清理知识草稿及其全部错误", async () => {
+    reset({
+      getKnowledgeSettings: vi.fn().mockResolvedValue({
+        revision: 1,
+        auto_enabled: true,
+        model_name: null,
+        context_budget: 2048,
+      }),
+    });
+    await store.getState().loadKnowledgeModel();
+    store.getState().patchKnowledgeModel("draft-model");
+    store.getState().patchKnowledgeGlobal({ contextBudget: 4096 });
+    store.setState({
+      knowledgeModelError: {
+        model: "model failure",
+        budget: "budget failure",
+        shared: "read failure",
+      },
+    });
+    store.getState().requestPageNavigation("chat");
+    expect(store.getState().navigationConfirmOpen).toBe(true);
+    await store.getState().confirmDiscardAndContinue();
+    expect(store.getState().knowledgeModelEditor).toBeNull();
+    expect(store.getState().knowledgeModelError).toEqual({
+      model: null,
+      budget: null,
+      shared: null,
+    });
+    expect(store.getState().page).toBe("chat");
+  });
+
   it("打开当前方案也进入详情，保存方案不夹带其他资料草稿", async () => {
     reset();
     store.setState({ settingsRoute: "scheme-library" });
@@ -278,30 +322,102 @@ describe("方案切换守卫", () => {
     expect(store.getState().settingsRoute).toBe("qq-scheme-config");
   });
 
-  it("绑定的未保存改绑也触发确认，保存成功后完成切换", async () => {
-    const updateBinding = vi.fn(async (id: string, patch: unknown) => {
-      const { expected_revision: _expected, ...fields } = patch as Record<string, unknown>;
-      return QqBindingResponseSchema.parse({ ...bindingFixture, id, ...fields });
-    });
-    reset({ updateQqBinding: updateBinding });
-    store.setState({
-      qqInputs: {
-        ...store.getState().qqInputs,
-        choices: {
-          [BINDING]: { agentId: AGENT, schemeId: OTHER, source: bindingFixture },
+  it.each(["keep", "reset"] as const)(
+    "绑定改绑通过原确认交接与实际%s预览选择后才保存并继续",
+    async (decision) => {
+      selectLocale("zh-CN");
+      const updateBinding = vi.fn(async (id: string, patch: unknown) => {
+        const request = UpdateQqBindingRequestSchema.parse(patch);
+        return QqBindingResponseSchema.parse({
+          ...bindingFixture,
+          id,
+          agent_id: request.agent_id ?? bindingFixture.agent_id,
+          scheme_id: request.scheme_id ?? bindingFixture.scheme_id,
+          revision: request.expected_revision + 1,
+        });
+      });
+      const overrides = { prompts: { scene: "retained group scene" } };
+      const base = scheme();
+      const getQqGroupConfig = vi.fn().mockResolvedValue(
+        QqGroupConfigResponseSchema.parse({
+          binding: bindingFixture,
+          base_scheme: base,
+          effective_scheme: mergeQqGroupScheme(base, overrides),
+          overrides,
+          disabled_capabilities: [],
+          revision: 4,
+        }),
+      );
+      reset({ updateQqBinding: updateBinding, getQqGroupConfig });
+      store.setState({
+        agents: [
+          AgentResponseSchema.parse({
+            id: AGENT,
+            name: "Bound Agent",
+            model_name: "model",
+            config_version: 1,
+            persona_intensity: 60,
+            created_at: NOW,
+            updated_at: NOW,
+          }),
+        ],
+        qqBindings: [bindingFixture],
+        qqInputs: {
+          ...store.getState().qqInputs,
+          choices: {
+            [BINDING]: { agentId: AGENT, schemeId: OTHER, source: bindingFixture },
+          },
         },
-      },
-    });
-    store.getState().requestQqSchemeNavigation(OTHER);
-    expect(store.getState().navigationConfirmOpen).toBe(true);
-    await store.getState().confirmSaveAndContinue();
-    expect(updateBinding).toHaveBeenCalledWith(
-      BINDING,
-      expect.objectContaining({ scheme_id: OTHER, expected_revision: 1 }),
-    );
-    expect(store.getState().qqSchemeEditor?.source.id).toBe(OTHER);
-    expect(store.getState().qqInputs.choices).toEqual({});
-  });
+      });
+      render(<NavigationGuard />);
+      act(() => store.getState().requestQqSchemeNavigation(OTHER));
+      const pending = store.getState().pendingNavigation;
+      fireEvent.click(
+        within(screen.getByRole("alertdialog")).getByRole("button", {
+          name: i18n.t("workspace.save_and_continue"),
+        }),
+      );
+      await waitFor(() =>
+        expect(store.getState().qqInputs.bindingSchemeConfirmationId).toBe(BINDING),
+      );
+      expect(updateBinding).not.toHaveBeenCalled();
+      expect(store.getState().pendingNavigation).toBe(pending);
+      const editor = await screen.findByRole("dialog");
+      fireEvent.click(
+        within(editor).getByRole("button", { name: i18n.t("connections.saveBinding") }),
+      );
+      const preview = await screen.findByRole("dialog", {
+        name: i18n.t("schemes.qq.groupConfig.scheme.confirmTitle", { "0": "其他方案" }),
+      });
+      expect(getQqGroupConfig).toHaveBeenCalledWith(BINDING);
+      expect(updateBinding).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(preview).getByRole("button", {
+          name: i18n.t(
+            decision === "keep"
+              ? "schemes.qq.groupConfig.scheme.keepLabel"
+              : "schemes.qq.groupConfig.scheme.resetLabel",
+          ),
+        }),
+      );
+      await waitFor(() => expect(store.getState().qqSchemeEditor?.source.id).toBe(OTHER));
+      expect(updateBinding).toHaveBeenCalledTimes(1);
+      expect(updateBinding).toHaveBeenCalledWith(
+        BINDING,
+        expect.objectContaining({
+          scheme_id: OTHER,
+          expected_revision: 1,
+          scheme_change: decision,
+          scheme_change_baseline: { config_revision: 4, scheme_revision: 3 },
+        }),
+      );
+      expect(store.getState().qqInputs.choices).toEqual({});
+      expect(store.getState().qqBindings[0]).not.toHaveProperty("scheme_change");
+      expect(store.getState().qqBindings[0]).not.toHaveProperty("scheme_change_baseline");
+      expect(store.getState().navigationConfirmOpen).toBe(false);
+      expect(store.getState().pendingNavigation).toBeNull();
+    },
+  );
 
   it("保存失败：留在原方案，弹窗保留可重试", async () => {
     reset({ updateQqScheme: vi.fn().mockRejectedValue(new Error("MEMORY_STATE_CONFLICT")) });

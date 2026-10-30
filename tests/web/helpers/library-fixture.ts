@@ -3,6 +3,7 @@ import {
   AgentResponseSchema,
   type MemoryContentResponse,
   type MemoryEntryResponse,
+  type MemoryManagementEntry,
   PersonaResponseSchema,
 } from "../../../src/shared/contracts";
 import type { KnowledgeDocumentDetail } from "../../../src/shared/contracts/knowledge";
@@ -38,7 +39,16 @@ export const persona = PersonaResponseSchema.parse({
   updated_at: now,
 });
 export const policy = { auto_enabled: true, every_turns: 20, target_chars: 1200, version: 1 };
-export const memory: MemoryEntryResponse = {
+export const memory: MemoryEntryResponse & MemoryManagementEntry = {
+  owner_agent_id: A,
+  visibility: "session_private",
+  visibility_revision: 1,
+  recipient_agent_ids: [],
+  origins: [{ channel: "web", conversation_id: S }],
+  origin_complete: true,
+  source_validity: "valid",
+  runtime_eligibility: "unknown",
+  raw_preview: "unknown",
   id: M,
   name: "Memory one",
   summary: "Apple preference",
@@ -67,7 +77,6 @@ export const memoryContent: MemoryContentResponse = {
   status: "active",
   corrected: false,
   retired: false,
-  source_messages: [],
 };
 export const document: KnowledgeDocumentDetail = {
   id: D,

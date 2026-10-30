@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * Stored close preferences remain readable for existing installations.
- * Since 2026-10-08, an owned desktop window always exits its owned process tree;
+ * An owned desktop window always exits its owned process tree;
  * the host ignores the legacy background preference without rewriting stored settings.
  * Non-window-owned hosts still use the stored preference.
  */

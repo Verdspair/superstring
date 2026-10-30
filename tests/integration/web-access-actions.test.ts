@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import type { ActionContext, BuiltInAction } from "../../src/server/agent/built-in-actions";
 import {
   createWebActions,
+  createWebToolDefinitions,
   WEB_FETCH_DEFAULT_LIMIT,
   WEB_FETCH_MAX_LIMIT,
   WEB_SEARCH_RESULT_CHARS,
@@ -311,4 +312,17 @@ describe("web.search 的配置读取", () => {
     });
     expect(calls).toHaveLength(1);
   });
+});
+
+it("shares metadata-only Web definitions with the executable factories", () => {
+  const definitions = createWebToolDefinitions();
+  const actions = createWebActions();
+  expect(definitions).toEqual(
+    actions.map(({ description, permission, sandboxCallable }) => ({
+      description,
+      permission,
+      ...(sandboxCallable === undefined ? {} : { sandboxCallable }),
+    })),
+  );
+  expect(definitions.every((definition) => !("execute" in definition))).toBe(true);
 });

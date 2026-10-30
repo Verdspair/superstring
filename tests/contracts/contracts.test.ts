@@ -46,6 +46,7 @@ import {
   UUID_REGEX,
   UuidSchema,
 } from "../../src/shared/contracts";
+import { EvidenceSchema, MemoryEvidenceMetadataSchema } from "../../src/shared/contracts/evidence";
 import {
   QQ_REPLY_DEFAULT_PROMPT,
   QQ_REPLY_SPLIT_PROMPT,
@@ -58,6 +59,27 @@ const TS = "2026-01-01T00:00:00.123456Z";
 function ok(schema: { safeParse: (v: unknown) => { success: boolean } }, value: unknown): boolean {
   return schema.safeParse(value).success;
 }
+
+describe("memory evidence content origin", () => {
+  it("keeps optional origin strict without granting original-source metadata", () => {
+    const evidence = { id: "entry", text: "", sources: [] };
+    expect(EvidenceSchema.parse(evidence)).toEqual(evidence);
+    for (const content_origin of ["derived", "manual_correction"] as const) {
+      const metadata = { content_origin };
+      expect(MemoryEvidenceMetadataSchema.parse(metadata)).toEqual(metadata);
+      expect(EvidenceSchema.parse({ ...evidence, metadata })).toEqual({ ...evidence, metadata });
+    }
+    for (const metadata of [
+      { content_origin: "original" },
+      { content_origin: "derived", speaker_id: "private" },
+      { content_origin: "derived", occurred_at_seconds: 1 },
+      { content_origin: "derived", sources: [] },
+      {},
+    ]) {
+      expect(EvidenceSchema.safeParse({ ...evidence, metadata }).success).toBe(false);
+    }
+  });
+});
 
 describe("UUID primitive", () => {
   it("accepts a canonical 36-char UUID (mixed case)", () => {

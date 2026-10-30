@@ -911,4 +911,174 @@ describe("dynamic query admission integration", () => {
     expect(obs!.value.status).toBe("ok");
     expect(obs!.value.items.map((i) => i.id)).toEqual(["k1", "k2"]);
   });
+
+  for (const declaredCounter of [false, true]) {
+    it(`Web ${declaredCounter ? "declared token" : "byte"} admission prices the sent observation without dropping internal grants`, async () => {
+      const business = runtimeFixtureBusiness(openBusinessDb(), MODEL);
+      handles.push(business);
+      ensureDefaults(business.orm, MODEL);
+      const counter = declaredCounter
+        ? { encoding: "o200k_base" as const, count: (text: string) => [...text].length }
+        : undefined;
+      const gateway = new DynamicAdmissionGateway(65536, counter);
+      const sessionId = createSession(business.orm, "authority-model-view", {
+        modelName: MODEL,
+      }).id;
+      const current = prepareTurn(
+        business.orm,
+        sessionId,
+        "Read the supplied source",
+        `authority-${declaredCounter}`,
+      );
+      if (!current.generationToken) throw new Error("missing generation token");
+      const turn = getTurnByRequest(business.orm, sessionId, `authority-${declaredCounter}`)!;
+      const runtime: RuntimeConfig = {
+        ...current.runtime,
+        p5_config: {
+          ...current.runtime.p5_config,
+          context_window: 65536,
+          max_output_tokens: 4096,
+          safety_margin_ratio: 0.1,
+          compression_enabled: false,
+          allocation: { mode: "auto" },
+        },
+      };
+      if (!runtime.knowledge_read) throw new Error("missing knowledge rule");
+      const grant = {
+        kind: "knowledge_grant",
+        id: "synthetic-document-grant",
+        revision: "g".repeat(4096),
+      };
+      const origin = {
+        kind: "future_document_source",
+        id: "document-source",
+        revision: "content-1",
+      };
+      const sourceChecks: string[] = [];
+      let live = true;
+      const agentRuntime = createAgentRuntime({
+        gateway,
+        repository: new AgentRunRepository(business.db),
+      });
+      const source = new WebContextSource({
+        db: business.db,
+        orm: business.orm,
+        gateway,
+        agentRuntime,
+        builder: new ContextBuilder({ orm: business.orm, db: business.db, gateway }),
+        runtime,
+        sessionId,
+        turnId: turn.id,
+        generationToken: current.generationToken,
+        maxSteps: 16,
+        resolveSource: (ref) => {
+          sourceChecks.push(ref.kind);
+          if (ref.kind === grant.kind && ref.id === grant.id) return live ? "available" : "revoked";
+          return ref.kind === origin.kind ? "available" : undefined;
+        },
+        modules: () => ({
+          memory: { query: async () => [] },
+          knowledge: {
+            query: async () => [
+              {
+                id: "document-item",
+                text: "Original source text",
+                sources: [grant, origin],
+                preview: { title: "Document", summary: "Source-supported summary" },
+              },
+            ],
+          },
+        }),
+      });
+      gateway.scripted = [
+        '{"kind":"invoke","name":"knowledge.query","arguments":{"query":"source"}}',
+        '{"kind":"final","outputs":[{"kind":"generate","targetId":"reply","instructions":"Use the result"}]}',
+      ];
+      const contexts: import("../../src/server/agent/context-engine").RenderedContext[] = [];
+      const result = await agentRuntime.run(source.spec, {
+        owner: {
+          kind: "web_turn",
+          id: turn.id,
+          userId: DEFAULT_USER_ID,
+          agentId: runtime.agent_id,
+        },
+        context: source,
+        actions: source.actions,
+        authorizedTargets: ["reply"],
+        outputMode: "stream",
+        onContext(context) {
+          contexts.push(structuredClone(context));
+        },
+      });
+      expect(result.status).toBe("completed");
+      expect(gateway.completeCalls).toHaveLength(2);
+      const call = gateway.completeCalls[1];
+      const observationMessage = call.messages.find((message) => {
+        if (typeof message.content !== "string") return false;
+        try {
+          return JSON.parse(message.content).kind === "action_observation";
+        } catch {
+          return false;
+        }
+      });
+      if (typeof observationMessage?.content !== "string")
+        throw new Error("missing actual observation");
+      const observation = JSON.parse(observationMessage.content).value;
+      expect(observation.value.items).toHaveLength(1);
+      expect(observation.sources).toEqual([origin]);
+      const internal = contexts.find((context) =>
+        context.sources.some((ref) => ref.id === grant.id),
+      );
+      if (!internal) throw new Error("missing internal grant");
+      expect(internal.sources).toContainEqual(grant);
+      expect(sourceChecks).toContain(grant.kind);
+      const actualBytes = new TextEncoder().encode(JSON.stringify(call.messages)).length;
+      const withGrant = call.messages.map((message) =>
+        message !== observationMessage
+          ? message
+          : {
+              ...message,
+              content: JSON.stringify({
+                ...JSON.parse(observationMessage.content as string),
+                value: { ...observation, sources: [grant, origin] },
+              }),
+            },
+      );
+      expect(actualBytes).toBeLessThan(new TextEncoder().encode(JSON.stringify(withGrant)).length);
+      const prepared = await gateway.prepareContextModel(MODEL);
+      const format = gateway.prepareRequestFormat({
+        model: MODEL,
+        responseSchema: call.responseSchema,
+        tools: call.tools,
+      });
+      expect(internal.messages).toEqual(
+        call.messages.map((message) =>
+          textMessage(
+            message.role === "assistant"
+              ? "assistant"
+              : message.role === "system"
+                ? "system"
+                : "user",
+            typeof message.content === "string" ? message.content : "",
+          ),
+        ),
+      );
+      const finalMeasure = measurePreparedRequest(internal.messages, prepared, format);
+      if (declaredCounter) {
+        expect(finalMeasure?.textTokens).toBe(internal.tokenMeasure?.textTokens);
+      } else {
+        expect(internal.tokenMeasure).toBeUndefined();
+      }
+      expect(source.spec.limits.inputUnits).toBeDefined();
+      if (declaredCounter) {
+        expect(internal.tokenMeasure?.textTokens).toBeLessThanOrEqual(
+          source.spec.limits.inputUnits!,
+        );
+      } else {
+        expect(internal.units).toBeLessThanOrEqual(source.spec.limits.inputUnits!);
+      }
+      live = false;
+      expect(() => source.assertSources([grant])).toThrow();
+    });
+  }
 });

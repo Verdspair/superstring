@@ -34,6 +34,14 @@ it("compact product navigation is a labelled modal, without duplicating the conv
   expect(screen.getByRole("dialog", { name: "会话与导航" })).toBeTruthy();
   expect(screen.getAllByRole("navigation", { name: "工作区" })).toHaveLength(1);
   expect(screen.queryByRole("navigation", { name: "历史会话" })).toBeNull();
+  const close = screen.getByRole("button", { name: "关闭导航" });
+  expect(close.tabIndex).toBe(0);
+  close.focus();
+  expect(document.activeElement).toBe(close);
+  await userEvent.click(close);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(document.activeElement).toBe(trigger);
+  await userEvent.click(trigger);
   await userEvent.keyboard("{Escape}");
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(document.activeElement).toBe(trigger);

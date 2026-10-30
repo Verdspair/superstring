@@ -74,6 +74,62 @@ beforeEach(() => {
   });
 });
 describe("Agent task save", () => {
+  it("tools task saves only this Agent overrides and keeps base/other Agent drafts", async () => {
+    const snapshot = {
+      revision: "r1",
+      policy: {
+        version: 1 as const,
+        grants: [
+          {
+            resource: "web",
+            approved: true,
+            revision: "w1",
+            directories: [],
+            agentIds: ["A", "B"],
+            agentOverrides: { B: { enabled: false, approved: false, directories: [] } },
+          },
+        ],
+      },
+      resources: [
+        {
+          name: "web.search",
+          resource: "web",
+          description: "",
+          effect: "read" as const,
+          revision: "w1",
+          approvalRequired: true,
+          directories: [],
+        },
+      ],
+    };
+    const getPermissions = vi.fn(async () => snapshot);
+    const savePermissions = vi.fn(
+      async (body: Parameters<SuperstringApi["savePermissions"]>[0]) => ({
+        ...snapshot,
+        revision: "r2",
+        policy: body.policy,
+      }),
+    );
+    store.setState({ apiClient: { ...client, getPermissions, savePermissions } });
+    await state().loadPermissionSettings();
+    state().patchToolGrant("web", {
+      approved: false,
+      agentOverrides: {
+        A: { enabled: false, approved: false, directories: [] },
+        B: { enabled: true, approved: true, revision: "w1", directories: [] },
+      },
+    });
+    expect(state().settingsTaskDirty("tools")).toBe(true);
+    expect(await state().saveSettingsTask("tools")).toBe(true);
+    const policy = savePermissions.mock.calls[0][0].policy;
+    expect(policy.grants[0].approved).toBe(true);
+    expect(policy.grants[0].agentOverrides?.A?.enabled).toBe(false);
+    expect(policy.grants[0].agentOverrides?.B?.enabled).toBe(false);
+    expect(state().permissionEditor?.grants.web.agentOverrides?.B.enabled).toBe(true);
+    expect(state().settingsTaskDirty("tools")).toBe(false);
+    expect(client.updateAgent).not.toHaveBeenCalled();
+  });
+
   it("keeps basic success after persona failure and retries only remaining work", async () => {
     state().patchPageAgent("basic", { name: "renamed" });
     state().patchPagePersona("identity", { core_identity: "identity" });
@@ -126,7 +182,12 @@ describe("Agent task save", () => {
     expect(client.updateAgent).toHaveBeenCalledTimes(3);
   });
   it("keeps memory success and knowledge failure for retry without unrelated basic write", async () => {
-    state().patchPageAgent("memory-tools", { memory_retrieval_prompt: "new prompt" });
+    state().patchPageAgent("memory-tools", {
+      p5_config: {
+        ...state().pageEditor!.draft.p5_config,
+        memory_read: { enabled: false, max_bytes: 1024 },
+      },
+    });
     state().patchPageAgent("basic", { name: "unrelated" });
     state().patchKnowledgeRead({ enabled: false });
     vi.mocked(client.saveAgentKnowledgeRead).mockRejectedValueOnce(

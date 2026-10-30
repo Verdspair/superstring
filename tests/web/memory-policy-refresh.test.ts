@@ -105,11 +105,11 @@ describe("记忆策略显式刷新合并", () => {
     const initial = store.getState().pageEditor;
     if (!initial) throw new Error("missing page editor");
     expect(initial.policy?.version).toBe(1);
-    const flipped = initial.agent.p5_config.retrieval_mode === "off" ? "broad" : "off";
+    const flipped = { enabled: false, max_bytes: 2048 };
 
     store.getState().patchPagePolicy({ every_turns: 25 });
     store.getState().patchPageAgent("memory-tools", {
-      p5_config: { ...initial.agent.p5_config, retrieval_mode: flipped },
+      p5_config: { ...initial.agent.p5_config, memory_read: flipped },
     });
     store.getState().patchPageAgent("long-memory", { memory_consolidation_prompt: "维护提示词" });
 
@@ -137,7 +137,7 @@ describe("记忆策略显式刷新合并", () => {
     expect(editor?.policyDraft?.auto_enabled).toBe(true); // 未改字段跟随新基线
     expect(editor?.policyDraft?.target_chars).toBe(400); // 未改字段跟随新基线
     expect(editor?.draft.memory_consolidation_additional_instructions).toBe("附加草稿");
-    expect(editor?.draft.p5_config.retrieval_mode).toBe(flipped);
+    expect(editor?.draft.p5_config.memory_read).toEqual(flipped);
     expect(dirtyPages(editor)).toEqual(["long-memory", "memory-tools"]);
 
     // 刷新后保存必须使用新版本；维护保存不提交读取草稿。
@@ -165,7 +165,10 @@ describe("记忆策略显式刷新合并", () => {
     expect(dirtyPages(store.getState().pageEditor)).toEqual([]);
     const readCall = vi.mocked(client.updateAgent).mock.lastCall;
     const readBody = readCall?.[1] as Record<string, unknown> | undefined;
-    expect(readBody?.p5_config).toMatchObject({ retrieval_mode: flipped });
+    expect(readBody?.p5_config).toMatchObject({
+      memory_read: flipped,
+      retrieval_mode: initial.agent.p5_config.retrieval_mode,
+    });
     expect(readBody).not.toHaveProperty("auto_enabled");
   });
 

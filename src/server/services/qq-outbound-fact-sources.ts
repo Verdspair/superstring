@@ -16,9 +16,8 @@ import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { QqConversationScope } from "../../shared/contracts/qq-message";
 import type { ContextPrincipal } from "../agent/context-access";
+import { evidenceScopeExists, ownerScope } from "../conversation/evidence-scope";
 import { DEFAULT_USER_ID } from "../db/repositories";
-import { evidenceScopeExists } from "../modules/conversation-evidence";
-import { ownerScope } from "./qq-media-sources";
 import { isObservationExpired } from "./qq-retention";
 
 /** One confirmed outbound part together with every value the revision hash freezes. */
@@ -285,7 +284,7 @@ function validatedOutboundFactPartState(
     ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
     finishedAt: row.finishedAt,
     // 与发送通路同一口径：ordinal 0 才带程序收件人，且只认合法纯数字
-    // （qqTextSegments 的 mention 形状检查）；sticker 部件按实际线上无 at。
+    // （qqReplySegments 的 legacy recipient 形状检查）；sticker 部件按实际线上无 at。
     targetParticipantId:
       row.partOrdinal === 0 &&
       typeof target.participantId === "string" &&

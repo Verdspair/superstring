@@ -19,7 +19,16 @@ import {
   PolicyUpdateSchema,
   SessionScopeUpdateSchema,
 } from "../../shared/contracts";
+import type { MemoryManagementQuery } from "../../shared/contracts/memory";
 import { correctMemory, memoryContent, setMemoryVisibility } from "../db/memory-content-repository";
+import {
+  memoryManagementMetadata,
+  memoryManagementPage,
+  memoryManagementScopes,
+  memoryReadablePage,
+  memorySourcePreviewPage,
+  memorySourcePreviews,
+} from "../db/memory-management-repository";
 import {
   enqueue,
   entries,
@@ -33,19 +42,9 @@ import {
   setScope,
   turns,
 } from "../db/memory-repository";
-import { memoryAccessMetadataBatch } from "../db/memory-source-repository";
-import { readQqBindings } from "../db/qq-binding-repository";
-import { pendingObservationCount } from "../db/qq-observation-repository";
-import { readQqOwnerIdentity } from "../db/qq-owner-repository";
-import { readQqSettings } from "../db/qq-settings-repository";
 import { DEFAULT_USER_ID, immediate, type Orm } from "../db/repositories";
 import * as schema from "../db/schema";
 import { fail } from "../errors";
-import {
-  qqConversationScope,
-  qqMemoryScopeKey,
-  resolveQqMemoryAccess,
-} from "../services/qq-binding-contract";
 import { parseBody, parseUuidParam, readJsonBody, validationFailed } from "./validation";
 
 /** `policy_view`. */
@@ -127,10 +126,14 @@ function intQuery(raw: string | undefined, fallback: number, min: number, max: n
   return value;
 }
 
-export function memoryRoutes(orm: Orm): Hono {
+export function memoryRoutes(orm: Orm, options: { includeShared?: boolean } = {}): Hono {
   const router = new Hono();
   const db = (orm as unknown as { $client: Database }).$client;
   const base = "/agents/:agentId/memory";
+  router.use(`${base}/*`, async (c, next) => {
+    c.header("cache-control", "no-store");
+    await next();
+  });
 
   /** Every memory route resolves the agent first, so a bad id is always 404. */
   const agentOf = (c: { req: { param: (name: string) => string } }): string =>
@@ -259,101 +262,99 @@ export function memoryRoutes(orm: Orm): Hono {
 
   router.get(`${base}/scopes`, (c) => {
     const agentId = agentOf(c);
-    return c.json(
-      immediate(db, () => {
-        const items = entries(orm, agentId);
-        const bindings = readQqBindings(orm).filter((binding) => binding.agentId === agentId);
-        const jobs = orm
-          .select()
-          .from(schema.memoryJobs)
-          .where(
-            and(
-              eq(schema.memoryJobs.agentId, agentId),
-              eq(schema.memoryJobs.userId, DEFAULT_USER_ID),
-            ),
-          )
-          .orderBy(desc(schema.memoryJobs.createdAt))
-          .all();
-        const latestByScope = new Map<string, MemoryJobRow>();
-        for (const job of jobs) {
-          const snapshot = JSON.parse(job.configSnapshot) as { scope_key: string };
-          if (!latestByScope.has(snapshot.scope_key)) latestByScope.set(snapshot.scope_key, job);
-        }
-        const owner = readQqOwnerIdentity(orm);
-        const settings = readQqSettings(orm);
-        const bindingByScope = new Map(
-          bindings.map((binding) => [qqMemoryScopeKey(qqConversationScope(binding)), binding]),
-        );
-        const keys = new Set([
-          agentId,
-          ...bindingByScope.keys(),
-          ...items.map((item) => item.scopeKey),
-          ...latestByScope.keys(),
-        ]);
-        return [...keys].map((key) => {
-          const binding = bindingByScope.get(key);
-          const access = binding ? resolveQqMemoryAccess(binding, owner) : null;
-          const matching = items.filter((item) => item.scopeKey === key);
-          const job = latestByScope.get(key);
-          return {
-            scope_key: key,
-            count: matching.length,
-            active_count: matching.filter((item) => item.status === "active").length,
-            read_scope_keys:
-              key === agentId
-                ? null
-                : access?.kind === "resolved"
-                  ? access.access.readScopes.map(qqMemoryScopeKey)
-                  : [],
-            write_scope_key: key,
-            pending: binding ? pendingObservationCount(orm, qqConversationScope(binding)) : null,
-            binding: binding
-              ? {
-                  id: binding.id,
-                  revision: binding.revision,
-                  memory_batch_size: binding.memoryBatchSize,
-                  paused: binding.paused,
-                  enabled: settings.enabled === 1 && settings.accountId === binding.accountId,
-                }
-              : null,
-            latest_job: job ? jobView(job) : null,
-          };
-        });
-      }),
-    );
+    return c.json(immediate(db, () => memoryManagementScopes(orm, agentId)));
   });
 
-  // pagination applies AFTER filtering the agent-owned list.
   router.get(`${base}/entries`, (c) => {
     const agentId = agentOf(c);
-    const offset = intQuery(c.req.query("offset"), 0, 0, Number.MAX_SAFE_INTEGER);
-    const limit = intQuery(c.req.query("limit"), 100, 1, 200);
-    const scopeKey = c.req.query("scope_key");
-    const search = (c.req.query("search") ?? "").trim().toLocaleLowerCase();
+    const view = c.req.query("view") ?? "owned";
+    const visibility = c.req.query("visibility");
     const status = c.req.query("status");
+    const search = (c.req.query("search") ?? "").trim();
+    const scope = c.req.query("scope_key");
     if (
-      (scopeKey?.length ?? 0) > 2048 ||
+      !["owned", "received", "all"].includes(view) ||
+      (visibility !== undefined &&
+        !["session_private", "agent_shared", "public", "unclassified"].includes(visibility)) ||
+      (status !== undefined && !["active", "suppressed", "replaced", "invalid"].includes(status)) ||
       search.length > 200 ||
-      (status !== undefined && !["active", "suppressed", "replaced", "invalid"].includes(status))
+      (scope?.length ?? 0) > 2048
     )
       fail("VALIDATION_ERROR", "记忆筛选条件无效", 422);
+    const query: MemoryManagementQuery = {
+      offset: intQuery(c.req.query("offset"), 0, 0, Number.MAX_SAFE_INTEGER),
+      limit: intQuery(c.req.query("limit"), 100, 1, 200),
+      view: view as MemoryManagementQuery["view"],
+      visibility: visibility as MemoryManagementQuery["visibility"],
+      status: status as MemoryManagementQuery["status"],
+      search,
+      scope_key: scope,
+      ...(c.req.query("origin_conversation_id")
+        ? { origin_conversation_id: parseUuidParam(c.req.query("origin_conversation_id")!) }
+        : {}),
+      ...(c.req.query("conversation_id")
+        ? { conversation_id: parseUuidParam(c.req.query("conversation_id")!) }
+        : {}),
+    };
+    return c.json(immediate(db, () => memoryManagementPage(orm, agentId, query)));
+  });
+
+  const readOptions = (
+    c: { req: { query: (name: string) => string | undefined; raw: Request } },
+    fields: readonly string[],
+  ) => {
+    const allowed = new Set(["conversation_id", "offset", "limit", ...fields]);
+    const params = new URL(c.req.raw.url).searchParams;
+    for (const key of params.keys())
+      if (!allowed.has(key) || params.getAll(key).length !== 1)
+        fail("VALIDATION_ERROR", "读取参数无效", 422);
+    return {
+      conversationId: c.req.query("conversation_id")
+        ? parseUuidParam(c.req.query("conversation_id")!)
+        : undefined,
+      signal: c.req.raw.signal,
+      includeShared: options.includeShared ?? false,
+      offset: intQuery(c.req.query("offset"), 0, 0, Number.MAX_SAFE_INTEGER),
+      limit: intQuery(c.req.query("limit"), 4096, 1, 4096),
+    };
+  };
+  router.get(`${base}/entries/:memoryId/read`, (c) => {
+    const read = readOptions(c, ["revision"]);
+    if (read.offset > 0 && !c.req.query("revision"))
+      fail("VALIDATION_ERROR", "续页需要读取修订", 422);
     return c.json(
-      immediate(db, () => {
-        const items = entries(orm, agentId, undefined, {
-          scopeKeys: scopeKey === undefined ? null : [scopeKey],
-          status,
-        }).filter(
-          (item) =>
-            !search ||
-            `${item.name}\n${item.summary}\n${item.body}\n${item.tags}`
-              .toLocaleLowerCase()
-              .includes(search),
-        );
-        return {
-          total: items.length,
-          items: items.slice(offset, offset + limit).map(entrySummary),
-        };
-      }),
+      orm.transaction(() =>
+        memoryReadablePage(orm, agentOf(c), parseUuidParam(c.req.param("memoryId")), {
+          ...read,
+          revision: c.req.query("revision"),
+        }),
+      ),
+    );
+  });
+  router.get(`${base}/entries/:memoryId/sources`, (c) => {
+    const read = readOptions(c, []);
+    return c.json(
+      orm.transaction(() =>
+        memorySourcePreviews(orm, agentOf(c), parseUuidParam(c.req.param("memoryId")), {
+          ...read,
+          limit: intQuery(c.req.query("limit"), 20, 1, 100),
+        }),
+      ),
+    );
+  });
+  router.get(`${base}/entries/:memoryId/source-preview`, (c) => {
+    const read = readOptions(c, ["source_key", "revision"]),
+      sourceKey = c.req.query("source_key"),
+      revision = c.req.query("revision");
+    if (!sourceKey || !revision) fail("VALIDATION_ERROR", "来源引用和修订不能为空", 422);
+    return c.json(
+      orm.transaction(() =>
+        memorySourcePreviewPage(orm, agentOf(c), parseUuidParam(c.req.param("memoryId")), {
+          ...read,
+          sourceKey,
+          revision,
+        }),
+      ),
     );
   });
 
@@ -365,13 +366,18 @@ export function memoryRoutes(orm: Orm): Hono {
   });
 
   router.get(`${base}/entries/:memoryId/access-metadata`, (c) => {
-    const agentId = agentOf(c);
-    const memoryId = parseUuidParam(c.req.param("memoryId"));
+    const agentId = agentOf(c),
+      memoryId = parseUuidParam(c.req.param("memoryId"));
+    const conversationId = c.req.query("conversation_id");
     return c.json(
-      immediate(db, () => {
-        const entry = entries(orm, agentId, [memoryId])[0]!;
-        return memoryAccessMetadataBatch(orm, [entry]).get(entry.id)!;
-      }),
+      immediate(db, () =>
+        memoryManagementMetadata(
+          orm,
+          agentId,
+          memoryId,
+          conversationId ? parseUuidParam(conversationId) : undefined,
+        ),
+      ),
     );
   });
 

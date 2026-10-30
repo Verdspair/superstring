@@ -7,6 +7,7 @@
 import type { SQLQueryBindings } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
 import { sourceAccess } from "../../src/server/agent/context-access";
+import type { BotEvidenceScope } from "../../src/server/conversation/evidence-scope";
 import {
   bodyRevision,
   ConversationEventRepository,
@@ -18,7 +19,6 @@ import {
   DEFAULT_USER_ID as USER,
 } from "../../src/server/db/repositories";
 import { openBusinessDb } from "../../src/server/db/schema-gate";
-import type { BotEvidenceScope } from "../../src/server/modules/conversation-evidence";
 import { loadConversationEvidence } from "../../src/server/modules/conversation-evidence-store";
 import { normalizeOneBotMessage } from "../../src/server/services/onebot-protocol";
 import type { SourceRef } from "../../src/shared/contracts/evidence";

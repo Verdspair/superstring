@@ -1,14 +1,9 @@
-// P2a: memory read/write scope for a non-web conversation (ADR0018).
-//
-// Long-term memory is owned by the Agent and, until now, every read was
-// agent-level. A QQ group/private conversation needs its own `scope_key` so two
-// groups of the same assistant cannot see each other, while the existing web
-// behaviour must stay identical. These tests pin both halves: an unscoped read is
-// still agent-level, and a scoped read never escapes its keys.
+// Stored scope keysets, governance filtering and job destinations.
+// Runtime current-conversation eligibility is covered by memory-conversation-private.
 
 import { describe, expect, it } from "bun:test";
 import { eq } from "drizzle-orm";
-import { catalog, catalogFingerprint, memoryBodies } from "../../src/server/db/context-repository";
+import { memoryBodiesByScopeKeys } from "../../src/server/db/context-repository";
 import { enqueue, entries, policy } from "../../src/server/db/memory-repository";
 import {
   createSession,
@@ -129,8 +124,8 @@ function seedEntry(
   return id;
 }
 
-function idsOf(orm: Orm, sessionId: string, scopeKeys?: MemoryScopeKeys): string[] {
-  return catalog(orm, AGENT_ID, sessionId, { allEntries: true, scopeKeys })
+function idsOf(orm: Orm, _sessionId: string, scopeKeys?: MemoryScopeKeys): string[] {
+  return entries(orm, AGENT_ID, undefined, { status: "active", scopeKeys })
     .map((item) => item.id)
     .sort();
 }
@@ -171,7 +166,7 @@ describe("memory scope keysets", () => {
   });
 });
 
-describe("scoped recall", () => {
+describe("stored scope filtering for governance and task reads", () => {
   it("keeps an unscoped read agent-level, including rows with a foreign scope_key", () => {
     const h = setup();
     try {
@@ -238,11 +233,11 @@ describe("scoped recall", () => {
       seedEntry(h.orm, "m_web", AGENT_ID, h.sessionId);
       const scope = qqMemoryScopeKeyset(GROUP_A).read;
       expect(
-        memoryBodies(h.orm, AGENT_ID, h.sessionId, ["m_a2", "m_a1"], scope).map((i) => i.id),
+        memoryBodiesByScopeKeys(h.orm, AGENT_ID, ["m_a2", "m_a1"], scope).map((i) => i.id),
       ).toEqual(["m_a2", "m_a1"]);
       // A memory that exists but sits in another scope is refused as a whole.
-      expect(() => memoryBodies(h.orm, AGENT_ID, h.sessionId, ["m_web"], scope)).toThrow();
-      expect(() => memoryBodies(h.orm, AGENT_ID, h.sessionId, ["m_a1", "m_web"], scope)).toThrow();
+      expect(() => memoryBodiesByScopeKeys(h.orm, AGENT_ID, ["m_web"], scope)).toThrow();
+      expect(() => memoryBodiesByScopeKeys(h.orm, AGENT_ID, ["m_a1", "m_web"], scope)).toThrow();
     } finally {
       h.business.close();
     }
@@ -260,29 +255,6 @@ describe("scoped recall", () => {
       expect(entries(h.orm, AGENT_ID, ["m_a"], { scopeKeys: scope })).toHaveLength(1);
       expect(() => entries(h.orm, AGENT_ID, ["m_web"], { scopeKeys: scope })).toThrow();
       expect(() => entries(h.orm, AGENT_ID, ["m_a", "m_web"], { scopeKeys: scope })).toThrow();
-    } finally {
-      h.business.close();
-    }
-  });
-});
-
-describe("scope-aware fingerprint", () => {
-  it("changes with the read scope and with scope contents", () => {
-    const h = setup();
-    try {
-      seedEntry(h.orm, "m_a", qqMemoryScopeKeyset(GROUP_A).write, h.sessionId);
-      const unscoped = catalogFingerprint(h.orm, AGENT_ID, h.sessionId);
-      const fingerprintOf = (keys: MemoryScopeKeys) =>
-        catalogFingerprint(h.orm, AGENT_ID, h.sessionId, keys);
-      const scopeA = fingerprintOf(qqMemoryScopeKeyset(GROUP_A).read);
-      // A read scope that matches the same rows as another is still a different scan,
-      // because the digest covers the scope itself.
-      expect(scopeA).not.toBe(unscoped);
-      expect(fingerprintOf(qqMemoryScopeKeyset(GROUP_A).read)).toBe(scopeA);
-      expect(fingerprintOf(qqMemoryScopeKeyset(GROUP_B).read)).not.toBe(scopeA);
-      expect(fingerprintOf([])).not.toBe(scopeA);
-      seedEntry(h.orm, "m_a2", qqMemoryScopeKeyset(GROUP_A).write, h.sessionId);
-      expect(fingerprintOf(qqMemoryScopeKeyset(GROUP_A).read)).not.toBe(scopeA);
     } finally {
       h.business.close();
     }

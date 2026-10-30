@@ -1,6 +1,7 @@
-import { BookOpen, Brain, Smile } from "lucide-react";
+import { ArrowLeft, BookOpen, Brain, Smile } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useSuperstringStore } from "@/store";
@@ -8,17 +9,23 @@ import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
 import { KnowledgeLibrary } from "./KnowledgeLibrary";
 import { MemoryLibrary } from "./MemoryLibrary";
 import { StickerLibrary } from "./StickerLibrary";
+
+function libraryTab(route: string) {
+  return route === "qq-stickers"
+    ? "stickers"
+    : route === "long-memory" || route === "profile"
+      ? "memory"
+      : "knowledge";
+}
+
 export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
   const route = useSuperstringStore((s) => s.settingsRoute),
     navigate = useSuperstringStore((s) => s.openSettingsRoute),
     requestKnowledgeEditor = useSuperstringStore((s) => s.requestKnowledgeEditor),
+    returnToOrigin = useSuperstringStore((s) => s.returnWorkspaceTarget),
+    hasReturn = useSuperstringStore((s) => s.workspaceReturns.length > 0),
     t = useTranslation().t;
-  const tab =
-    route === "qq-stickers"
-      ? "stickers"
-      : route === "long-memory" || route === "profile"
-        ? "memory"
-        : "knowledge";
+  const tab = libraryTab(route);
   const [visited, setVisited] = useState([tab]);
   useEffect(() => {
     if (
@@ -32,18 +39,108 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
   const workspaceScroll = useRef<HTMLDivElement>(null);
   const scrollPositions = useRef(new Map<string, number>());
   const previousTab = useRef(tab);
+  const wasActive = useRef(active);
+  const pending = useRef<{ tab: string; target: number } | null>(null);
+  const scrollObserver = useRef<ResizeObserver | null>(null);
+  useLayoutEffect(() => {
+    if (!active) return;
+    return useSuperstringStore.subscribe((next, before) => {
+      const oldTab = libraryTab(before.settingsRoute);
+      const newTab = libraryTab(next.settingsRoute);
+      const element = workspaceScroll.current;
+      if (oldTab !== newTab && previousTab.current === oldTab && element && !pending.current)
+        scrollPositions.current.set(oldTab, element.scrollTop);
+    });
+  }, [active]);
   useEffect(() => {
     setVisited((previous) => (previous.includes(tab) ? previous : [...previous, tab]));
   }, [tab]);
   useLayoutEffect(() => {
     const element = workspaceScroll.current;
     if (!element) return;
-    if (previousTab.current !== tab) {
-      scrollPositions.current.set(previousTab.current, element.scrollTop);
-      element.scrollTop = scrollPositions.current.get(tab) ?? 0;
-      previousTab.current = tab;
+    if (!active) {
+      wasActive.current = false;
+      pending.current = null;
+      return;
     }
-  }, [tab]);
+    const returning = !wasActive.current;
+    wasActive.current = true;
+    if (previousTab.current !== tab || returning) {
+      previousTab.current = tab;
+      const target = scrollPositions.current.get(tab) ?? 0;
+      pending.current = { tab, target };
+      if (element.scrollHeight - element.clientHeight >= target) {
+        element.scrollTop = target;
+        pending.current = null;
+      }
+    }
+    const content = element.querySelector<HTMLElement>(`[data-workspace-scroll="${tab}"]`);
+    const request = pending.current;
+    if (!request || !content) return;
+    const observer = new ResizeObserver(() => {
+      const attempt = pending.current;
+      if (
+        attempt !== request ||
+        attempt.tab !== tab ||
+        previousTab.current !== tab ||
+        !element.isConnected ||
+        content.closest("[hidden]")
+      )
+        return;
+      if (element.scrollHeight - element.clientHeight >= attempt.target) {
+        element.scrollTop = attempt.target;
+        pending.current = null;
+        observer.disconnect();
+        if (scrollObserver.current === observer) scrollObserver.current = null;
+      }
+    });
+    scrollObserver.current = observer;
+    observer.observe(content);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      if (scrollObserver.current === observer) scrollObserver.current = null;
+      if (pending.current === request) pending.current = null;
+    };
+  }, [tab, active]);
+  useLayoutEffect(() => {
+    const element = workspaceScroll.current;
+    if (!active || !element) return;
+    const cancelPendingScroll = () => {
+      if (!pending.current) return;
+      pending.current = null;
+      scrollPositions.current.set(tab, element.scrollTop);
+      scrollObserver.current?.disconnect();
+      scrollObserver.current = null;
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key) &&
+        !(
+          event.target instanceof HTMLElement &&
+          event.target.closest('input,textarea,select,button,[role="tab"],[contenteditable="true"]')
+        )
+      )
+        cancelPendingScroll();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        event.target === element &&
+        event.clientX >= element.getBoundingClientRect().left + element.clientWidth
+      )
+        cancelPendingScroll();
+    };
+    element.addEventListener("wheel", cancelPendingScroll, { passive: true });
+    element.addEventListener("touchmove", cancelPendingScroll, { passive: true });
+    element.addEventListener("keydown", onKeyDown);
+    element.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      element.removeEventListener("wheel", cancelPendingScroll);
+      element.removeEventListener("touchmove", cancelPendingScroll);
+      element.removeEventListener("keydown", onKeyDown);
+      element.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [active, tab]);
   // 只有当前可见面板走入场动效；已访问面板仍常挂载，草稿与滚动位置不受影响。
   const panel = (name: "knowledge" | "memory" | "stickers", child: React.ReactNode) =>
     visited.includes(name) || tab === name ? (
@@ -59,10 +156,26 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
     <div
       ref={workspaceScroll}
       data-testid="library-workspace-scroll"
-      onScroll={(event) => scrollPositions.current.set(tab, event.currentTarget.scrollTop)}
-      className="mx-auto h-full min-h-0 w-full max-w-[1160px] overflow-y-auto px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
+      onScroll={(event) => {
+        if (active && previousTab.current === tab && !pending.current)
+          scrollPositions.current.set(tab, event.currentTarget.scrollTop);
+      }}
+      className="workspace-page h-full min-h-0 overflow-y-auto"
     >
       <WorkspacePageHeader
+        backAction={
+          hasReturn ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("library.returnToOrigin")}
+              tooltip={t("library.returnToOrigin")}
+              onClick={returnToOrigin}
+            >
+              <ArrowLeft />
+            </Button>
+          ) : undefined
+        }
         location={t("brand.workspace", { "0": t("library.materials") })}
         title={t("library.library")}
         description={t(
@@ -82,7 +195,7 @@ export function LibraryWorkspace({ active = true }: { active?: boolean } = {}) {
           )
         }
       >
-        <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">
+        <TabsList presentation="workspace" flow="scroll" className="w-fit max-w-full justify-start">
           <Tooltip>
             <TooltipTrigger asChild preserveTriggerState>
               <TabsTrigger value="knowledge">

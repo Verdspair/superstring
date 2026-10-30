@@ -99,7 +99,7 @@ describe("new assistant knowledge entry", () => {
   it("cannot leave an unsaved new draft for knowledge without a decision", async () => {
     useSuperstringStore.setState({ page: "settings", settingsView: "agents" });
     await useSuperstringStore.getState().editAgent("__new__");
-    useSuperstringStore.getState().patchDraft({ name: "草稿名" });
+    useSuperstringStore.getState().patchNewAgentDraft({ name: "草稿名" });
     useSuperstringStore.getState().openSettingsRoute("knowledge-config");
     const state = useSuperstringStore.getState();
     expect(state.settingsView).toBe("agents");

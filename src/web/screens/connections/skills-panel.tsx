@@ -22,6 +22,8 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
   const { t } = useTranslation();
   const apiClient = useSuperstringStore((s) => s.apiClient);
   const target = useSuperstringStore((s) => s.componentTarget);
+  const returnTarget = useSuperstringStore((s) => s.returnWorkspaceTarget);
+  const hasReturn = useSuperstringStore((s) => s.workspaceReturns.length > 0);
   const {
     data: catalog,
     loading,
@@ -56,7 +58,7 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
   }, [active, target, open]);
   const metadata = Object.entries(detail?.metadata ?? {});
   return (
-    <div className="w-full space-y-6 px-4 py-6">
+    <div className="w-full min-w-0 space-y-6 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
@@ -191,12 +193,16 @@ export function SkillsPanel({ active = true }: { active?: boolean } = {}) {
           if (!open) {
             pendingDetail.current?.cancel();
             setDetail(null);
+            if (hasReturn) {
+              returnTarget();
+              return;
+            }
             if (useSuperstringStore.getState().componentTarget?.kind === "skill")
               useSuperstringStore.setState({ componentTarget: null });
           }
         }}
       >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
+        <SheetContent scrollMode="surface" className="w-full  sm:max-w-2xl">
           <SheetHeader className="border-b pb-4">
             <SheetTitle>{detail?.name}</SheetTitle>
             <SheetDescription>{t("connections.skills.detailHint")}</SheetDescription>

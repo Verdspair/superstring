@@ -1,7 +1,8 @@
 // QQ 群自定义名称（小功能）：会话目录菜单复用重命名 Dialog，保存走群名接口并回写目录；
 // 空输入清除备注恢复默认；原 Web 重命名路径不变；保存失败保留输入并显示错误，不假成功。
 
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationSummary } from "../../src/shared/contracts/conversation";
 import type { SuperstringApi } from "../../src/web/api";
@@ -140,4 +141,57 @@ it("群名保存失败保留输入并显示错误，目录标题不假更新", a
     "开会群",
   );
   expect(store.getState().summaryById["conv-group"]?.title).toBe("同事群");
+});
+
+it("QQ group rename cancel restores the actual menu trigger without saving or selecting", async () => {
+  const item = group();
+  const rename = vi.fn();
+  store.setState({ apiClient: { ...store.getState().apiClient, renameConversationGroup: rename } });
+  store.getState().rememberConversation(item);
+  render(<ConversationIndex />);
+  const trigger = screen.getByRole("button", {
+    name: zh["workspace.conversation_actions"].replace("{0}", item.title),
+  });
+  await userEvent.click(trigger);
+  await userEvent.click(screen.getByRole("menuitem", { name: "重命名" }));
+  const dialog = await screen.findByRole("dialog");
+  await userEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+  expect(rename).not.toHaveBeenCalled();
+  expect(store.getState().currentConversationId).toBeNull();
+});
+
+it("old QQ group rename completion cannot close or overwrite a new API target", async () => {
+  const item = group();
+  const old = Promise.withResolvers<ConversationSummary>();
+  const rename = vi.fn().mockReturnValue(old.promise);
+  store.setState({ apiClient: { ...store.getState().apiClient, renameConversationGroup: rename } });
+  await openRename(item);
+  fireEvent.change(screen.getByRole("textbox", { name: "会话名称" }), {
+    target: { value: "Old pending" },
+  });
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "会话名称" }), { key: "Enter" });
+  const newPending = Promise.withResolvers<ConversationSummary>();
+  const nextRename = vi.fn().mockReturnValue(newPending.promise);
+  await act(async () =>
+    store.setState({
+      apiClient: { ...store.getState().apiClient, renameConversationGroup: nextRename },
+    }),
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  fireEvent.contextMenu(screen.getByRole("button", { name: item.title }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "重命名" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "会话名称" }), {
+    target: { value: "New pending" },
+  });
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "会话名称" }), { key: "Enter" });
+  await act(async () => old.resolve({ ...item, title: "Old saved" }));
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "会话名称" }) as HTMLInputElement).disabled).toBe(
+    true,
+  );
+  expect(store.getState().summaryById[item.id].title).toBe(item.title);
+  await act(async () => newPending.resolve({ ...item, title: "New pending" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(store.getState().summaryById[item.id].title).toBe("New pending");
 });

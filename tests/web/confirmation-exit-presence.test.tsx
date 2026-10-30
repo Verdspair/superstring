@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AlertDialog, ConfirmDialog } from "../../src/web/components/confirmation";
 import { i18n } from "../../src/web/i18n/runtime";
@@ -162,4 +162,98 @@ describe("confirmation exit presence", () => {
     await userEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(cancel).toHaveBeenCalledTimes(1);
   });
+});
+
+it("confirmation close does not steal focus from its committed navigation destination", async () => {
+  function NavigateAfterConfirm() {
+    const [open, setOpen] = useState(false);
+    const [landed, setLanded] = useState(false);
+    const destination = useRef<HTMLButtonElement>(null);
+    useLayoutEffect(() => {
+      if (landed) destination.current?.focus();
+    }, [landed]);
+    return (
+      <>
+        <button type="button" onClick={() => setOpen(true)}>
+          Navigation origin
+        </button>
+        <button type="button" ref={destination}>
+          Committed destination
+        </button>
+        <ConfirmDialog
+          open={open}
+          message="Navigate?"
+          onCancel={() => setOpen(false)}
+          onConfirm={() => {
+            setOpen(false);
+            setLanded(true);
+          }}
+        />
+      </>
+    );
+  }
+  render(<NavigateAfterConfirm />);
+  await userEvent.click(screen.getByRole("button", { name: "Navigation origin" }));
+  await userEvent.click(screen.getByRole("button", { name: "确认" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await waitFor(() =>
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Committed destination" }),
+    ),
+  );
+});
+
+it("an old explicit confirmation owner cannot hold or clear a replacement owner's pending lock", async () => {
+  const oldPending = Promise.withResolvers<void>();
+  const nextPending = Promise.withResolvers<void>();
+  const oldConfirm = vi.fn().mockReturnValue(oldPending.promise);
+  const nextConfirm = vi.fn().mockReturnValue(nextPending.promise);
+  const oldOrigin = { current: null as HTMLElement | null };
+  const nextOrigin = { current: null as HTMLElement | null };
+  const cancel = vi.fn();
+  const oldOwner = {};
+  const nextOwner = {};
+  const { rerender } = render(
+    <ConfirmDialog
+      open
+      message="Old owner"
+      invocationOwner={oldOwner}
+      returnFocusRef={oldOrigin}
+      onCancel={cancel}
+      onConfirm={oldConfirm}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "确认" }));
+  expect(oldConfirm).toHaveBeenCalledTimes(1);
+  rerender(
+    <ConfirmDialog
+      open={false}
+      message="New owner"
+      invocationOwner={nextOwner}
+      returnFocusRef={nextOrigin}
+      onCancel={cancel}
+      onConfirm={nextConfirm}
+    />,
+  );
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  rerender(
+    <ConfirmDialog
+      open
+      message="New owner"
+      invocationOwner={nextOwner}
+      returnFocusRef={nextOrigin}
+      onCancel={cancel}
+      onConfirm={nextConfirm}
+    />,
+  );
+  const confirm = screen.getByRole("button", { name: "确认" }) as HTMLButtonElement;
+  await waitFor(() => expect(confirm.disabled).toBe(false));
+  await userEvent.click(confirm);
+  expect(nextConfirm).toHaveBeenCalledTimes(1);
+  await act(async () => oldPending.resolve());
+  expect(confirm.disabled).toBe(true);
+  await userEvent.keyboard("{Escape}");
+  expect(cancel).not.toHaveBeenCalled();
+  await act(async () => nextPending.resolve());
+  await waitFor(() => expect(confirm.disabled).toBe(false));
 });

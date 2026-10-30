@@ -23,6 +23,8 @@ type EditorState = {
   organizationLoading: boolean;
   knowledgeBusy: boolean;
   error?: string | null;
+  organizationError?: string | null;
+  feedback?: string;
   apiClient: {
     getOrganizationSettings: ReturnType<typeof vi.fn>;
     saveOrganizationSettings: ReturnType<typeof vi.fn>;
@@ -44,6 +46,8 @@ function harness(source: OrganizationSettings, editorPatch: Record<string, unkno
     organizationLoading: false,
     knowledgeBusy: false,
     error: null,
+    organizationError: null,
+    feedback: "",
     apiClient: {
       getOrganizationSettings: vi.fn(),
       saveOrganizationSettings: vi.fn(async (body: Record<string, unknown>) => ({
@@ -145,7 +149,9 @@ describe("organization auxiliary allocation drafts", () => {
     expect(editor.modelName).toBe("UNSAVED");
     expect(editor.auxiliaryAllocation).toEqual({ knowledge_organize: { mode: "auto" } });
     expect(editor.source.revision).toBe(1);
-    expect(state.error).toBe("revision conflict");
+    expect(state.organizationError).toBe("revision conflict");
+    expect(state.error).toBeNull();
+    expect(state.feedback).toBe("");
   });
 
   it("saves selected role overlaying baseline while unselected role draft stays preserved", async () => {
@@ -247,8 +253,13 @@ describe("organization auxiliary allocation drafts", () => {
     );
 
     // 尝试保存包含非法输入的目标角色，被立即拦截
+    const beforeInvalidFeedback = state.feedback;
+    const successfulCalls = state.apiClient.saveOrganizationSettings.mock.calls.length;
     expect(await actions.saveOrganization("allocation", ["qq_sticker_annotate"])).toBe(false);
-    expect(state.error).toBe("请先修正方案中的无效数字，再保存。");
+    expect(state.organizationError).toBe("请先修正方案中的无效数字，再保存。");
+    expect(state.error).toBeNull();
+    expect(state.feedback).toBe(beforeInvalidFeedback);
+    expect(state.apiClient.saveOrganizationSettings).toHaveBeenCalledTimes(successfulCalls);
   });
 
   it("advances revision on same editor allowing sequential saves without 409", async () => {
@@ -336,7 +347,9 @@ describe("organization auxiliary allocation drafts", () => {
     state.apiClient.saveOrganizationSettings.mockRejectedValueOnce(new Error("CAS 409 conflict"));
 
     expect(await actions.saveOrganization("allocation", ["knowledge_organize"])).toBe(false);
-    expect(state.error).toBe("CAS 409 conflict");
+    expect(state.organizationError).toBe("CAS 409 conflict");
+    expect(state.error).toBeNull();
+    expect(state.feedback).toBe("");
     // 草稿与版本未变
     expect(state.organizationEditor?.auxiliaryAllocation?.knowledge_organize).toEqual({
       mode: "auto",
@@ -449,7 +462,9 @@ describe("organization auxiliary allocation drafts", () => {
     );
 
     expect(await actions.saveOrganization("organization-model")).toBe(false);
-    expect(state.error).toBe("revision conflict 409");
+    expect(state.organizationError).toBe("revision conflict 409");
+    expect(state.error).toBeNull();
+    expect(state.feedback).toBe("");
     expect(state.organizationEditor?.modelName).toBe("new-shared-model");
     expect(state.organizationEditor?.source.revision).toBe(1);
   });

@@ -144,7 +144,7 @@ describe("runtime task names presentation", () => {
       stage: "run",
       details: { specId: "context.compress.events" },
     });
-    render(<EvidenceWorkbench item={span} />);
+    render(<EvidenceWorkbench renderRun={(runId) => <RunWorkspace runId={runId} />} item={span} />);
     expect(screen.getByRole("heading", { level: 3, name: "QQ历史消息摘要" })).toBeTruthy();
   });
 

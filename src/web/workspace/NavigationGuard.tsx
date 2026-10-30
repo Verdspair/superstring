@@ -5,10 +5,20 @@ import { AlertDialog } from "../components/confirmation";
 import { Button } from "../components/ui/button";
 import { qqDraftChanges } from "../features/qq/draft-state";
 import { translateNotice } from "../i18n";
+import { BindingEditor } from "../screens/connections/binding-editor";
 import { useSuperstringStore } from "../store";
 
 export function NavigationGuard() {
   const open = useSuperstringStore((state) => state.navigationConfirmOpen);
+  const handoff = useSuperstringStore(
+    useShallow((state) => ({
+      binding: state.qqBindings.find(
+        (row) => row.id === state.qqInputs.bindingSchemeConfirmationId,
+      ),
+      api: state.apiClient,
+      pendingNavigation: state.pendingNavigation,
+    })),
+  );
   const [pending, setPending] = useState(false);
   const visited = useRef(false);
   if (open) visited.current = true;
@@ -21,8 +31,40 @@ export function NavigationGuard() {
       setPending(false);
     }
   };
+  const releaseBindingEditor = () =>
+    useSuperstringStore.setState((state) => ({
+      qqInputs: { ...state.qqInputs, bindingSchemeConfirmationId: null },
+    }));
   return visited.current ? (
-    <NavigationConfirmDialog open={open} pending={pending} run={run} />
+    <>
+      <NavigationConfirmDialog open={open && !handoff.binding} pending={pending} run={run} />
+      {open && handoff.binding && (
+        <BindingEditor
+          key={handoff.binding.id}
+          binding={handoff.binding}
+          conversation={{
+            account_id: handoff.binding.account_id,
+            kind: handoff.binding.kind,
+            peer_id: handoff.binding.peer_id,
+            messages: 0,
+            last_at_seconds: 0,
+            binding_id: handoff.binding.id,
+          }}
+          navigationConfirmation
+          onClose={releaseBindingEditor}
+          onSaved={() => {
+            const current = useSuperstringStore.getState();
+            if (
+              current.apiClient !== handoff.api ||
+              current.pendingNavigation !== handoff.pendingNavigation
+            )
+              return;
+            releaseBindingEditor();
+            void run(current.confirmSaveAndContinue);
+          }}
+        />
+      )}
+    </>
   ) : null;
 }
 

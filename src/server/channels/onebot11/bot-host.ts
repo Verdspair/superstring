@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+  qqReplyTerminalDescriptions,
   REPLY_STICKER_DESCRIPTION,
   REPLY_TEXT_DESCRIPTION,
 } from "../../../shared/contracts/agent-action-descriptions";
@@ -1060,7 +1061,6 @@ export class OneBotHost {
           ...(focusKey ? { focusEventKey: focusKey } : {}),
         },
         {
-          eligibilityOnly: true,
           ...(path === "chiming_in" ? { pendingTargets } : {}),
           ...(path === "chiming_in" && resumedInitiative ? { resumedInitiative } : {}),
           // T08 gate 桥（§8.1）：仅当本 run 一次成功模型调用真实消费了该图（MODEL_IMAGE_
@@ -2640,9 +2640,7 @@ export class OneBotHost {
         action.permission.revision === WEB_PERMISSION_REVISION;
       const isMediaRead = (action: BuiltInAction) =>
         mediaActions.includes(action) && action.description.effect === "read";
-      const replyTerminalDescriptions = stickersEnabled
-        ? [REPLY_TEXT_DESCRIPTION, REPLY_STICKER_DESCRIPTION]
-        : [REPLY_TEXT_DESCRIPTION];
+      const replyTerminalDescriptions = qqReplyTerminalDescriptions(stickersEnabled);
       /**
        * ── 许可（0.4.0 P4 §4.1 后半，batch-first 后）──
        *
@@ -3404,7 +3402,7 @@ export class OneBotHost {
             // 许可被拒＝这一轮不开口（静默结束）；"模型犯错"类的 blocked 码不在此列，照旧失败。
             // 许可的时效由既有机制保证：相关变化会让这一轮重新观察（`refresh`），`assertCurrent` 再兜一层。
             silentBlockCodes: QQ_SILENT_BLOCK_CODES,
-            // 终结回复动作：模型一次 invoke speech.reply 直接给出正文（inline 草稿），与 final
+            // 终结回复贡献：模型提交文字或表情草稿，与 final
             // 同形状走同一提交路径；不执行工具、不返回模型确认。目标/mention 由 prepareOutput
             // 与提交边界照常校验。
             terminalAction: {

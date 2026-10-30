@@ -380,7 +380,11 @@ export function buildConsolidationPrompt(
     '\n只返回JSON对象 {"memory":null} 或 {"memory":{"name":"名称",' +
     '"summary":"简介","tags":[],"kinds":["semantic"],"body":"Markdown正文"}}。' +
     "\nkinds仅限working、semantic、episodic、procedural，可多选。" +
-    "\n无长期价值则memory为null。不要代码围栏，不要返回时间、ID、权限或状态。";
+    "\n无长期价值则memory为null。不要用代码围栏包裹JSON，不得新增时间、ID、权限、状态等协议外字段；正文与简介可表达来源有据的人物、事件时间及结果状态，无需强制列出日期或ID。" +
+    "\n来源字段说明：speaker/actor表示原消息发言者，不一定是叙事主体；转述不能当作被转述者的独立确认。" +
+    "occurredAtSeconds、occurred_at_seconds、source_time及utterance_time表示来源发言时刻；user_source/assistant_source.recorded_at与message_records.created_at表示消息记录时刻，都不自动成为所述事件的发生时间。" +
+    "正文写时间时应说明是事件还是发言/记录时间；未知不补。保留来源原有相对时间措辞，未明确时不推定其指向的周、日期或周期关系，仅在来源支持时细化；相对日期仅在来源与时区依据足够时换算。保留不同事项、否定、更正以及提议、尝试、失败和已确认结果的区别。" +
+    "\nbody是解码后可读的Markdown字符串，排版换行按标准JSON字符串编码一次，不要写成可见的反斜线加n；引用代码、路径、正则及字面转义保持原文，不再解码或替换。";
   // Configured administrators affect the retention preference for their own QQ sources only.
   if (sources.some((source) => source.important === true)) {
     system +=

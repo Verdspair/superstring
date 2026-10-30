@@ -682,10 +682,10 @@ export function qqEffectiveReplyPrompt(reply: string, splitReplyBySpeaker: boole
 }
 
 /**
- * 消息关系与时间设置组（规格 §5/§6，0052 批次）：引用模式、层数、时间模式、时区。
+ * 消息关系与时间设置组：引用模式、层数、时间模式、时区。
  *
  * 归 QQ 方案、本群可稀疏覆盖；schema 与默认值都在 `qq-message.ts` 单源维护，这里只是把该组
- * 挂进方案契约。省略＝新建用默认、更新保持不动（与其他 JSON 组同一语义；列在 T02 迁移落地）。
+ * 挂进方案契约。省略＝新建用默认、更新保持不动（与其他 JSON 组同一语义）。
  */
 export const QqSchemeMessageSettingsSchema = QqMessageSettingsSchema;
 export type QqSchemeMessageSettings = QqMessageSettings;
@@ -695,7 +695,7 @@ export const QQ_MESSAGE_SETTINGS_SCHEME_DEFAULT: QqSchemeMessageSettings = Objec
 });
 
 /**
- * 图片输入设置组（规格 §7，0052 批次）：模式、三阶段独立开关、图数与规格。
+ * 图片输入设置组：模式、三阶段独立开关、图数与规格。
  *
  * stages 的三个布尔互相独立、允许全 false（图片能力开但不自动发画面，仅按需），不强迫至少一
  * 阶段；`ordinary_still_max_dimension: null` 表示原图——它是一个设置值，不是「跟随基础方案」。
@@ -1160,27 +1160,44 @@ export const CreateQqBindingRequestSchema = z
   );
 export type CreateQqBindingRequest = z.infer<typeof CreateQqBindingRequestSchema>;
 
-export const UpdateQqBindingRequestSchema = z.strictObject({
-  agent_id: UuidSchema.optional(),
-  scheme_id: UuidSchema.optional(),
-  paused: z.boolean().optional(),
-  /** The whole group travels: absent leaves all four alone, and a member set to null clears it. */
-  triggers: QqBindingTriggersSchema.optional(),
-  /** The whole list travels too: absent leaves mode and members alone; `off` clears both. */
-  attention: QqBindingAttentionSchema.optional(),
-  memory_batch_size: z.number().int().min(1).nullable().optional(),
-  share_web_memory: z.boolean().optional(),
-  /**
-   * 群聊换基础方案时的显式决定（ADR0019 §13.2 G，0051）：`keep` 保留本群方案差异，
-   * `reset` 清空差异（能力停用不重置）。只有"同一 Agent 的绑定带着差异换方案"才要求它；
-   * 换 Agent 时按新 Agent 已保存的差异恢复，不适用本字段。
-   */
-  scheme_change: z.enum(["keep", "reset"]).optional(),
-  /** 0059 的覆盖两组。整组来或整组不动：省略保持现值，成员 null 恢复跟随方案。 */
-  task_limits: QqBindingTaskLimitsSchema.optional(),
-  input_anti_spam: QqBindingInputAntiSpamSchema.optional(),
-  expected_revision: z.number().int().positive(),
+export const QqBindingSchemeChangeBaselineSchema = z.strictObject({
+  config_revision: z.number().int().nonnegative(),
+  scheme_revision: z.number().int().positive(),
 });
+export type QqBindingSchemeChangeBaseline = z.infer<typeof QqBindingSchemeChangeBaselineSchema>;
+
+export const UpdateQqBindingRequestSchema = z
+  .strictObject({
+    agent_id: UuidSchema.optional(),
+    scheme_id: UuidSchema.optional(),
+    paused: z.boolean().optional(),
+    /** The whole group travels: absent leaves all four alone, and a member set to null clears it. */
+    triggers: QqBindingTriggersSchema.optional(),
+    /** The whole list travels too: absent leaves mode and members alone; `off` clears both. */
+    attention: QqBindingAttentionSchema.optional(),
+    memory_batch_size: z.number().int().min(1).nullable().optional(),
+    share_web_memory: z.boolean().optional(),
+    /**
+     * 群聊或私聊换基础方案时的显式决定：`keep` 保留本会话方案差异，
+     * `reset` 清空差异（能力停用不重置）。只有"同一 Agent 的绑定带着差异换方案"才要求它；
+     * 换 Agent 时按新 Agent 已保存的差异恢复，不适用本字段。
+     */
+    scheme_change: z.enum(["keep", "reset"]).optional(),
+    /** The config and target scheme revisions actually shown before confirming a scheme change. */
+    scheme_change_baseline: QqBindingSchemeChangeBaselineSchema.optional(),
+    /** 0059 的覆盖两组。整组来或整组不动：省略保持现值，成员 null 恢复跟随方案。 */
+    task_limits: QqBindingTaskLimitsSchema.optional(),
+    input_anti_spam: QqBindingInputAntiSpamSchema.optional(),
+    expected_revision: z.number().int().positive(),
+  })
+  .refine(
+    (request) =>
+      request.scheme_change === undefined || request.scheme_change_baseline !== undefined,
+    {
+      message: "换方案的保留或重置决定必须携带预览修订",
+      path: ["scheme_change_baseline"],
+    },
+  );
 export type UpdateQqBindingRequest = z.infer<typeof UpdateQqBindingRequestSchema>;
 
 /**

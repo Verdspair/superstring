@@ -1,8 +1,4 @@
-// 统一上下文分配（0068 批次）：组织设置全局辅助任务分配的持久化红绿测试。
-//
-// 只用既有公开入口（PUT /organization/settings、readOrganizationSettings、原始 SQL 列读）
-// 做行为判据：不 import 新模块、不用本地绝对路径。列（0068）已由 Root 的迁移就绪；
-// 首批用例在仓储尚未写辅助列时为 RED（保存被静默丢弃）。
+// 组织设置全局辅助任务分配的持久化测试。
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createApp } from "../../src/server/app";

@@ -12,6 +12,7 @@ import {
   PermissionPolicySchema,
   type PermissionRequirement,
   selectEffectivePermissionGrant,
+  selectEffectivePermissionGrantEntry,
 } from "../../shared/contracts/permissions";
 
 export class PermissionError extends Error {
@@ -224,8 +225,11 @@ export class PermissionService {
     source: SourceRef,
     owner: RunOwner,
     policy: PermissionPolicy,
+    grants?: ReadonlyMap<string, PermissionGrant>,
   ): "available" | "revoked" {
-    const selected = selectEffectivePermissionGrant(policy, source.id, owner?.agentId);
+    const selected = grants
+      ? selectEffectivePermissionGrantEntry(grants.get(source.id), owner?.agentId)
+      : selectEffectivePermissionGrant(policy, source.id, owner?.agentId);
     if (!selected) return "revoked";
     const grant = selected.grant;
     if (
@@ -250,8 +254,14 @@ export class PermissionService {
     } catch {
       return sources.map((source) => (source.kind === "tool_permission" ? "revoked" : undefined));
     }
+    const grants = new Map<string, PermissionGrant>();
+    for (const grant of policy.grants) {
+      if (!grants.has(grant.resource)) grants.set(grant.resource, grant);
+    }
     return sources.map((source) =>
-      source.kind === "tool_permission" ? this.sourceVerdict(source, owner, policy) : undefined,
+      source.kind === "tool_permission"
+        ? this.sourceVerdict(source, owner, policy, grants)
+        : undefined,
     );
   }
   sourceAccess(source: SourceRef, owner: RunOwner): "available" | "revoked" | undefined {

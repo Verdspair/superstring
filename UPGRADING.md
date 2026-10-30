@@ -8,7 +8,7 @@
 
 ### 当前 main 源码更新：记忆、资料与对话（不在已发布安装包中）
 
-每个对话默认使用当前会话的私有记忆，也可选择加入明确授予该 Agent 的共享或公共记忆。此选择不会自动开放其他会话的私有内容；公共派生记忆的授权不等于原始私聊正文的查看权限。知识库保存用户输入或导入的外部原文，文档需要明确分配给 Agent；新建 Agent 不再自动获得未分配的文档，原有工具创建授权与既有文档授权保留。
+每个对话默认使用当前会话的私有记忆，也可选择加入明确授予该 Agent 的共享或公共记忆。此选择不会自动开放其他会话的私有内容；公共派生记忆的授权不等于原始私聊正文的查看权限；获准读取公共派生记忆不要求同时拥有全部来源私聊原文的读取权限，原文仍须单独授权，来源须有效。知识库保存用户输入或导入的外部原文，文档需要明确分配给 Agent；新建 Agent 不再自动获得未分配的文档，原有工具创建授权与既有文档授权保留。
 
 方案目录以清楚、同等权重的 QQ 任务入口区分「会话与绑定」「QQ连接」和「数据与保留」，不再常驻跨任务胶囊。连接页分为连接、消息事件和运行设置；进入具体方案或会话后专注当前对象，并提供唯一返回。原有未保存草稿与保存冲突提示保留。仅艾特后附空白的消息现在可正常被引用回复；真实正文被删除、过期或改写时，来源校验仍会拒绝。
 
@@ -93,7 +93,7 @@ QQ 回复现在可自主选择文字、单张表情或组合，并可按方案�
 
 - **QQ 方案自主接话**：在方案设置中复查自主接话配置。若群聊消息频繁，可根据活跃度调整触发消息数与扰动量，确认忙时排队是否符合预期。
 - **群聊消息与进行中任务**：在群聊中确认新消息到达时是否平滑显示，检查顶部模型任务指示与详情展开是否正常。
-- **模型服务与图片支持**：模型页只管理连接、目录与容量，不再逐模型开关工具、视觉或沙箱。原生图片被服务明确拒绝时回退文本描述；已知不支持原生图片的模型可选择文本描述模式。沙箱总开关仍在系统执行设置，实际工具授权不变。
+- **当前源码：模型服务与图片支持**：模型页只管理连接、目录与容量，不再逐模型开关工具、视觉或沙箱。原生图片被服务明确拒绝时回退文本描述；已知不支持原生图片的模型可选择文本描述模式。沙箱总开关仍在系统执行设置，实际工具授权不变。
 
 ---
 
@@ -103,7 +103,7 @@ QQ 回复现在可自主选择文字、单张表情或组合，并可按方案�
 
 ### Current main source: memory, materials, and conversations (not in the published installers)
 
-Each conversation uses its own private memories by default. You can also choose shared or public memories explicitly granted to that Agent. This does not unlock other conversations' private memories, and access to a public derived memory does not grant access to the original private chat. The knowledge library holds user-entered or imported external originals; documents must be explicitly assigned to an Agent. New Agents no longer receive unassigned documents automatically. Existing document grants and the tool authorization provided at Agent creation are retained.
+Each conversation uses its own private memories by default. You can also choose shared or public memories explicitly granted to that Agent. This does not unlock other conversations' private memories, and access to a public derived memory does not grant access to the original private chat. Reading an authorized public derived memory does not require access to every source private chat; source validity and permission to view the original are checked separately. The knowledge library holds user-entered or imported external originals; documents must be explicitly assigned to an Agent. New Agents no longer receive unassigned documents automatically. Existing document grants and the tool authorization provided at Agent creation are retained.
 
 The scheme catalog offers clear, equally weighted task entries for bindings, QQ connection, and data retention instead of persistent cross-task pills. Connection, message events, and runtime settings have separate views. Scheme and conversation details focus on the current object and provide one return path. Unsaved drafts and save-conflict handling remain unchanged. Messages containing only a mention and whitespace can now be quoted in replies; source validation still rejects deleted, expired, or rewritten nonempty bodies.
 
@@ -188,7 +188,7 @@ The application executes incremental migrations only on matched known schemas, a
 
 - **QQ Scheme Autonomous Participation**: Review autonomous participation settings in schemes. If group messages are frequent, adjust trigger counts and jitter, and confirm that queue-on-busy behavior matches your preferences.
 - **Group Chats & In-flight Tasks**: Verify smooth updates as new messages arrive and inspect active parent/child tasks in group conversations.
-- **Model services and images**: The model page manages connections, catalogs, and capacity, without per-model tool, vision, or sandbox switches. Explicit service rejection of native images triggers a description fallback; use description mode for models known not to accept native images. The global sandbox switch remains in system execution settings, and tool grants still apply.
+- **Current source: model services and images**: The model page manages connections, catalogs, and capacity, without per-model tool, vision, or sandbox switches. Explicit service rejection of native images triggers a description fallback; use description mode for models known not to accept native images. The global sandbox switch remains in system execution settings, and tool grants still apply.
 
 ---
 

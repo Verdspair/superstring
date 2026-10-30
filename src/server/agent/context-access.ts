@@ -11,7 +11,6 @@ import type {
 import type { SourceAccess, SourceRef } from "../../shared/contracts/evidence";
 import type { AgentRunRepository } from "../db/agent-run-repository";
 import { toOrmHandle } from "../db/connection";
-import { memoryAccessRefs } from "../db/context-repository";
 import { ConversationEventRepository } from "../db/conversation-event-repository";
 import { blockedMemorySourceStates } from "../db/memory-source-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
@@ -19,7 +18,11 @@ import { fail } from "../errors";
 import { type ModuleSourceResolver, resolveSourceStates } from "../modules/composition";
 import { stringifyJsonSpaced } from "../services/memory-contract";
 import { memoryRevision } from "../services/memory-revision";
-import { memoryAccessOwnerMatches, memoryConversationAccess } from "../services/memory-scope";
+import {
+  memoryAccessOwnerMatches,
+  memoryAccessRefs,
+  memoryConversationAccess,
+} from "../services/memory-scope";
 import { qqMediaSourceAccess } from "../services/qq-media-sources";
 import { qqMediaReadTaskSourceAccess } from "../services/qq-media-task-sources";
 import { qqMemberRosterSourceAccess } from "../services/qq-member-roster-sources";
@@ -240,7 +243,7 @@ function memoryAccessStates(
         orm,
         access,
         owner,
-        access.channel === "web" ? access.sourceId : undefined,
+        owner.kind === "web_turn" && access.channel === "web" ? access.sourceId : undefined,
       )
     )
       continue;

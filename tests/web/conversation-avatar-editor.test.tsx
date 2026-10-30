@@ -7,6 +7,7 @@ import {
   type ConversationAvatar,
 } from "../../src/shared/contracts/conversation-avatar";
 import { selectLocale } from "../../src/web/i18n";
+import { i18n } from "../../src/web/i18n/runtime";
 import { ConversationAvatar as AvatarView } from "../../src/web/screens/conversations/avatar";
 import {
   AVATAR_STYLES,
@@ -511,4 +512,88 @@ it("previews the group CDN avatar after reset and still submits null when it can
   expect(save).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("button", { name: "保存头像" }));
   expect(save).toHaveBeenCalledWith(null);
+});
+
+it.each(["web", "private", "group"] as const)(
+  "directory %s avatar cancellation uses the original row menu origin without a write",
+  async (kind) => {
+    const row: ConversationSummary = {
+      id: conversation.id,
+      title: "Avatar row",
+      topology: kind === "group" ? "shared" : "direct",
+      channel: kind === "web" ? "web" : "onebot11",
+      sourceId: "source-a",
+      agentId: "agent",
+      bindingEpoch: 1,
+      participants: [],
+      updatedAt: "2026-10-01T00:00:00Z",
+      lastSeq: 0,
+      consumedSeq: 0,
+    };
+    const save = vi.fn();
+    store.setState({
+      summaryById: { [row.id]: row },
+      directoryIds: [row.id],
+      currentConversationId: null,
+      apiClient: { ...store.getState().apiClient, saveConversationAvatar: save },
+    });
+    render(<ConversationIndex />);
+    const trigger = screen.getByRole("button", {
+      name: i18n.t("workspace.conversation_actions", { "0": row.title }),
+    });
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("menuitem", { name: "更换会话头像" }));
+    await screen.findByRole("dialog");
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    expect(save).not.toHaveBeenCalled();
+    expect(store.getState().currentConversationId).toBeNull();
+  },
+);
+
+it("old same-conversation avatar API save cannot close a replacement owner's draft", async () => {
+  const old = Promise.withResolvers<void>();
+  const next = Promise.withResolvers<void>();
+  const closed = vi.fn();
+  const firstOwner = {},
+    nextOwner = {};
+  const { rerender } = render(
+    <AvatarEditor
+      conversationId={conversation.id}
+      title={conversation.title}
+      topology="direct"
+      value={null}
+      open
+      onOpenChange={closed}
+      onSave={() => old.promise}
+      operationOwner={firstOwner}
+    />,
+  );
+  await userEvent.click(screen.getByRole("radio", { name: "选择第 2 个图案" }));
+  await userEvent.click(screen.getByRole("button", { name: "保存头像" }));
+  rerender(
+    <AvatarEditor
+      conversationId={conversation.id}
+      title={conversation.title}
+      topology="direct"
+      value={null}
+      open
+      onOpenChange={closed}
+      onSave={() => next.promise}
+      operationOwner={nextOwner}
+    />,
+  );
+  await waitFor(() =>
+    expect((screen.getByRole("button", { name: "保存头像" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    ),
+  );
+  await userEvent.click(screen.getByRole("button", { name: "保存头像" }));
+  await act(async () => old.resolve());
+  expect(closed).not.toHaveBeenCalled();
+  expect(
+    (screen.getByRole("button", { name: i18n.t("avatar.saving") }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  await act(async () => next.resolve());
+  expect(closed).toHaveBeenCalledExactlyOnceWith(false);
 });

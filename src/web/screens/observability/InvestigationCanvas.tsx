@@ -13,6 +13,7 @@ import { useRuntimeWaterfall } from "../../features/observability/use-runtime-tr
 import { formatDate } from "../../i18n/runtime";
 import { useSuperstringStore } from "../../store";
 import { DeliveryDetails } from "../runs/DeliveryEvidence";
+import { RunWorkspace } from "../runs/RunEntry";
 import { EvidenceWorkbench } from "./EvidenceWorkbench";
 import { ModelCallsTable } from "./ModelCallsTable";
 import {
@@ -331,6 +332,8 @@ export function InvestigationCanvas({
                     >
                       <TabsList
                         variant="line"
+                        presentation="compact"
+                        flow="wrap"
                         className="mx-3 h-11 shrink-0"
                         aria-label={t("observability.investigationViews")}
                       >
@@ -400,10 +403,15 @@ export function InvestigationCanvas({
                       {t(expanded ? "observability.restoreLayout" : "observability.expandReader")}
                     </Button>
                   </div>
-                  <ScrollArea className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:block!">
+                  <ScrollArea className="min-h-0 flex-1">
                     <div className="min-w-0 p-4 md:p-6">
                       {selected ? (
-                        <EvidenceWorkbench key={selected.spanId} item={selected} autoInspect />
+                        <EvidenceWorkbench
+                          key={selected.spanId}
+                          item={selected}
+                          autoInspect
+                          renderRun={(runId) => <RunWorkspace runId={runId} />}
+                        />
                       ) : (
                         <div className="grid min-h-40 place-content-center gap-2 text-center">
                           <p className="font-medium">

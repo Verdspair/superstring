@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
-import { inArray } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
 import type { SourceRef } from "../../shared/contracts/evidence";
-import { memoryPublicationSourceRevisions } from "../db/memory-source-repository";
+import {
+  memoryPublicationSourceRevisions,
+  memorySourceFactAssessment,
+  retainedMemoryPublications,
+} from "../db/memory-source-repository";
 import type { Orm } from "../db/repositories";
 import * as schema from "../db/schema";
-import { memoryRevision } from "./memory-revision";
+import { memoryJobScopes } from "./memory-contract";
+import { isCorrectionRetired, memoryMetadata, memoryRevision } from "./memory-revision";
 import { type QqMemoryAccess, qqMemoryScopeKey } from "./qq-binding-contract";
 
 // Legacy scope keys remain job and QQ binding identifiers; they are not Web
@@ -93,6 +98,21 @@ export function memoryConversationAccess(
     : null;
 }
 
+/** Resolve the canonical Web conversation, never treating a session ID as a journal ID. */
+export function memoryConversationForSession(
+  orm: Orm,
+  agentId: string,
+  sessionId: string,
+  userId: string,
+): MemoryConversationAccess | null {
+  const db = (orm as Orm & { $client: import("bun:sqlite").Database }).$client;
+  const row = db
+    .query(`SELECT id FROM conversations WHERE channel='web' AND source_id=?
+    AND agent_id=? AND user_id=? AND closed_at IS NULL`)
+    .get(sessionId, agentId, userId) as { id: string } | null;
+  return row ? memoryConversationAccess(orm, row.id, agentId, userId) : null;
+}
+
 /** Bind a runtime owner to the exact canonical conversation before reading metadata. */
 export function memoryAccessOwnerMatches(
   orm: Orm,
@@ -127,7 +147,7 @@ export function memoryGrantFingerprint(orm: Orm, access: MemoryConversationAcces
 }
 
 /** Current-session private and explicitly granted shared/public entries use one access ref. */
-export function memoryAccessEvidence(
+function memoryAccessEvidence(
   orm: Orm,
   access: MemoryConversationAccess,
   rows: readonly MemoryEntry[],
@@ -139,6 +159,7 @@ export function memoryAccessEvidence(
     (row) =>
       row.userId === access.userId &&
       row.status === "active" &&
+      !isCorrectionRetired(row.configSnapshot) &&
       (ownPrivateIds.has(row.id) ||
         (access.mode === "agent_shared" &&
           (row.visibility === "public" ||
@@ -158,7 +179,66 @@ export function memoryAccessEvidence(
   }
   const qualified = eligible.filter((row) => ownPrivateIds.has(row.id) || tokenById.has(row.id));
   const revisions = new Map(qualified.map((row) => [row.id, memoryRevision(row)]));
-  const proofs = memoryPublicationSourceRevisions(orm, qualified, revisions, now);
+  const ordinary = qualified.filter(
+    (row) =>
+      ownPrivateIds.has(row.id) &&
+      row.visibility !== "public" &&
+      row.visibility !== "agent_shared" &&
+      !memoryJobScopes(memoryMetadata(row.configSnapshot)).route,
+  );
+  const ordinaryIds = new Set(ordinary.map((row) => row.id));
+  const facts = memorySourceFactAssessment(orm, ordinary);
+  const distributed = qualified.filter(
+    (row) => row.visibility === "public" || row.visibility === "agent_shared",
+  );
+  const distributedIds = new Set(distributed.map((row) => row.id));
+  const proofs = new Map(
+    memoryPublicationSourceRevisions(
+      orm,
+      qualified.filter((row) => !ordinaryIds.has(row.id) && !distributedIds.has(row.id)),
+      revisions,
+      now,
+    ),
+  );
+  for (const [id, proof] of retainedMemoryPublications(orm, distributed, now))
+    proofs.set(id, proof);
+  const webIds = [
+    ...new Set(
+      [...facts.webSources.values()]
+        .flat()
+        .flatMap((link) => [link.userMessageId, link.assistantMessageId]),
+    ),
+  ];
+  const webBodies = new Map<string, string>();
+  for (let offset = 0; offset < webIds.length; offset += 500) {
+    for (const message of orm
+      .select({
+        id: schema.messages.id,
+        content: sql<
+          string | null
+        >`CASE WHEN length(CAST(${schema.messages.content} AS BLOB))<=262144 THEN ${schema.messages.content} END`,
+      })
+      .from(schema.messages)
+      .where(inArray(schema.messages.id, webIds.slice(offset, offset + 500)))
+      .all())
+      if (message.content !== null) webBodies.set(message.id, message.content);
+  }
+  for (const row of ordinary) {
+    const fact = facts.revisions.get(row.id);
+    if (facts.states.get(row.id) !== "valid" || !fact) continue;
+    const links = facts.webSources.get(row.id) ?? [];
+    const ids = [
+      ...new Set(links.flatMap((link) => [link.userMessageId, link.assistantMessageId])),
+    ].sort();
+    if (ids.some((id) => !webBodies.has(id))) continue;
+    const webRevision = ids.map((id) => [id, webBodies.get(id)]);
+    proofs.set(
+      row.id,
+      createHash("sha256")
+        .update(JSON.stringify(["ordinary-retained", fact, webRevision]))
+        .digest("hex"),
+    );
+  }
   const result = new Map<string, SourceRef>();
   for (const row of qualified) {
     const proof = proofs.get(row.id);
@@ -185,4 +265,86 @@ export function memoryAccessEvidence(
 /** True when a stored `scope_key` is visible to the given read scope. */
 export function scopeKeyVisible(scopeKey: string, keys: MemoryScopeKeys): boolean {
   return keys === null ? true : keys.includes(scopeKey);
+}
+
+/** Coarse candidate eligibility before any title/body projection; proof is revalidated below. */
+export function runtimeCandidateCondition(access: MemoryConversationAccess) {
+  const e = schema.memoryEntries;
+  const ownSource =
+    access.channel === "web"
+      ? sql`EXISTS (SELECT 1 FROM memory_sources ms JOIN turns t ON t.id=ms.turn_id WHERE ms.memory_id=${e.id} AND t.session_id=${access.sourceId})
+      AND NOT EXISTS (SELECT 1 FROM memory_sources ms LEFT JOIN turns t ON t.id=ms.turn_id WHERE ms.memory_id=${e.id} AND (t.id IS NULL OR t.session_id<>${access.sourceId} OR t.context_valid<>1 OR t.source_valid<>1 OR t.generation_status<>'completed'))
+      AND NOT EXISTS (SELECT 1 FROM qq_memory_sources qs WHERE qs.memory_id=${e.id})`
+      : sql`EXISTS (SELECT 1 FROM qq_memory_sources qs JOIN conversation_events ce ON ce.source_kind='qq_event' AND ce.source_id=qs.event_key WHERE qs.memory_id=${e.id} AND ce.conversation_id=${access.conversationId})
+      AND NOT EXISTS (SELECT 1 FROM qq_memory_sources qs WHERE qs.memory_id=${e.id} AND NOT EXISTS (SELECT 1 FROM conversation_events ce WHERE ce.source_kind='qq_event' AND ce.source_id=qs.event_key AND ce.conversation_id=${access.conversationId}))
+      AND NOT EXISTS (SELECT 1 FROM memory_sources ms WHERE ms.memory_id=${e.id})`;
+  const own = and(eq(e.agentId, access.agentId), ownSource)!;
+  if (access.mode !== "agent_shared") return own;
+  const granted = sql`(${e.visibility}='public' OR (${e.visibility}='agent_shared' AND ${e.agentId}=${access.agentId}))
+    AND EXISTS (SELECT 1 FROM memory_read_grants g WHERE g.memory_id=${e.id} AND g.agent_id=${access.agentId})`;
+  return or(own, granted)!;
+}
+
+/** All private sources must match the canonical conversation; explicit publication uses its own proof. */
+export function qualifyMemoryEntries(
+  orm: Orm,
+  access: MemoryConversationAccess,
+  rows: readonly MemoryEntry[],
+): ReadonlyMap<string, SourceRef> {
+  if (!rows.length) return new Map();
+  const owned = orm
+    .select({ id: schema.memoryEntries.id })
+    .from(schema.memoryEntries)
+    .where(
+      and(
+        inArray(
+          schema.memoryEntries.id,
+          rows.map((row) => row.id),
+        ),
+        runtimeCandidateCondition({ ...access, mode: "current_conversation" }),
+      ),
+    )
+    .all();
+  return memoryAccessEvidence(
+    orm,
+    access,
+    rows,
+    new Set(owned.map((row) => row.id)),
+    new Date().toISOString(),
+  );
+}
+
+export function memoryAccessRefs(
+  orm: Orm,
+  access: MemoryConversationAccess,
+  ids: readonly string[],
+): ReadonlyMap<string, import("../../shared/contracts/evidence").SourceRef> {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return new Map();
+  const rows: MemoryEntry[] = [];
+  for (let offset = 0; offset < unique.length; offset += 500) {
+    const selected = orm
+      .select({
+        ...getTableColumns(schema.memoryEntries),
+        body: sql<string>`CASE WHEN length(CAST(${schema.memoryEntries.body} AS BLOB)) <= 64000 THEN ${schema.memoryEntries.body} ELSE '' END`,
+        bodyBytes: sql<number>`length(CAST(${schema.memoryEntries.body} AS BLOB))`,
+      })
+      .from(schema.memoryEntries)
+      .where(
+        and(
+          inArray(schema.memoryEntries.id, unique.slice(offset, offset + 500)),
+          eq(schema.memoryEntries.userId, access.userId),
+          eq(schema.memoryEntries.status, "active"),
+          runtimeCandidateCondition(access),
+        ),
+      )
+      .all();
+    rows.push(...selected.filter((row) => row.bodyBytes <= 64000 && row.body.length <= 16000));
+  }
+  const refs = new Map<string, import("../../shared/contracts/evidence").SourceRef>();
+  for (let offset = 0; offset < rows.length; offset += 300) {
+    for (const [id, ref] of qualifyMemoryEntries(orm, access, rows.slice(offset, offset + 300)))
+      refs.set(id, ref);
+  }
+  return refs;
 }

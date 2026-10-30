@@ -21,7 +21,7 @@ export function SettingsGroup({
   containerClassName,
 }: SettingsGroupProps) {
   return (
-    <section className={cn("space-y-4", className)}>
+    <section className={cn("min-w-0 space-y-4", className)}>
       {(title || description || action) && (
         <div className="flex flex-wrap items-start justify-between gap-4 px-0.5">
           <div className="min-w-0 flex-1 space-y-2">
@@ -40,7 +40,7 @@ export function SettingsGroup({
       )}
       <div
         className={cn(
-          "overflow-hidden rounded-[10px] border border-border bg-card text-card-foreground divide-y divide-border",
+          "overflow-hidden rounded-[8px] border border-border bg-card text-card-foreground divide-y divide-border",
           containerClassName,
         )}
       >
@@ -56,6 +56,8 @@ export interface SettingsRowProps {
   icon?: ComponentType<{ className?: string }>;
   action?: ReactNode;
   children?: ReactNode;
+  /** Layout contract for the control lane; keeps sizing ownership in the shared row. */
+  controlClassName?: string;
   className?: string;
 }
 
@@ -65,12 +67,13 @@ export function SettingsRow({
   icon: Icon,
   action,
   children,
+  controlClassName,
   className,
 }: SettingsRowProps) {
   return (
     <div
       className={cn(
-        "flex min-w-0 flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5",
+        "settings-content-padding flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
         className,
       )}
     >
@@ -84,13 +87,18 @@ export function SettingsRow({
           <div className="min-w-0 space-y-1.5">
             {label && <div className="text-[13.5px] font-medium text-foreground">{label}</div>}
             {description && (
-              <div className="text-xs text-muted-foreground leading-[1.6]">{description}</div>
+              <div className="text-[12.5px] text-muted-foreground leading-[1.6]">{description}</div>
             )}
           </div>
         </div>
       )}
       {(children || action) && (
-        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-3 sm:ml-auto">
+        <div
+          className={cn(
+            "flex min-w-0 max-w-full flex-wrap items-center gap-3 sm:ml-auto",
+            controlClassName,
+          )}
+        >
           {children}
           {action}
         </div>

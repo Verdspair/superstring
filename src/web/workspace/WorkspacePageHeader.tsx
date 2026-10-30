@@ -12,13 +12,16 @@ export function WorkspacePageHeader({
   description,
   actions,
   backAction,
+  headingLevel = 1,
 }: {
   location: string;
   title: string;
   description: string;
   actions?: ReactNode;
   backAction?: ReactNode;
+  headingLevel?: 1 | 2;
 }) {
+  const Title = headingLevel === 1 ? "h1" : "h2";
   return (
     <header className="workspace-page-header mb-[24px]">
       <div className="workspace-page-location flex flex-wrap items-center gap-1.5">
@@ -27,9 +30,15 @@ export function WorkspacePageHeader({
         <p className="m-0 leading-[20px]">{location}</p>
       </div>
       <div className="flex min-h-[42px] flex-wrap items-center gap-2">
-        <h1 className="workspace-page-title min-w-0 break-words">{title}</h1>
+        <Title
+          className={`${headingLevel === 1 ? "workspace-page-title" : "workspace-dialog-title"} min-w-0 break-words`}
+        >
+          {title}
+        </Title>
         <WorkspaceHelp title={title} description={description} />
-        {actions && <div className="ml-auto flex shrink-0 items-center gap-[8px]">{actions}</div>}
+        {actions && (
+          <div className="workspace-actions workspace-page-actions ml-auto">{actions}</div>
+        )}
       </div>
     </header>
   );

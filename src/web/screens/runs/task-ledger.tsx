@@ -28,9 +28,11 @@ import {
   TableHeader,
   TableRow,
 } from "../../components/ui/table";
+import { scheduleSourceExpiry, sourceExpired } from "../../features/conversations/source-expiry";
 import { formatDate } from "../../i18n/runtime";
 import { addConversationChangeListener } from "../../services/conversation-changes";
 import { type ReadTask, startRead } from "../../services/read-task";
+import { useForegroundRead } from "../../services/use-foreground-read";
 import { errorText } from "../../state/helpers";
 import { useSuperstringStore } from "../../store";
 import { RunLink } from "./RunEntry";
@@ -90,7 +92,17 @@ export function TaskLedger({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [detail, setDetail] = useState<TaskDetail | null>(null);
+  const errorSource = useRef<"list" | "detail" | null>(null);
+  const detailScope = useMemo(
+    () => ({ apiClient, conversationId: conversationId ?? filters.conversationId }),
+    [apiClient, conversationId, filters.conversationId],
+  );
+  const [detailState, setDetailState] = useState<{
+    scope: typeof detailScope;
+    value: TaskDetail;
+  } | null>(null);
+  const detail = detailState?.scope === detailScope ? detailState.value : null;
+  const selectedTask = useRef<{ conversationId: string | undefined; id: string } | null>(null);
   const [approving, setApproving] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   // 常挂载审批框在关闭段落期间仍渲染；保留最近一次打开的内容快照，避免详情先被清空。
@@ -100,14 +112,36 @@ export function TaskLedger({
   } | null>(null);
   const pending = useRef<ReadTask | null>(null);
   const pendingDetail = useRef<ReadTask | null>(null);
-  const mutation = useRef(false);
   const previousLocked = useRef(conversationId);
-  const [saving, setSaving] = useState(false);
   const isInitialRead = useRef(true);
   const effectiveFilters = useMemo<FilterDraft>(
     () => (conversationId ? { ...filters, conversationId } : filters),
     [conversationId, filters],
   );
+  const [visibilityRevision, setVisibilityRevision] = useState(0);
+  const hiddenRetired = useRef(false);
+  const owner = useMemo(
+    () => ({ detailScope, active, filters: effectiveFilters, visibilityRevision }),
+    [detailScope, active, effectiveFilters, visibilityRevision],
+  );
+  const currentOwner = useRef<typeof owner | null>(owner);
+  currentOwner.current = owner;
+  const mutation = useRef<{
+    owner: typeof owner;
+    id: string;
+    selection: typeof selectedTask.current;
+  } | null>(null);
+  const [operation, setOperation] = useState<typeof mutation.current>(null);
+  const saving = operation?.owner === owner && operation.id === detail?.id;
+  useEffect(() => {
+    currentOwner.current = owner;
+    errorSource.current = null;
+    setError("");
+    setNotice("");
+    return () => {
+      if (currentOwner.current === owner) currentOwner.current = null;
+    };
+  }, [owner]);
   useEffect(() => {
     if (previousLocked.current === conversationId) return;
     previousLocked.current = conversationId;
@@ -120,8 +154,6 @@ export function TaskLedger({
   const listRef = useRef<TaskList | null>(null);
   listRef.current = list;
 
-  const errorSource = useRef<"list" | "detail" | null>(null);
-
   const cancelPending = useCallback(() => {
     pending.current?.cancel();
     pending.current = null;
@@ -129,33 +161,52 @@ export function TaskLedger({
     setLoading(false);
   }, []);
 
+  const readDetail = useCallback(
+    (id: string) => {
+      if (currentOwner.current !== owner || !active || document.visibilityState === "hidden")
+        return;
+      pendingDetail.current?.cancel();
+      pendingDetail.current = startRead((signal) => apiClient.getTask(id, signal), {
+        success: (next) => {
+          if (currentOwner.current !== owner || selectedTask.current?.id !== id) return;
+          setDetailState({ scope: detailScope, value: next });
+          if (errorSource.current === "detail") {
+            errorSource.current = null;
+            setError("");
+          }
+        },
+        failure: (caught) => {
+          if (currentOwner.current !== owner || selectedTask.current?.id !== id) return;
+          setDetailState(null);
+          errorSource.current = "detail";
+          setError(errorText(caught));
+        },
+        settled: () => {
+          if (currentOwner.current === owner && selectedTask.current?.id === id)
+            pendingDetail.current = null;
+        },
+      });
+    },
+    [apiClient, active, owner, detailScope],
+  );
   const refreshDetail = useCallback(() => {
-    const currentDetail = detailRef.current;
-    if (!active || !currentDetail) return;
-    pendingDetail.current?.cancel();
-    pendingDetail.current = null;
-    pendingDetail.current = startRead((signal) => apiClient.getTask(currentDetail.id, signal), {
-      success: (next) => {
-        setDetail((prev) => (prev?.id === next.id ? next : prev));
-        if (errorSource.current === "detail") {
-          errorSource.current = null;
-          setError("");
-        }
-      },
-      failure: (caught) => {
-        setDetail(null);
-        errorSource.current = "detail";
-        setError(errorText(caught));
-      },
-      settled: () => {
-        pendingDetail.current = null;
-      },
-    });
-  }, [apiClient, active]);
-
+    const selected = selectedTask.current;
+    if (selected && selected.conversationId === detailScope.conversationId) readDetail(selected.id);
+  }, [detailScope, readDetail]);
+  useEffect(
+    () =>
+      scheduleSourceExpiry([detail?.expiresAt], () => {
+        approvalSnapshot.current = null;
+        setApproving(false);
+        setCancelling(false);
+        refreshDetail();
+      }),
+    [detail?.expiresAt, refreshDetail],
+  );
   const load = useCallback(
     (cursor?: string, clear = false) => {
-      if (!active) return;
+      if (currentOwner.current !== owner || !active || document.visibilityState === "hidden")
+        return;
       const scopedConversationId = conversationId ?? effectiveFilters.conversationId;
       if (pending.current) {
         if (!clear && !cursor) {
@@ -234,10 +285,12 @@ export function TaskLedger({
         },
         {
           progress: (intermediate) => {
+            if (currentOwner.current !== owner) return;
             setList(intermediate);
             if (errorSource.current !== "detail") setError("");
           },
           success: (page) => {
+            if (currentOwner.current !== owner) return;
             setList(
               cursor && listRef.current
                 ? { ...page, items: [...listRef.current.items, ...page.items] }
@@ -246,10 +299,12 @@ export function TaskLedger({
             if (errorSource.current !== "detail") setError("");
           },
           failure: (caught) => {
+            if (currentOwner.current !== owner) return;
             errorSource.current = "list";
             setError(errorText(caught));
           },
           settled: () => {
+            if (currentOwner.current !== owner) return;
             isInitialRead.current = false;
             setLoading(false);
             pending.current = null;
@@ -261,7 +316,7 @@ export function TaskLedger({
         },
       );
     },
-    [apiClient, effectiveFilters, conversationId, cancelPending, active],
+    [apiClient, effectiveFilters, conversationId, cancelPending, active, owner],
   );
 
   const readScope = useRef<{
@@ -269,71 +324,62 @@ export function TaskLedger({
     filters: FilterDraft;
     conversationId: string | undefined;
   } | null>(null);
-  useEffect(() => {
-    if (active) {
-      const previous = readScope.current;
-      const changed =
-        !previous ||
-        previous.apiClient !== apiClient ||
-        previous.filters !== effectiveFilters ||
-        previous.conversationId !== conversationId;
-      readScope.current = { apiClient, filters: effectiveFilters, conversationId };
-      load(undefined, changed);
-      if (detailRef.current) refreshDetail();
+  const suspend = useCallback(() => {
+    // Document suspension retires both the domain operation and its confirmation invocation.
+    if (document.visibilityState === "hidden" && !hiddenRetired.current) {
+      hiddenRetired.current = true;
+      currentOwner.current = null;
+      setVisibilityRevision((revision) => revision + 1);
     }
-    return () => {
-      cancelPending();
-      pendingDetail.current?.cancel();
-      pendingDetail.current = null;
-    };
-  }, [load, cancelPending, active, apiClient, effectiveFilters, conversationId, refreshDetail]);
+    cancelPending();
+    pendingDetail.current?.cancel();
+    pendingDetail.current = null;
+    mutation.current = null;
+    setOperation(null);
+    setApproving(false);
+    setCancelling(false);
+  }, [cancelPending]);
+  const resume = useCallback(() => {
+    hiddenRetired.current = false;
+    const previous = readScope.current;
+    const changed =
+      !previous ||
+      previous.apiClient !== apiClient ||
+      previous.filters !== effectiveFilters ||
+      previous.conversationId !== conversationId;
+    readScope.current = { apiClient, filters: effectiveFilters, conversationId };
+    load(undefined, changed);
+    refreshDetail();
+  }, [apiClient, effectiveFilters, conversationId, load, refreshDetail]);
+  useForegroundRead(resume, cancelPending, {
+    paused: !active,
+    intervalMs: null,
+    onSuspend: suspend,
+  });
 
   useEffect(() => {
     if (!active) return;
-    let pendingHidden = false;
     const targetConversationId = conversationId ?? effectiveFilters.conversationId;
-    const unsubscribe = addConversationChangeListener((event) => {
+    return addConversationChangeListener((event) => {
       const matches =
         event.event === "ready" ||
         (event.event === "conversation_changed" &&
           (!targetConversationId || event.conversationId === targetConversationId));
-      if (!matches) return;
-      if (document.visibilityState === "hidden") {
-        pendingHidden = true;
+      if (!matches || document.visibilityState === "hidden") return;
+      if (
+        event.event === "ready" &&
+        isInitialRead.current &&
+        pending.current &&
+        listRef.current === null
+      )
         return;
-      }
-      if (event.event === "ready") {
-        // SSE ready handshake indicates connection readiness; if an initial read is in flight
-        // without an existing authoritative list (listRef.current === null), coalesce without trailing GET.
-        if (isInitialRead.current && pending.current && listRef.current === null) {
-          return;
-        }
-        load(undefined, false);
-      } else {
-        // Real conversation changes require authoritative re-read (or trailing revalidation if pending).
-        load(undefined, false);
-      }
+      load(undefined, false);
       if (
         detailRef.current &&
         (!event.conversationId || detailRef.current.conversationId === event.conversationId)
-      ) {
+      )
         refreshDetail();
-      }
     });
-    const onVisibility = () => {
-      if (document.visibilityState !== "hidden" && pendingHidden) {
-        pendingHidden = false;
-        load(undefined, false);
-        if (detailRef.current) {
-          refreshDetail();
-        }
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      unsubscribe();
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
   }, [conversationId, effectiveFilters.conversationId, load, refreshDetail, active]);
   const updateDraft = <K extends keyof FilterDraft>(key: K, value: FilterDraft[K]) =>
     setDraft((previous) => ({ ...previous, [key]: value }));
@@ -344,61 +390,79 @@ export function TaskLedger({
     setFilters((previous) => (sameFilters(previous, lockedFilters) ? previous : lockedFilters));
   };
   const openDetail = (id: string) => {
-    pendingDetail.current?.cancel();
-    pendingDetail.current = null;
+    if (!active || currentOwner.current !== owner || document.visibilityState === "hidden") return;
+    selectedTask.current = { conversationId: detailScope.conversationId, id };
+    setApproving(false);
+    setCancelling(false);
     setError("");
-    pendingDetail.current = startRead((signal) => apiClient.getTask(id, signal), {
-      success: setDetail,
-      failure: (caught) => setError(errorText(caught)),
-      settled: () => {
-        pendingDetail.current = null;
-      },
-    });
+    setNotice("");
+    if (detail?.id !== id) setDetailState(null);
+    readDetail(id);
   };
-  const decide = async (approve: boolean) => {
-    const call = detail?.calls.find((entry) => entry.status === "waiting_approval");
-    if (!detail || !call || mutation.current) return;
-    // A waiting call without an approval ticket cannot be decided; say so instead of returning
-    // silently, so a stale state never looks like a no-op.
-    if (!call.approvalRevision) {
+  const mutate = async (approve?: boolean) => {
+    if (
+      !detail ||
+      !active ||
+      sourceExpired(detail.expiresAt) ||
+      currentOwner.current !== owner ||
+      document.visibilityState === "hidden" ||
+      mutation.current?.owner === owner
+    )
+      return;
+    const call = detail.calls.find((entry) => entry.status === "waiting_approval");
+    if (approve !== undefined && !call?.approvalRevision) {
       setApproving(false);
       setNotice(t("connections.tasks.approvalUnavailable"));
       return;
     }
-    mutation.current = true;
-    setSaving(true);
+    const invocation = { owner, id: detail.id, selection: selectedTask.current };
+    mutation.current = invocation;
+    setOperation(invocation);
+    setError("");
+    setNotice("");
+    const isCurrent = () => {
+      const current = detailRef.current;
+      const currentCall = current?.calls.find((entry) => entry.ordinal === call?.ordinal);
+      return (
+        mutation.current === invocation &&
+        currentOwner.current === owner &&
+        selectedTask.current === invocation.selection &&
+        current?.id === detail.id &&
+        current.conversationId === detail.conversationId &&
+        current.agentId === detail.agentId &&
+        (approve === undefined || currentCall?.approvalRevision === call?.approvalRevision) &&
+        document.visibilityState !== "hidden"
+      );
+    };
     try {
-      await apiClient.approveTask(detail.id, {
-        ordinal: call.ordinal,
-        expectedApproval: call.approvalRevision,
-        approve,
-      });
+      if (approve === undefined) await apiClient.cancelTask(detail.id);
+      else if (call?.approvalRevision)
+        await apiClient.approveTask(detail.id, {
+          ordinal: call.ordinal,
+          expectedApproval: call.approvalRevision,
+          approve,
+        });
+      if (!isCurrent()) return;
       setApproving(false);
-      setNotice(t(approve ? "connections.tasks.approved" : "connections.tasks.rejected"));
-      openDetail(detail.id);
-      load();
-    } catch (caught) {
-      setError(errorText(caught));
-    } finally {
-      mutation.current = false;
-      setSaving(false);
-    }
-  };
-  const cancel = async () => {
-    if (!detail || mutation.current) return;
-    mutation.current = true;
-    setSaving(true);
-    try {
-      await apiClient.cancelTask(detail.id);
       setCancelling(false);
-      setNotice(t("connections.tasks.cancelled"));
-      openDetail(detail.id);
+      setNotice(
+        t(
+          approve === undefined
+            ? "connections.tasks.cancelled"
+            : approve
+              ? "connections.tasks.approved"
+              : "connections.tasks.rejected",
+        ),
+      );
+      readDetail(invocation.id);
       load();
     } catch (caught) {
-      setError(errorText(caught));
+      if (isCurrent()) setError(errorText(caught));
     } finally {
-      mutation.current = false;
-      setSaving(false);
+      if (mutation.current === invocation) {
+        mutation.current = null;
+        if (currentOwner.current === owner) setOperation(null);
+      }
     }
   };
   const waiting = detail?.calls.find((entry) => entry.status === "waiting_approval");
@@ -601,11 +665,15 @@ export function TaskLedger({
         onOpenChange={(open) => {
           if (!open && !saving) {
             pendingDetail.current?.cancel();
-            setDetail(null);
+            pendingDetail.current = null;
+            selectedTask.current = null;
+            setDetailState(null);
+            setApproving(false);
+            setCancelling(false);
           }
         }}
       >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
+        <SheetContent scrollMode="surface" className="w-full  sm:max-w-2xl">
           <SheetHeader className="border-b">
             <SheetTitle>{t("connections.tasks.detail")}</SheetTitle>
             <SheetDescription>{detail?.id}</SheetDescription>
@@ -628,9 +696,10 @@ export function TaskLedger({
               <div className="space-y-3">
                 {detail.calls.map((call) => (
                   <CallRow
-                    key={`${detail.id}:${call.ordinal}:${call.resultStatus}`}
-                    taskId={detail.id}
+                    key={`${detail.id}:${call.ordinal}`}
+                    task={detail}
                     call={call}
+                    active={active}
                   />
                 ))}
               </div>
@@ -716,7 +785,7 @@ export function TaskLedger({
             disabledReason={t("hints.investigation.tasks.saving")}
             data-dialog-cancel
             tooltip={t("hints.investigation.tasks.reject")}
-            onClick={() => void decide(false)}
+            onClick={() => void mutate(false)}
           >
             {t("connections.tasks.reject")}
           </Button>
@@ -724,7 +793,7 @@ export function TaskLedger({
             disabled={saving}
             disabledReason={t("hints.investigation.tasks.saving")}
             tooltip={t("hints.investigation.tasks.approve")}
-            onClick={() => void decide(true)}
+            onClick={() => void mutate(true)}
           >
             {t("connections.tasks.approveOnce")}
           </Button>
@@ -735,7 +804,8 @@ export function TaskLedger({
         message={t("connections.tasks.cancelConfirm")}
         busy={saving}
         onCancel={() => setCancelling(false)}
-        onConfirm={() => void cancel()}
+        onConfirm={() => mutate()}
+        invocationOwner={owner}
       />
     </div>
   );
@@ -783,27 +853,101 @@ function TaskRow({
   );
 }
 
-function CallRow({ taskId, call }: { taskId: string; call: TaskDetail["calls"][number] }) {
+function CallRow({
+  task,
+  call,
+  active,
+}: {
+  task: TaskDetail;
+  call: TaskDetail["calls"][number];
+  active: boolean;
+}) {
   const { t } = useTranslation();
   const apiClient = useSuperstringStore((s) => s.apiClient);
-  const [page, setPage] = useState<{ field: "arguments" | "result"; value: TaskBodyPage } | null>(
-    null,
+  const scope = useMemo(
+    () => ({
+      apiClient,
+      taskId: task.id,
+      conversationId: task.conversationId,
+      agentId: task.agentId,
+      expiresAt: task.expiresAt,
+      dataStatus: task.dataStatus,
+      ordinal: call.ordinal,
+      revision: call.revision,
+      name: call.name,
+      resultStatus: call.resultStatus,
+    }),
+    [
+      apiClient,
+      task.id,
+      task.conversationId,
+      task.agentId,
+      task.expiresAt,
+      task.dataStatus,
+      call.ordinal,
+      call.revision,
+      call.name,
+      call.resultStatus,
+    ],
   );
-  const [error, setError] = useState("");
+  const currentScope = useRef<typeof scope | null>(scope);
+  currentScope.current = scope;
+  const [body, setBody] = useState<{
+    scope: typeof scope;
+    field: "arguments" | "result";
+    value: TaskBodyPage;
+  } | null>(null);
+  const [failure, setFailure] = useState<{ scope: typeof scope; message: string } | null>(null);
+  const page = body?.scope === scope ? body : null;
+  const error = failure?.scope === scope ? failure.message : "";
   const pending = useRef<ReadTask | null>(null);
-  useEffect(() => () => pending.current?.cancel(), []);
-  const clear = () => {
+  const cancelRead = useCallback(() => {
     pending.current?.cancel();
-    setPage(null);
-  };
+    pending.current = null;
+  }, []);
+  const clear = useCallback(() => {
+    cancelRead();
+    setBody(null);
+    setFailure(null);
+  }, [cancelRead]);
+  useEffect(() => {
+    currentScope.current = scope;
+    clear();
+    return () => {
+      cancelRead();
+      if (currentScope.current === scope) currentScope.current = null;
+    };
+  }, [scope, clear, cancelRead]);
+  useEffect(() => scheduleSourceExpiry([task.expiresAt], clear), [task.expiresAt, clear]);
+  const retain = useCallback(() => {}, []);
+  useForegroundRead(retain, clear, {
+    paused: !active,
+    intervalMs: null,
+    onSuspend: cancelRead,
+  });
   const read = (field: "arguments" | "result", offset = 0) => {
-    pending.current?.cancel();
-    setError("");
+    if (
+      !active ||
+      document.visibilityState === "hidden" ||
+      task.dataStatus !== "available" ||
+      sourceExpired(task.expiresAt)
+    )
+      return;
+    cancelRead();
+    setFailure(null);
     pending.current = startRead(
-      (signal) => apiClient.getTaskBody(taskId, call.ordinal, field, offset, 2048, signal),
+      (signal) => apiClient.getTaskBody(task.id, call.ordinal, field, offset, 2048, signal),
       {
-        success: (value) => setPage({ field, value }),
-        failure: (caught) => setError(errorText(caught)),
+        success: (value) => {
+          if (currentScope.current === scope && !sourceExpired(task.expiresAt))
+            setBody({ scope, field, value });
+        },
+        failure: (caught) => {
+          if (currentScope.current === scope) setFailure({ scope, message: errorText(caught) });
+        },
+        settled: () => {
+          if (currentScope.current === scope) pending.current = null;
+        },
       },
     );
   };

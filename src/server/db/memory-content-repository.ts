@@ -1,10 +1,11 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type {
   ContentItem,
   MemoryContentResponse,
   MemoryCorrection,
   MemoryVisibilityUpdate,
 } from "../../shared/contracts";
+import type { SourceRef } from "../../shared/contracts/evidence";
 import { AppError, fail } from "../errors";
 import { MEMORY_SEARCH_FOLD_VERSION, memorySearchProjection } from "../services/memory-contract";
 import {
@@ -15,144 +16,52 @@ import {
   memoryMetadata,
   memoryRevision,
 } from "../services/memory-revision";
+import { memoryAccessRefs, memoryConversationForSession } from "../services/memory-scope";
 import { assertQqRouteCurrent, entries, govern, validateEntrySources } from "./memory-repository";
 import {
-  acceptsObservationSources,
-  loadMessageIntegrity,
-  loadSessionIntegrity,
-  loadTurnIntegrity,
-  memoryPublicationSourceRevision,
+  issueMemoryPublications,
+  memorySourceFactAssessment,
   observationContentSources,
   observationSources,
+  retainedMemoryPublications,
 } from "./memory-source-repository";
 import { DEFAULT_USER_ID, newId, nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
 
-/**
- * The chat-source validity rule shared by the per-memory reader and the batched
- * correction scan: pure predicate over the integrity rows, no I/O.
- */
-interface ChatSourceValidity {
-  turn:
-    | {
-        id: string;
-        sessionId: string;
-        sourceValid: number;
-        generationStatus: string;
-      }
-    | undefined;
-  session: { id: string; agentId: string; userId: string; title: string } | undefined;
-  user: { id: string; turnId: string; sessionId: string; role: string; status: string } | undefined;
-  assistant:
-    | { id: string; turnId: string; sessionId: string; role: string; status: string }
-    | undefined;
-}
-
-function chatSourceValid(agentId: string, state: ChatSourceValidity): boolean {
-  const { turn, session, user, assistant } = state;
-  return Boolean(
-    turn &&
-      session &&
-      session.agentId === agentId &&
-      session.userId === DEFAULT_USER_ID &&
-      turn.sourceValid === 1 &&
-      turn.generationStatus === "completed" &&
-      user &&
-      user.turnId === turn.id &&
-      user.sessionId === session.id &&
-      user.role === "user" &&
-      user.status === "completed" &&
-      assistant &&
-      assistant.turnId === turn.id &&
-      assistant.sessionId === session.id &&
-      assistant.role === "assistant" &&
-      assistant.status === "completed",
-  );
-}
-
 /** Never expose a message from another agent, even if a damaged source points to it. */
 export function memoryContent(orm: Orm, agentId: string, memoryId: string): MemoryContentResponse {
   const row = entries(orm, agentId, [memoryId])[0];
-  const links = orm
-    .select()
-    .from(schema.memorySources)
-    .where(eq(schema.memorySources.memoryId, row.id))
-    .all();
-  const observations = observationSources(orm, [row.id]).get(row.id) ?? [];
-  const sourceMessages: MemoryContentResponse["source_messages"] = [];
-  const chatSources: ContentItem["sources"] = links.map((link) => {
-    const turn = orm.select().from(schema.turns).where(eq(schema.turns.id, link.turnId)).get();
-    const session = turn
-      ? orm.select().from(schema.sessions).where(eq(schema.sessions.id, turn.sessionId)).get()
-      : undefined;
-    const owned = session?.agentId === agentId && session?.userId === DEFAULT_USER_ID;
-    const user = owned
-      ? orm
-          .select()
-          .from(schema.messages)
-          .where(
-            and(
-              eq(schema.messages.id, link.userMessageId),
-              eq(schema.messages.turnId, link.turnId),
-              eq(schema.messages.sessionId, session.id),
-              eq(schema.messages.role, "user"),
-            ),
-          )
-          .get()
-      : undefined;
-    const assistant = owned
-      ? orm
-          .select()
-          .from(schema.messages)
-          .where(
-            and(
-              eq(schema.messages.id, link.assistantMessageId),
-              eq(schema.messages.turnId, link.turnId),
-              eq(schema.messages.sessionId, session.id),
-              eq(schema.messages.role, "assistant"),
-            ),
-          )
-          .get()
-      : undefined;
-    const valid = chatSourceValid(agentId, { turn, session, user, assistant });
-    sourceMessages.push({
-      turn_id: link.turnId,
-      session_title: owned ? session.title : null,
-      user: user?.status === "completed" ? user.content : null,
-      assistant: assistant?.status === "completed" ? assistant.content : null,
-    });
-    return {
-      type: "chat",
-      turn_id: link.turnId,
-      session_id: owned ? session.id : null,
-      user_message_id: link.userMessageId,
-      assistant_message_id: link.assistantMessageId,
-      sequence_no: link.sequenceNo,
-      valid,
-    };
-  });
-  const routed = Object.hasOwn(memoryMetadata(row.configSnapshot), "qq_route");
-  let routedValid = false;
-  if (routed) {
-    try {
+  const facts = memorySourceFactAssessment(orm, [row]);
+  const links = facts.webSources.get(row.id) ?? [];
+  const observations = [...(facts.observationSources.get(row.id) ?? [])];
+  const sessions = facts.webSessions.get(row.id) ?? [];
+  const chatSources: ContentItem["sources"] = links.map((link, index) => ({
+    type: "chat",
+    turn_id: link.turnId,
+    session_id: facts.webValidity.get(JSON.stringify([row.id, link.turnId]))
+      ? (sessions[index] ?? null)
+      : null,
+    user_message_id: link.userMessageId,
+    assistant_message_id: link.assistantMessageId,
+    sequence_no: link.sequenceNo,
+    valid: facts.webValidity.get(JSON.stringify([row.id, link.turnId])) === true,
+  }));
+  let sourcesValid = false;
+  try {
+    if (Object.hasOwn(memoryMetadata(row.configSnapshot), "qq_route"))
       assertQqRouteCurrent(orm, agentId, row.configSnapshot);
-      validateEntrySources(orm, [row]);
-      routedValid = true;
-    } catch (error) {
-      if (
-        !(error instanceof AppError) ||
-        !["MEMORY_SOURCE_INVALID", "MEMORY_STATE_CONFLICT"].includes(error.code)
-      )
-        throw error;
-    }
+    validateEntrySources(orm, [row]);
+    sourcesValid = true;
+  } catch (error) {
+    if (
+      !(error instanceof AppError) ||
+      !["MEMORY_SOURCE_INVALID", "MEMORY_STATE_CONFLICT"].includes(error.code)
+    )
+      throw error;
   }
   const sources: ContentItem["sources"] = [
     ...chatSources,
-    ...observationContentSources(observations).map(
-      (source) =>
-        // Routed validity is owned by the complete source proof, not target scope.
-        ({ ...source, valid: routed ? routedValid : true }) as ContentItem["sources"][number],
-    ),
+    ...observationContentSources(observations, facts.observationValidity),
   ];
   return {
     content: {
@@ -170,18 +79,13 @@ export function memoryContent(orm: Orm, agentId: string, memoryId: string): Memo
         sources.length > 0 &&
         sources.every((source) => source.valid) &&
         row.status !== "invalid" &&
-        (routed
-          ? routedValid
-          : acceptsObservationSources(row.scopeKey, agentId) || observations.length === 0)
+        sourcesValid
           ? "valid"
           : "invalid",
     },
     status: row.status as MemoryContentResponse["status"],
     corrected: correctionMetadata(row.configSnapshot) !== null,
     retired: isCorrectionRetired(row.configSnapshot),
-    // Original text is only kept for chat turns. An observation stores no message
-    // body, so a QQ memory has no recap here — that is deliberate, not a gap.
-    source_messages: sourceMessages,
   };
 }
 
@@ -195,8 +99,6 @@ export function setMemoryVisibility(
   const row = entries(orm, agentId, [id])[0]!;
   if (row.visibilityRevision !== input.expected_revision)
     fail("MEMORY_STATE_CONFLICT", "记忆授权已变化，请重新加载");
-  if (row.status !== "active" || isCorrectionRetired(row.configSnapshot))
-    fail("MEMORY_STATE_CONFLICT", "只能发布有效记忆");
   const recipients = [...input.recipient_agent_ids].sort();
   if (
     (input.visibility === "session_private" && recipients.length !== 0) ||
@@ -219,15 +121,45 @@ export function setMemoryVisibility(
     .where(eq(schema.memoryReadGrants.memoryId, id))
     .all();
   const previous = current.map((grant) => grant.agentId).sort();
-  const publication =
-    input.visibility === "session_private"
-      ? null
-      : memoryPublicationSourceRevision(orm, row, memoryRevision(row), nowIso());
-  if (
-    row.visibility === input.visibility &&
-    row.publicationSourceRevision === publication &&
-    JSON.stringify(previous) === JSON.stringify(recipients)
-  ) {
+  const sameRecipients = JSON.stringify(previous) === JSON.stringify(recipients);
+  const same = row.visibility === input.visibility && sameRecipients;
+  const subset = recipients.every((recipient) => previous.includes(recipient));
+  const contraction =
+    input.visibility === "session_private" ||
+    (row.visibility === input.visibility && subset && recipients.length < previous.length) ||
+    (row.visibility === "public" &&
+      input.visibility === "agent_shared" &&
+      subset &&
+      recipients.length === 1 &&
+      recipients[0] === agentId);
+  if (!contraction && (row.status !== "active" || isCorrectionRetired(row.configSnapshot)))
+    fail("MEMORY_STATE_CONFLICT", "只能发布有效记忆");
+  let publication = row.publicationSourceRevision;
+  let reissued = false;
+  if (input.visibility === "session_private") publication = null;
+  else if (!contraction) {
+    if (
+      same &&
+      !input.revalidate_publication &&
+      retainedMemoryPublications(orm, [row], nowIso()).has(id)
+    ) {
+      return {
+        visibility: input.visibility,
+        visibility_revision: row.visibilityRevision,
+        recipient_agent_ids: recipients,
+      };
+    }
+    if (same && !input.revalidate_publication)
+      fail("MEMORY_SOURCE_INVALID", "发布依据无法验证，请显式重新验证发布依据或撤销接收者");
+    publication = issueMemoryPublications(orm, [row], nowIso()).get(id) ?? null;
+    if (!publication)
+      fail(
+        "MEMORY_SOURCE_INVALID",
+        "无法重新验证发布依据：来源原文已到期、缺失或授权变化；现有接收授权未变",
+      );
+    reissued = input.revalidate_publication === true;
+  }
+  if (same && row.publicationSourceRevision === publication && !reissued) {
     return {
       visibility: input.visibility,
       visibility_revision: row.visibilityRevision,
@@ -269,7 +201,12 @@ export function setMemoryVisibility(
         .insert(schema.memoryReadGrants)
         .values({ memoryId: id, agentId: recipient, token: crypto.randomUUID() })
         .run();
-    else if (row.visibility !== input.visibility || row.publicationSourceRevision !== publication)
+    else if (
+      !contraction &&
+      (reissued ||
+        row.visibility !== input.visibility ||
+        row.publicationSourceRevision !== publication)
+    )
       orm
         .update(schema.memoryReadGrants)
         .set({ token: crypto.randomUUID() })
@@ -408,6 +345,7 @@ export interface CorrectionScan {
   /** All chat turn ids of this entry, in the entry's source order. */
   source_ids: string[];
   validity: "valid" | "invalid";
+  source: SourceRef | null;
 }
 
 /**
@@ -415,52 +353,73 @@ export interface CorrectionScan {
  * the same projections and predicates as `memoryContent` on same-call batched
  * maps; the result is a plain value (never persisted, never reused across calls).
  */
-export function activeCorrections(orm: Orm, agentId: string): CorrectionScan[] {
-  const correctionEntries = entries(orm, agentId, undefined, { status: "active" }).filter(
-    (entry) => correctionMetadata(entry.configSnapshot) !== null,
+export function activeCorrections(
+  orm: Orm,
+  agentId: string,
+  qualify: (ids: readonly string[]) => ReadonlyMap<string, SourceRef>,
+): CorrectionScan[] {
+  const correctionEntries = orm
+    .select()
+    .from(schema.memoryEntries)
+    .where(
+      and(
+        eq(schema.memoryEntries.agentId, agentId),
+        eq(schema.memoryEntries.userId, DEFAULT_USER_ID),
+        inArray(schema.memoryEntries.status, ["active", "suppressed", "invalid", "replaced"]),
+        sql`CASE WHEN json_valid(${schema.memoryEntries.configSnapshot}) THEN (json_type(${schema.memoryEntries.configSnapshot},'$.content_correction.replaces')='text' OR json_extract(${schema.memoryEntries.configSnapshot},'$.correction_retired')=1) ELSE 0 END`,
+      ),
+    )
+    .orderBy(desc(schema.memoryEntries.createdAt), schema.memoryEntries.id)
+    .all();
+  if (!correctionEntries.length) return [];
+  const refs = qualify(correctionEntries.map((entry) => entry.id));
+  const currentIds = new Set(
+    correctionEntries
+      .filter(
+        (entry) =>
+          entry.status === "active" &&
+          refs.has(entry.id) &&
+          !isCorrectionRetired(entry.configSnapshot),
+      )
+      .map((entry) => entry.id),
   );
-  if (correctionEntries.length === 0) return [];
-  const ids = correctionEntries.map((entry) => entry.id);
-  const linksByMemory = loadMemorySourcesOrdered(orm, ids);
-  const allLinks = [...linksByMemory.values()].flat();
-  const turnRows = loadTurnIntegrity(
+  const descendants = orm
+    .select()
+    .from(schema.memoryLinks)
+    .where(
+      sql`${schema.memoryLinks.parentId} IN (SELECT value FROM json_each(${JSON.stringify(correctionEntries.map((entry) => entry.id))}))`,
+    )
+    .all();
+  const hasCurrentDescendant = (id: string): boolean => {
+    const pending = [id],
+      seen = new Set<string>();
+    while (pending.length) {
+      const parent = pending.pop()!;
+      if (seen.has(parent)) continue;
+      seen.add(parent);
+      for (const link of descendants)
+        if (link.parentId === parent) {
+          if (currentIds.has(link.childId)) return true;
+          pending.push(link.childId);
+        }
+    }
+    return false;
+  };
+  const eligible = correctionEntries.filter(
+    (entry) => !isCorrectionRetired(entry.configSnapshot) || !hasCurrentDescendant(entry.id),
+  );
+  const links = loadMemorySourcesOrdered(
     orm,
-    allLinks.map((link) => link.turnId),
+    eligible.map((entry) => entry.id),
   );
-  const sessionRows = loadSessionIntegrity(
-    orm,
-    [...turnRows.values()].map((turn) => turn.sessionId),
-  );
-  const messageRows = loadMessageIntegrity(
-    orm,
-    allLinks.flatMap((link) => [link.userMessageId, link.assistantMessageId]),
-  );
-  const observations = observationSources(orm, ids);
-  return correctionEntries.map((entry) => {
-    const links = linksByMemory.get(entry.id) ?? [];
-    const obs = observations.get(entry.id) ?? [];
-    const chatSources = links.map((link) => {
-      const turn = turnRows.get(link.turnId);
-      const session = turn ? sessionRows.get(turn.sessionId) : undefined;
-      const user = session ? messageRows.get(link.userMessageId) : undefined;
-      const assistant = session ? messageRows.get(link.assistantMessageId) : undefined;
-      const valid = chatSourceValid(agentId, { turn, session, user, assistant });
-      return { turn_id: link.turnId, valid };
-    });
-    return {
-      id: entry.id,
-      body: entry.body,
-      revision: memoryRevision(entry),
-      source_ids: chatSources.map((source) => source.turn_id),
-      validity:
-        chatSources.length + obs.length > 0 &&
-        chatSources.every((source) => source.valid) &&
-        entry.status !== "invalid" &&
-        (acceptsObservationSources(entry.scopeKey, agentId) || obs.length === 0)
-          ? "valid"
-          : "invalid",
-    };
-  });
+  return eligible.map((entry) => ({
+    id: entry.id,
+    body: currentIds.has(entry.id) ? entry.body : "",
+    revision: memoryRevision(entry),
+    source: refs.get(entry.id) ?? null,
+    source_ids: (links.get(entry.id) ?? []).map((source) => source.turnId),
+    validity: currentIds.has(entry.id) ? ("valid" as const) : ("invalid" as const),
+  }));
 }
 
 /** Apply a prepared scan to one allowed turn set; same rule as the per-call reader. */
@@ -468,14 +427,20 @@ export function correctionsForTurnsFrom(scan: CorrectionScan[], turnIds: string[
   const allowed = new Set(turnIds);
   return scan.flatMap((entry) => {
     const ids = entry.source_ids.filter((id) => allowed.has(id));
-    return entry.validity === "valid" && ids.length > 0
-      ? [{ id: entry.id, body: entry.body, revision: entry.revision, source_ids: ids }]
+    if (ids.length > 0 && (entry.validity !== "valid" || entry.source === null))
+      fail("CONTEXT_SOURCE_INVALID", "历史已有纠正但当前无权读取，不能恢复旧错误正文");
+    return entry.validity === "valid" && entry.source !== null && ids.length > 0
+      ? [
+          {
+            id: entry.id,
+            body: entry.body,
+            revision: entry.revision,
+            source_ids: ids,
+            source: entry.source!,
+          },
+        ]
       : [];
   });
-}
-
-export function correctionsForTurns(orm: Orm, agentId: string, turnIds: string[]) {
-  return correctionsForTurnsFrom(activeCorrections(orm, agentId), turnIds);
 }
 
 /**
@@ -501,4 +466,23 @@ function loadMemorySourcesOrdered(
     else grouped.set(row.memoryId, [row]);
   }
   return grouped;
+}
+
+/** Relevant retained turns do not substitute for the full canonical source authorization. */
+export function conversationCorrectionScan(
+  orm: Orm,
+  agentId: string,
+  sessionId: string,
+): CorrectionScan[] {
+  const access = memoryConversationForSession(orm, agentId, sessionId, DEFAULT_USER_ID);
+  if (!access) fail("CONTEXT_SOURCE_INVALID", "会话记忆资格已失效，不能恢复原历史");
+  return activeCorrections(orm, agentId, (ids) => memoryAccessRefs(orm, access, ids));
+}
+export function conversationCorrections(
+  orm: Orm,
+  agentId: string,
+  sessionId: string,
+  turnIds: string[],
+) {
+  return correctionsForTurnsFrom(conversationCorrectionScan(orm, agentId, sessionId), turnIds);
 }

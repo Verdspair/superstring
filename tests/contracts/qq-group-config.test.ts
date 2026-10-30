@@ -12,6 +12,7 @@ import {
   type QqSchemeResponse,
   QqSchemeResponseSchema,
   QqSchemeRhythmSchema,
+  UpdateQqBindingRequestSchema,
 } from "../../src/shared/contracts/qq";
 import {
   isBothTrueInteractionPair,
@@ -476,5 +477,36 @@ describe("生效对归一：mergeQqGroupScheme 与 raw 存量双 true", () => {
     );
     expect(merged2.triggers.follow_up).toBe(false);
     expect(merged2.triggers.chiming_in).toBe(true);
+  });
+});
+
+describe("binding scheme change preview contract", () => {
+  it("requires both preview revisions for keep/reset, including config revision zero", () => {
+    const patch = { scheme_id: "33333333-3333-4333-8333-333333333333", expected_revision: 1 };
+    for (const scheme_change of ["keep", "reset"] as const) {
+      expect(UpdateQqBindingRequestSchema.safeParse({ ...patch, scheme_change }).success).toBe(
+        false,
+      );
+      const input = {
+        ...patch,
+        scheme_change,
+        scheme_change_baseline: { config_revision: 0, scheme_revision: 2 },
+      };
+      expect(UpdateQqBindingRequestSchema.parse(input)).toEqual(input);
+      for (const baseline of [
+        { config_revision: -1, scheme_revision: 2 },
+        { config_revision: 0 },
+        { config_revision: 0, scheme_revision: 0 },
+      ]) {
+        expect(
+          UpdateQqBindingRequestSchema.safeParse({ ...input, scheme_change_baseline: baseline })
+            .success,
+        ).toBe(false);
+      }
+    }
+    expect(UpdateQqBindingRequestSchema.parse({ paused: false, expected_revision: 1 })).toEqual({
+      paused: false,
+      expected_revision: 1,
+    });
   });
 });

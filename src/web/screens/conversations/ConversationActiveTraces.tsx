@@ -123,8 +123,9 @@ export function ConversationActiveTraces({
         }}
       >
         <DialogContent
+          scrollMode="body"
           showCloseButton={false}
-          className="gap-4 sm:max-w-6xl"
+          className="h-[min(90dvh,calc(100dvh-2rem))] gap-4 sm:max-w-6xl"
           aria-describedby={descriptionId}
         >
           <header className="flex items-start justify-between gap-4 border-b pb-3">
@@ -143,7 +144,7 @@ export function ConversationActiveTraces({
               </Button>
             </DialogClose>
           </header>
-          <ScrollArea className="h-[75dvh] pr-3 [&_[data-radix-scroll-area-viewport]>div]:block!">
+          <ScrollArea className="min-h-0 flex-1 pr-3">
             {inspectTraceId && (
               <InvestigationCanvas
                 key={inspectTraceId}

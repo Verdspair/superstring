@@ -14,13 +14,12 @@ import { InputSuggestions } from "@/components/ui/input-suggestions";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { returnFromContextAllocation } from "@/features/context-allocation";
 import { translateNotice } from "@/i18n";
 import { useSuperstringStore } from "@/store";
 import type { AgentResponse } from "../../../shared/contracts";
 import type { AgentWorkspaceTask } from "../../state/types";
 import { WorkspacePageHeader } from "../../workspace/WorkspacePageHeader";
-import { KnowledgeToolSettings, MemoryToolSettings } from "./ResourceRules";
+import { AgentMaterials } from "./AgentMaterials";
 import { AgentToolScope, CapabilityEditor, IdentityEditor } from "./StudioEditors";
 
 /** The directory chooses an object; the studio always edits an explicit assistant. */
@@ -33,9 +32,11 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       editorAgentId: state.editorAgentId,
       editorDraft: state.editorDraft,
       editorLoading: state.editorLoading,
+      api: state.apiClient,
+      baselineRefresh: state.editorBaselineRefresh,
       modelNames: state.modelNames,
       pageEditor: state.pageEditor,
-      patchDraft: state.patchDraft,
+      patchNewAgentDraft: state.patchNewAgentDraft,
       refreshModels: state.refreshModels,
       requestAgentNavigation: state.requestAgentNavigation,
       saveAllSettingsPages: state.saveAllSettingsPages,
@@ -44,8 +45,10 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       discardSettingsTask: state.discardSettingsTask,
       knowledgeReadEditor: state.knowledgeReadEditor,
       knowledgeReadLoading: state.knowledgeReadLoading,
-      saveCurrentSection: state.saveCurrentSection,
+      createAgent: state.createAgent,
       feedback: state.feedback,
+      taskResult: state.agentTaskResult,
+      permissionSaving: state.permissionSaving,
       selectedNewSessionAgentId: state.selectedNewSessionAgentId,
       setNewSessionAgent: state.setNewSessionAgent,
       settingsRoute: state.settingsRoute,
@@ -53,6 +56,10 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
       settingsView: state.settingsView,
       syncSettingsRoute: state.syncSettingsRoute,
       contextAllocationTarget: state.contextAllocationTarget,
+      returnFromContextAllocation: state.returnFromContextAllocation,
+      workspaceReturns: state.workspaceReturns,
+      returnWorkspaceTarget: state.returnWorkspaceTarget,
+      refreshSettingsAgent: state.refreshSettingsAgent,
       error: state.error,
       dirty: state.dirty,
     })),
@@ -63,6 +70,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
     "models",
     "context",
     "memory-tools",
+    "agent-tools",
     "knowledge-tools",
     "long-memory",
     "knowledge-config",
@@ -86,13 +94,15 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
     setDeleteIds(ids);
   };
   const initialTab =
-    s.settingsRoute === "models" || s.settingsRoute === "context"
-      ? "capabilities"
-      : ["memory-tools", "knowledge-tools", "long-memory", "knowledge-config"].includes(
-            s.settingsRoute,
-          )
-        ? "access"
-        : "identity";
+    s.settingsRoute === "agent-tools"
+      ? "tools"
+      : s.settingsRoute === "models" || s.settingsRoute === "context"
+        ? "capabilities"
+        : ["memory-tools", "knowledge-tools", "long-memory", "knowledge-config"].includes(
+              s.settingsRoute,
+            )
+          ? "access"
+          : "identity";
   const [tab, setTab] = useState(initialTab);
   const [visitedTabs, setVisitedTabs] = useState([initialTab]);
   const previousRoute = useRef(s.settingsRoute);
@@ -100,7 +110,10 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
     const prev = previousRoute.current;
     previousRoute.current = s.settingsRoute;
     if (prev === s.settingsRoute) return;
-    if (s.settingsRoute === "models" || s.settingsRoute === "context") {
+    if (s.settingsRoute === "agent-tools") {
+      setTab("tools");
+      setStudio(true);
+    } else if (s.settingsRoute === "models" || s.settingsRoute === "context") {
       setTab("capabilities");
       setStudio(true);
     } else if (
@@ -127,11 +140,9 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
   // 严格核验目标 ID 存在于 s.agents 中，尊重新草稿的脏保护，并在目标切换后支持继续水合
   const hydratedTargetRef = useRef<string | null>(null);
   const targetAgent =
-    (s.editorAgentId && s.editorAgentId !== "__new__"
+    s.editorAgentId && s.editorAgentId !== "__new__"
       ? s.agents.find((a) => a.id === s.editorAgentId)
-      : null) ??
-    s.agents.find((a) => a.id === s.selectedNewSessionAgentId) ??
-    s.agents[0];
+      : null;
   const targetId = targetAgent?.id;
 
   useEffect(() => {
@@ -239,6 +250,11 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
     setSelection((ids) => (checked ? [...ids, id] : ids.filter((value) => value !== id)));
   }, []);
   const current = s.pageEditor;
+  const refreshingCurrent =
+    !!current &&
+    s.baselineRefresh?.api === s.api &&
+    s.baselineRefresh.agentId === s.editorAgentId &&
+    s.baselineRefresh.token === current.token;
   const isNew = s.editorAgentId === "__new__";
   const currentTask: AgentWorkspaceTask | "tools" =
     tab === "identity"
@@ -248,9 +264,20 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
         : tab === "access"
           ? "materials"
           : "tools";
-  const isTaskDirty = currentTask !== "tools" && s.settingsTaskDirty(currentTask);
+  const isTaskDirty = s.settingsTaskDirty(currentTask);
+  const taskResult =
+    s.taskResult &&
+    s.taskResult.agentId === current?.agent.id &&
+    s.taskResult.token === current?.token &&
+    s.taskResult.task === currentTask
+      ? s.taskResult
+      : null;
   const taskNavigation = (
-    <TabsList className="mb-[24px] h-auto group-data-horizontal/tabs:h-auto w-fit max-w-full justify-start flex-wrap gap-[6px] rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:rounded-[6px] [&_[role=tab]]:shrink-0 [&_[role=tab]]:flex-none [&_[role=tab]]:border-0 [&_[role=tab][data-state=active]]:border [&_[role=tab][data-state=active]]:border-border [&_[role=tab][data-state=active]]:bg-card [&_[role=tab][data-state=active]]:font-semibold [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px] [&_[role=tab]]:font-medium">
+    <TabsList
+      presentation="workspace"
+      flow="wrap"
+      className="mb-[24px] w-fit max-w-full justify-start"
+    >
       <TabsTrigger value="identity" tooltip={t("hints.custom.agentTab.identity")}>
         {t("strict.task.identity")}
       </TabsTrigger>
@@ -266,7 +293,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
     </TabsList>
   );
   return (
-    <div className="mx-auto h-full min-h-0 w-full max-w-[1160px] overflow-y-auto px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]">
+    <div className="workspace-page h-full min-h-0 overflow-y-auto">
       {!studio ? (
         <WorkspacePageHeader
           location={t("brand.workspace", { "0": t("library.assistant") })}
@@ -290,15 +317,19 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
           backAction={
             <Tooltip>
               <TooltipTrigger asChild>
-                <button
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
                   type="button"
-                  className="relative inline-flex h-[20px] items-center gap-1 rounded text-[12.5px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary before:absolute before:-inset-y-1.5 before:inset-x-0 before:content-['']"
+                  className="shrink-0"
                   aria-label={t("library.all.assistants")}
-                  onClick={() => setStudio(false)}
+                  onClick={() =>
+                    s.workspaceReturns.length ? s.returnWorkspaceTarget() : setStudio(false)
+                  }
                 >
                   <ArrowLeft className="size-3.5" aria-hidden="true" />
-                  <span>{t("library.all.assistants")}</span>
-                </button>
+                  <span className="sr-only">{t("library.all.assistants")}</span>
+                </Button>
               </TooltipTrigger>
               <TooltipContent>{t("hints.agent.directory")}</TooltipContent>
             </Tooltip>
@@ -314,24 +345,6 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
               ? "agent.configuration.hint"
               : "library.define.each.agent.s.identity.model.capabilities.and.resource",
           )}
-          actions={
-            s.contextAllocationTarget?.returnRoute &&
-            s.contextAllocationTarget.returnRoute !== s.settingsRoute ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={returnFromContextAllocation}
-                tooltip={t("hints.agent.returnFromContextAllocation")}
-                className="h-auto min-h-9 flex items-center gap-1.5"
-              >
-                <ArrowLeft className="size-4" />
-                {t("schemes.allocation.returnTo", {
-                  "0":
-                    s.contextAllocationTarget.returnLabel || s.contextAllocationTarget.returnRoute,
-                })}
-              </Button>
-            ) : undefined
-          }
         />
       )}
       {!studio ? (
@@ -408,7 +421,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
             </div>
           )}
         </>
-      ) : s.editorLoading ? (
+      ) : s.editorLoading && !refreshingCurrent ? (
         <p role="status">{t("library.loading")}</p>
       ) : isNew && s.editorDraft ? (
         <div className="max-w-2xl">
@@ -423,13 +436,13 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
               className="space-y-5 p-5"
               onSubmit={(e) => {
                 e.preventDefault();
-                void s.saveCurrentSection();
+                void s.createAgent();
               }}
             >
               <Field label="library.name" tooltip={t("hints.agent.fieldName")}>
                 <Input
                   value={s.editorDraft.name}
-                  onChange={(e) => s.patchDraft({ name: e.target.value })}
+                  onChange={(e) => s.patchNewAgentDraft({ name: e.target.value })}
                   disabled={s.settingsSaving}
                   required
                   maxLength={100}
@@ -438,7 +451,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
               <Field label="library.description" tooltip={t("hints.agent.fieldDescription")}>
                 <Textarea
                   value={s.editorDraft.description}
-                  onChange={(e) => s.patchDraft({ description: e.target.value })}
+                  onChange={(e) => s.patchNewAgentDraft({ description: e.target.value })}
                   disabled={s.settingsSaving}
                 />
               </Field>
@@ -446,7 +459,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                 <InputSuggestions
                   suggestions={modelSuggestions}
                   value={s.editorDraft.model_name}
-                  onValueChange={(value) => s.patchDraft({ model_name: value })}
+                  onValueChange={(value) => s.patchNewAgentDraft({ model_name: value })}
                   disabled={s.settingsSaving}
                 />
               </Field>
@@ -457,7 +470,9 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                 <Textarea
                   rows={5}
                   value={s.editorDraft.additional_instructions}
-                  onChange={(e) => s.patchDraft({ additional_instructions: e.target.value })}
+                  onChange={(e) =>
+                    s.patchNewAgentDraft({ additional_instructions: e.target.value })
+                  }
                   disabled={s.settingsSaving}
                 />
               </Field>
@@ -492,12 +507,24 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
               {isTaskDirty && <Badge>{t("library.unsaved.changes")}</Badge>}
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2 sm:ml-auto">
-              {currentTask !== "tools" && (
+              {currentTask === "materials" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={s.settingsSaving || s.editorLoading || s.knowledgeReadLoading}
+                  onClick={() => void s.refreshSettingsAgent({ materials: true })}
+                >
+                  {t("capabilities.resources.refreshBaseline")}
+                </Button>
+              )}
+              {
                 <>
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={!isTaskDirty || s.settingsSaving}
+                    disabled={
+                      !isTaskDirty || s.settingsSaving || s.permissionSaving || s.editorLoading
+                    }
                     tooltip={t("hints.agent.discard")}
                     disabledReason={t("hints.agent.noChangesToDiscard")}
                     onClick={() => s.discardSettingsTask(currentTask)}
@@ -506,7 +533,9 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                   </Button>
                   <Button
                     size="sm"
-                    disabled={!isTaskDirty || s.settingsSaving}
+                    disabled={
+                      !isTaskDirty || s.settingsSaving || s.permissionSaving || s.editorLoading
+                    }
                     tooltip={t("hints.agent.saveAll")}
                     disabledReason={t("hints.agent.noChangesToSave")}
                     onClick={() => void s.saveSettingsTask(currentTask)}
@@ -514,7 +543,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                     {t("library.save.agent")}
                   </Button>
                 </>
-              )}
+              }
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -526,14 +555,14 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
               </Button>
             </div>
           </div>
-          {s.error && (
+          {(taskResult?.error || s.error) && (
             <p role="alert" className="mb-3 text-sm text-destructive">
-              {translateNotice(s.error)}
+              {translateNotice(taskResult?.error || s.error || "")}
             </p>
           )}
-          {s.feedback && !s.error && (
+          {taskResult?.feedback && (
             <p role="status" className="mb-3 text-sm text-muted-foreground">
-              {translateNotice(s.feedback)}
+              {translateNotice(taskResult.feedback)}
             </p>
           )}
           <Tabs
@@ -547,6 +576,8 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
                 s.syncSettingsRoute("identity");
               } else if (next === "access") {
                 s.syncSettingsRoute("memory-tools");
+              } else if (next === "tools") {
+                s.syncSettingsRoute("agent-tools");
               }
             }}
             className="agent-workspace-content gap-0"
@@ -571,8 +602,7 @@ export function AssistantWorkspace({ active = true }: { active?: boolean } = {})
             {(tab === "access" || visitedTabs.includes("access")) && (
               <TabsContent value="access" forceMount className="data-[state=inactive]:hidden">
                 <div className="space-y-6">
-                  <MemoryToolSettings active={active && tab === "access"} embedded />
-                  <KnowledgeToolSettings active={active && tab === "access"} embedded />
+                  <AgentMaterials active={active && tab === "access"} />
                 </div>
               </TabsContent>
             )}

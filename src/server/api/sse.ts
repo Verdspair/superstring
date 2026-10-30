@@ -22,6 +22,8 @@ export const SSE_KEEPALIVE_INTERVAL_MS = 15_000;
 export interface SseWriter {
   readonly cancelled: boolean;
   send(event: string, data: Record<string, unknown>): Promise<void>;
+  readonly writable: boolean;
+  trySendBatch(frames: readonly { event: string; data: Record<string, unknown> }[]): boolean;
 }
 
 /**
@@ -34,6 +36,7 @@ export function createSseResponse(
     requestSignal: AbortSignal;
     onDisconnect: () => void;
     keepaliveIntervalMs?: number;
+    onWritable?: () => void;
   },
   produce: (writer: SseWriter) => Promise<void>,
 ): Response {
@@ -47,6 +50,7 @@ export function createSseResponse(
   let pump: Promise<void> | undefined;
   let resume: (() => void) | undefined;
   let sending = false;
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
   const cleanup = () => {
     if (timer !== undefined) clearInterval(timer);
     timer = undefined;
@@ -64,6 +68,7 @@ export function createSseResponse(
   if (options.requestSignal.aborted) disconnect();
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
+      streamController = controller;
       const send = async (event: string, data: Record<string, unknown>) => {
         if (cancelled || finished) return;
         if (sending) throw new Error("SSE business sends must be awaited sequentially");
@@ -91,6 +96,20 @@ export function createSseResponse(
               return cancelled;
             },
             send,
+            get writable() {
+              return !cancelled && !finished && !sending && (controller.desiredSize ?? 0) > 0;
+            },
+            trySendBatch(frames) {
+              if (cancelled || finished || sending || (controller.desiredSize ?? 0) <= 0)
+                return false;
+              if (frames.length)
+                controller.enqueue(
+                  encoder.encode(
+                    frames.map((frame) => encodeSse(frame.event, frame.data)).join(""),
+                  ),
+                );
+              return true;
+            },
           });
         } catch (error) {
           // The route owns business error events. An unhandled producer failure
@@ -110,6 +129,8 @@ export function createSseResponse(
       const ready = resume;
       resume = undefined;
       ready?.();
+      if (!cancelled && !finished && (streamController?.desiredSize ?? 0) > 0)
+        options.onWritable?.();
     },
     async cancel() {
       readerCancelled = true;

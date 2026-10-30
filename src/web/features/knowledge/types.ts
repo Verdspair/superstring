@@ -45,6 +45,14 @@ export function knowledgeListQuery(
   };
 }
 
+/** Rebase only when a locally edited field has not changed remotely to another value. */
+export function knowledgeFieldConflict<T>(baseline: T, draft: T, remote: T): boolean {
+  return draft !== baseline && remote !== baseline && draft !== remote;
+}
+export function knowledgeGrantIdsEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id) => b.includes(id));
+}
+
 export type KnowledgeTarget =
   | { kind: "document" | "grants"; id: string }
   | { kind: "import" | "settings" | "category-new" | "none" }
@@ -88,6 +96,36 @@ export type KnowledgeEditor =
       agent_id: string;
       granted: boolean;
     };
+export function knowledgeSettingsConflict(
+  editor: KnowledgeModelEditor,
+  source: KnowledgeSettings,
+): boolean {
+  return knowledgeSettingsConflictScope(editor, source) !== null;
+}
+
+export function knowledgeSettingsConflictScope(
+  editor: KnowledgeModelEditor,
+  source: KnowledgeSettings,
+): "model" | "budget" | "both" | null {
+  const model = knowledgeFieldConflict(
+    editor.source.model_name,
+    editor.modelName,
+    source.model_name,
+  );
+  const budget =
+    knowledgeFieldConflict(
+      editor.source.auto_enabled,
+      editor.autoEnabled ?? editor.source.auto_enabled,
+      source.auto_enabled,
+    ) ||
+    knowledgeFieldConflict(
+      editor.source.context_budget,
+      editor.contextBudget ?? editor.source.context_budget,
+      source.context_budget,
+    );
+  return model && budget ? "both" : model ? "model" : budget ? "budget" : null;
+}
+
 export interface KnowledgeModelEditor {
   token: object;
   source: KnowledgeSettings;
@@ -215,6 +253,9 @@ export interface KnowledgeState {
   organizationLoading: boolean;
   organizationError: string | null;
   loadOrganization: (refresh?: boolean) => Promise<void>;
+  cancelOrganizationRead: () => void;
+  acquireOrganizationRead: (owner: object) => Promise<void>;
+  releaseOrganizationRead: (owner: object) => void;
   patchOrganization: (modelName: string | null) => void;
   /** The two media purposes, patched together because they sit in one group on the page. */
   patchOrganizationPurposes: (patch: {
@@ -234,19 +275,26 @@ export interface KnowledgeState {
   ) => void;
   knowledgeReadEditor: KnowledgeReadEditor | null;
   knowledgeReadLoading: boolean;
+  knowledgeReadError: string | null;
   loadKnowledgeRead: () => Promise<void>;
+  cancelKnowledgeRead: () => void;
   refreshKnowledgeRead: () => Promise<void>;
   patchKnowledgeRead: (patch: Partial<AgentKnowledgeReadConfig>) => void;
   saveKnowledgeRead: () => Promise<boolean>;
-  discardKnowledgeRead: () => void;
+  discardKnowledgeRead: (options?: { preserveBaseline?: boolean }) => void;
   knowledgeModelEditor: KnowledgeModelEditor | null;
   knowledgeModelLoading: boolean;
+  knowledgeModelError: { model: string | null; budget: string | null; shared: string | null };
+  knowledgeModelNotice: string;
   loadKnowledgeModel: (refresh?: boolean) => Promise<void>;
+  cancelKnowledgeModelRead: () => void;
+  acquireKnowledgeModelRead: (owner: object) => Promise<void>;
+  releaseKnowledgeModelRead: (owner: object) => void;
   patchKnowledgeModel: (modelName: string | null) => void;
   patchKnowledgeGlobal: (patch: { autoEnabled?: boolean; contextBudget?: number }) => void;
   saveKnowledgeModel: (scope?: KnowledgeSaveScope) => Promise<boolean>;
-  /** scope "budget" 只还原预算字段，保留模型与整理草稿；缺省清空整份编辑器。 */
-  discardKnowledgeModel: (scope?: "budget") => void;
+  /** 指定分组只还原该字段及对应错误；缺省清空整份编辑器。 */
+  discardKnowledgeModel: (scope?: "budget" | "model") => void;
   knowledgeCategories: KnowledgeCategory[];
   knowledgeDocuments: KnowledgeDocument[];
   /** 列表过滤（搜索/分类/状态）；翻页与刷新沿用，改了过滤即回到第一页。 */
@@ -261,6 +309,7 @@ export interface KnowledgeState {
   knowledgeDirty: boolean;
   knowledgeBusy: boolean;
   knowledgeLoading: boolean;
+  knowledgeLibraryError: string | null;
   /** 第一页列表是否已就绪（预热或前台读取成功后为 true）；前台挂载据此复用，不再重复取首页。 */
   knowledgeLoaded: boolean;
   knowledgeReadId: number;
@@ -271,6 +320,8 @@ export interface KnowledgeState {
   ) => Promise<boolean>;
   /** 键集翻页：next 用服务端 next_cursor，prev 出栈回上一页；成功后交回 true。 */
   loadKnowledgePage: (direction: "next" | "prev") => Promise<boolean>;
+  cancelKnowledgeLibraryRead: () => void;
+  resumeKnowledgeLibraryRead: () => Promise<boolean>;
   requestKnowledgeEditor: (target: KnowledgeTarget) => void;
   openKnowledgeEditor: (target: KnowledgeTarget) => Promise<boolean>;
   updateKnowledgeEditor: (editor: KnowledgeEditor) => void;
@@ -290,8 +341,15 @@ export const knowledgeInitial = {
   organizationError: null as string | null,
   knowledgeReadEditor: null as KnowledgeReadEditor | null,
   knowledgeReadLoading: false,
+  knowledgeReadError: null as string | null,
   knowledgeModelEditor: null as KnowledgeModelEditor | null,
   knowledgeModelLoading: false,
+  knowledgeModelError: {
+    model: null,
+    budget: null,
+    shared: null,
+  } as KnowledgeState["knowledgeModelError"],
+  knowledgeModelNotice: "",
   knowledgeCategories: [] as KnowledgeCategory[],
   knowledgeDocuments: [] as KnowledgeDocument[],
   knowledgeFilters: { ...emptyKnowledgeListFilters },
@@ -303,6 +361,7 @@ export const knowledgeInitial = {
   knowledgeDirty: false,
   knowledgeBusy: false,
   knowledgeLoading: false,
+  knowledgeLibraryError: null as string | null,
   knowledgeLoaded: false,
   knowledgeReadId: 0,
 };

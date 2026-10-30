@@ -20,7 +20,7 @@ export type RecordAction = {
   label: string;
   tooltip: string;
   icon: LucideIcon;
-  run: () => void;
+  run: (origin: HTMLElement | null) => void;
   disabled?: boolean;
   destructive?: boolean;
 };
@@ -40,9 +40,10 @@ export function RecordActions({
   const invoked = useRef(false);
   const origin = useRef<HTMLElement | null>(null);
   const choose = (action: RecordAction) => {
+    const source = origin.current;
     invoked.current = true;
-    origin.current?.focus({ preventScroll: true });
-    action.run();
+    source?.focus({ preventScroll: true });
+    action.run(source);
   };
   const items = (kind: "context" | "dropdown") => {
     const Item = kind === "context" ? ContextMenuItem : DropdownMenuItem;

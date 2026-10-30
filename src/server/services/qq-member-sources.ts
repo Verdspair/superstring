@@ -12,12 +12,10 @@ import type {
   QqMessageFact,
 } from "../../shared/contracts/qq-message";
 import type { ContextPrincipal } from "../agent/context-access";
+import { evidenceScopeExists, inTimeline, ownerScope } from "../conversation/evidence-scope";
 import { DEFAULT_USER_ID } from "../db/repositories";
-import { evidenceScopeExists } from "../modules/conversation-evidence";
 import type { EvidenceStore } from "../modules/conversation-evidence-store";
-import { inTimeline } from "../modules/conversation-evidence-store";
 import { normalizeOneBotAccountId } from "./onebot-protocol";
-import { ownerScope } from "./qq-media-sources";
 import { isObservationExpired } from "./qq-retention";
 
 /** One member's verified current-name value plus the ref that proves it. */

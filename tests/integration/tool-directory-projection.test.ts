@@ -9,7 +9,12 @@ const description = {
   capability: "media.write",
   effect: "write" as const,
 };
-const builtin = { description, sandboxCallable: false, functionId: "media-stickers" as const };
+const builtin = {
+  description,
+  sandboxCallable: false,
+  functionId: "media-stickers" as const,
+  scope: "qq-conversation" as const,
+};
 
 it("keeps a globally disabled built-in definition in the directory", () => {
   const execution = ExecutionPolicySchema.parse({ modules: { qqMedia: false } });

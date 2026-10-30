@@ -13,7 +13,6 @@ import { eq } from "drizzle-orm";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import type { BusinessDbHandle } from "../../src/server/db/connection";
 import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
-import { readQqDispatchCandidate } from "../../src/server/db/qq-dispatch-repository";
 import { mediaNoteRow, pendingMediaSupplementFor } from "../../src/server/db/qq-media-repository";
 import {
   readQqSettings,
@@ -192,48 +191,20 @@ function fixture(patch: Parameters<typeof observation>[0]) {
   return { s };
 }
 
-describe("classification and queueing", () => {
-  it("turns a group message that is not addressed into an initiative candidate", async () => {
-    const { s } = fixture({ eventKey: "evt-1" });
-    try {
-      const outcome = await handleQqRecordedMessage(s.h.orm, {
-        observation: observation({ eventKey: "evt-1" }),
-        nowSeconds: NOW,
-      });
-      expect(outcome.dispatch).toMatchObject({ kind: "scheduled", path: "chiming_in" });
-      expect(readQqDispatchCandidate(s.h.orm, '["qq","10001","group","30003"]')).not.toBeNull();
-    } finally {
-      s.close();
-    }
-  });
-
-  it("leaves a direct mention out of the queue (it is the immediate path's)", async () => {
-    const { s } = fixture({ eventKey: "evt-2", mentionsSelf: true });
-    try {
-      const outcome = await handleQqRecordedMessage(s.h.orm, {
-        observation: observation({ eventKey: "evt-2", mentionsSelf: true }),
-        nowSeconds: NOW,
-      });
-      expect(outcome.dispatch).toEqual({ kind: "not_scheduled", reason: "handled_directly" });
-      expect(readQqDispatchCandidate(s.h.orm, '["qq","10001","group","30003"]')).toBeNull();
-    } finally {
-      s.close();
-    }
-  });
-
-  it("uses the conversation's own merge window for readiness", async () => {
-    const { s } = fixture({ eventKey: "evt-3" });
-    try {
-      await handleQqRecordedMessage(s.h.orm, {
-        observation: observation({ eventKey: "evt-3" }),
-        nowSeconds: NOW,
-      });
-      // The scheme's default merge window is 30s, so the candidate is not runnable yet.
-      expect(
-        readQqDispatchCandidate(s.h.orm, '["qq","10001","group","30003"]')?.readyAtSeconds,
-      ).toBe(NOW + 30);
-    } finally {
-      s.close();
+describe("media follow-up never creates a second scheduling queue", () => {
+  it("leaves both plain and addressed events to canonical ingress", async () => {
+    for (const mentionsSelf of [false, true]) {
+      const { s } = fixture({ eventKey: `ingress-${mentionsSelf}`, mentionsSelf });
+      try {
+        const outcome = await handleQqRecordedMessage(s.h.orm, {
+          observation: observation({ eventKey: `ingress-${mentionsSelf}`, mentionsSelf }),
+          nowSeconds: NOW,
+        });
+        expect(outcome.dispatch).toEqual({ kind: "not_scheduled", reason: "conversation_ingress" });
+        expect(s.h.db.query("SELECT * FROM qq_dispatch_candidates").all()).toEqual([]);
+      } finally {
+        s.close();
+      }
     }
   });
 });
@@ -251,7 +222,7 @@ describe("media is recorded and never read (ADR0019 §8.11)", () => {
         observation: observation(patch),
         nowSeconds: NOW,
       });
-      expect(outcome.dispatch).toEqual({ kind: "not_scheduled", reason: "handled_directly" });
+      expect(outcome.dispatch).toEqual({ kind: "not_scheduled", reason: "conversation_ingress" });
       expect(outcome.media).toEqual({ hasMedia: true, own: null, supplement: null });
       expect(mediaNoteRow(s.h.orm, "evt-4", 0)).toMatchObject({
         segmentKind: "image",
@@ -275,7 +246,10 @@ describe("media is recorded and never read (ADR0019 §8.11)", () => {
         observation: observation(patch),
         nowSeconds: NOW,
       });
-      expect(outcome.dispatch).toMatchObject({ kind: "scheduled", path: "chiming_in" });
+      expect(outcome.dispatch).toMatchObject({
+        kind: "not_scheduled",
+        reason: "conversation_ingress",
+      });
       expect(outcome.media).toEqual({ hasMedia: true, own: null, supplement: null });
       expect(mediaNoteRow(s.h.orm, "evt-5", 0)).toMatchObject({
         attempts: 0,
@@ -347,7 +321,7 @@ describe("a waiting read is not woken by a supplement", () => {
         observation: supplement,
         nowSeconds: NOW + 300,
       });
-      expect(outcome.dispatch).toEqual({ kind: "not_scheduled", reason: "handled_directly" });
+      expect(outcome.dispatch).toEqual({ kind: "not_scheduled", reason: "conversation_ingress" });
       expect(outcome.media).toEqual({ hasMedia: false, own: null, supplement: null });
       expect(vision.calls).toHaveLength(1);
       expect(mediaNoteRow(s.h.orm, "evt-7", 0)).toMatchObject({ attempts: 1, note: null });
@@ -441,7 +415,7 @@ describe("the transport runtime drives the event path", () => {
     }
   }
 
-  it("queues what a real wire event produces, and leaves the pipeline silent when it cannot", async () => {
+  it("records a real wire event without a second queue when no canonical ingress is mounted", async () => {
     const s = setup();
     let runtime: QqIntakeRuntime | undefined;
     try {
@@ -473,11 +447,11 @@ describe("the transport runtime drives the event path", () => {
       expect(events).toContainEqual({
         kind: "follow_up",
         hasMedia: false,
-        dispatch: "scheduled",
+        dispatch: "not_scheduled",
         own: "none",
         supplement: "none",
       });
-      expect(readQqDispatchCandidate(s.h.orm, '["qq","10001","group","30003"]')).not.toBeNull();
+      expect(s.h.db.query("SELECT * FROM qq_dispatch_candidates").all()).toEqual([]);
     } finally {
       runtime?.stop();
       s.close();
@@ -521,7 +495,7 @@ describe("the transport runtime drives the event path", () => {
       expect(events).toContainEqual({
         kind: "follow_up",
         hasMedia: true,
-        dispatch: "scheduled",
+        dispatch: "not_scheduled",
         own: "none",
         supplement: "none",
       });

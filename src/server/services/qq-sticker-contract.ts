@@ -223,37 +223,6 @@ export function qqStickerUsable(candidate: unknown, policy: unknown): QqStickerU
 }
 
 /**
- * Read the sticker stage's answer: one candidate number, or 0 for "none" (P4i).
- *
- * A bare integer rather than JSON, because the scheme's editable default prompt already promises
- * "只输出候选编号" and the program-owned constraint line adds the 0 sentinel — a JSON shape would
- * contradict the text the user can see and edit.
- *
- * Everything that is not a whole number in 1..`candidateCount` becomes "no sticker". That is the
- * safe direction: a number that cannot be read would otherwise be turned into a guess, and
- * §8.1-5 forbids selecting a candidate the caller never offered, so an out-of-range answer is
- * refused rather than clamped. The reasons are diagnostics (§10); none of them is permission.
- */
-export type QqStickerChoice =
-  | { readonly kind: "picked"; readonly index: number }
-  | {
-      readonly kind: "none";
-      readonly reason: "declined" | "empty" | "out_of_range" | "unreadable";
-    };
-
-export function qqStickerChoice(raw: unknown, candidateCount: unknown): QqStickerChoice {
-  const count = parse(z.number().int().positive(), candidateCount);
-  if (typeof raw !== "string") return Object.freeze({ kind: "none", reason: "unreadable" });
-  const text = raw.trim();
-  if (text === "") return Object.freeze({ kind: "none", reason: "empty" });
-  if (!/^\d+$/.test(text)) return Object.freeze({ kind: "none", reason: "unreadable" });
-  const value = Number(text);
-  if (value === 0) return Object.freeze({ kind: "none", reason: "declined" });
-  if (value > count) return Object.freeze({ kind: "none", reason: "out_of_range" });
-  return Object.freeze({ kind: "picked", index: value });
-}
-
-/**
  * §9.1's destructive-looking operations, stated as what they actually do, so a later
  * "clean up the library" change has one place to contradict rather than a field to guess at.
  *

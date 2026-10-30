@@ -69,6 +69,7 @@ describe("conversation change notifications", () => {
 
   it("opens with ready, streams conversation_changed and unsubscribes on client abort", async () => {
     const { session, journal, app } = setup();
+    await tick();
     const controller = new AbortController();
     const response = await app.request("/v2/conversations/changes", {
       signal: controller.signal,
@@ -96,6 +97,45 @@ describe("conversation change notifications", () => {
     // The subscription is gone; late writes must not touch the dead stream.
     appendFixture(journal, conversation.id, 2);
     await tick();
+  });
+
+  it("streams a live session creation and a subsequent append after ready", async () => {
+    const { business, journal, app } = setup();
+    await tick();
+    const controller = new AbortController();
+    const response = await app.request("/v2/conversations/changes", {
+      signal: controller.signal,
+    });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    try {
+      expect(parseSseFrames(decoder.decode((await reader.read()).value!))).toEqual([
+        { event: "ready", data: { ready: true } },
+      ]);
+      const session = createSession(business.orm, "live creation", { modelName: "fixture" });
+      const conversation = business.db
+        .query(
+          "SELECT id FROM conversations WHERE channel='web' AND source_id=? AND closed_at IS NULL",
+        )
+        .get(session.id) as { id: string } | null;
+      expect(conversation).not.toBeNull();
+      expect(parseSseFrames(decoder.decode((await reader.read()).value!))).toEqual([
+        {
+          event: "conversation_changed",
+          data: { conversationId: conversation!.id, seq: 0, bindingEpoch: 1 },
+        },
+      ]);
+      appendFixture(journal, conversation!.id, 1);
+      expect(parseSseFrames(decoder.decode((await reader.read()).value!))).toEqual([
+        {
+          event: "conversation_changed",
+          data: { conversationId: conversation!.id, seq: 1, bindingEpoch: 1 },
+        },
+      ]);
+    } finally {
+      controller.abort();
+      await reader.cancel();
+    }
   });
 
   it("filters shared conversations for the single-user principal", async () => {
@@ -179,6 +219,7 @@ describe("conversation change notifications", () => {
 
   it("delivers shared conversations when the app includes shared scope", async () => {
     const { business, journal, app } = setup(true);
+    await tick();
     const scheme = createQqScheme(business.orm, { name: "group fixture" });
     const bindingId = crypto.randomUUID();
     business.orm
@@ -405,6 +446,10 @@ describe("conversation change notifications", () => {
       { event: "ready", data: { ready: true } },
     ]);
     const web = journal.ensureWeb(session.id)!;
+    const { publishConversationChange } = await import(
+      "../../src/server/conversation/conversation-changes"
+    );
+    publishConversationChange(business.db, web.id);
     await tick();
     expect(parseSseFrames(decoder.decode((await reader.read()).value!))).toEqual([
       { event: "conversation_changed", data: { conversationId: web.id, seq: 0, bindingEpoch: 1 } },

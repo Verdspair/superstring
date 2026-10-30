@@ -3,6 +3,11 @@ import { z } from "zod";
 import type { RunOwner } from "../../shared/contracts/agent-run";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
 import type { ActionContext, EvidenceQueryModule } from "../agent/built-in-actions";
+import {
+  type BotEvidenceScope,
+  type ConversationEvidenceScope,
+  evidenceScopeExists,
+} from "../conversation/evidence-scope";
 import { readQqMessageFactsByPlatformMessageId } from "../db/qq-message-repository";
 import { DEFAULT_USER_ID } from "../db/repositories";
 import { fail } from "../errors";
@@ -17,59 +22,6 @@ import {
   VALID_TURN,
 } from "./conversation-evidence-store";
 
-export interface WebEvidenceScope {
-  channel: "web";
-  agentId: string;
-  sessionId: string;
-  currentTurnId: string;
-  /** Minted by the factory and serialized into refs: durable re-checks follow the mint, not a live setting. */
-  retrievalEnabled: boolean;
-}
-export interface BotEvidenceScope {
-  channel: "onebot11";
-  agentId: string;
-  conversationId: string;
-  bindingId: string;
-  bindingEpoch: number;
-  authorityRevision: number;
-  accountId: string;
-  conversationKind: "group" | "private";
-  peerId: string;
-}
-export type ConversationEvidenceScope = WebEvidenceScope | BotEvidenceScope;
-/**
- * Scope existence check shared with the QQ message fact projection (T03a): the full
- * conversation/binding/authority/agent/account identity, re-validated per read.
- * Exported for reuse — projection must not copy this authorisation query.
- */
-export function evidenceScopeExists(
-  db: EvidenceStore["db"],
-  scope: ConversationEvidenceScope,
-): boolean {
-  if (scope.channel === "web")
-    return !!db
-      .query(`SELECT 1 FROM sessions s JOIN turns t ON t.session_id=s.id
-    WHERE s.id=? AND s.user_id=? AND s.agent_id=? AND t.id=?
-      AND t.cancel_requested=0 AND t.invalidated_at IS NULL AND t.generation_status IN ('active','completed')`)
-      .get(scope.sessionId, DEFAULT_USER_ID, scope.agentId, scope.currentTurnId);
-  return !!db
-    .query(`SELECT 1 FROM conversations c JOIN qq_bindings b ON b.id=c.source_id
-    WHERE c.id=? AND c.channel='onebot11' AND c.closed_at IS NULL AND c.binding_epoch=?
-    AND c.user_id=? AND c.agent_id=? AND b.id=? AND b.agent_id=? AND b.authority_revision=?
-    AND b.account_id=? AND b.conversation_kind=? AND b.peer_id=?`)
-    .get(
-      scope.conversationId,
-      scope.bindingEpoch,
-      DEFAULT_USER_ID,
-      scope.agentId,
-      scope.bindingId,
-      scope.agentId,
-      scope.authorityRevision,
-      scope.accountId,
-      scope.conversationKind,
-      scope.peerId,
-    );
-}
 function scanConversationEvidence(
   store: EvidenceStore,
   scope: ConversationEvidenceScope,
@@ -125,7 +77,7 @@ interface CommonOptions extends EvidenceStore {
 export interface WebConversationEvidenceOptions extends CommonOptions {
   sessionId: string;
   currentTurnId: string;
-  /** Defaults to true; the host passes retrieval_mode !== "off". Only the factory applies this default. */
+  /** Defaults to true; the host passes its resolved memory-tool enablement. */
   retrievalEnabled?: boolean;
 }
 export interface BotConversationEvidenceOptions extends CommonOptions {

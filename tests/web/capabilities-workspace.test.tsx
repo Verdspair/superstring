@@ -14,10 +14,12 @@ import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { selectLocale } from "../../src/web/i18n";
 import { i18n } from "../../src/web/i18n/runtime";
 import { CapabilitiesWorkspace } from "../../src/web/screens/connections/CapabilitiesWorkspace";
+import { MemoryLibrary } from "../../src/web/screens/library/MemoryLibrary";
 import type { SuperstringState } from "../../src/web/state/types";
 import { useSuperstringStore as store } from "../../src/web/store";
 import { activeSpace } from "../../src/web/workspace/navigation";
 import type { SettingsRoute } from "../../src/web/workspace/settings-routes";
+import { setupLibrary } from "./helpers/library-fixture";
 import { render } from "./helpers/render-with-providers";
 
 const agent = (id: string) =>
@@ -97,8 +99,8 @@ async function openRoute(
 }
 
 const rows: Array<[string, SettingsRoute]> = [
-  ["记忆查询", "memory-tools"],
-  ["知识查询", "knowledge-tools"],
+  ["记忆查询", "capability-memory"],
+  ["知识查询", "capability-knowledge"],
   ["联网", "web-access"],
   ["媒体与表情", "media-tools"],
   ["任务与执行限制", "execution-settings"],
@@ -154,41 +156,33 @@ describe("system capability directory", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("attempts the automatic agent load once and retries only on demand", async () => {
+  it("never automatically loads an Agent from a global memory capability", async () => {
     const getAgent = vi.fn().mockRejectedValue(new Error("boom"));
-    await openRoute(
-      {
-        getAgent,
-        getPersona: vi.fn().mockResolvedValue(persona("A")),
-      },
-      "memory-tools",
-      { agents: [agent("A")], reloadMemory: vi.fn().mockResolvedValue(undefined) },
+    await openRoute({ getAgent }, "capability-memory", { agents: [configuredAgent("A")] });
+    expect(getAgent).not.toHaveBeenCalled();
+    expect(screen.getByRole("combobox", { name: "选择要配置的 Agent" })).toHaveProperty(
+      "value",
+      "",
     );
-    expect(getAgent).toHaveBeenCalledTimes(1);
-    await act(async () => {});
-    await act(async () => {});
-    expect(getAgent).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("alert").textContent).toContain("boom");
-    fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    await act(async () => {});
-    expect(getAgent).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("button", { name: "配置此 Agent 的资料读取" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
   });
-
-  it("loads the chosen assistant before jumping to its short-term context", async () => {
+  it("uses an explicitly chosen Agent when leaving global knowledge details", async () => {
+    const getAgent = vi.fn(async (id: string) => configuredAgent(id));
     await openRoute(
-      {
-        getAgent: vi.fn(async (id: string) => agent(id)),
-        getPersona: vi.fn(async (id: string) => persona(id)),
-      },
-      "session-history",
-      { agents: [agent("A")], reloadMemory: vi.fn().mockResolvedValue(undefined) },
+      { getAgent, getPersona: vi.fn(async (id: string) => persona(id)) },
+      "capability-knowledge",
+      { agents: [configuredAgent("A"), configuredAgent("B")] },
     );
-    const jump = screen.getByRole("button", { name: "打开短期上下文" });
-    await waitFor(() => expect(store.getState().pageEditor).not.toBeNull());
-    expect(store.getState().error).toBeNull();
-    await waitFor(() => expect(jump.hasAttribute("disabled")).toBe(false));
-    fireEvent.click(jump);
-    expect(store.getState().settingsRoute).toBe("context");
+    fireEvent.change(screen.getByRole("combobox", { name: "选择要配置的 Agent" }), {
+      target: { value: "B" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "配置此 Agent 的资料读取" }));
+    await waitFor(() => expect(getAgent).toHaveBeenCalledWith("B"));
+    expect(store.getState().settingsRoute).toBe("knowledge-tools");
     expect(activeSpace(store.getState())).toBe("assistants");
   });
 
@@ -201,159 +195,117 @@ describe("system capability directory", () => {
   });
 });
 
-describe("save 后（pageEditor=null / editorDraft 非空）进入能力详情", () => {
-  const postSave = () => ({
-    agents: [configuredAgent("A"), configuredAgent("B")],
-    editorAgentId: "B",
-    editorDraft: toDraft(configuredAgent("B")),
-    pageEditor: null,
-    dirty: false,
-  });
-
-  const readyFixture = () => ({
-    agents: [configuredAgent("A"), configuredAgent("B")],
-    editorAgentId: "B",
-    editorDraft: toDraft(configuredAgent("B")),
-    pageEditor: newPageEditor(configuredAgent("B"), persona("B")),
-    dirty: false,
-  });
-
-  it("memory-tools：渲染规范跳转链接，不挂载真实输入框，点击触发向助手 access 的导航", async () => {
-    const navSpy = vi.spyOn(store.getState(), "requestAgentNavigation");
-    await openRoute(
-      {
-        getAgent: vi.fn(async (id: string) => configuredAgent(id)),
-        getPersona: vi.fn(async (id: string) => persona(id)),
-      },
-      "memory-tools",
-      { ...readyFixture(), reloadMemory: vi.fn().mockResolvedValue(undefined) },
-    );
-    // 渲染规范跳转链接
-    expect(screen.getByTestId("capability-canonical-memory-link")).toBeTruthy();
-
-    // 严格负向断言：Capabilities 内部绝对无内联记忆编辑输入框
-    expect(screen.queryByLabelText(/检索模式/)).toBeNull();
-    expect(screen.queryByLabelText(/检索全局指引/)).toBeNull();
-    expect(screen.queryByRole("textbox")).toBeNull();
-
-    // 点击规范跳转链接触发 requestAgentNavigation
-    fireEvent.click(screen.getByTestId("capability-canonical-memory-link"));
-    expect(navSpy).toHaveBeenCalledWith("B", "memory-tools");
-    navSpy.mockRestore();
-  });
-
-  it("knowledge-tools：渲染规范跳转链接，不挂载真实 checkbox/输入框，点击触发向助手 access 的导航", async () => {
-    const navSpy = vi.spyOn(store.getState(), "requestAgentNavigation");
-    await openRoute(
-      {
-        getAgent: vi.fn(async (id: string) => configuredAgent(id)),
-        getPersona: vi.fn(async (id: string) => persona(id)),
-      },
-      "knowledge-tools",
-      { ...readyFixture(), reloadMemory: vi.fn().mockResolvedValue(undefined) },
-    );
-    expect(screen.getByTestId("capability-canonical-knowledge-link")).toBeTruthy();
-
-    // 严格负向断言：Capabilities 内部绝无内联知识读取 checkbox
-    expect(screen.queryByRole("checkbox")).toBeNull();
-
-    // 点击规范跳转链接触发 requestAgentNavigation
-    fireEvent.click(screen.getByTestId("capability-canonical-knowledge-link"));
-    expect(navSpy).toHaveBeenCalledWith("B", "knowledge-tools");
-    navSpy.mockRestore();
-  });
-
-  it("session-history：沿同一守卫恢复并保持当前非首位选择", async () => {
-    const getAgent = vi.fn(async (id: string) => configuredAgent(id));
-    await openRoute(
-      { getAgent, getPersona: vi.fn(async (id: string) => persona(id)) },
-      "session-history",
-      { ...postSave(), reloadMemory: vi.fn().mockResolvedValue(undefined) },
-    );
-    await waitFor(() => expect(store.getState().pageEditor).not.toBeNull());
-    expect(getAgent).toHaveBeenCalledWith("B");
-    expect(store.getState().editorAgentId).toBe("B");
-    const jump = screen.getByRole("button", { name: "打开短期上下文" });
-    await waitFor(() => expect(jump.hasAttribute("disabled")).toBe(false));
-    expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("B");
-  });
-
-  it("脏 __new__ 草稿经同一守卫弹显式确认，取消不丢稿", async () => {
-    const getAgent = vi.fn(async (id: string) => configuredAgent(id));
-    await openRoute(
-      { getAgent, getPersona: vi.fn(async (id: string) => persona(id)) },
-      "memory-tools",
-      {
-        agents: [configuredAgent("A"), configuredAgent("B")],
-        selectedNewSessionAgentId: "B",
-        editorAgentId: "__new__",
-        editorDraft: { ...toDraft(configuredAgent("B")), name: "新助手草稿" },
-        pageEditor: null,
-        dirty: true,
-        reloadMemory: vi.fn().mockResolvedValue(undefined),
-      },
-    );
-    await waitFor(() => expect(store.getState().navigationConfirmOpen).toBe(true));
-    expect(store.getState().pendingNavigation).toEqual({ kind: "agent", id: "B" });
-    expect(store.getState().editorDraft?.name).toBe("新助手草稿");
-    expect(store.getState().dirty).toBe(true);
-    expect(getAgent).not.toHaveBeenCalled();
-    expect(screen.getByText("有未保存的修改；切换 Agent 前请先保存或放弃。")).toBeTruthy();
-
+it.each(["zh-CN", "en"] as const)(
+  "%s model shortcuts describe their actual destination and retain the dirty guard",
+  async (locale) => {
+    setupLibrary({
+      getPermissions: vi.fn().mockResolvedValue(permissions),
+      getToolDirectory: vi.fn().mockResolvedValue({ tools: [] }),
+      getSkills: vi.fn().mockResolvedValue({ skills: [], problems: [] }),
+      getMcpServers: vi.fn().mockResolvedValue({ servers: [] }),
+    });
+    selectLocale(locale);
+    store.setState({ settingsRoute: "media-tools" });
+    const media = render(<CapabilitiesWorkspace />);
+    await act(async () => {});
+    const modelServices = screen.getByRole("button", { name: i18n.t("models.title") });
+    expect(
+      screen.queryByRole("button", { name: i18n.t("library.open.model.services") }),
+    ).toBeNull();
+    act(() => store.getState().patchPageAgent("basic", { name: "Unsaved Agent" }));
+    fireEvent.click(modelServices);
+    expect(store.getState().settingsRoute).toBe("media-tools");
+    expect(store.getState().pendingNavigation).toMatchObject({
+      kind: "page",
+      settingsRoute: "models",
+    });
     act(() => store.getState().cancelPendingNavigation());
-    const state = store.getState();
-    expect(state.pendingNavigation).toBeNull();
-    expect(state.navigationConfirmOpen).toBe(false);
-    expect(state.editorAgentId).toBe("__new__");
-    expect(state.editorDraft?.name).toBe("新助手草稿");
-    expect(state.dirty).toBe(true);
-  });
+    expect(store.getState().pageEditor?.draft.name).toBe("Unsaved Agent");
+    act(() => store.getState().discardSettingsTask("identity"));
+    fireEvent.click(modelServices);
+    await waitFor(() => expect(store.getState().settingsRoute).toBe("models"));
+    media.unmount();
+    setupLibrary();
+    selectLocale(locale);
+    store.setState({ settingsRoute: "long-memory" });
+    render(<MemoryLibrary />);
+    const organizationDefault = await screen.findByRole("button", {
+      name: i18n.t("library.open.model.services"),
+    });
+    fireEvent.click(organizationDefault);
+    await waitFor(() => expect(store.getState().settingsRoute).toBe("execution-settings"));
+  },
+);
 
-  it("保存后首次读取失败只尝试一次，点重试才再次请求", async () => {
+describe("explicit global capability to Agent navigation", () => {
+  it.each(["capability-memory", "capability-knowledge"] as const)(
+    "%s keeps system facts separate from the Agent editor",
+    async (route) => {
+      const getAgent = vi.fn(async (id: string) => configuredAgent(id));
+      await openRoute({ getAgent }, route, {
+        agents: [configuredAgent("A"), configuredAgent("B")],
+        editorAgentId: "B",
+        pageEditor: newPageEditor(configuredAgent("B"), persona("B")),
+      });
+      expect(getAgent).not.toHaveBeenCalled();
+      expect(screen.queryByRole("checkbox")).toBeNull();
+      expect(screen.queryByRole("textbox")).toBeNull();
+      expect(screen.getByRole("combobox")).toHaveProperty("value", "");
+    },
+  );
+  it("dirty new Agent draft is guarded before explicit global→Agent navigation, cancel keeps the original", async () => {
+    const getAgent = vi.fn(async (id: string) => configuredAgent(id));
+    await openRoute({ getAgent }, "capability-memory", {
+      agents: [configuredAgent("A"), configuredAgent("B")],
+      editorAgentId: "__new__",
+      editorDraft: { ...toDraft(configuredAgent("B")), name: "new draft" },
+      pageEditor: null,
+      dirty: true,
+    });
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "B" } });
+    fireEvent.click(screen.getByRole("button", { name: "配置此 Agent 的资料读取" }));
+    expect(store.getState().pendingNavigation).toMatchObject({
+      kind: "workspace-target",
+      agentId: "B",
+      route: "memory-tools",
+    });
+    expect(getAgent).not.toHaveBeenCalled();
+    store.getState().cancelPendingNavigation();
+    expect(store.getState().editorDraft?.name).toBe("new draft");
+    expect(store.getState().settingsRoute).toBe("capability-memory");
+    expect(store.getState().workspaceReturns).toEqual([]);
+  });
+  it("failed explicitly targeted Agent read preserves source and retries only on a new user action", async () => {
     const getAgent = vi
       .fn()
       .mockRejectedValueOnce(new Error("boom"))
       .mockImplementation(async (id: string) => configuredAgent(id));
     await openRoute(
       { getAgent, getPersona: vi.fn(async (id: string) => persona(id)) },
-      "memory-tools",
-      { ...postSave(), reloadMemory: vi.fn().mockResolvedValue(undefined) },
+      "capability-memory",
+      { agents: [configuredAgent("B")] },
     );
-    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("boom"));
-    await act(async () => {});
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "B" } });
+    fireEvent.click(screen.getByRole("button", { name: "配置此 Agent 的资料读取" }));
+    await waitFor(() => expect(store.getState().navigationConfirmOpen).toBe(true));
     expect(getAgent).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    await act(async () => {});
-    await waitFor(() => {
-      expect(screen.getByTestId("capability-canonical-memory-link")).toBeTruthy();
-    });
+    expect(store.getState().settingsRoute).toBe("capability-memory");
+    store.getState().cancelPendingNavigation();
+    fireEvent.click(screen.getByRole("button", { name: "配置此 Agent 的资料读取" }));
+    await waitFor(() => expect(store.getState().settingsRoute).toBe("memory-tools"));
     expect(getAgent).toHaveBeenCalledTimes(2);
-    expect(store.getState().error).toBeNull();
   });
-
-  it("未就绪且无错误无脏稿时提供显式重试兜底（忙时禁用）", async () => {
-    const getAgent = vi.fn(async (id: string) => configuredAgent(id));
-    await openRoute(
-      { getAgent, getPersona: vi.fn(async (id: string) => persona(id)) },
-      "memory-tools",
-      { ...postSave(), knowledgeBusy: true, reloadMemory: vi.fn().mockResolvedValue(undefined) },
-    );
+  it("configuration writes block canonical navigation without changing the target", async () => {
+    const getAgent = vi.fn();
+    await openRoute({ getAgent }, "capability-knowledge", {
+      agents: [configuredAgent("B")],
+      settingsSaving: true,
+    });
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "B" } });
+    fireEvent.click(screen.getByRole("button", { name: "配置此 Agent 的资料读取" }));
     expect(getAgent).not.toHaveBeenCalled();
-    expect(store.getState().pageEditor).toBeNull();
-    const retry = screen.getByRole("button", { name: "重试" });
-    expect(retry.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByText("正在加载…")).toBeTruthy();
-
-    await act(async () => {
-      store.setState({ knowledgeBusy: false });
-    });
-    expect(retry.hasAttribute("disabled")).toBe(false);
-    fireEvent.click(retry);
-    await act(async () => {});
-    expect(getAgent).toHaveBeenCalledWith("B");
-    await waitFor(() => {
-      expect(screen.getByTestId("capability-canonical-memory-link")).toBeTruthy();
-    });
+    expect(store.getState().settingsRoute).toBe("capability-knowledge");
+    expect(store.getState().workspaceReturns).toEqual([]);
   });
 
   it("passes active prop to execution detail and pauses polling when active is false", async () => {

@@ -111,7 +111,7 @@ it("选当前Agent打开studio后access真实click选中持久；编辑对象/�
   expect(screen.getByRole("tab", { name: "资料读取" }).getAttribute("aria-selected")).toBe("true");
   // access 内容为真实复用组件：记忆读取摘要 + 知识访问编辑器，读取配置挂在编辑对象 B。
   expect(screen.getByRole("heading", { name: "Agent 配置 · Agent B" })).toBeTruthy();
-  expect(screen.getByText("知识访问")).toBeTruthy();
+  expect(screen.getByText("外部资料")).toBeTruthy();
   expect(store.getState().knowledgeReadEditor?.agentId).toBe(B);
   // 走一次 identity 路由 effect 路径：identity→access 往返仍不弹回。
   await user.click(screen.getByRole("tab", { name: "人设表达" }));
@@ -184,7 +184,7 @@ it("取消切换保留access活动视图与草稿；identity往返不重读读�
   const state = () => store.getState();
   const editor = () => state().knowledgeReadEditor;
   // 首次进入 access 恰好读一次基线（对象 B）。
-  expect(vi.mocked(client.getAgentKnowledgeRead).mock.calls).toEqual([[B]]);
+  expect(vi.mocked(client.getAgentKnowledgeRead).mock.calls.map(([id]) => id)).toEqual([B]);
   await user.click(screen.getByRole("checkbox", { name: "启用知识读取" }));
   expect(knowledgeReadDirty(editor())).toBe(true);
   // 读取草稿未决时切换 Agent 走统一守卫；取消后保留 access 活动视图与草稿。
@@ -207,7 +207,7 @@ it("取消切换保留access活动视图与草稿；identity往返不重读读�
   await user.click(screen.getByRole("tab", { name: "人设表达" }));
   await user.click(screen.getByRole("tab", { name: "资料读取" }));
   await act(async () => {});
-  expect(vi.mocked(client.getAgentKnowledgeRead).mock.calls).toEqual([[B]]);
+  expect(vi.mocked(client.getAgentKnowledgeRead).mock.calls.map(([id]) => id)).toEqual([B]);
   expect(client.listAgentKnowledge).toHaveBeenCalledTimes(2);
   expect(editor()?.agentId).toBe(B);
   expect(editor()?.draft.enabled).toBe(false);

@@ -8,7 +8,7 @@ import {
 } from "../../shared/contracts/context-allocation";
 import type { ContextUsage } from "../../shared/contracts/context-usage";
 import type { Evidence, SourceRef } from "../../shared/contracts/evidence";
-import { resolveMemoryReadPolicy } from "../../shared/contracts/memory";
+import { resolveMemoryReadSettings } from "../../shared/contracts/memory";
 import type { AgentRuntime } from "../agent/agent-runtime";
 import type { AgentSpec } from "../agent/agent-specs";
 import {
@@ -121,19 +121,16 @@ export class WebContextSource implements ConversationContextSource {
       agentId: runtime.agent_id,
       sessionId: options.sessionId,
       currentTurnId: options.turnId,
-      retrievalEnabled: runtime.p5_config.retrieval_mode !== "off",
+      retrievalEnabled: resolveMemoryReadSettings(runtime.p5_config).enabled,
       assertCurrent: () => this.assertCurrent(),
       assertSources: (sources) => this.assertSources(sources),
     });
     const readMemory = memory.read?.bind(memory);
     const readKnowledge = knowledge.read?.bind(knowledge);
-    const memoryPolicy = resolveMemoryReadPolicy(
-      runtime.p5_config.retrieval_mode,
-      runtime.p5_config.retrieval_presets,
-    );
+    const memorySettings = resolveMemoryReadSettings(runtime.p5_config);
     this.actions = createBuiltInActions(
       {
-        ...(runtime.p5_config.retrieval_mode !== "off"
+        ...(resolveMemoryReadSettings(runtime.p5_config).enabled
           ? {
               memory: {
                 query: async (
@@ -145,7 +142,6 @@ export class WebContextSource implements ConversationContextSource {
                       agentId: runtime.agent_id,
                       sessionId: options.sessionId,
                       conversationId: canonical.id,
-                      mode: runtime.p5_config.retrieval_mode,
                       scopes: null,
                       ...input,
                       projection: "catalog",
@@ -227,7 +223,7 @@ export class WebContextSource implements ConversationContextSource {
         fit: (name, arguments_, signal) => this.actionResultFitter(name, arguments_, signal),
         budget: (kind) =>
           kind === "memory"
-            ? memoryPolicy.preset.max_tokens
+            ? memorySettings.maxBytes
             : kind === "knowledge"
               ? (runtime.knowledge_read?.budget ?? Number.MAX_SAFE_INTEGER)
               : Number.MAX_SAFE_INTEGER,
@@ -767,10 +763,7 @@ export class WebContextSource implements ConversationContextSource {
         : name.startsWith("knowledge.")
           ? (this.options.runtime.knowledge_read?.budget ??
             new KnowledgeRepository(this.options.db).settings().context_budget)
-          : resolveMemoryReadPolicy(
-              this.options.runtime.p5_config.retrieval_mode,
-              this.options.runtime.p5_config.retrieval_presets,
-            ).preset.max_tokens;
+          : resolveMemoryReadSettings(this.options.runtime.p5_config).maxBytes;
     if (budget < 1) return { status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED", items: [] };
     const result = evidenceQueryPage(await read(budget));
     this.assertCurrent();

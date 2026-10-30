@@ -1,13 +1,21 @@
 import { createHash } from "node:crypto";
+import type { SharedActionDescription } from "../../shared/contracts/agent-action-descriptions";
 import { type ExecutionPolicy, toolExecutionEnabled } from "../../shared/contracts/permissions";
-import type { SystemFunctionId, ToolDirectoryEntry } from "../../shared/contracts/tool-directory";
-import type { ActionDescription } from "../agent/agent-specs";
-import type { BuiltInAction } from "../agent/built-in-actions";
+import {
+  describeTool,
+  type SystemFunctionId,
+  type ToolDefinition,
+  type ToolDirectoryEntry,
+  type ToolDirectoryInvocation,
+  type ToolDirectoryScope,
+} from "../../shared/contracts/tool-directory";
 
 export interface SystemToolDefinition {
-  description: ActionDescription;
+  description: SharedActionDescription;
   sandboxCallable?: boolean;
   functionId: SystemFunctionId;
+  invocation?: ToolDirectoryInvocation;
+  scope: ToolDirectoryScope;
 }
 
 function globallyEnabled(name: string, execution: ExecutionPolicy): boolean {
@@ -36,25 +44,31 @@ function functionOf(name: string): SystemFunctionId | null {
 
 export function projectToolDirectory(
   system: readonly SystemToolDefinition[],
-  actions: readonly BuiltInAction[],
+  actions: readonly ToolDefinition[],
   execution: ExecutionPolicy,
 ): ToolDirectoryEntry[] {
   const tools = new Map<string, ToolDirectoryEntry>();
   const add = (
-    description: ActionDescription,
+    description: SharedActionDescription,
     sandboxCallable: boolean | undefined,
     functionId: SystemFunctionId | null,
-    permission?: BuiltInAction["permission"],
+    invocation: ToolDirectoryInvocation,
+    scope: ToolDirectoryScope,
+    permission?: ToolDefinition["permission"],
   ) => {
     if (tools.has(description.name)) throw new Error(`TOOL_CATALOG_DUPLICATE: ${description.name}`);
-    const effect = description.effect ?? "write";
+    const descriptor = describeTool({ description, sandboxCallable });
     const origin = description.name.startsWith("mcp.") ? "mcp" : "system";
     tools.set(description.name, {
-      ...description,
-      effect,
-      sandboxCallable: effect === "read" && sandboxCallable !== false,
+      ...descriptor,
       origin,
-      globalEnabled: globallyEnabled(description.name, execution),
+      invocation,
+      scope,
+      // Terminals use host output gates, not executable pausedTools or resource grants.
+      globalEnabled:
+        invocation === "host-terminal"
+          ? description.name !== "reply.sticker" || execution.modules.qqStickers
+          : globallyEnabled(description.name, execution),
       functionId,
       resource: permission?.resource ?? null,
       revision:
@@ -65,12 +79,20 @@ export function projectToolDirectory(
     });
   };
   for (const definition of system)
-    add(definition.description, definition.sandboxCallable, definition.functionId);
+    add(
+      definition.description,
+      definition.sandboxCallable,
+      definition.functionId,
+      definition.invocation ?? "action",
+      definition.scope,
+    );
   for (const action of actions)
     add(
       action.description,
       action.sandboxCallable,
       functionOf(action.description.name),
+      "action",
+      "conversation",
       action.permission,
     );
   return [...tools.values()].sort((left, right) => left.name.localeCompare(right.name));

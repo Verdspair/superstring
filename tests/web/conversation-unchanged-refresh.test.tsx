@@ -185,4 +185,134 @@ describe("conversation unchanged authoritative refresh", () => {
     expect(cached.items[0].text).toBeNull();
     expect(cached.items[0].contentState).toBe("expired");
   });
+
+  it("hydrates an inactive cache through source sanitization even when storage resolves after its cap", async () => {
+    vi.setSystemTime(new Date("2026-10-29T00:00:00Z"));
+    const cached: ConversationEventView = {
+      ...event(1),
+      source: {
+        kind: "qq_event",
+        id: "event-1",
+        revision: "1",
+        expiresAt: new Date(Date.now() + 1000).toISOString(),
+      },
+      media: [
+        { id: "image-1", kind: "image", description: "cached-image", availability: "available" },
+      ],
+    };
+    const stable = event(2);
+    let release!: (value: string) => void;
+    const pendingCache = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const read = vi.fn<SuperstringApi["getConversationEvents"]>().mockResolvedValue({
+      items: [cached, stable],
+      nextSeq: 2,
+      hasMore: false,
+    });
+    const { storage } = setup(read);
+    vi.mocked(storage.read).mockReturnValue(pendingCache);
+    useSuperstringStore.setState({
+      summaryById: {
+        "conv-1": { id: "conv-1", agentId: "agent-1", bindingEpoch: 1 } as never,
+      },
+    });
+    const beforeChange = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useConversationEvents("conv-1", beforeChange, { enabled }),
+      { initialProps: { enabled: false } },
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      release(
+        JSON.stringify({
+          conversationId: "conv-1",
+          agentId: "agent-1",
+          bindingEpoch: 1,
+          items: [cached, stable],
+          cachedAt: Date.now() - 1000,
+        }),
+      );
+    });
+    expect(read).not.toHaveBeenCalled();
+    expect(result.current.items[0]).toMatchObject({
+      text: null,
+      contentState: "expired",
+      media: [{ id: "image-1", description: null, availability: "unavailable" }],
+      qqMessageFacts: [],
+    });
+    expect(result.current.items[1]?.text).toBe("message-2");
+    const expired = result.current.items;
+    beforeChange.mockClear();
+    rerender({ enabled: true });
+    expect(result.current.items[0]?.text).toBeNull();
+    expect(result.current.items[1]?.text).toBe("message-2");
+    await act(async () => {});
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(result.current.items).toBe(expired);
+    expect(beforeChange).not.toHaveBeenCalled();
+    expect(storage.write).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse(vi.mocked(storage.write).mock.calls[0]?.[1] ?? "{}");
+    expect(persisted.items[0].text).toBeNull();
+    expect(persisted.items[0].media[0].description).toBeNull();
+    expect(persisted.items[1].text).toBe("message-2");
+  });
+
+  it("keeps an inactive hydrated cache on the same local expiry clock without reads or writes", async () => {
+    vi.setSystemTime(new Date("2026-10-29T00:00:00Z"));
+    const cached: ConversationEventView = {
+      ...event(1),
+      sources: [
+        {
+          kind: "qq_event",
+          id: "body-1",
+          revision: "1",
+          expiresAt: new Date(Date.now() + 3000).toISOString(),
+        },
+        {
+          kind: "qq_observation",
+          id: "body-2",
+          revision: "1",
+          expiresAt: new Date(Date.now() + 1000).toISOString(),
+        },
+      ],
+    };
+    const read = vi.fn<SuperstringApi["getConversationEvents"]>();
+    const { storage } = setup(read);
+    vi.mocked(storage.read).mockResolvedValue(
+      JSON.stringify({
+        conversationId: "conv-1",
+        agentId: "agent-1",
+        bindingEpoch: 1,
+        items: [cached, event(2)],
+        cachedAt: Date.now(),
+      }),
+    );
+    useSuperstringStore.setState({
+      summaryById: {
+        "conv-1": { id: "conv-1", agentId: "agent-1", bindingEpoch: 1 } as never,
+      },
+    });
+    const beforeChange = vi.fn();
+    const { result, unmount } = renderHook(() =>
+      useConversationEvents("conv-1", beforeChange, { enabled: false }),
+    );
+    await act(async () => {});
+    const stable = result.current.items[1];
+    expect(result.current.items[0]?.text).toBe("message-1");
+    expect(vi.getTimerCount()).toBe(1);
+    beforeChange.mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(result.current.items[0]).toMatchObject({ text: null, contentState: "expired" });
+    expect(result.current.items[1]).toBe(stable);
+    expect(beforeChange).toHaveBeenCalledTimes(1);
+    expect(beforeChange).toHaveBeenLastCalledWith("refresh", result.current.items);
+    expect(read).not.toHaveBeenCalled();
+    expect(storage.write).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

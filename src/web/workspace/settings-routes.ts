@@ -113,6 +113,24 @@ export const SETTINGS_ROUTES = [
     note: "workspace.manage_built_in_capabilities_and_execution_limits_by_function",
   },
   {
+    id: "capability-memory",
+    title: "capabilities.memory.name",
+    state: "transition",
+    note: "capabilities.memory.description",
+  },
+  {
+    id: "capability-knowledge",
+    title: "capabilities.knowledge.name",
+    state: "transition",
+    note: "capabilities.knowledge.description",
+  },
+  {
+    id: "agent-tools",
+    title: "strict.tools.title",
+    state: "transition",
+    note: "library.tools.for.agent.hint",
+  },
+  {
     id: "memory-tools",
     title: "capabilities.memory.name",
     state: "transition",
@@ -182,7 +200,7 @@ export const SETTINGS_ROUTES = [
     state: "transition",
     note: "schemes.qq.groupConfigNote",
   },
-  // 运行（P7-d）：执行台账与任务与审批；执行设置已移归系统能力（P8）。
+  // 运行：执行台账、任务与审批；执行设置位于系统能力。
   {
     id: "execution-ledger",
     title: "connections.runs.ledger",

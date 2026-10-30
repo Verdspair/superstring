@@ -1,6 +1,8 @@
 import { waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
-import { returnFromContextAllocation } from "../../src/web/features/context-allocation";
+
+const returnFromContextAllocation = () => store.getState().returnFromContextAllocation();
+
 import { useSuperstringStore as store } from "../../src/web/store";
 import { activeSpace } from "../../src/web/workspace/navigation";
 import { SETTINGS_ROUTES } from "../../src/web/workspace/settings-routes";

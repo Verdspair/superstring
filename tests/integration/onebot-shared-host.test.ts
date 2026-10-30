@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { ActionExecutor } from "../../src/server/agent/action-executor";
 import { AgentRuntime } from "../../src/server/agent/agent-runtime";
 import type { BuiltInAction } from "../../src/server/agent/built-in-actions";
-import { inputUnits } from "../../src/server/agent/context-engine";
+import {
+  type ActionObservation,
+  actionObservationMessage,
+  ContextEngine,
+  inputUnits,
+} from "../../src/server/agent/context-engine";
 import type { ModelPort, ModelRequest } from "../../src/server/agent/model-port";
 import { OneBot11Adapter } from "../../src/server/channels/onebot11/adapter";
 import { OneBotHost } from "../../src/server/channels/onebot11/bot-host";
@@ -97,6 +102,7 @@ function setup(
     taskSourceState?: ConstructorParameters<typeof OneBotHost>[0]["taskSourceState"];
     externalActions?: ConstructorParameters<typeof OneBotHost>[0]["externalActions"];
     resolveSource?: ConstructorParameters<typeof OneBotHost>[0]["resolveSource"];
+    onDiagnostic?: ConstructorParameters<typeof OneBotHost>[0]["onDiagnostic"];
     actionExecutor?:
       | ConstructorParameters<typeof AgentRuntime>[0]["actionExecutor"]
       | ((
@@ -212,6 +218,7 @@ function setup(
     ...(options.onCompression ? { enqueueCompression: options.onCompression } : {}),
     ...(options.externalActions ? { externalActions: options.externalActions } : {}),
     ...(options.resolveSource ? { resolveSource: options.resolveSource } : {}),
+    ...(options.onDiagnostic ? { onDiagnostic: options.onDiagnostic } : {}),
   });
   const receive = (
     id: string,
@@ -265,6 +272,22 @@ function setup(
     scheme,
   };
 }
+
+/** Resolve the fixture's canonical OneBot conversation through its existing journal owner. */
+function canonicalConversationId(h: ReturnType<typeof setup>): string {
+  const conversation = h.journal.ensureOneBot(bindingId);
+  if (!conversation) throw new Error("missing canonical OneBot conversation");
+  return conversation.id;
+}
+
+/** Read only exact conversation-owner context snapshots, never all runs or a recent run. */
+function latestFullSources(h: ReturnType<typeof setup>, ownerId = canonicalConversationId(h)) {
+  const runs = h.runs.listRuns({ ownerKind: "conversation", ownerId });
+  return runs.flatMap((run) =>
+    run.steps.flatMap((step) => h.runs.getContext(step.context)?.sources ?? []),
+  );
+}
+
 const authorizedTargetIds = (request: ModelRequest): string[] => {
   const matches = request.messages
     .filter((message) => message.role === "system")
@@ -2990,7 +3013,16 @@ describe("Bot tool-first knowledge reading in the shared host", () => {
     // 只有 knowledge.read 之后正文才进入，并带着资料文档与授权的来源。
     const read = evidencePage(seen[2]!, "knowledge.read");
     expect(read?.items[0]?.text).toContain("SECRET_BODY");
-    expect(JSON.stringify(seen[2]!.messages)).toContain("knowledge_grant");
+    expect(JSON.stringify(seen[2]!.messages)).not.toContain("knowledge_grant");
+    const readRun = h.runs.listRuns({
+      ownerKind: "conversation",
+      ownerId: canonicalConversationId(h),
+    })[0];
+    if (!readRun) throw new Error("missing knowledge run");
+    const retained = readRun.steps.flatMap(
+      (step) => h.runs.getContext(step.context)?.sources ?? [],
+    );
+    expect(retained.some((source) => source.kind === "knowledge_grant")).toBe(true);
     expect(h.outbox.list({})).toEqual([]);
   });
 
@@ -3331,17 +3363,19 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
       }
     return found;
   }
-  /** 观测来源必须带齐真实授权链：tool_permission "web" + 本群 web 能力引用（同一 guard 事实）。 */
-  function expectAuthorizedWebSources(envelope: WebObservationEnvelope) {
-    const kinds = new Set(envelope.sources.map(([kind]) => kind));
-    expect(kinds.has("tool_permission")).toBe(true);
-    expect(kinds.has("qq_group_capability")).toBe(true);
-    const permission = envelope.sources.find(([kind]) => kind === "tool_permission")!;
-    expect(permission[1]).toBe("web");
-    expect(permission[2]).toMatch(/^[0-9a-f]{64}$/);
-    const capability = envelope.sources.find(([kind]) => kind === "qq_group_capability")!;
-    const parsed = JSON.parse(capability[1]) as unknown;
-    expect(parsed).toEqual([bindingId, DEFAULT_AGENT_ID, "web"]);
+  /** Model text intentionally omits pure authority; the run snapshot remains the guard proof. */
+  function expectAuthorizedWebSources(
+    envelope: WebObservationEnvelope,
+    runSources: readonly { kind: string; id: string; revision?: string }[],
+  ) {
+    expect(envelope.sources.some(([kind]) => kind === "tool_permission")).toBe(false);
+    expect(envelope.sources.some(([kind]) => kind === "qq_group_capability")).toBe(false);
+    const permission = runSources.find((source) => source.kind === "tool_permission");
+    expect(permission?.id).toBe("web");
+    expect(permission?.revision).toMatch(/^[0-9a-f]{64}$/);
+    const capability = runSources.find((source) => source.kind === "qq_group_capability");
+    expect(capability).toBeDefined();
+    expect(JSON.parse(capability!.id)).toEqual([bindingId, DEFAULT_AGENT_ID, "web"]);
   }
 
   it("control: one bounded search then none settles no_output with one network request and a real authorized observation", async () => {
@@ -3356,7 +3390,7 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     expect(disclosed).toHaveLength(1);
     expect(disclosed[0]).toMatchObject({ status: "ok", channel: "bing" });
     expect(disclosed[0]!.items.length).toBeGreaterThan(0);
-    expectAuthorizedWebSources(disclosed[0]!);
+    expectAuthorizedWebSources(disclosed[0]!, latestFullSources(h));
   });
 
   it("nine max-CJK bounded searches settle no_output: excess results become explicit CONTEXT_BUDGET_EXCEEDED denial with the same authorized sources", async () => {
@@ -3409,9 +3443,10 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     expect(denied.length).toBeGreaterThan(0);
     for (const o of denied) {
       expect(o.code).toBe("CONTEXT_BUDGET_EXCEEDED");
-      expectAuthorizedWebSources(o);
+      expectAuthorizedWebSources(o, latestFullSources(h));
     }
-    for (const o of webObservations(seen[1]!, "web.search")) expectAuthorizedWebSources(o);
+    for (const o of webObservations(seen[1]!, "web.search"))
+      expectAuthorizedWebSources(o, latestFullSources(h));
   });
 
   it("web.fetch with a public resolver reads one offline page then none: no_output, one network call, authorized sources", async () => {
@@ -3448,7 +3483,7 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
       title: "示例文章",
     });
     expect(String(page[0]!.text)).toContain("第一段正文内容");
-    expectAuthorizedWebSources(page[0]!);
+    expectAuthorizedWebSources(page[0]!, latestFullSources(h));
   });
 
   /** 合成正文填充；根级校准的首个模型请求约 58.5k / 60.3k 输入单位。 */
@@ -3551,7 +3586,7 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     expect(page).toHaveLength(1);
     expect(["ok", "unavailable"]).toContain(page[0]!.status);
     if (page[0]!.status === "unavailable") expect(page[0]!.code).toBe("CONTEXT_BUDGET_EXCEEDED");
-    expectAuthorizedWebSources(page[0]!);
+    expectAuthorizedWebSources(page[0]!, latestFullSources(h));
   });
 
   it("near-capacity concurrent batch: two max-CJK fetches settle no_output with authorized observations", async () => {
@@ -3634,7 +3669,7 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     for (const o of pages) {
       expect(["ok", "unavailable"]).toContain(o.status);
       if (o.status === "unavailable") expect(o.code).toBe("CONTEXT_BUDGET_EXCEEDED");
-      expectAuthorizedWebSources(o);
+      expectAuthorizedWebSources(o, latestFullSources(h));
     }
   });
 
@@ -3724,7 +3759,7 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
       for (const page of pages) {
         expect(["ok", "unavailable"]).toContain(page.status);
         if (page.status === "unavailable") expect(page.code).toBe("CONTEXT_BUDGET_EXCEEDED");
-        expectAuthorizedWebSources(page);
+        expectAuthorizedWebSources(page, latestFullSources(h));
       }
     },
   );
@@ -3886,7 +3921,7 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     expect(pages).toHaveLength(1);
     expect(pages[0]!.status).toBe("ok");
     expect(String(pages[0]!.text)).toContain("正常正文");
-    expectAuthorizedWebSources(pages[0]!);
+    expectAuthorizedWebSources(pages[0]!, latestFullSources(h));
     expect(h.outbox.list({})).toEqual([]);
   });
 
@@ -3952,171 +3987,667 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
         (item) => item?.kind === "action_observation" && item.value?.name === "sticker.search",
       );
     expect(stickerObservations).toHaveLength(1);
-    expectAuthorizedWebSources(pages[0]!);
+    expectAuthorizedWebSources(pages[0]!, latestFullSources(h));
     expect(h.outbox.list({})).toEqual([]);
   });
 
-  it.each([16_000, 16_600, 16_800])(
-    "mixed real media list and host sticker search fits every returned observation at %d",
-    async (length) => {
-      const seen: ModelRequest[] = [];
-      let round = 0;
-      const h = setup(
-        {
-          complete: async (request) => {
-            seen.push(request);
-            return ++round === 1
-              ? JSON.stringify({
+  type ProtocolSample = { phase: "decision" | "generation"; messages: readonly ModelMessage[] };
+  function protocolMeasurement() {
+    const samples: ProtocolSample[] = [];
+    const fits: {
+      name: string;
+      value: unknown;
+      accepted: boolean;
+      sources: ActionObservation["sources"];
+      samples: ProtocolSample[];
+    }[] = [];
+    let initial: ProtocolSample[] = [];
+    let ceiling: number | undefined;
+    const render = ContextEngine.prototype.render;
+    const output = ContextEngine.prototype.renderOutput;
+    const read = BotContextSource.prototype.read;
+    const fitter = BotContextSource.prototype.actionResultFitter;
+    return {
+      samples,
+      fits,
+      get initial() {
+        return initial;
+      },
+      get ceiling() {
+        return ceiling;
+      },
+      markInitial() {
+        if (initial.length === 0) initial = samples.slice();
+      },
+      async run<T>(work: () => Promise<T>): Promise<T> {
+        const renderSpy = spyOn(ContextEngine.prototype, "render").mockImplementation(function (
+          this: ContextEngine,
+          ...args: Parameters<ContextEngine["render"]>
+        ) {
+          const result = render.apply(this, args);
+          samples.push({ phase: "decision", messages: result.messages });
+          return result;
+        });
+        const outputSpy = spyOn(ContextEngine.prototype, "renderOutput").mockImplementation(
+          function (this: ContextEngine, ...args: Parameters<ContextEngine["renderOutput"]>) {
+            const result = output.apply(this, args);
+            samples.push({ phase: "generation", messages: result });
+            return result;
+          },
+        );
+        const readSpy = spyOn(BotContextSource.prototype, "read").mockImplementation(
+          async function (this: BotContextSource, ...args: Parameters<BotContextSource["read"]>) {
+            const result = await read.apply(this, args);
+            ceiling = this.phaseUnitsCeiling("decision");
+            return result;
+          },
+        );
+        const fitSpy = spyOn(BotContextSource.prototype, "actionResultFitter").mockImplementation(
+          async function (
+            this: BotContextSource,
+            ...args: Parameters<BotContextSource["actionResultFitter"]>
+          ) {
+            const original = await fitter.apply(this, args);
+            return (value, sources, terminal) => {
+              const start = samples.length;
+              const accepted = original(value, sources, terminal);
+              fits.push({
+                name: args[0],
+                value: structuredClone(value),
+                sources: [...sources],
+                accepted,
+                samples: samples.slice(start),
+              });
+              return accepted;
+            };
+          },
+        );
+        try {
+          return await work();
+        } finally {
+          fitSpy.mockRestore();
+          readSpy.mockRestore();
+          outputSpy.mockRestore();
+          renderSpy.mockRestore();
+        }
+      },
+    };
+  }
+
+  // Change only the fixture's ASCII body inside messages produced by the actual renderer.
+  // Both the facts and activation-trigger occurrences are measured, not assumed to occur once.
+  function measuredCost(samples: readonly ProtocolSample[], from: number, length = from) {
+    if (samples.length === 0) throw new Error("missing actual phase protocol samples");
+    const body = "b".repeat(from);
+    const actual = samples.filter(
+      ({ messages }) =>
+        !messages.some((message) =>
+          message.content.some(
+            (part) => part.kind === "text" && part.text.includes('"name":"action.result"'),
+          ),
+        ),
+    );
+    expect(actual.length).toBeGreaterThan(0);
+    return Math.max(
+      ...actual.map(({ messages }) =>
+        inputUnits(
+          messages.map((message) => ({
+            ...message,
+            content: message.content.map((part) =>
+              part.kind === "text"
+                ? { ...part, text: part.text.split(body).join("b".repeat(length)) }
+                : part,
+            ),
+          })),
+        ),
+      ),
+    );
+  }
+  function initialProtocol(samples: readonly ProtocolSample[]) {
+    return samples.filter(
+      ({ messages }) =>
+        !messages.some((message) =>
+          message.content.some(
+            (part) => part.kind === "text" && part.text.includes('"kind":"action_observation"'),
+          ),
+        ),
+    );
+  }
+  function measuredLength(samples: readonly ProtocolSample[], from: number, target: number) {
+    const current = measuredCost(samples, from);
+    const slope = measuredCost(samples, from, from + 1) - current;
+    expect(slope).toBeGreaterThan(0);
+    const length = from + Math.floor((target - current) / slope);
+    expect(length).toBeGreaterThan(0);
+    expect(measuredCost(samples, from, length)).toBeLessThanOrEqual(target);
+    expect(measuredCost(samples, from, length + 1)).toBeGreaterThan(target);
+    return length;
+  }
+  function windowFailure(
+    diagnostics: Parameters<
+      NonNullable<ConstructorParameters<typeof OneBotHost>[0]["onDiagnostic"]>
+    >[0][],
+  ) {
+    const details = diagnostics.find((event) => event.details?.stage === "window_fit")?.details;
+    if (
+      !details ||
+      typeof details.renderedCost !== "number" ||
+      typeof details.ceiling !== "number" ||
+      typeof details.roomFor !== "number"
+    )
+      throw new Error(`missing actual window-fit measurement: ${JSON.stringify(diagnostics)}`);
+    return {
+      ceiling: details.ceiling,
+      next: details.ceiling - details.renderedCost - details.roomFor,
+    };
+  }
+
+  async function mixedReadWriteBoundary(length: number, withWrite = true) {
+    const measurement = protocolMeasurement();
+    let writes = 0;
+    const requests: ModelRequest[] = [];
+    const diagnostics: Parameters<
+      NonNullable<ConstructorParameters<typeof OneBotHost>[0]["onDiagnostic"]>
+    >[0][] = [];
+    const write: BuiltInAction = {
+      description: {
+        name: "test.write",
+        capability: "test",
+        description: "write",
+        effect: "write",
+        parameters: { type: "object", properties: {} },
+      },
+      async execute() {
+        writes++;
+        return { value: {}, sources: [] };
+      },
+    };
+    const h = setup(
+      {
+        complete: async (request) => {
+          measurement.markInitial();
+          requests.push(request);
+          return JSON.stringify(
+            requests.length === 1
+              ? {
                   kind: "invoke",
                   calls: [
                     { name: "media.list", arguments: { limit: 50 } },
                     { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
+                    ...(withWrite ? [{ name: "test.write", arguments: {} }] : []),
                   ],
-                })
-              : '{"kind":"none"}';
+                }
+              : { kind: "none" },
+          );
+        },
+      },
+      {
+        stickersAvailable: true,
+        mediaAdapter: () => ({
+          capabilities: ["image"],
+          read: async () => {
+            throw new Error("unexpected media read");
           },
+        }),
+        externalActions: () => (withWrite ? [write] : []),
+        onDiagnostic: (event) => {
+          diagnostics.push(event);
         },
-        {
-          stickersAvailable: true,
-          mediaAdapter: () => ({
-            capabilities: ["image"],
-            read: async () => {
-              throw new Error("unexpected media read");
-            },
-          }),
-        },
-      );
-      addSticker(h);
-      h.receive("8890", "20002", true, "b".repeat(length));
-      const settled = await h.activate("direct_reply").catch((error) => {
-        console.info(JSON.stringify({ length, requests: seen.length, code: error.code }));
+      },
+    );
+    const stickerId = addSticker(h);
+    const barriers: Parameters<BotContextSource["assertBeforeActionEffects"]>[0][] = [];
+    const barrierResults: { status: "accepted" | "rejected"; writes: number; code?: string }[] = [];
+    const barrierSamples: ProtocolSample[] = [];
+    let decisionCeiling: number | undefined;
+    const originalBarrier = BotContextSource.prototype.assertBeforeActionEffects;
+    const barrierSpy = spyOn(
+      BotContextSource.prototype,
+      "assertBeforeActionEffects",
+    ).mockImplementation(async function (this: BotContextSource, input) {
+      barriers.push(input);
+      decisionCeiling = this.phaseUnitsCeiling("decision");
+      const sampleStart = measurement.samples.length;
+      try {
+        await originalBarrier.call(this, input);
+        barrierResults.push({ status: "accepted", writes });
+      } catch (error) {
+        barrierResults.push({
+          status: "rejected",
+          writes,
+          code: error instanceof Error && "code" in error ? String(error.code) : undefined,
+        });
         throw error;
+      } finally {
+        barrierSamples.push(...measurement.samples.slice(sampleStart));
+      }
+    });
+    try {
+      const settled = await measurement.run(async () => {
+        h.receive("8891", "20002", true, "b".repeat(length));
+        return h.activate("direct_reply").then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
       });
-      expect(settled.status).toBe("no_output");
-      expect(seen).toHaveLength(2);
-      const observations = seen[1]!.messages
-        .flatMap((message) => message.content)
-        .filter((part) => part.kind === "text")
-        .map((part) => {
-          try {
-            return JSON.parse(part.text);
-          } catch {
-            return null;
-          }
-        })
-        .filter((item) => item?.kind === "action_observation");
-      expect(observations.map((item) => item.value.name).sort()).toEqual([
+      const error = settled.ok ? undefined : settled.error;
+      const code = error instanceof Error && "code" in error ? String(error.code) : null;
+      const row = {
+        length,
+        settled,
+        code,
+        requests,
+        writes,
+        outbox: h.outbox.list({}),
+        stickerId,
+        barriers,
+        barrierResults,
+        diagnostics,
+        decisionCeiling: decisionCeiling ?? measurement.ceiling,
+        measurement,
+        barrierSamples,
+        sources: latestFullSources(h),
+      };
+      return row;
+    } finally {
+      barrierSpy.mockRestore();
+      const index = handles.indexOf(h);
+      if (index >= 0) handles.splice(index, 1);
+      h.db.close(true);
+    }
+  }
+
+  function assertMixedReadWriteRefusal(
+    row: Awaited<ReturnType<typeof mixedReadWriteBoundary>>,
+    code: string,
+    reachesBarrier: boolean,
+  ) {
+    if (
+      row.settled.ok ||
+      row.code !== code ||
+      row.writes !== 0 ||
+      row.requests.length !== 1 ||
+      row.barriers.length !== (reachesBarrier ? 1 : 0)
+    )
+      console.info(
+        JSON.stringify({
+          mixedBoundaryFailure: {
+            length: row.length,
+            code: row.code,
+            modelCalls: row.requests.length,
+            writes: row.writes,
+            outboxCount: row.outbox.length,
+            barrierResults: row.barrierResults,
+            diagnostics: row.diagnostics,
+          },
+        }),
+      );
+    expect(row.settled.ok).toBe(false);
+    if (row.settled.ok) throw new Error("mixed write unexpectedly fit");
+    expect(row.code).toBe(code);
+    expect(row.requests).toHaveLength(1);
+    expect(row.writes).toBe(0);
+    expect(row.outbox).toEqual([]);
+    expect(row.barriers).toHaveLength(reachesBarrier ? 1 : 0);
+    const rejectedFits = row.diagnostics.flatMap((event) => {
+      const details = event.details;
+      return details?.stage === "action_result_fit" &&
+        typeof details.candidateCost === "number" &&
+        typeof details.nextActionReserved === "number" &&
+        typeof details.siblingReserved === "number" &&
+        typeof details.ceiling === "number" &&
+        details.terminal === false
+        ? [
+            {
+              candidateCost: details.candidateCost,
+              nextActionReserved: details.nextActionReserved,
+              siblingReserved: details.siblingReserved,
+              ceiling: details.ceiling,
+            },
+          ]
+        : [];
+    });
+    expect(rejectedFits.length).toBeGreaterThan(0);
+    for (const event of row.diagnostics) {
+      const details = event.details;
+      if (details?.stage !== "action_result_fit") continue;
+      expect(details.unit).toBe("bytes");
+      expect(details.capacity).toBe(65536);
+      expect(details.outputReserved).toBe(2048);
+      expect(details.headroomRatio).toBe(0.05);
+      expect(details.tier).toBe("reply");
+      expect(details.model).toBe("reply-model");
+      expect(details.roomFor).toBe(
+        Number(details.ceiling) -
+          Number(details.candidateCost) -
+          Number(details.nextActionReserved) -
+          Number(details.siblingReserved),
+      );
+    }
+    if (reachesBarrier) {
+      expect(
+        rejectedFits.some((fit) => fit.candidateCost + fit.nextActionReserved > fit.ceiling),
+      ).toBe(true);
+      expect(row.barrierResults).toEqual([
+        { status: "rejected", writes: 0, code: "CONTEXT_BUDGET_EXCEEDED" },
+      ]);
+      expect(row.barriers[0]!.effects).toEqual([{ name: "test.write", arguments: {} }]);
+      expect(row.barriers[0]!.observations).toEqual([
+        expect.objectContaining({
+          name: "media.list",
+          value: { status: "ok", items: [], nextCursor: null },
+        }),
+        expect.objectContaining({
+          name: "sticker.search",
+          value: expect.objectContaining({
+            status: "available",
+            items: [expect.objectContaining({ id: row.stickerId, name: "wave" })],
+          }),
+          sources: expect.arrayContaining([
+            expect.objectContaining({ kind: "qq_sticker", id: row.stickerId }),
+          ]),
+        }),
+      ]);
+    } else {
+      expect(row.barrierResults).toEqual([]);
+      expect(
+        rejectedFits.some(
+          (fit) => fit.candidateCost + fit.nextActionReserved + fit.siblingReserved > fit.ceiling,
+        ),
+      ).toBe(true);
+      const error = row.settled.error;
+      expect(error).toBeInstanceOf(Error);
+      if (!(error instanceof Error)) throw new Error("Sticker fit refusal has no original error");
+      if (error.stack === undefined) throw new Error("Sticker fit refusal stack is missing");
+      expect(error.stack).toContain("qq-sticker-capability");
+    }
+  }
+
+  type MixedRow = Awaited<ReturnType<typeof mixedReadWriteBoundary>>;
+  function assertActualDecision(row: MixedRow) {
+    expect(row.requests[0]!.model).toBe("reply-model");
+    expect(row.requests[0]!.maxTokens).toBe(2048);
+    expect(row.requests[0]!.responseSchema).toBeDefined();
+    expect(row.requests[0]!.tools?.some((tool) => tool.name === "memory.query")).toBe(true);
+    expect(JSON.stringify(row.requests[0]!.messages)).toContain("metadata.content_origin");
+    for (const phase of ["decision", "generation"])
+      expect(row.measurement.initial.some((sample) => sample.phase === phase)).toBe(true);
+    expect(row.sources.some((source) => source.kind === "qq_observation")).toBe(true);
+  }
+  function logBoundary(label: string, row: MixedRow) {
+    console.info(
+      JSON.stringify({
+        protocolBoundary: label,
+        length: row.length,
+        requests: row.requests.length,
+        code: row.code,
+        writes: row.writes,
+        barrierResults: row.barrierResults,
+        initialCost: row.measurement.initial.length
+          ? measuredCost(initialProtocol(row.measurement.initial), row.length)
+          : null,
+        ceiling: row.decisionCeiling,
+        diagnostics: row.diagnostics,
+      }),
+    );
+  }
+  let mixedCalibration:
+    | Promise<{
+        baseline: MixedRow;
+        next: number;
+        ceiling: number;
+        initial: number;
+        action: number;
+        preEffect: number;
+      }>
+    | undefined;
+  function calibrateMixedProtocol() {
+    if (mixedCalibration) return mixedCalibration;
+    mixedCalibration = (async () => {
+      // Two offline probes, not a search: one fitting control and one guaranteed over-window input.
+      const baseline = await mixedReadWriteBoundary(1_000);
+      expect(baseline.settled.ok).toBe(true);
+      expect(baseline.writes).toBe(1);
+      assertActualDecision(baseline);
+      const over = await mixedReadWriteBoundary(65_536);
+      expect(over.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+      expect(over.requests).toHaveLength(0);
+      expect(over.writes).toBe(0);
+      expect(over.outbox).toEqual([]);
+      const { ceiling, next } = windowFailure(over.diagnostics);
+      expect(ceiling).toBe(baseline.decisionCeiling!);
+      const initial = measuredLength(
+        initialProtocol(baseline.measurement.initial),
+        baseline.length,
+        ceiling - next,
+      );
+      const sticker = baseline.measurement.fits.find(
+        (fit) =>
+          fit.name === "sticker.search" && (fit.value as { items?: unknown[] }).items?.length === 0,
+      );
+      const media = baseline.barriers[0]!.observations.find(
+        (observation) => observation.name === "media.list",
+      );
+      if (!sticker || !media) throw new Error("missing real empty sticker/media fit control");
+      const sibling = inputUnits([actionObservationMessage(media)]) - inputUnits([]);
+      expect(sticker.accepted).toBe(true);
+      expect(next).toBeGreaterThan(0);
+      expect(sticker.samples.some((sample) => sample.phase === "decision")).toBe(true);
+      expect(sticker.samples.some((sample) => sample.phase === "generation")).toBe(true);
+      expect(baseline.barrierSamples.some((sample) => sample.phase === "decision")).toBe(true);
+      expect(baseline.barrierSamples.some((sample) => sample.phase === "generation")).toBe(true);
+      const action = measuredLength(sticker.samples, baseline.length, ceiling - next - sibling) + 1;
+      const preEffect =
+        measuredLength(baseline.barrierSamples, baseline.length, ceiling - next) + 1;
+      expect(
+        measuredCost(initialProtocol(baseline.measurement.initial), baseline.length, action) + next,
+      ).toBeLessThanOrEqual(ceiling);
+      expect(
+        measuredCost(initialProtocol(baseline.measurement.initial), baseline.length, preEffect) +
+          next,
+      ).toBeLessThanOrEqual(ceiling);
+      console.info(
+        JSON.stringify({
+          protocolCalibration: "mixed",
+          probes: 2,
+          unit: "bytes",
+          ceiling,
+          next,
+          sibling,
+          current: measuredCost(initialProtocol(baseline.measurement.initial), baseline.length),
+          actionCandidate: measuredCost(sticker.samples, baseline.length, action),
+          preEffectCandidate: measuredCost(baseline.barrierSamples, baseline.length, preEffect),
+          initial,
+          action,
+          preEffect,
+        }),
+      );
+      return { baseline, ceiling, next, initial, action, preEffect };
+    })();
+    return mixedCalibration;
+  }
+
+  it.each([16_000, 16_600, "measured terminal"] as const)(
+    "mixed real media list and host sticker search fits every returned observation at %s",
+    async (witness) => {
+      let length: number;
+      if (typeof witness === "number") length = witness;
+      else {
+        const { ceiling, next } = await calibrateMixedProtocol();
+        // The read-only action directory has no write declaration: measure its own protocol.
+        const baseline = await mixedReadWriteBoundary(1_000, false);
+        expect(baseline.settled.ok).toBe(true);
+        length = measuredLength(
+          initialProtocol(baseline.measurement.initial),
+          baseline.length,
+          ceiling - next,
+        );
+        console.info(
+          JSON.stringify({
+            protocolCalibration: "read_only",
+            probes: 1,
+            unit: "bytes",
+            ceiling,
+            next,
+            length,
+            current: measuredCost(initialProtocol(baseline.measurement.initial), baseline.length),
+            candidate: measuredCost(
+              initialProtocol(baseline.measurement.initial),
+              baseline.length,
+              length,
+            ),
+          }),
+        );
+      }
+      const row = await mixedReadWriteBoundary(length, false);
+      logBoundary(String(witness), row);
+      expect(row.settled.ok).toBe(true);
+      if (!row.settled.ok) throw row.settled.error;
+      expect(row.settled.value.status).toBe("no_output");
+      expect(row.requests).toHaveLength(2);
+      assertActualDecision(row);
+      const observations = committedObservations(row.requests, "");
+      expect(observations.map((item) => item.name).sort()).toEqual([
         "media.list",
         "sticker.search",
       ]);
-      const media = observations.find((item) => item.value.name === "media.list").value;
-      const sticker = observations.find((item) => item.value.name === "sticker.search").value;
+      const media = observations.find((item) => item.name === "media.list")!;
+      const sticker = observations.find((item) => item.name === "sticker.search")!;
       expect(media.arguments).toEqual({ limit: 50 });
       expect(sticker.arguments).toEqual({ query: "wave", limit: 1 });
       expect(media.sources).toEqual([]);
-      if (media.value.status === "ok")
+      if (witness === 16_000) {
         expect(media.value).toEqual({ status: "ok", items: [], nextCursor: null });
-      else expect(media.value).toEqual({ status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" });
-      if (length === 16_000) expect(sticker.value.status).toBe("available");
-      else {
+        expect(sticker.value).toMatchObject({
+          status: "available",
+          items: [expect.objectContaining({ id: row.stickerId })],
+        });
+        expect(
+          row.sources.some((source) => source.kind === "qq_sticker" && source.id === row.stickerId),
+        ).toBe(true);
+      } else {
         expect(sticker.value).toEqual({ status: "budget_exhausted", items: [], nextCursor: null });
         expect(sticker.sources).toEqual([]);
+        if (witness === 16_600) {
+          const mediaValue = media.value as { status: string };
+          if (mediaValue.status === "ok")
+            expect(media.value).toEqual({ status: "ok", items: [], nextCursor: null });
+          else
+            expect(media.value).toEqual({ status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" });
+        }
       }
-      if (length === 16_800) {
-        const tools = seen[1]!.tools?.map((tool) => tool.name) ?? [];
+      if (witness === "measured terminal") {
+        expect(media.value).toEqual({ status: "unavailable", code: "CONTEXT_BUDGET_EXCEEDED" });
+        const tools = row.requests[1]!.tools?.map((tool) => tool.name) ?? [];
+        expect(tools).toContain("reply.text");
         expect(tools.every((name) => ["reply.text", "reply.sticker"].includes(name))).toBe(true);
       }
-      expect(h.outbox.list({})).toEqual([]);
+      expect(row.writes).toBe(0);
+      expect(row.outbox).toEqual([]);
     },
   );
 
-  it.each([
-    [16_400, "CONTEXT_BUDGET_EXCEEDED", true],
-    [16_600, "STICKER_SEARCH_CONTEXT_LIMIT", false],
-  ] as const)(
-    "rejects a mixed read/write batch at %d before write effects",
-    async (length, code, reachesBarrier) => {
-      let writes = 0;
-      let modelCalls = 0;
-      const write: BuiltInAction = {
-        description: {
-          name: "test.write",
-          capability: "test",
-          description: "write",
-          effect: "write",
-          parameters: { type: "object", properties: {} },
-        },
-        async execute() {
-          writes++;
-          return { value: {}, sources: [] };
-        },
-      };
-      const h = setup(
-        {
-          complete: async () => {
-            modelCalls++;
-            return JSON.stringify({
-              kind: "invoke",
-              calls: [
-                { name: "media.list", arguments: { limit: 50 } },
-                { name: "sticker.search", arguments: { query: "wave", limit: 1 } },
-                { name: "test.write", arguments: {} },
-              ],
-            });
-          },
-        },
-        {
-          stickersAvailable: true,
-          mediaAdapter: () => ({
-            capabilities: ["image"],
-            read: async () => {
-              throw new Error("unexpected media read");
-            },
-          }),
-          externalActions: () => [write],
-        },
-      );
-      const stickerId = addSticker(h);
-      const barriers: Parameters<BotContextSource["assertBeforeActionEffects"]>[0][] = [];
-      const originalBarrier = BotContextSource.prototype.assertBeforeActionEffects;
-      const barrierSpy = spyOn(
-        BotContextSource.prototype,
-        "assertBeforeActionEffects",
-      ).mockImplementation(async function (this: BotContextSource, input) {
-        barriers.push(input);
-        return originalBarrier.call(this, input);
-      });
-      try {
-        h.receive("8891", "20002", true, "b".repeat(length));
-        await expect(h.activate("direct_reply")).rejects.toMatchObject({ code });
-        expect(modelCalls).toBe(1);
-        expect(writes).toBe(0);
-        expect(h.outbox.list({})).toEqual([]);
-        expect(barriers).toHaveLength(reachesBarrier ? 1 : 0);
-        if (reachesBarrier) {
-          expect(barriers[0]!.effects).toEqual([{ name: "test.write", arguments: {} }]);
-          expect(barriers[0]!.observations).toEqual([
-            expect.objectContaining({
-              name: "media.list",
-              value: { status: "ok", items: [], nextCursor: null },
-            }),
-            expect.objectContaining({
-              name: "sticker.search",
-              value: expect.objectContaining({
-                status: "available",
-                items: [expect.objectContaining({ id: stickerId, name: "wave" })],
-              }),
-              sources: expect.arrayContaining([
-                expect.objectContaining({ kind: "qq_sticker", id: stickerId }),
-              ]),
-            }),
-          ]);
-        }
-      } finally {
-        barrierSpy.mockRestore();
+  it.each(["pre_effect", "action_fit"] as const)(
+    "actual protocol %s witness rejects a mixed read/write batch before effects",
+    async (intent) => {
+      const calibration = await calibrateMixedProtocol();
+      const length = intent === "pre_effect" ? calibration.preEffect : calibration.action;
+      if (intent === "pre_effect") {
+        const fitting = await mixedReadWriteBoundary(length - 1);
+        logBoundary("pre_effect_fitting_neighbor", fitting);
+        expect(fitting.settled.ok).toBe(true);
+        if (!fitting.settled.ok) throw fitting.settled.error;
+        expect(fitting.settled.value.status).toBe("no_output");
+        expect(fitting.writes).toBe(1);
+        expect(fitting.requests).toHaveLength(2);
+        expect(fitting.barrierResults).toEqual([{ status: "accepted", writes: 0 }]);
+        expect(fitting.outbox).toEqual([]);
       }
+      const row = await mixedReadWriteBoundary(length);
+      logBoundary(intent, row);
+      assertActualDecision(row);
+      expect(
+        measuredCost(initialProtocol(row.measurement.initial), length) + calibration.next,
+      ).toBeLessThanOrEqual(calibration.ceiling);
+      expect(
+        row.diagnostics.some(
+          (event) =>
+            event.details?.stage === "action_result_fit" &&
+            event.details.currentCost ===
+              measuredCost(initialProtocol(row.measurement.initial), length),
+        ),
+      ).toBe(true);
+      assertMixedReadWriteRefusal(
+        row,
+        intent === "pre_effect" ? "CONTEXT_BUDGET_EXCEEDED" : "STICKER_SEARCH_CONTEXT_LIMIT",
+        intent === "pre_effect",
+      );
     },
   );
+
+  it("one character beyond the measured initial window refuses before any model or effect", async () => {
+    const calibration = await calibrateMixedProtocol();
+    const row = await mixedReadWriteBoundary(calibration.initial + 1);
+    logBoundary("initial_window", row);
+    expect(row.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+    expect(row.requests).toHaveLength(0);
+    expect(row.barriers).toEqual([]);
+    expect(row.writes).toBe(0);
+    expect(row.outbox).toEqual([]);
+    expect(windowFailure(row.diagnostics)).toEqual({
+      ceiling: calibration.ceiling,
+      next: calibration.next,
+    });
+    const details = row.diagnostics.find((event) => event.details?.stage === "window_fit")!
+      .details!;
+    expect(details.renderedCost).toBe(
+      measuredCost(
+        initialProtocol(calibration.baseline.measurement.initial),
+        calibration.baseline.length,
+        row.length,
+      ),
+    );
+    expect(details.roomFor).toBeLessThan(0);
+  });
+
+  it("a fitting first mixed batch writes once and the next none decision settles without replay", async () => {
+    const row = await mixedReadWriteBoundary(1000);
+    expect(row.settled.ok).toBe(true);
+    if (!row.settled.ok) throw row.settled.error;
+    expect(row.settled.value.status).toBe("no_output");
+    expect(row.requests).toHaveLength(2);
+    expect(row.writes).toBe(1);
+    expect(row.outbox).toEqual([]);
+    expect(row.barriers).toHaveLength(1);
+    expect(row.barrierResults).toEqual([{ status: "accepted", writes: 0 }]);
+    const observations = row.requests[1]!.messages.flatMap((message) => message.content).flatMap(
+      (part) => {
+        if (part.kind !== "text") return [];
+        try {
+          const parsed = JSON.parse(part.text);
+          return parsed.kind === "action_observation" ? [parsed.value] : [];
+        } catch {
+          return [];
+        }
+      },
+    );
+    expect(observations.map((entry) => entry.name)).toEqual([
+      "media.list",
+      "sticker.search",
+      "test.write",
+    ]);
+    expect(observations[2]).toMatchObject({
+      name: "test.write",
+      arguments: {},
+      value: {},
+      sources: [],
+    });
+    expect(row.decisionCeiling).toBeDefined();
+    if (row.decisionCeiling === undefined)
+      throw new Error("Original public decision ceiling is missing");
+    expect(inputUnits(row.requests[1]!.messages)).toBeLessThan(row.decisionCeiling);
+  });
+
   it("does not allow terminal media recovery in a batch containing a write", async () => {
     let writes = 0;
     let modelCalls = 0;
@@ -4310,7 +4841,7 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
       expect(pages).toHaveLength(1);
       expect(pages[0]!.status).toBe("ok");
       expect(String(pages[0]!.text)).toContain("文");
-      expectAuthorizedWebSources(pages[0]!);
+      expectAuthorizedWebSources(pages[0]!, latestFullSources(h));
       expect(h.outbox.list({})).toEqual([]);
     },
   );
@@ -4361,7 +4892,7 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     for (const page of pages) {
       expect(["ok", "unavailable"]).toContain(page.status);
       if (page.status === "unavailable") expect(page.code).toBe("CONTEXT_BUDGET_EXCEEDED");
-      expectAuthorizedWebSources(page);
+      expectAuthorizedWebSources(page, latestFullSources(h));
     }
     expect(h.outbox.list({})).toEqual([]);
   });
@@ -4542,7 +5073,11 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     }
   });
 
-  it("mixed read and legitimate write under 19000-character input fails with fatal budget error before write effects", async () => {
+  async function webReadWriteBoundary(length: number) {
+    const measurement = protocolMeasurement();
+    const diagnostics: Parameters<
+      NonNullable<ConstructorParameters<typeof OneBotHost>[0]["onDiagnostic"]>
+    >[0][] = [];
     let writeExecuted = 0;
     const customWriteAction: BuiltInAction = {
       description: {
@@ -4570,7 +5105,9 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
     const h = setup(
       {
         complete: async (request) => {
+          measurement.markInitial();
           seen.push(request);
+          if (seen.length > 1) return '{"kind":"none"}';
           return JSON.stringify({
             kind: "invoke",
             calls: [
@@ -4589,20 +5126,121 @@ describe("Bot web actions under the actual shared host (admission contract)", ()
       {
         ...web,
         externalActions: () => [...web.externalActions(), customWriteAction],
+        onDiagnostic: (event) => {
+          diagnostics.push(event);
+        },
       },
     );
-    h.receive("8814", "20002", true, nearCapacityBody());
-    const settled = await h.activate("direct_reply").then(
-      () => ({ ok: true as const }),
-      (error: unknown) => ({ ok: false as const, error }),
+    try {
+      const settled = await measurement.run(async () => {
+        h.receive("8814", "20002", true, "b".repeat(length));
+        return h.activate("direct_reply").then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        );
+      });
+      return {
+        length,
+        settled,
+        measurement,
+        diagnostics,
+        requests: seen,
+        writes: writeExecuted,
+        code: settled.ok ? null : (settled.error as { code?: string }).code,
+        calls: web.calls,
+        outbox: h.outbox.list({}),
+        sources: latestFullSources(h),
+      };
+    } finally {
+      const index = handles.indexOf(h);
+      if (index >= 0) handles.splice(index, 1);
+      h.db.close(true);
+    }
+  }
+
+  it("mixed real web read fits initially, fetches once and refuses before legitimate write effects", async () => {
+    // Two same-directory offline probes. No expected error is used to choose a length.
+    const baseline = await webReadWriteBoundary(1_000);
+    expect(baseline.settled.ok).toBe(true);
+    expect(baseline.calls).toHaveLength(1);
+    expect(baseline.writes).toBe(1);
+    expect(baseline.requests).toHaveLength(2);
+    const pages = webObservations(baseline.requests[1]!, "web.fetch");
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.status).toBe("ok");
+    expectAuthorizedWebSources(pages[0]!, baseline.sources);
+    const over = await webReadWriteBoundary(65_536);
+    expect(over.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+    expect(over.requests).toHaveLength(0);
+    expect(over.calls).toHaveLength(0);
+    expect(over.writes).toBe(0);
+    expect(over.outbox).toEqual([]);
+    const { ceiling, next } = windowFailure(over.diagnostics);
+    expect(ceiling).toBe(baseline.measurement.ceiling!);
+    const length = measuredLength(
+      initialProtocol(baseline.measurement.initial),
+      baseline.length,
+      ceiling - next,
     );
-    expect(settled.ok).toBe(false);
-    if (settled.ok) throw new Error("mixed read/write under near capacity unexpectedly succeeded");
-    expect((settled.error as { code?: string }).code).toBe("CONTEXT_BUDGET_EXCEEDED");
-    expect(writeExecuted).toBe(0);
-    expect(web.calls).toHaveLength(1);
-    expect(seen).toHaveLength(1);
-    expect(h.outbox.list({})).toEqual([]);
+    const row = await webReadWriteBoundary(length);
+    console.info(
+      JSON.stringify({
+        protocolCalibration: "web_read_write",
+        probes: 2,
+        length,
+        ceiling,
+        next,
+        initialCost: row.measurement.initial.length
+          ? measuredCost(initialProtocol(row.measurement.initial), length)
+          : null,
+        code: row.code,
+        requests: row.requests.length,
+        network: row.calls.length,
+        writes: row.writes,
+        diagnostics: row.diagnostics,
+      }),
+    );
+    expect(row.settled.ok).toBe(false);
+    expect(row.code).toBe("CONTEXT_BUDGET_EXCEEDED");
+    expect(row.requests).toHaveLength(1);
+    expect(row.calls).toHaveLength(1);
+    expect(row.writes).toBe(0);
+    expect(row.outbox).toEqual([]);
+    expect(
+      measuredCost(initialProtocol(row.measurement.initial), length) + next,
+    ).toBeLessThanOrEqual(ceiling);
+    expect(row.requests[0]!.tools?.some((tool) => tool.name === "web.custom_write")).toBe(true);
+    expect(row.requests[0]!.maxTokens).toBe(2048);
+    expect(row.requests[0]!.responseSchema).toBeDefined();
+    const failed = row.measurement.fits.filter((fit) => fit.name === "web.fetch" && !fit.accepted);
+    expect(failed.length).toBeGreaterThan(0);
+    expect(
+      failed.some((fit) => (fit.value as { code?: string }).code === "CONTEXT_BUDGET_EXCEEDED"),
+    ).toBe(true);
+    for (const fit of failed) {
+      expect(
+        fit.sources.some((source) => source.kind === "tool_permission" && source.id === "web"),
+      ).toBe(true);
+      expect(fit.sources.some((source) => source.kind === "qq_group_capability")).toBe(true);
+    }
+    const rejections = row.diagnostics.filter(
+      (event) => event.details?.stage === "action_result_fit",
+    );
+    expect(rejections.length).toBeGreaterThan(0);
+    for (const { details } of rejections) {
+      expect(details!.capacity).toBe(65536);
+      expect(details!.outputReserved).toBe(2048);
+      expect(details!.headroomRatio).toBe(0.05);
+      expect(details!.unit).toBe("bytes");
+      expect(details!.tier).toBe("reply");
+      expect(details!.roomFor).toBeLessThan(0);
+      expect(details!.roomFor).toBe(
+        Number(details!.ceiling) -
+          Number(details!.candidateCost) -
+          Number(details!.nextActionReserved) -
+          Number(details!.siblingReserved),
+      );
+    }
   });
 
   it("cancelling during a pending actual offline fetch propagates the original abort reason with immediate gates", async () => {

@@ -11,6 +11,7 @@
 
 import type { Database } from "bun:sqlite";
 import { fail } from "../errors";
+import { closeConversationSource } from "./conversation-identity-repository";
 import { OutboundIntentRepository } from "./outbound-intent-repository";
 import { readQqBindingLiveWork } from "./qq-binding-work-guard";
 import { removeQqDispatchCandidate } from "./qq-dispatch-repository";
@@ -135,5 +136,6 @@ export function deleteQqBinding(orm: Orm, id: string, expectedRevision: number):
       .query("DELETE FROM qq_bindings WHERE id=? AND revision=?")
       .run(id, expectedRevision).changes;
     if (removed === 0) fail("MEMORY_STATE_CONFLICT", "QQ绑定已变化，请重新加载后删除");
+    closeConversationSource(db, "onebot11", id, at);
   }).immediate();
 }

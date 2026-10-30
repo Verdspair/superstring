@@ -17,6 +17,7 @@ import {
   filterDraft,
   parseFilterDraft,
 } from "../../features/observability/trace-filters";
+import { WorkspaceHelp } from "../../workspace/WorkspaceHelp";
 import { channelLabels, stageLabels, statusLabels } from "./labels";
 import { ReadError } from "./presentation";
 
@@ -120,12 +121,20 @@ export function QueryToolbar({
           <Input
             className="pl-9"
             aria-label={t("observability.searchRuntimeRecords")}
-            placeholder={t("observability.reasonNameCorrelationIdOrMetadataKeyword")}
+            placeholder={t("observability.searchPlaceholder")}
+            aria-describedby={`${id}-search-hint`}
             value={draft.q}
             maxLength={200}
             onChange={(event) => update("q", event.target.value)}
           />
         </div>
+        <WorkspaceHelp
+          title={t("observability.searchRuntimeRecords")}
+          description={t("observability.reasonNameCorrelationIdOrMetadataKeyword")}
+        />
+        <span id={`${id}-search-hint`} className="sr-only">
+          {t("observability.reasonNameCorrelationIdOrMetadataKeyword")}
+        </span>
         <Popover>
           <PopoverTrigger asChild>
             <Button

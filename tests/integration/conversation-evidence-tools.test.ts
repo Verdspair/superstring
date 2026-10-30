@@ -7,7 +7,7 @@ import {
   bodyRevision,
   ConversationEventRepository,
 } from "../../src/server/db/conversation-event-repository";
-import { correctionsForTurns } from "../../src/server/db/memory-content-repository";
+import { conversationCorrections } from "../../src/server/db/memory-content-repository";
 import { OutboundIntentRepository } from "../../src/server/db/outbound-intent-repository";
 import {
   DEFAULT_AGENT_ID as AGENT,
@@ -25,6 +25,7 @@ import {
   createBotConversationEvidence,
   createWebConversationEvidence,
 } from "../../src/server/modules/conversation-evidence";
+import { memoryAccessRefs, memoryConversationAccess } from "../../src/server/services/memory-scope";
 import type { Evidence, SourceRef } from "../../src/shared/contracts/evidence";
 
 const at = "2026-09-29T12:00:00.000Z",
@@ -40,6 +41,7 @@ function fixture() {
   const exec = (sql: string, ...args: SQLQueryBindings[]) => h.db.query(sql).run(...args);
   const session = createSession(h.orm, "evidence", { modelName: "model" });
   const journal = new ConversationEventRepository(h.db);
+  journal.ensureWeb(session.id, USER);
   let clock = at;
   function completed(text: string, sessionId = session.id) {
     const key = crypto.randomUUID(),
@@ -383,8 +385,18 @@ describe("read-only conversation evidence modules", () => {
     expect(body).not.toContain("wrong old fact");
     expect(body).not.toContain("unrelated correction");
     expect(JSON.stringify(item)).not.toContain("wrong old fact");
-    expect(item.sources.some((s) => s.kind === "memory")).toBe(true);
+    const canonical = h.journal.ensureWeb(h.session.id, USER)!;
+    const access = memoryConversationAccess(h.orm, canonical.id, AGENT, USER)!;
+    const expectedRef = memoryAccessRefs(h.orm, access, [id]).get(id)!;
+    expect(expectedRef.kind).toBe("memory_access");
+    expect(JSON.parse(expectedRef.id)).toEqual([AGENT, canonical.id, id]);
+    expect(item.sources.filter((s) => s.kind === "memory_access")).toEqual([expectedRef]);
+    expect(sourceAccess(h.db, expectedRef, w.context.owner, { userId: USER }, at)).toBe(
+      "available",
+    );
     h.exec("UPDATE memory_entries SET status='suppressed' WHERE id=?", id);
+    expect(sourceAccess(h.db, expectedRef, w.context.owner, { userId: USER }, at)).toBe("revoked");
+    await expect(read(w.history, w.context, item)).rejects.toMatchObject(invalid);
     expect((await query(w.history, w.context, { query: "wrong old fact" })).items).toHaveLength(0);
     h.exec("UPDATE turns SET source_valid=0 WHERE id=?", turn.id);
     await expect(read(w.history, w.context, item)).rejects.toMatchObject(invalid);
@@ -421,7 +433,7 @@ describe("read-only conversation evidence modules", () => {
       turn = h.completed("original"),
       stale = h.summary(turn);
     h.correction(turn, "correct summary fact");
-    const good = h.summary(turn, correctionsForTurns(h.orm, AGENT, [turn.id])),
+    const good = h.summary(turn, conversationCorrections(h.orm, AGENT, h.session.id, [turn.id])),
       w = h.web();
     const page = await query(w.summary, w.context);
     expect(page.items).toHaveLength(1);
@@ -583,7 +595,7 @@ describe("Web evidence with retrieval disabled", () => {
     expect((await read(w.history, w.context, page.items[1] as Evidence)).text).toBe(
       "answer raw original",
     );
-    expect(item.sources.some((s) => s.kind === "memory")).toBe(false);
+    expect(item.sources.some((s) => s.kind === "memory" || s.kind === "memory_access")).toBe(false);
     expect(JSON.stringify(item)).not.toContain("correction body");
     expect(String(item.preview?.title)).not.toContain("corrected");
     expect((await query(w.history, w.context, { query: "raw original" })).items).toHaveLength(2);
@@ -641,7 +653,7 @@ describe("Web evidence with retrieval disabled", () => {
     const h = fixture(),
       turn = h.completed("summary parent");
     h.correction(turn, "snapshot correction");
-    const corrections = correctionsForTurns(h.orm, AGENT, [turn.id]);
+    const corrections = conversationCorrections(h.orm, AGENT, h.session.id, [turn.id]);
     expect(corrections).toHaveLength(1);
     h.summary(turn, corrections);
     h.summary(turn, []);
@@ -652,7 +664,7 @@ describe("Web evidence with retrieval disabled", () => {
     const item = first(page.items),
       body = await read(w.summary, w.context, item);
     expect(body.text).toContain("saved summary");
-    expect(item.sources.some((s) => s.kind === "memory")).toBe(false);
+    expect(item.sources.some((s) => s.kind === "memory" || s.kind === "memory_access")).toBe(false);
     expect(item.sources.some((s) => s.kind === "web_turn")).toBe(true);
     const self = item.sources.find((s) => s.kind === "conversation_evidence");
     if (!self) throw new Error("self ref");

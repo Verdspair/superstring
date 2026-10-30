@@ -5,17 +5,25 @@ import type * as React from "react";
 function ScrollArea({
   className,
   children,
+  contentSizing = "bounded",
   ...props
-}: React.ComponentProps<typeof ScrollAreaPrimitive.Root>) {
+}: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & {
+  contentSizing?: "bounded" | "intrinsic";
+}) {
   return (
     <ScrollAreaPrimitive.Root
       data-slot="scroll-area"
+      data-content-sizing={contentSizing}
       className={cn("relative", className)}
       {...props}
     >
       <ScrollAreaPrimitive.Viewport
         data-slot="scroll-area-viewport"
-        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
+        className={cn(
+          "size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1",
+          // Radix's intrinsic table wrapper must not size forms wider than the viewport.
+          contentSizing === "bounded" && "[&>div]:block! [&>div]:w-full! [&>div]:min-w-0!",
+        )}
       >
         {children}
       </ScrollAreaPrimitive.Viewport>

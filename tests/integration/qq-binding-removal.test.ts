@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { createApp } from "../../src/server/app";
+import { ConversationEventRepository } from "../../src/server/db/conversation-event-repository";
 import { readQqBinding } from "../../src/server/db/qq-binding-repository";
 import { createQqScheme, readQqScheme } from "../../src/server/db/qq-scheme-repository";
 import {
@@ -64,31 +65,14 @@ function setup(
       listModels: async () => [MODEL],
     } as never,
   });
-  return { business, orm, app, bindingId, schemeId: scheme.id, accountId, peerId };
+  const journal = new ConversationEventRepository(business.db);
+  return { business, orm, app, bindingId, schemeId: scheme.id, accountId, peerId, journal };
 }
 
-function insertConversation(
-  orm: Orm,
-  bindingId: string,
-  input: { epoch?: number; closed?: boolean } = {},
-): string {
-  const id = crypto.randomUUID();
-  orm
-    .insert(schema.conversations)
-    .values({
-      id,
-      channel: "onebot11",
-      topology: "direct",
-      sourceId: bindingId,
-      agentId: AGENT,
-      userId: DEFAULT_USER_ID,
-      bindingEpoch: input.epoch ?? 1,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-      closedAt: input.closed ? nowIso() : null,
-    })
-    .run();
-  return id;
+function currentConversation(journal: ConversationEventRepository, bindingId: string): string {
+  const current = journal.ensureOneBotActivation(bindingId);
+  if (!current) throw new Error("missing canonical fixture activation");
+  return current.id;
 }
 
 function insertTask(
@@ -216,7 +200,7 @@ describe("DELETE /qq/bindings/:bindingId", () => {
   it("removes a normal group binding with 204; retained material stays and the conversation is unlisted", async () => {
     const h = setup();
     try {
-      const conversationId = insertConversation(h.orm, h.bindingId);
+      const conversationId = currentConversation(h.journal, h.bindingId);
       h.orm
         .insert(schema.qqEvents)
         .values({
@@ -296,6 +280,7 @@ describe("DELETE /qq/bindings/:bindingId", () => {
   it("404 for an unknown binding and 409 on a revision conflict, with no side effects on either", async () => {
     const h = setup();
     try {
+      const beforeConversations = h.orm.select().from(schema.conversations).all();
       const missing = await del(h.app, "00000000-0000-4000-8000-0000000000ff", 1);
       expect(missing.status).toBe(404);
       expect((await errorBody(missing)).error.code).toBe("MEMORY_NOT_FOUND");
@@ -305,7 +290,7 @@ describe("DELETE /qq/bindings/:bindingId", () => {
       expect((await errorBody(conflict)).error.code).toBe("MEMORY_STATE_CONFLICT");
       // Nothing was written by either refused request.
       expect(readQqBinding(h.orm, h.bindingId)).not.toBeNull();
-      expect(h.orm.select().from(schema.conversations).all().length).toBe(0);
+      expect(h.orm.select().from(schema.conversations).all()).toEqual(beforeConversations);
     } finally {
       h.business.close();
     }
@@ -314,7 +299,7 @@ describe("DELETE /qq/bindings/:bindingId", () => {
   it("refuses while a task runs, a run is unfinished, a wake is leased or the outbox is sending/unknown", async () => {
     const h = setup();
     try {
-      const conversationId = insertConversation(h.orm, h.bindingId);
+      const conversationId = currentConversation(h.journal, h.bindingId);
       const blocked: Array<() => void> = [
         () => insertTask(h.orm, conversationId, { status: "running", leaseToken: "lease-1" }),
         () => insertRun(h.orm, conversationId, "generating"),
@@ -353,7 +338,10 @@ describe("DELETE /qq/bindings/:bindingId", () => {
   it("also refuses when the live work sits on a CLOSED epoch of the same binding", async () => {
     const h = setup();
     try {
-      const closed = insertConversation(h.orm, h.bindingId, { epoch: 1, closed: true });
+      const closed = currentConversation(h.journal, h.bindingId);
+      h.business.db.query("UPDATE conversations SET closed_at=? WHERE id=?").run(nowIso(), closed);
+      const successor = h.journal.ensureOneBotActivation(h.bindingId)!;
+      expect(successor.id).not.toBe(closed);
       insertRun(h.orm, closed, "generating");
       const response = await del(h.app, h.bindingId, 1);
       expect(response.status).toBe(409);
@@ -366,7 +354,7 @@ describe("DELETE /qq/bindings/:bindingId", () => {
   it("cancels pending tasks with a stored plain reason, skips pending wakes, and stale-marks queued outbox", async () => {
     const h = setup();
     try {
-      const conversationId = insertConversation(h.orm, h.bindingId);
+      const conversationId = currentConversation(h.journal, h.bindingId);
       const pendingTask = insertTask(h.orm, conversationId, { status: "pending" });
       const doneTask = insertTask(h.orm, conversationId, { status: "completed" });
       const pendingWake = insertWake(h.orm, conversationId, { status: "pending" });
@@ -420,7 +408,7 @@ describe("DELETE /qq/bindings/:bindingId", () => {
     for (const kind of ["private", "group"] as const) {
       const h = setup({ kind });
       try {
-        const conversationId = insertConversation(h.orm, h.bindingId);
+        const conversationId = currentConversation(h.journal, h.bindingId);
         h.orm
           .insert(schema.qqEvents)
           .values({

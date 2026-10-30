@@ -1,7 +1,9 @@
 import {
   EXECUTION_MODULE_KEYS,
   executionPolicy,
+  type PermissionGrant,
   type PermissionsResponse,
+  selectEffectivePermissionGrantEntry,
 } from "../../../shared/contracts/permissions";
 import type { SuperstringApi } from "../../api";
 import { errorText } from "../../state/helpers";
@@ -16,6 +18,7 @@ import {
   applyGrantEdits,
   type GrantDraft,
   grantDraftOf,
+  grantDraftOfEntry,
   sameAgentOverrides,
   sameGrantDraft,
 } from "./permission-draft";
@@ -79,12 +82,11 @@ export const permissionInitial = {
 };
 
 export function permissionResources(snapshot: PermissionsResponse) {
+  const known = new Set(snapshot.resources.map((resource) => resource.resource));
   return [
     ...snapshot.resources,
     ...snapshot.policy.grants
-      .filter(
-        (grant) => !snapshot.resources.some((resource) => resource.resource === grant.resource),
-      )
+      .filter((grant) => !known.has(grant.resource))
       .map((grant) => ({
         name: grant.resource,
         resource: grant.resource,
@@ -97,8 +99,88 @@ export function permissionResources(snapshot: PermissionsResponse) {
   ];
 }
 
+/** Project the selected Agent once from saved grants and only its own override drafts. */
+export function agentPermissionScope(
+  editor: PermissionEditor | null,
+  agentId: string,
+): PermissionScopeSelection {
+  if (!editor) return { agentOverrides: [] };
+  const resources = new Set([
+    ...editor.snapshot.policy.grants.map((entry) => entry.resource),
+    ...Object.keys(editor.grants),
+  ]);
+  return { agentOverrides: [...resources].map((resource) => ({ resource, agentId })) };
+}
+
+export function projectAgentPermissionEdits(editor: PermissionEditor | null, agentId: string) {
+  const result = new Map<
+    string,
+    {
+      saved: PermissionGrant | undefined;
+      base: import("./permission-draft").AgentOverrideDraft;
+      override: import("./permission-draft").AgentOverrideDraft | undefined;
+      enabled: boolean;
+      approved: boolean;
+      directories: string[];
+      declaredDirectories: string[];
+      dirty: boolean;
+    }
+  >();
+  if (!editor) return result;
+  const saved = new Map(editor.snapshot.policy.grants.map((entry) => [entry.resource, entry]));
+  for (const resource of permissionResources(editor.snapshot)) {
+    const entry = saved.get(resource.resource);
+    // Base inheritance deliberately excludes overrides without cloning the override map.
+    const baseEntry = entry ? { ...entry, agentOverrides: undefined } : undefined;
+    const inherited = selectEffectivePermissionGrantEntry(baseEntry, agentId)?.grant;
+    const base = {
+      enabled:
+        !!inherited &&
+        inherited.enabled !== false &&
+        (inherited.agentIds === undefined || inherited.agentIds.includes(agentId)),
+      approved: inherited?.approved === true,
+      revision: inherited?.revision ?? resource.revision,
+      directories: [...(inherited?.directories ?? [])],
+    };
+    const override = editor.grants[resource.resource]?.agentOverrides?.[agentId];
+    const effective = selectEffectivePermissionGrantEntry(
+      entry || override
+        ? {
+            ...(entry ?? {
+              resource: resource.resource,
+              approved: false,
+              agentIds: [],
+              directories: [],
+            }),
+            agentOverrides: override ? { [agentId]: override } : undefined,
+          }
+        : undefined,
+      agentId,
+    )?.grant;
+    result.set(resource.resource, {
+      saved: entry,
+      base,
+      override,
+      enabled:
+        !!effective &&
+        effective.enabled !== false &&
+        (effective.agentIds === undefined || effective.agentIds.includes(agentId)),
+      approved: effective?.approved === true && effective.revision === resource.revision,
+      directories: [...(override?.directories ?? base.directories)],
+      declaredDirectories: [...new Set(resource.directories ?? [])],
+      dirty: !sameAgentOverrides(
+        override ? { [agentId]: override } : undefined,
+        entry?.agentOverrides?.[agentId] ? { [agentId]: entry.agentOverrides[agentId] } : undefined,
+      ),
+    });
+  }
+  return result;
+}
+
 const editorOf = (snapshot: PermissionsResponse): PermissionEditor => {
   const execution = executionDraftOf(executionPolicy(snapshot.policy));
+  const grants = new Map(snapshot.policy.grants.map((entry) => [entry.resource, entry]));
+  const paused = new Set(executionPolicy(snapshot.policy).pausedTools);
   return {
     snapshot,
     execution,
@@ -106,7 +188,11 @@ const editorOf = (snapshot: PermissionsResponse): PermissionEditor => {
     grants: Object.fromEntries(
       permissionResources(snapshot).map((resource) => [
         resource.resource,
-        grantDraftOf(snapshot.policy, resource.resource, resource.revision),
+        grantDraftOfEntry(
+          grants.get(resource.resource),
+          paused.has(resource.resource),
+          resource.revision,
+        ),
       ]),
     ),
   };
@@ -191,11 +277,13 @@ export function permissionSettingsDirty(
   }
   if (!grantsSelected(resolved)) return false;
   if (resolved.agentOverrides.length > 0) {
+    const savedGrants = new Map(
+      editor.snapshot.policy.grants.map((grant) => [grant.resource, grant]),
+    );
     for (const pair of resolved.agentOverrides) {
       const draft = editor.grants[pair.resource];
-      const baseline = grantDraftOf(editor.snapshot.policy, pair.resource);
       const draftOv = draft?.agentOverrides?.[pair.agentId];
-      const baseOv = baseline?.agentOverrides?.[pair.agentId];
+      const baseOv = savedGrants.get(pair.resource)?.agentOverrides?.[pair.agentId];
       if (
         !sameAgentOverrides(
           draftOv ? { [pair.agentId]: draftOv } : undefined,
@@ -418,12 +506,14 @@ export function createPermissionSettingsActions(set: StoreSet, get: StoreGet) {
           grants: { ...editor.grants, [resource]: { ...targetGrant, ...patch } },
         },
         permissionNotice: "",
+        agentTaskResult: null,
       });
     },
     savePermissionSettings: async (scope: PermissionScope = "all") => {
       if (get().permissionSaving || get().permissionLoading) return false;
       const editor = get().permissionEditor;
-      if (!editor || !permissionSettingsDirty(editor, scope)) return true;
+      if (!editor) return false;
+      if (!permissionSettingsDirty(editor, scope)) return true;
       const resolved = scopeOf(scope);
       const savesExecution = executionSelected(resolved);
       const savesGrants = grantsSelected(resolved);

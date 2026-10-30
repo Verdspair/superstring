@@ -908,6 +908,7 @@ export function qqRoutes(orm: Orm, options: QqRoutesOptions): Hono {
           binding: result.binding,
           expectedRevision: payload.expected_revision,
           schemeChange: payload.scheme_change,
+          schemeChangeBaseline: payload.scheme_change_baseline,
         }),
       ),
     );

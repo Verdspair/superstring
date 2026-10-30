@@ -1,6 +1,6 @@
 import { ArrowLeft, ArrowUpRight } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,17 +8,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { RuntimeSpan } from "../../../shared/contracts/runtime-observability";
 import { formatDate } from "../../i18n/runtime";
 import { DeliveryEvidence } from "../runs/DeliveryEvidence";
-import { RunWorkspace } from "../runs/RunEntry";
 import { detailLabels, reasonLabels } from "./labels";
 import { ModelEvidence } from "./ModelEvidence";
 import { phaseLabels, StatusMark, spanTitle } from "./presentation";
 export function EvidenceWorkbench({
   item,
+  renderRun,
   autoInspect = false,
   fullEvidence = false,
   includeDelivery = true,
 }: {
   item: RuntimeSpan;
+  renderRun: (runId: string) => ReactNode;
   autoInspect?: boolean;
   fullEvidence?: boolean;
   includeDelivery?: boolean;
@@ -86,7 +87,7 @@ export function EvidenceWorkbench({
           <ArrowLeft />
           {t("observability.backToStepDetails")}
         </Button>
-        <RunWorkspace runId={item.runId} />
+        {renderRun(item.runId)}
       </section>
     );
   return (
@@ -103,7 +104,7 @@ export function EvidenceWorkbench({
             <h3
               ref={title}
               tabIndex={-1}
-              className="text-base font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="workspace-card-title outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {spanTitle(item, t)}
             </h3>

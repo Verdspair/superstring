@@ -441,6 +441,185 @@ function resolveTaskActivity(
   };
 }
 
+export interface ConversationSourceBody {
+  text: string | null;
+  state: "active" | "expired" | "revoked" | "unavailable";
+  revision: string;
+  expiresAt: string | null;
+  messageStatus?: "completed" | "failed" | "cancelled";
+}
+/** One selected batch. This projects bodies but never grants access. */
+export function conversationSourceBodies(
+  db: Database,
+  events: readonly ConversationEvent[],
+  at: string,
+  inspection = false,
+): Map<ConversationEvent, ConversationSourceBody> {
+  const result = new Map<ConversationEvent, ConversationSourceBody>();
+  const requested = events.filter((event) =>
+    ["web_message", "qq_event", "qq_observation"].includes(event.source.kind),
+  );
+  if (!requested.length) return result;
+  const web = requested.filter((event) => event.source.kind === "web_message");
+  const qq = requested.filter((event) => event.source.kind !== "web_message");
+  type Row = {
+    conversationId: string;
+    id: string;
+    text: string | null;
+    status: string | null;
+    expiresAt: string | null;
+    recordedAt: string | null;
+  };
+  const rows: Row[] = [];
+  if (web.length)
+    rows.push(
+      ...(db
+        .query(`SELECT json_extract(selected.value,'$.conversationId') AS conversationId,m.id,
+    CASE WHEN ?=0 OR length(CAST(m.content AS BLOB))<=262144 THEN m.content END AS text,
+    m.status,NULL AS expiresAt,NULL AS recordedAt FROM json_each(?) selected JOIN messages m ON m.id=json_extract(selected.value,'$.id')
+    JOIN turns t ON t.id=m.turn_id WHERE ?=0 OR EXISTS (
+      SELECT 1 FROM sessions s JOIN conversations c ON c.source_id=s.id AND c.channel='web'
+      WHERE s.id=m.session_id AND c.id=json_extract(selected.value,'$.conversationId') AND c.user_id=s.user_id AND c.agent_id=s.agent_id)`)
+        .all(
+          inspection ? 1 : 0,
+          JSON.stringify(
+            web.map((event) => ({ conversationId: event.conversationId, id: event.source.id })),
+          ),
+          inspection ? 1 : 0,
+        ) as Row[]),
+    );
+  const qqRows = new Map<ConversationEvent, Row>();
+  function qqLifetime(event: ConversationEvent, row: Row) {
+    const sources = event.sources.filter(
+      (ref) => ref.kind === "qq_observation" && ref.id === event.source.id,
+    );
+    const source = sources[0];
+    const caps = [
+      row.expiresAt,
+      ...sources.map((ref) => ref.expiresAt),
+      event.source.expiresAt,
+    ].filter((cap): cap is string => !!cap);
+    return {
+      source,
+      expiresAt: caps.sort()[0] ?? null,
+      expired: caps.some(
+        (cap) => !Number.isFinite(Date.parse(cap)) || Date.parse(cap) <= Date.parse(at),
+      ),
+    };
+  }
+  if (qq.length) {
+    // Parse caps with the same Date.parse semantics as source inspection. Only the
+    // active selected identities reach the payload query, including its size check.
+    const metadata = db
+      .query(`SELECT selected.key AS ordinal,json_extract(selected.value,'$.conversationId') AS conversationId,e.event_key AS id,
+    NULL AS text,NULL AS status,t.expires_at AS expiresAt,e.recorded_at AS recordedAt FROM json_each(?) selected
+    JOIN qq_events e ON e.event_key=json_extract(selected.value,'$.id') LEFT JOIN qq_observation_text t ON t.event_key=e.event_key
+    WHERE ?=0 OR EXISTS (SELECT 1 FROM conversations c JOIN qq_bindings b ON b.id=c.source_id
+      WHERE c.id=json_extract(selected.value,'$.conversationId') AND c.channel='onebot11' AND c.agent_id=e.agent_id
+        AND b.agent_id=e.agent_id AND b.account_id=e.account_id AND b.conversation_kind=e.conversation_kind AND b.peer_id=e.peer_id)`)
+      .all(
+        JSON.stringify(
+          qq.map((event) => ({ conversationId: event.conversationId, id: event.source.id })),
+        ),
+        inspection ? 1 : 0,
+      ) as (Row & { ordinal: number })[];
+    const active: {
+      ordinal: number;
+      conversationId: string;
+      id: string;
+      expiresAt: string | null;
+      recordedAt: string | null;
+    }[] = [];
+    for (const row of metadata) {
+      const event = qq[Number(row.ordinal)]!;
+      qqRows.set(event, row);
+      if (!qqLifetime(event, row).expired)
+        active.push({
+          ordinal: row.ordinal,
+          conversationId: row.conversationId,
+          id: row.id,
+          expiresAt: row.expiresAt,
+          recordedAt: row.recordedAt,
+        });
+    }
+    if (active.length) {
+      const bodies = db
+        .query(`SELECT json_extract(selected.value,'$.ordinal') AS ordinal,
+    CASE WHEN ?=0 OR length(CAST(t.body AS BLOB))<=262144 THEN t.body END AS text
+    FROM json_each(?) selected JOIN qq_events e ON e.event_key=json_extract(selected.value,'$.id')
+      AND e.recorded_at=json_extract(selected.value,'$.recordedAt')
+    JOIN qq_observation_text t ON t.event_key=e.event_key AND t.expires_at IS json_extract(selected.value,'$.expiresAt')
+    WHERE ?=0 OR EXISTS (SELECT 1 FROM conversations c JOIN qq_bindings b ON b.id=c.source_id
+      WHERE c.id=json_extract(selected.value,'$.conversationId') AND c.channel='onebot11' AND c.agent_id=e.agent_id
+        AND b.agent_id=e.agent_id AND b.account_id=e.account_id AND b.conversation_kind=e.conversation_kind AND b.peer_id=e.peer_id)`)
+        .all(inspection ? 1 : 0, JSON.stringify(active), inspection ? 1 : 0) as {
+        ordinal: number;
+        text: string | null;
+      }[];
+      for (const body of bodies) qqRows.get(qq[Number(body.ordinal)]!)!.text = body.text;
+    }
+  }
+  const byId = new Map(rows.map((row) => [JSON.stringify([row.conversationId, row.id]), row]));
+  for (const event of requested) {
+    const row =
+      event.source.kind === "web_message"
+        ? byId.get(JSON.stringify([event.conversationId, event.source.id]))
+        : qqRows.get(event);
+    const absent: ConversationSourceBody = {
+      text: null,
+      state: "revoked",
+      revision: "",
+      expiresAt: null,
+    };
+    if (!row) {
+      result.set(event, absent);
+      continue;
+    }
+    if (event.source.kind === "web_message") {
+      if (row.text === null) {
+        result.set(event, { ...absent, state: "unavailable" });
+        continue;
+      }
+      const revision = bodyRevision(`${row.status}\0${row.text}`);
+      result.set(
+        event,
+        row.status === "pending" || revision !== event.source.revision
+          ? { ...absent, state: "unavailable", revision }
+          : {
+              text: row.text,
+              state: "active",
+              revision,
+              expiresAt: null,
+              messageStatus: row.status as "completed" | "failed" | "cancelled",
+            },
+      );
+      continue;
+    }
+    const { source, expiresAt, expired } = qqLifetime(event, row);
+    if (expired) {
+      result.set(event, { ...absent, state: "expired", expiresAt });
+      continue;
+    }
+    if (row.text === null || (!inspection && row.text.length === 0)) {
+      result.set(event, { ...absent, state: "unavailable", expiresAt });
+      continue;
+    }
+    const revision = bodyRevision(row.text);
+    const valid =
+      !inspection ||
+      (!!source &&
+        source.revision === revision &&
+        (event.source.kind !== "qq_event" || event.source.revision === row.recordedAt));
+    result.set(event, {
+      text: valid ? row.text : null,
+      state: valid ? "active" : "unavailable",
+      revision,
+      expiresAt,
+    });
+  }
+  return result;
+}
+
 /** Resolve current source bodies on demand. The journal is never a retention bypass. */
 export function projectConversationEvent(
   db: Database,
@@ -457,7 +636,8 @@ export function projectConversationEvents(
   at = new Date().toISOString(),
 ): ConversationEventView[] {
   const page = pageMetadata(db, events);
-  return events.map((event) => projectEvent(db, event, at, page));
+  const bodies = conversationSourceBodies(db, events, at);
+  return events.map((event) => projectEvent(db, event, at, page, bodies));
 }
 
 function projectEvent(
@@ -465,6 +645,7 @@ function projectEvent(
   event: ConversationEvent,
   at: string,
   page: PageMetadata,
+  bodies: ReadonlyMap<ConversationEvent, ConversationSourceBody>,
 ): ConversationEventView {
   const wake =
     event.kind === "wake" && event.source.kind === "wake"
@@ -506,40 +687,16 @@ function projectEvent(
   if (event.source.kind !== "outbound_intent" && expired(event.source.expiresAt))
     return { ...base, contentState: "expired" };
   if (event.source.kind === "web_message") {
-    const m = db
-      .query(
-        "SELECT m.content,m.status,m.role,t.source_valid,t.context_valid,t.generation_status,t.cancel_requested,t.generation_token FROM messages m JOIN turns t ON t.id=m.turn_id WHERE m.id=?",
-      )
-      .get(event.source.id) as {
-      content: string;
-      status: string;
-      source_valid: number;
-      context_valid: number;
-      role: string;
-      generation_status: string;
-      cancel_requested: number;
-      generation_token: string | null;
-    } | null;
-    if (!m) return { ...base, contentState: "revoked" };
-    if (
-      m.status === "pending" ||
-      bodyRevision(`${m.status}\0${m.content}`) !== event.source.revision
-    )
-      return { ...base, contentState: "unavailable" };
+    const body = bodies.get(event)!;
     return {
       ...base,
-      text: m.content,
-      contentState: "active",
-      messageStatus: m.status as "completed" | "failed" | "cancelled",
+      text: body.text,
+      contentState: body.state,
+      messageStatus: body.messageStatus ?? null,
     };
   }
   if (event.source.kind === "qq_event" || event.source.kind === "qq_observation") {
-    const row = db
-      .query(
-        "SELECT t.body,t.expires_at FROM qq_events e LEFT JOIN qq_observation_text t ON t.event_key=e.event_key WHERE e.event_key=?",
-      )
-      .get(event.source.id) as { body: string | null; expires_at: string | null } | null;
-    if (!row) return { ...base, contentState: "revoked" };
+    const body = bodies.get(event)!;
     const media = db
       .query(
         "SELECT id,segment_kind,note,expires_at FROM qq_media_notes WHERE event_key=? ORDER BY segment_index",
@@ -556,15 +713,11 @@ function projectEvent(
       description: expired(m.expires_at) ? null : m.note,
       availability: expired(m.expires_at) ? "expired" : "available",
     }));
-    const allMediaExpired = media.length > 0 && media.every((m) => expired(m.expires_at));
-    const stale =
-      expired(row.expires_at) ||
-      event.sources.some((s) => s.kind === "qq_observation" && expired(s.expiresAt)) ||
-      (!row.body && allMediaExpired);
+    const allMediaExpired = media.length > 0 && media.every((item) => expired(item.expires_at));
     return {
       ...base,
-      text: stale ? null : row.body,
-      contentState: stale ? "expired" : row.body ? "active" : "unavailable",
+      text: body.text,
+      contentState: body.state === "unavailable" && allMediaExpired ? "expired" : body.state,
     };
   }
   if (event.source.kind === "qq_media") {

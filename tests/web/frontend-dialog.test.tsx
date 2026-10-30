@@ -1,10 +1,15 @@
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Profiler, useState } from "react";
+import { Trash2 } from "lucide-react";
+import { Profiler, useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfirmDialog } from "../../src/web/components/confirmation";
+import { Dialog, DialogContent, DialogTitle } from "../../src/web/components/ui/dialog";
+import { ConversationIndex } from "../../src/web/screens/conversations/ConversationIndex";
+import { RecordActions } from "../../src/web/screens/conversations/RecordActions";
 import { useSuperstringStore } from "../../src/web/store";
 import { NavigationGuard as NavigationConfirm } from "../../src/web/workspace/NavigationGuard";
+import { summaryFixture } from "./helpers/chat-fixture";
 import { render } from "./helpers/render-with-providers";
 
 afterEach(cleanup);
@@ -129,4 +134,201 @@ describe("Radix确认弹窗", () => {
       });
     }
   });
+});
+
+it("programmatic Dialog and its explicit confirmation keep separate return-focus owners", async () => {
+  function NestedConfirm() {
+    const [open, setOpen] = useState(false);
+    const [confirm, setConfirm] = useState(false);
+    return (
+      <>
+        <button type="button" onClick={() => setOpen(true)}>
+          Open editor
+        </button>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogContent>
+            <DialogTitle>Editor</DialogTitle>
+            <button type="button" onClick={() => setConfirm(true)}>
+              Open confirmation
+            </button>
+            <ConfirmDialog
+              open={confirm}
+              message="Nested confirmation?"
+              onCancel={() => setConfirm(false)}
+              onConfirm={() => setConfirm(false)}
+            />
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
+  render(<NestedConfirm />);
+  const editor = screen.getByRole("button", { name: "Open editor" });
+  await userEvent.click(editor);
+  const trigger = screen.getByRole("button", { name: "Open confirmation" });
+  await userEvent.click(trigger);
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "取消" }));
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+  expect(screen.getByRole("dialog", { name: "Editor" })).toBeTruthy();
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(document.activeElement).toBe(editor));
+});
+
+it("delayed confirmation retains its explicit action opener while preserving cancel-first", async () => {
+  const pending = Promise.withResolvers<void>();
+  const confirm = vi.fn();
+  function Delayed() {
+    const [busy, setBusy] = useState(false);
+    const [open, setOpen] = useState(false);
+    const opener = useRef<HTMLElement | null>(null);
+    return (
+      <>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={(event) => {
+            opener.current = event.currentTarget;
+            setBusy(true);
+            void pending.promise.then(() => {
+              setBusy(false);
+              setOpen(true);
+            });
+          }}
+        >
+          Delayed origin
+        </button>
+        <ConfirmDialog
+          open={open}
+          message="Delayed confirmation"
+          returnFocusRef={opener}
+          onCancel={() => setOpen(false)}
+          onConfirm={confirm}
+        />
+      </>
+    );
+  }
+  render(<Delayed />);
+  const opener = screen.getByRole("button", { name: "Delayed origin" }) as HTMLButtonElement;
+  await userEvent.click(opener);
+  expect(opener.disabled).toBe(true);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  await act(async () => pending.resolve());
+  const cancel = screen.getByRole("button", { name: "取消" });
+  expect(document.activeElement).toBe(cancel);
+  await userEvent.click(cancel);
+  await waitFor(() => expect(document.activeElement).toBe(opener));
+  expect(confirm).not.toHaveBeenCalled();
+});
+
+it("an explicit null confirmation origin is not replaced with the focused ambient button", async () => {
+  function NoOrigin() {
+    const [open, setOpen] = useState(false);
+    const origin = useRef<HTMLElement | null>(null);
+    return (
+      <>
+        <button type="button" onClick={() => setOpen(true)}>
+          Ambient opener
+        </button>
+        <ConfirmDialog
+          open={open}
+          message="No explicit source"
+          returnFocusRef={origin}
+          onCancel={() => setOpen(false)}
+          onConfirm={() => {}}
+        />
+      </>
+    );
+  }
+  render(<NoOrigin />);
+  const ambient = screen.getByRole("button", { name: "Ambient opener" });
+  await userEvent.click(ambient);
+  const focus = vi.spyOn(ambient, "focus");
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await act(async () => {});
+  expect(focus).not.toHaveBeenCalled();
+});
+
+it("record menu passes durable origin to confirmation without changing zero-argument actions", async () => {
+  const legacy = vi.fn();
+  function MenuConfirmation() {
+    const [open, setOpen] = useState(false);
+    const source = useRef<HTMLElement | null>(null);
+    return (
+      <>
+        <RecordActions
+          label="Origin actions"
+          actions={[
+            { label: "Legacy action", tooltip: "Legacy", icon: Trash2, run: () => legacy() },
+            {
+              label: "Open confirmation",
+              tooltip: "Confirm",
+              icon: Trash2,
+              run: (origin) => {
+                source.current = origin;
+                setOpen(true);
+              },
+            },
+          ]}
+        >
+          {(trigger) => <article>{trigger}</article>}
+        </RecordActions>
+        <ConfirmDialog
+          open={open}
+          message="Menu confirmation"
+          returnFocusRef={source}
+          onCancel={() => setOpen(false)}
+          onConfirm={() => setOpen(false)}
+        />
+      </>
+    );
+  }
+  render(<MenuConfirmation />);
+  const trigger = screen.getByRole("button", { name: "Origin actions" });
+  await userEvent.click(trigger);
+  await userEvent.click(screen.getByRole("menuitem", { name: "Legacy action" }));
+  expect(legacy).toHaveBeenCalledTimes(1);
+  expect(legacy).toHaveBeenCalledWith();
+  await userEvent.click(trigger);
+  await userEvent.click(screen.getByRole("menuitem", { name: "Open confirmation" }));
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+});
+
+it("directory operation owner drops old API completion without closing a new target", async () => {
+  const originalRename = useSuperstringStore.getState().renameSession;
+  const row = summaryFixture("directory-owner", { title: "Directory owner" });
+  const first = Promise.withResolvers<boolean>();
+  const next = Promise.withResolvers<boolean>();
+  const rename = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(next.promise);
+  useSuperstringStore.getState().resetForTests();
+  useSuperstringStore.setState({
+    summaryById: { [row.id]: row },
+    directoryIds: [row.id],
+    renameSession: rename,
+  });
+  render(<ConversationIndex />);
+  const open = async () => {
+    await userEvent.click(screen.getByRole("button", { name: "会话操作：Directory owner" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "重命名" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "会话名称" }), {
+      target: { value: "Changed" },
+    });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "会话名称" }), { key: "Enter" });
+  };
+  await open();
+  await act(async () =>
+    useSuperstringStore.setState({ apiClient: { ...useSuperstringStore.getState().apiClient } }),
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await open();
+  await act(async () => first.resolve(true));
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "会话名称" }) as HTMLInputElement).disabled).toBe(
+    true,
+  );
+  await act(async () => next.resolve(true));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  useSuperstringStore.setState({ renameSession: originalRename });
 });

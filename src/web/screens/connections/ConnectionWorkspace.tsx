@@ -23,7 +23,7 @@ export function ConnectionWorkspace({ active = true }: { active?: boolean } = {}
       );
   return (
     <section
-      className="mx-auto flex h-full min-h-0 w-full max-w-[1160px] flex-col px-[36px] pt-[28px] pb-[64px] max-[768px]:px-[16px] max-[768px]:pt-[20px] max-[768px]:pb-[48px]"
+      className="workspace-page flex h-full min-h-0 flex-col"
       aria-label={t("workspace.extensions")}
     >
       <WorkspacePageHeader
@@ -33,7 +33,11 @@ export function ConnectionWorkspace({ active = true }: { active?: boolean } = {}
       />
       <Tabs value={tab} onValueChange={openTab} className="flex min-h-0 flex-1 flex-col gap-0">
         <div className="mb-[24px]">
-          <TabsList className="h-[42px] group-data-horizontal/tabs:h-[42px] w-fit max-w-full justify-start gap-[6px] overflow-x-auto rounded-[10px] border border-border bg-muted p-[4px] [&_[role=tab]]:h-[32px] [&_[role=tab]]:flex-none [&_[role=tab]]:px-[14px] [&_[role=tab]]:text-[13px]">
+          <TabsList
+            presentation="workspace"
+            flow="scroll"
+            className="w-fit max-w-full justify-start"
+          >
             <TabsTrigger value="mcp">{t("connections.mcp.title")}</TabsTrigger>
             <TabsTrigger value="skills">{t("connections.skills.title")}</TabsTrigger>
             <TabsTrigger value="grants">{t("connections.tools.title")}</TabsTrigger>

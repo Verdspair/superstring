@@ -9,7 +9,7 @@ import {
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
 import { AlertDialog } from "@/components/confirmation";
@@ -40,8 +40,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { translateNotice } from "@/i18n";
+import { useForegroundRead } from "@/services/use-foreground-read";
 import { useSuperstringStore } from "@/store";
-import type { KnowledgeCategory } from "../../../shared/contracts/knowledge";
 import { knowledgeSettingsDirty } from "../../features/knowledge/types";
 import { ModelPurposes } from "../environment/ModelPurposes";
 import { ModelDefaults } from "../environment/model-defaults";
@@ -61,8 +61,10 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
   const s = useSuperstringStore(
     useShallow((state) => ({
       agents: state.agents,
+      api: state.apiClient,
+      cancelRead: state.cancelKnowledgeLibraryRead,
       deleteKnowledgeItem: state.deleteKnowledgeItem,
-      error: state.error,
+      error: state.knowledgeLibraryError,
       knowledgeBusy: state.knowledgeBusy,
       knowledgeCategories: state.knowledgeCategories,
       knowledgeCursors: state.knowledgeCursors,
@@ -77,6 +79,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
       knowledgeSettings: state.knowledgeSettings,
       knowledgeTotal: state.knowledgeTotal,
       loadKnowledge: state.loadKnowledge,
+      resumeRead: state.resumeKnowledgeLibraryRead,
       loadKnowledgePage: state.loadKnowledgePage,
       openSettingsRoute: state.openSettingsRoute,
       requestKnowledgeEditor: state.requestKnowledgeEditor,
@@ -85,6 +88,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
     })),
   );
   const t = useTranslation().t;
+  const searchHintId = useId();
   const [selected, setSelected] = useState<string[]>([]);
   const [deleting, setDeleting] = useState<KnowledgeDeleteTarget | null>(null);
   const [moveTo, setMoveTo] = useState("default");
@@ -95,10 +99,16 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
     setDeleting(target);
   };
   const deleteTarget = deleting ?? lastDeleting.current;
-  useEffect(() => {
-    // 挂载只发一次稳定读取：预热在途则接管那一次读取，预热已就绪则静默做一次权威刷新。
-    if (active) void s.loadKnowledge(undefined, { quiet: true });
-  }, [active, s.loadKnowledge]);
+  const readLibrary = useCallback(() => {
+    if (useSuperstringStore.getState().apiClient !== s.api) return;
+    void s.resumeRead();
+  }, [s.api, s.resumeRead]);
+  useForegroundRead(readLibrary, s.cancelRead, {
+    paused: !active,
+    intervalMs: null,
+    retainOnHide: true,
+    onSuspend: s.cancelRead,
+  });
   // 列表由服务端分页过滤；docs 就是当前页，不在客户端二次筛选。
   const docs = s.knowledgeDocuments,
     filters = s.knowledgeFilters,
@@ -175,14 +185,15 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
     <section className="space-y-6" aria-label={t("library.document.library")}>
       <SettingsGroup
         title={t("library.documents")}
-        description={t("library.search.titles.summaries.or.tags")}
+        description={<span id={searchHintId}>{t("library.search.titles.summaries.or.tags")}</span>}
       >
         <div className="space-y-3 p-4">
           <div className="flex flex-wrap gap-2">
             <Input
               className="min-w-48 flex-1"
               aria-label={t("library.search.documents")}
-              placeholder={t("library.search.titles.summaries.or.tags")}
+              placeholder={t("library.search.documents")}
+              aria-describedby={searchHintId}
               value={localSearch}
               onChange={(e) => {
                 const nextVal = e.target.value;
@@ -488,7 +499,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
           <span className="text-xs text-muted-foreground">
             {t("library.value.entries.page.value", { "0": s.knowledgeTotal, "1": page })}
           </span>
-          <div className="flex gap-2">
+          <div className="workspace-actions">
             <Button
               size="icon"
               variant="outline"
@@ -550,7 +561,7 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
                 </NativeSelect>
               </Field>
             )}
-            <div className="flex justify-end gap-2">
+            <div className="workspace-actions justify-end">
               <Button
                 variant="outline"
                 data-dialog-cancel
@@ -590,30 +601,11 @@ export function KnowledgeLibrary({ active = true }: { active?: boolean } = {}) {
   );
 }
 
-function CategorySelect({
-  value,
-  categories,
-  onChange,
-}: {
-  value: string;
-  categories: KnowledgeCategory[];
-  onChange: (id: string) => void;
-}) {
-  return (
-    <NativeSelect value={value} onChange={(e) => onChange(e.target.value)}>
-      {categories.map((category) => (
-        <option key={category.id} value={category.id}>
-          {category.name}
-        </option>
-      ))}
-    </NativeSelect>
-  );
-}
 function KnowledgeEditorPanel() {
   const s = useSuperstringStore(
       useShallow((state) => ({
         agents: state.agents,
-        error: state.error,
+        error: state.knowledgeLibraryError,
         knowledgeBusy: state.knowledgeBusy,
         knowledgeCategories: state.knowledgeCategories,
         knowledgeDirty: state.knowledgeDirty,
@@ -647,7 +639,10 @@ function KnowledgeEditorPanel() {
         if (!open) s.requestKnowledgeEditor({ kind: "none" });
       }}
     >
-      <SheetContent className="flex h-full w-full flex-col gap-0 p-0 sm:max-w-3xl">
+      <SheetContent
+        scrollMode="body"
+        className="flex h-full w-full flex-col gap-0 p-0 sm:max-w-3xl"
+      >
         <SheetHeader className="border-b px-4 py-4 pr-12">
           <SheetTitle>{editor ? t(titles[editor.kind]) : ""}</SheetTitle>
           <SheetDescription>
@@ -656,7 +651,7 @@ function KnowledgeEditorPanel() {
         </SheetHeader>
         {editor && (
           <>
-            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5">
+            <div data-slot="sheet-body" className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
               {s.error && (
                 <p role="alert" className="text-sm text-destructive">
                   {translateNotice(s.error)}
@@ -677,13 +672,18 @@ function KnowledgeEditorPanel() {
                       label="library.category"
                       tooltip={t("hints.library.knowledge.categoryField")}
                     >
-                      <CategorySelect
+                      <NativeSelect
                         value={editor.category_id}
-                        categories={s.knowledgeCategories}
-                        onChange={(category_id) =>
-                          s.updateKnowledgeEditor({ ...editor, category_id })
+                        onChange={(event) =>
+                          s.updateKnowledgeEditor({ ...editor, category_id: event.target.value })
                         }
-                      />
+                      >
+                        {s.knowledgeCategories.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {category.name}
+                          </option>
+                        ))}
+                      </NativeSelect>
                     </Field>
                   </div>
                   {editor.kind === "import" ? (
@@ -749,7 +749,7 @@ function KnowledgeEditorPanel() {
                         </NativeSelect>
                       </Field>
                       <Tabs defaultValue="original">
-                        <TabsList className="max-w-full flex-wrap gap-1 group-data-horizontal/tabs:h-auto [&_[role=tab]]:h-7">
+                        <TabsList presentation="compact" flow="wrap" className="max-w-full gap-1">
                           <Tooltip>
                             <TooltipTrigger asChild preserveTriggerState>
                               <TabsTrigger value="original">
@@ -947,7 +947,7 @@ function KnowledgeEditorPanel() {
                       }
                     />
                   </Field>
-                  <ModelDefaults active scope="knowledge" />
+                  <ModelDefaults active scope="knowledge" embedded />
                   <div className="min-h-0">
                     <ModelPurposes active embedded />
                   </div>
@@ -955,13 +955,32 @@ function KnowledgeEditorPanel() {
               )}
             </div>
             <SheetFooter className="border-t">
-              <div className="flex w-full items-center justify-between gap-3">
+              <div className="flex min-w-0 w-full flex-wrap items-center justify-between gap-3">
                 <span className="text-xs text-muted-foreground">
                   {(editor.kind === "settings" ? knowledgeSettingsDirty(s) : s.knowledgeDirty)
                     ? t("library.unsaved.changes")
                     : t("library.saved")}
                 </span>
-                <div className="flex gap-2">
+                <div className="workspace-actions">
+                  {(editor.kind === "document" ||
+                    editor.kind === "grants" ||
+                    editor.kind === "settings") && (
+                    <Button
+                      variant="outline"
+                      disabled={s.knowledgeBusy || s.settingsSaving}
+                      tooltip={t("hints.library.knowledge.refreshEditor")}
+                      onClick={() =>
+                        s.requestKnowledgeEditor(
+                          editor.kind === "settings"
+                            ? { kind: "settings" }
+                            : { kind: editor.kind, id: editor.source.id },
+                        )
+                      }
+                    >
+                      <RefreshCw />
+                      {t("library.refresh")}
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     disabled={s.knowledgeBusy}

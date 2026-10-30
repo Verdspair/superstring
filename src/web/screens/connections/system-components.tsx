@@ -40,19 +40,15 @@ export function SystemComponents({
 
   const hasTools = associatedTools.length > 0;
   const hasSkills = associatedSkills.length > 0;
-  const isQqReply = entry.id === "qq-reply";
   const actionNote =
     "actionNoteKey" in entry && entry.actionNoteKey ? t(entry.actionNoteKey) : null;
-
-  const stickerTool = (toolData?.tools ?? []).find(
-    (tool) => tool.name === "reply.sticker" || tool.name.startsWith("sticker."),
-  );
-  const isStickerOff = stickerTool ? stickerTool.globalEnabled === false : false;
 
   return (
     <section className="space-y-3 text-xs" aria-label={t("connections.components.title")}>
       <div className="flex flex-wrap items-center justify-between gap-2 pb-1">
-        <h2 className="font-medium text-foreground">{t("connections.components.title")}</h2>
+        <h2 className="workspace-section-title text-foreground">
+          {t("connections.components.title")}
+        </h2>
         <span className="text-[11px] text-muted-foreground">
           {t("connections.components.noMcpDependency")}
         </span>
@@ -60,50 +56,8 @@ export function SystemComponents({
 
       {actionNote && <p className="text-[11px] text-muted-foreground">{actionNote}</p>}
 
-      {isQqReply && (
-        <div className="space-y-1.5 pt-0.5">
-          <span className="block text-[11px] font-medium text-muted-foreground">
-            {t("capabilities.qqReply.runtimeAction")}
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            <div className="flex w-full items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1 text-xs">
-              <Badge variant="outline" className="px-1 py-0 text-[10px] uppercase shrink-0">
-                {t("connections.components.tools")}
-              </Badge>
-              {TOOL_HUMAN_LABELS["reply.text"] && (
-                <span className="font-medium">{t(TOOL_HUMAN_LABELS["reply.text"])}</span>
-              )}
-              {/* i18next-instrument-ignore-next-line */}
-              <span className="font-mono text-[11px] text-muted-foreground">reply.text</span>
-            </div>
-            <div
-              className={`flex w-full items-center gap-2 rounded-md bg-muted/60 px-2.5 py-1 text-xs ${
-                isStickerOff ? "opacity-60" : ""
-              }`}
-            >
-              <Badge
-                variant={isStickerOff ? "secondary" : "outline"}
-                className="px-1 py-0 text-[10px] uppercase shrink-0"
-              >
-                {t("connections.components.tools")}
-              </Badge>
-              {TOOL_HUMAN_LABELS["reply.sticker"] && (
-                <span className="font-medium">{t(TOOL_HUMAN_LABELS["reply.sticker"])}</span>
-              )}
-              {/* i18next-instrument-ignore-next-line */}
-              <span className="font-mono text-[11px] text-muted-foreground">reply.sticker</span>
-              {isStickerOff && (
-                <span className="text-[10px] text-destructive shrink-0">
-                  ({t("connections.components.globalOff")})
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
       {toolError && !toolData && (
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
           <p role="alert" className="text-xs text-destructive">
             {toolError}
           </p>
@@ -156,6 +110,12 @@ export function SystemComponents({
                   </Badge>
                   {humanLabel && <span className="font-medium">{humanLabel}</span>}
                   <span className="font-mono text-[11px] text-muted-foreground">{tool.name}</span>
+                  {tool.invocation === "host-terminal" && (
+                    <span className="text-[11px] text-muted-foreground">
+                      {t("connections.tools.hostTerminal")} ·{" "}
+                      {t("connections.tools.scope.qq-conversation")}
+                    </span>
+                  )}
                   {isOff && (
                     <span className="text-[10px] text-destructive shrink-0">
                       ({t("connections.components.globalOff")})
@@ -169,7 +129,7 @@ export function SystemComponents({
       )}
 
       {skillError && !skillData && (
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
           <p role="alert" className="text-xs text-destructive">
             {skillError}
           </p>

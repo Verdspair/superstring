@@ -10,13 +10,21 @@ export function useConversationAvatar(conversation: ConversationSummary | null) 
   const save = useCallback(
     async (selection: GeneratedAvatar | File | null) => {
       if (!id) return;
-      const { apiClient } = useSuperstringStore.getState();
+      const { apiClient, summaryById } = useSuperstringStore.getState();
+      const target = summaryById[id];
       // A directory request issued before the write must not restore the old avatar.
       useSuperstringStore.setState((state) => ({ directoryRevision: state.directoryRevision + 1 }));
       const avatar = await apiClient.saveConversationAvatar(id, selection);
       useSuperstringStore.setState((state) => {
         const current = state.summaryById[id];
-        if (!current || state.apiClient !== apiClient) return state;
+        if (
+          !current ||
+          state.apiClient !== apiClient ||
+          current.sourceId !== target?.sourceId ||
+          current.agentId !== target?.agentId ||
+          current.bindingEpoch !== target?.bindingEpoch
+        )
+          return state;
         return {
           directoryRevision: state.directoryRevision + 1,
           summaryById: { ...state.summaryById, [id]: { ...current, avatar } },

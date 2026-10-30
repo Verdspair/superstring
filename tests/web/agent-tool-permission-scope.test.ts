@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentResponseSchema } from "../../src/shared/contracts/agent";
+import { AgentResponseSchema, PersonaResponseSchema } from "../../src/shared/contracts/agent";
 import {
   ExecutionPolicySchema,
   type PermissionGrant,
@@ -14,9 +15,37 @@ import {
   type PermissionScope,
   permissionSettingsDirty,
 } from "../../src/web/features/access/permission-state";
+import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { selectLocale, translate } from "../../src/web/i18n";
 import { AgentToolScope } from "../../src/web/screens/assistants/StudioEditors";
 import { useSuperstringStore as store } from "../../src/web/store";
+
+async function saveAgentToolsTask(agentId = AGENT_A) {
+  const current = store.getState();
+  const agent = AgentResponseSchema.parse({
+    id: agentId,
+    name: agentId,
+    model_name: "model",
+    config_version: 1,
+    persona_intensity: 60,
+    created_at: "2026-10-27T00:00:00.000Z",
+    updated_at: "2026-10-27T00:00:00.000Z",
+  });
+  const persona = PersonaResponseSchema.parse({
+    id: "P",
+    agent_id: agentId,
+    core_identity: "",
+    communication_style: "",
+    interaction_boundaries: "",
+    advanced_instructions: "",
+    example_dialogues: "",
+    created_at: "2026-10-27T00:00:00.000Z",
+    updated_at: "2026-10-27T00:00:00.000Z",
+  });
+  if (!current.pageEditor || current.pageEditor.agent.id !== agentId)
+    store.setState({ editorAgentId: agentId, pageEditor: newPageEditor(agent, persona) });
+  return store.getState().saveSettingsTask("tools");
+}
 
 const AGENT_A = "agent-alpha-id";
 const AGENT_B = "agent-beta-id";
@@ -252,6 +281,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
           capability: "memory",
           effect: "read",
           sandboxCallable: true,
+          invocation: "action" as const,
+          scope: "conversation" as const,
           origin: "system",
           globalEnabled: true,
           functionId: "memory-query",
@@ -267,6 +298,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
           capability: "search",
           effect: "read",
           sandboxCallable: false,
+          invocation: "action" as const,
+          scope: "conversation" as const,
           origin: "mcp",
           globalEnabled: true,
           functionId: null,
@@ -522,6 +555,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
           capability: "memory",
           effect: "read" as const,
           sandboxCallable: true,
+          invocation: "action" as const,
+          scope: "conversation" as const,
           origin: "system" as const,
           globalEnabled: true,
           functionId: "memory-query" as const,
@@ -537,6 +572,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
           capability: "search",
           effect: "read" as const,
           sandboxCallable: false,
+          invocation: "action" as const,
+          scope: "conversation" as const,
           origin: "mcp" as const,
           globalEnabled: true,
           functionId: null,
@@ -591,11 +628,9 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
     fireEvent.click(enableCheckbox);
     expect(enableCheckbox.getAttribute("aria-checked")).toBe("true");
 
-    const saveBtn = screen.getByTestId("agent-tool-save-mcp.search.query") as HTMLButtonElement;
-    expect(saveBtn.disabled).toBe(false);
-
+    expect(screen.queryByTestId("agent-tool-save-mcp.search.query")).toBeNull();
     await act(async () => {
-      fireEvent.click(saveBtn);
+      expect(await saveAgentToolsTask()).toBe(true);
     });
 
     expect(save).toHaveBeenCalledTimes(1);
@@ -623,6 +658,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
           capability: "search",
           effect: "read" as const,
           sandboxCallable: false,
+          invocation: "action" as const,
+          scope: "conversation" as const,
           origin: "mcp" as const,
           globalEnabled: true,
           functionId: null,
@@ -672,8 +709,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
       "agent-tool-enable-mcp.search.query",
     ) as HTMLButtonElement;
     expect(enableCheckbox.disabled).toBe(true);
-    const saveBtn = screen.getByTestId("agent-tool-save-mcp.search.query") as HTMLButtonElement;
-    expect(saveBtn.disabled).toBe(true);
+    expect(screen.queryByTestId("agent-tool-save-mcp.search.query")).toBeNull();
+    expect(await saveAgentToolsTask()).toBe(false);
 
     await act(async () => {
       fireEvent.click(retryBtn);
@@ -682,120 +719,151 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
     expect(enableCheckbox.disabled).toBe(false);
   });
 
-  it("renders tool with module paused status when globalEnabled is false", async () => {
-    const current = makeSnapshot();
-    const get = vi.fn(async () => structuredClone(current));
-    const getToolDir = vi.fn(async () => ({
-      tools: [
-        {
-          name: "mcp.search.query",
-          description: "Search documents",
-          parameters: {},
-          capability: "search",
-          effect: "read" as const,
-          sandboxCallable: false,
-          origin: "mcp" as const,
-          globalEnabled: false,
-          functionId: null,
-          resource: "mcp.search.query",
-          revision: "v1",
-          approvalRequired: true,
-          directories: ["/data/search"],
-        },
-      ],
-    }));
+  it.each(["zh-CN", "en"] as const)(
+    "%s renders a wrapped resource status without changing its permission form",
+    async (locale) => {
+      const current = makeSnapshot();
+      const get = vi.fn(async () => structuredClone(current));
+      const getToolDir = vi.fn(async () => ({
+        tools: [
+          {
+            name: "mcp.search.query",
+            description: "Search documents",
+            parameters: {},
+            capability: "search",
+            effect: "read" as const,
+            sandboxCallable: false,
+            invocation: "action" as const,
+            scope: "conversation" as const,
+            origin: "mcp" as const,
+            globalEnabled: false,
+            functionId: null,
+            resource: "mcp.search.query",
+            revision: "v1",
+            approvalRequired: true,
+            directories: ["/data/search"],
+          },
+        ],
+      }));
 
-    store.getState().resetForTests({
-      ...api,
-      getPermissions: get,
-      getToolDirectory: getToolDir,
-    });
-    store.setState({
-      editorAgentId: AGENT_A,
-      agents: [
-        AgentResponseSchema.parse({
-          id: AGENT_A,
-          name: "Alpha Agent",
-          model_name: "test-model",
-          config_version: 1,
-          persona_intensity: 60,
-          created_at: "2026-10-27T00:00:00.000Z",
-          updated_at: "2026-10-27T00:00:00.000Z",
-        }),
-      ],
-    });
+      store.getState().resetForTests({
+        ...api,
+        getPermissions: get,
+        getToolDirectory: getToolDir,
+      });
+      selectLocale(locale);
+      store.setState({
+        editorAgentId: AGENT_A,
+        agents: [
+          AgentResponseSchema.parse({
+            id: AGENT_A,
+            name: "Alpha Agent",
+            model_name: "test-model",
+            config_version: 1,
+            persona_intensity: 60,
+            created_at: "2026-10-27T00:00:00.000Z",
+            updated_at: "2026-10-27T00:00:00.000Z",
+          }),
+        ],
+      });
 
-    await act(async () => {
-      render(
-        React.createElement(
-          DesignSystemProvider,
-          null,
-          React.createElement(AgentToolScope, { agentId: AGENT_A, active: true }),
-        ),
-      );
-    });
+      await act(async () => {
+        render(
+          React.createElement(
+            DesignSystemProvider,
+            null,
+            React.createElement(AgentToolScope, { agentId: AGENT_A, active: true }),
+          ),
+        );
+      });
 
-    expect(screen.getByText(translate("connections.grants.modulePaused"))).toBeTruthy();
-  });
+      const status = screen.getByText(translate("connections.grants.modulePaused"));
+      expect(status.getAttribute("data-slot")).toBe("badge");
+      expect(status.getAttribute("data-wrap")).toBe("true");
+      expect(status.textContent).toBe(translate("connections.grants.modulePaused"));
+      expect(screen.getByText(translate("library.tools.for.agent.scope"))).toBeTruthy();
+      const control = screen.getByTestId("agent-tool-enable-mcp.search.query");
+      const wasEnabled = control.getAttribute("aria-checked") === "true";
+      fireEvent.click(control);
+      expect(
+        store.getState().permissionEditor?.grants["mcp.search.query"].agentOverrides?.[AGENT_A]
+          ?.enabled,
+      ).toBe(!wasEnabled);
+      expect(store.getState().permissionEditor?.snapshot.policy).toEqual(current.policy);
+      expect(screen.getByText(translate("connections.grants.modulePaused"))).toBe(status);
+    },
+  );
 
-  it("renders built-in tool with module paused status when globalEnabled is false", async () => {
-    const current = makeSnapshot();
-    const get = vi.fn(async () => structuredClone(current));
-    const getToolDir = vi.fn(async () => ({
-      tools: [
-        {
-          name: "memory.query",
-          description: "Query long-term memory",
-          parameters: {},
-          capability: "memory",
-          effect: "read" as const,
-          sandboxCallable: true,
-          origin: "system" as const,
-          globalEnabled: false,
-          functionId: "memory-query" as const,
-          resource: null,
-          revision: null,
-          approvalRequired: false,
-          directories: [],
-        },
-      ],
-    }));
+  it.each(["zh-CN", "en"] as const)(
+    "%s wraps both built-in status placements without inventing a grant",
+    async (locale) => {
+      const current = makeSnapshot();
+      const get = vi.fn(async () => structuredClone(current));
+      const getToolDir = vi.fn(async () => ({
+        tools: [
+          {
+            name: "memory.query",
+            description: "Query long-term memory",
+            parameters: {},
+            capability: "memory",
+            effect: "read" as const,
+            sandboxCallable: true,
+            invocation: "action" as const,
+            scope: "conversation" as const,
+            origin: "system" as const,
+            globalEnabled: false,
+            functionId: "memory-query" as const,
+            resource: null,
+            revision: null,
+            approvalRequired: false,
+            directories: [],
+          },
+        ],
+      }));
 
-    store.getState().resetForTests({
-      ...api,
-      getPermissions: get,
-      getToolDirectory: getToolDir,
-    });
-    store.setState({
-      editorAgentId: AGENT_A,
-      agents: [
-        AgentResponseSchema.parse({
-          id: AGENT_A,
-          name: "Alpha Agent",
-          model_name: "test-model",
-          config_version: 1,
-          persona_intensity: 60,
-          created_at: "2026-10-27T00:00:00.000Z",
-          updated_at: "2026-10-27T00:00:00.000Z",
-        }),
-      ],
-    });
+      store.getState().resetForTests({
+        ...api,
+        getPermissions: get,
+        getToolDirectory: getToolDir,
+      });
+      selectLocale(locale);
+      store.setState({
+        editorAgentId: AGENT_A,
+        agents: [
+          AgentResponseSchema.parse({
+            id: AGENT_A,
+            name: "Alpha Agent",
+            model_name: "test-model",
+            config_version: 1,
+            persona_intensity: 60,
+            created_at: "2026-10-27T00:00:00.000Z",
+            updated_at: "2026-10-27T00:00:00.000Z",
+          }),
+        ],
+      });
 
-    await act(async () => {
-      render(
-        React.createElement(
-          DesignSystemProvider,
-          null,
-          React.createElement(AgentToolScope, { agentId: AGENT_A, active: true }),
-        ),
-      );
-    });
+      await act(async () => {
+        render(
+          React.createElement(
+            DesignSystemProvider,
+            null,
+            React.createElement(AgentToolScope, { agentId: AGENT_A, active: true }),
+          ),
+        );
+      });
 
-    expect(screen.getByText("memory.query")).toBeTruthy();
-    expect(
-      screen.getAllByText(translate("connections.grants.modulePaused")).length,
-    ).toBeGreaterThan(0);
-  });
+      expect(screen.getByText("memory.query")).toBeTruthy();
+      const statuses = screen.getAllByText(translate("connections.grants.modulePaused"));
+      expect(statuses).toHaveLength(2);
+      for (const status of statuses) {
+        expect(status.getAttribute("data-wrap")).toBe("true");
+        expect(status.textContent).toBe(translate("connections.grants.modulePaused"));
+      }
+      expect(screen.getByText(translate("library.tools.for.agent.scope"))).toBeTruthy();
+      expect(screen.queryByTestId("agent-tool-enable-memory.query")).toBeNull();
+      expect(store.getState().permissionEditor?.snapshot.policy).toEqual(current.policy);
+    },
+  );
 
   it("savedbasevsdirtybase: initializing override from directory edit builds from saved effective grant, not dirty base draft", async () => {
     let current: PermissionsResponse = {
@@ -839,6 +907,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
           capability: "search",
           effect: "read" as const,
           sandboxCallable: false,
+          invocation: "action" as const,
+          scope: "conversation" as const,
           origin: "mcp" as const,
           globalEnabled: true,
           functionId: null,
@@ -907,9 +977,9 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
     expect(agentAOverride?.directories).not.toContain("/data/dirty-uncommitted");
 
     // 5. Scoped save of Agent A sends ONLY Agent A's override, preserving server baseline base
-    const saveBtn = screen.getByTestId("agent-tool-save-mcp.search.query");
+    expect(screen.queryByTestId("agent-tool-save-mcp.search.query")).toBeNull();
     await act(async () => {
-      fireEvent.click(saveBtn);
+      expect(await saveAgentToolsTask()).toBe(true);
     });
 
     expect(save).toHaveBeenCalledTimes(1);
@@ -966,6 +1036,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
           capability: "search",
           effect: "read" as const,
           sandboxCallable: false,
+          invocation: "action" as const,
+          scope: "conversation" as const,
           origin: "mcp" as const,
           globalEnabled: true,
           functionId: null,
@@ -1027,9 +1099,9 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
     expect(overrideDraft?.directories).toContain("/data/historical");
 
     // Scoped save persists the retained historical directory
-    const saveBtn = screen.getByTestId("agent-tool-save-mcp.search.query");
+    expect(screen.queryByTestId("agent-tool-save-mcp.search.query")).toBeNull();
     await act(async () => {
-      fireEvent.click(saveBtn);
+      expect(await saveAgentToolsTask()).toBe(true);
     });
 
     expect(save).toHaveBeenCalledTimes(1);
@@ -1131,6 +1203,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
           capability: "search",
           effect: "read" as const,
           sandboxCallable: false,
+          invocation: "action" as const,
+          scope: "conversation" as const,
           origin: "mcp" as const,
           globalEnabled: true,
           functionId: null,
@@ -1245,6 +1319,8 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
           capability: "search",
           effect: "read" as const,
           sandboxCallable: false,
+          invocation: "action" as const,
+          scope: "conversation" as const,
           origin: "mcp" as const,
           globalEnabled: true,
           functionId: null,
@@ -1325,9 +1401,9 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
     expect(overrideAfterUncheck?.revision).toBe("v1-base");
 
     // 4. Scoped save of Agent A sends ONLY Agent A's override, preserving server baseline and Agent B
-    const saveBtn = screen.getByTestId("agent-tool-save-mcp.search.query");
+    expect(screen.queryByTestId("agent-tool-save-mcp.search.query")).toBeNull();
     await act(async () => {
-      fireEvent.click(saveBtn);
+      expect(await saveAgentToolsTask()).toBe(true);
     });
 
     expect(save).toHaveBeenCalledTimes(1);
@@ -1337,3 +1413,140 @@ describe("agent tool permission scope: scoped save and isolation contracts", () 
     expect(submittedGrant.agentOverrides?.[AGENT_B]?.directories).toEqual(["/synthetic/dirB"]);
   });
 });
+
+it("shows resource-less QQ terminal scope without base inheritance or editable grants", async () => {
+  const getPermissions = vi.fn(async () => structuredClone(makeSnapshot()));
+  const terminal = {
+    name: "reply.text",
+    description: "Contribute text",
+    parameters: {},
+    capability: "conversation.reply",
+    effect: "write" as const,
+    sandboxCallable: false,
+    invocation: "host-terminal" as const,
+    scope: "qq-conversation" as const,
+    origin: "system" as const,
+    globalEnabled: true,
+    functionId: "qq-reply" as const,
+    resource: null,
+    revision: "reply-v1",
+    approvalRequired: false,
+    directories: [],
+  };
+  const getToolDirectory = vi.fn(async () => ({ tools: [terminal] }));
+  store.getState().resetForTests({ ...api, getPermissions, getToolDirectory });
+  store.setState({
+    editorAgentId: AGENT_A,
+    agents: [
+      AgentResponseSchema.parse({
+        id: AGENT_A,
+        name: "Alpha Agent",
+        model_name: "test-model",
+        config_version: 1,
+        persona_intensity: 60,
+        created_at: "2026-10-27T00:00:00.000Z",
+        updated_at: "2026-10-27T00:00:00.000Z",
+      }),
+    ],
+  });
+  await act(async () => {
+    render(
+      React.createElement(
+        DesignSystemProvider,
+        null,
+        React.createElement(AgentToolScope, { agentId: AGENT_A, active: true }),
+      ),
+    );
+  });
+  expect(screen.getByText("reply.text")).toBeTruthy();
+  expect(screen.getByText("QQ 会话")).toBeTruthy();
+  expect(screen.getByText("宿主提交")).toBeTruthy();
+  expect(screen.getByText(translate("connections.tools.hostTerminalHint"))).toBeTruthy();
+  expect(screen.queryByText(translate("connections.grants.baseScopeHint"))).toBeNull();
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  expect(getToolDirectory).toHaveBeenCalledTimes(1);
+  expect(store.getState().permissionEditor?.snapshot.policy.grants).toEqual(
+    makeSnapshot().policy.grants,
+  );
+});
+
+it.each(["zh-CN", "en"] as const)(
+  "%s preserves Agent tool search matching and scope while describing it outside the placeholder",
+  async (locale) => {
+    const getPermissions = vi.fn(async () => structuredClone(makeSnapshot()));
+    const savePermissions = vi.fn();
+    const entry = {
+      name: "memory.query",
+      description: "Recall distinctive evidence",
+      parameters: {},
+      capability: "memory.read",
+      effect: "read" as const,
+      sandboxCallable: true,
+      invocation: "action" as const,
+      scope: "conversation" as const,
+      origin: "system" as const,
+      globalEnabled: true,
+      functionId: "memory-query" as const,
+      resource: null,
+      revision: null,
+      approvalRequired: false,
+      directories: [],
+    };
+    const getToolDirectory = vi.fn(async () => ({
+      tools: [
+        entry,
+        {
+          ...entry,
+          name: "history.query",
+          description: "Browse history",
+          capability: "history.read",
+          functionId: "session-history-summary" as const,
+        },
+      ],
+    }));
+    store.getState().resetForTests({ ...api, getPermissions, getToolDirectory, savePermissions });
+    selectLocale(locale);
+    store.setState({ editorAgentId: AGENT_A });
+    await act(async () =>
+      render(
+        React.createElement(
+          DesignSystemProvider,
+          null,
+          React.createElement(AgentToolScope, { agentId: AGENT_A, active: true }),
+        ),
+      ),
+    );
+    const search = screen.getByRole("textbox", { name: translate("connections.tools.search") });
+    expect(search.getAttribute("placeholder")).toBe(
+      translate("connections.tools.searchPlaceholder"),
+    );
+    const description = document.getElementById(search.getAttribute("aria-describedby") ?? "");
+    expect(description?.textContent).toBe(translate("connections.tools.agentSearchHelp"));
+    const help = screen.getByRole("button", {
+      name: translate("hints.field.learnAbout", translate("connections.tools.searchPlaceholder")),
+    });
+    help.focus();
+    await userEvent.keyboard("{Enter}");
+    expect((await screen.findByRole("tooltip")).textContent).toContain(
+      translate("connections.tools.agentSearchHelp"),
+    );
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(help);
+    expect((await screen.findByRole("tooltip")).textContent).toContain(
+      translate("connections.tools.agentSearchHelp"),
+    );
+    await userEvent.keyboard("{Escape}");
+    fireEvent.change(search, { target: { value: "distinctive" } });
+    expect(screen.getByText("memory.query")).toBeTruthy();
+    expect(screen.queryByText("history.query")).toBeNull();
+    fireEvent.change(search, { target: { value: "history.query" } });
+    expect(screen.getByText("history.query")).toBeTruthy();
+    expect(screen.queryByText("memory.query")).toBeNull();
+    fireEvent.change(search, { target: { value: "" } });
+    expect(screen.getByText("memory.query")).toBeTruthy();
+    expect(screen.getByText(translate("library.tools.for.agent.scope"))).toBeTruthy();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(savePermissions).not.toHaveBeenCalled();
+    expect(getToolDirectory).toHaveBeenCalledTimes(1);
+  },
+);

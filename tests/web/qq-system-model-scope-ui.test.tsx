@@ -12,16 +12,32 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QqSettingsResponse } from "../../src/shared/contracts/qq";
-import { api } from "../../src/web/api";
+import { ApiError, api } from "../../src/web/api";
 import { DesignSystemProvider } from "../../src/web/design-system/Providers";
-import {
-  resetContextAllocationTarget,
-  setContextAllocationTarget,
-} from "../../src/web/features/context-allocation";
+
+const resetContextAllocationTarget = () =>
+  store.setState({
+    contextAllocationTarget: {
+      purpose: "assistant",
+      agentId: null,
+      schemeId: null,
+      bindingId: null,
+      returnRoute: null,
+      returnLabel: null,
+    },
+  });
+const setContextAllocationTarget = (
+  target: Partial<import("../../src/web/features/context-allocation").ContextAllocationTarget>,
+) =>
+  store.setState((state) => ({
+    contextAllocationTarget: { ...state.contextAllocationTarget, ...target },
+  }));
+
 import { selectLocale, translate } from "../../src/web/i18n";
 import { QqConnectionTab } from "../../src/web/screens/connections/qq-app-management";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";
 import { ModelPurposes } from "../../src/web/screens/environment/ModelPurposes";
+import { ModelDefaults } from "../../src/web/screens/environment/model-defaults";
 import { useSuperstringStore as store } from "../../src/web/store";
 
 const render = (...[ui, options]: Parameters<typeof renderView>) =>
@@ -108,6 +124,131 @@ afterEach(() => {
 });
 
 describe("system and QQ model scope UI", () => {
+  it.each(["zh-CN", "en"] as const)(
+    "distinguishes QQ unset from knowledge inheritance in %s",
+    async (locale) => {
+      await selectLocale(locale);
+      const client = createClient();
+      resetStore(client);
+      render(<QqConnectionTab active task="runtime" />);
+      const transcription = await screen.findByLabelText(translate("models.purpose.transcription"));
+      expect((transcription as HTMLInputElement).placeholder).toBe(translate("library.unset"));
+      expect(
+        document.getElementById(transcription.getAttribute("aria-describedby")!)?.textContent,
+      ).toBe(translate("models.mediaUnsetHint"));
+      cleanup();
+      render(<ModelDefaults scope="knowledge" />);
+      const knowledge = await screen.findByLabelText(translate("models.knowledgeModel"));
+      expect((knowledge as HTMLInputElement).placeholder).toBe(
+        translate("models.inheritPlaceholder"),
+      );
+      expect(
+        document.getElementById(knowledge.getAttribute("aria-describedby")!)?.textContent,
+      ).toBe(translate("models.knowledgeInheritHint"));
+      expect(client.saveOrganizationSettings).not.toHaveBeenCalled();
+    },
+  );
+  it("cancels the shared QQ capacity transport when truly hidden and ignores its late result", async () => {
+    let hidden = false;
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() =>
+      hidden ? "hidden" : "visible",
+    );
+    let signal!: AbortSignal;
+    let finish!: (value: Awaited<ReturnType<typeof api.getModelCapacity>>) => void;
+    const getModelCapacity = vi
+      .fn()
+      .mockImplementationOnce((_model: string, input?: AbortSignal) => {
+        signal = input!;
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      })
+      .mockResolvedValue({ model: "vision-model", status: "loaded", context_length: 64000 });
+    const client = createClient({ getModelCapacity });
+    resetStore(client);
+    render(<QqConnectionTab active task="runtime" />);
+    await waitFor(() => expect(signal).toBeDefined());
+    hidden = true;
+    fireEvent(document, new Event("visibilitychange"));
+    expect(signal.aborted).toBe(true);
+    finish({ model: "vision-model", status: "loaded", context_length: 128000 });
+    await act(async () => {});
+    expect(screen.queryByText(/128000/)).toBeNull();
+    hidden = false;
+    fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(getModelCapacity).toHaveBeenCalledTimes(2));
+    expect(await screen.findAllByText(/64000/)).toHaveLength(2);
+    fireEvent(window, new Event("blur"));
+    fireEvent(window, new Event("focus"));
+    expect(getModelCapacity).toHaveBeenCalledTimes(2);
+  });
+  it("document-hidden QQ runtime does not read organization and resumes once without changing scoped drafts", async () => {
+    let hidden = true;
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() =>
+      hidden ? "hidden" : "visible",
+    );
+    const client = createClient();
+    resetStore(client);
+    render(<QqConnectionTab active task="runtime" />);
+    await act(async () => {});
+    expect(client.getOrganizationSettings).not.toHaveBeenCalled();
+    expect(client.getModelCapacity).not.toHaveBeenCalled();
+    hidden = false;
+    fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(client.getOrganizationSettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(client.getModelCapacity).toHaveBeenCalledTimes(1));
+    store.getState().patchOrganizationPurposes({ visionModelName: "dirty-vision" });
+    hidden = true;
+    fireEvent(document, new Event("visibilitychange"));
+    hidden = false;
+    fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(client.getOrganizationSettings).toHaveBeenCalledTimes(2));
+    expect(store.getState().organizationEditor?.visionModelName).toBe("dirty-vision");
+    fireEvent(window, new Event("blur"));
+    fireEvent(window, new Event("focus"));
+    expect(client.getOrganizationSettings).toHaveBeenCalledTimes(2);
+  });
+  it("waits for the replacement API saved organization model before requesting capacity once for both roles", async () => {
+    const client = createClient();
+    resetStore(client);
+    render(<QqConnectionTab active task="runtime" />);
+    await waitFor(() => expect(client.getModelCapacity).toHaveBeenCalledTimes(1));
+    let finishOrganization!: (
+      value: Awaited<ReturnType<typeof api.getOrganizationSettings>>,
+    ) => void;
+    const getOrganizationSettings = vi.fn(
+      () =>
+        new Promise<Awaited<ReturnType<typeof api.getOrganizationSettings>>>((resolve) => {
+          finishOrganization = resolve;
+        }),
+    );
+    const replacement = createClient({
+      getOrganizationSettings,
+      getModelCapacity: vi.fn(async (model: string) => ({
+        model,
+        status: "loaded" as const,
+        context_length: 64000,
+      })),
+    });
+    act(() => store.setState({ apiClient: replacement }));
+    await waitFor(() => expect(getOrganizationSettings).toHaveBeenCalledTimes(1));
+    expect(replacement.getModelCapacity).not.toHaveBeenCalled();
+    await act(async () => {
+      finishOrganization({
+        model_name: "new-default",
+        vision_model_name: "new-vision-model",
+        transcription_model_name: null,
+        auxiliary_allocation: {},
+        revision: 9,
+      });
+    });
+    await waitFor(() => expect(replacement.getModelCapacity).toHaveBeenCalledTimes(1));
+    expect(replacement.getModelCapacity).toHaveBeenCalledWith(
+      "new-vision-model",
+      expect.any(AbortSignal),
+    );
+    expect(await screen.findAllByText(/64000/)).toHaveLength(2);
+  });
   it("keeps QQ auxiliary scope visible and makes role explanations available on demand", async () => {
     const client = createClient();
     resetStore(client);
@@ -149,7 +290,7 @@ describe("system and QQ model scope UI", () => {
     // 两个 QQ 角色：已存 vision 模型作为运行事实显示，容量只按模型读一次。
     expect(await screen.findAllByText(/128000/)).toHaveLength(2);
     expect(client.getModelCapacity).toHaveBeenCalledTimes(1);
-    expect(client.getModelCapacity).toHaveBeenCalledWith("vision-model");
+    expect(client.getModelCapacity).toHaveBeenCalledWith("vision-model", expect.any(AbortSignal));
   });
 
   it("retries a failed QQ settings read with exactly one extra request and shows the error once", async () => {
@@ -235,7 +376,10 @@ describe("system and QQ model scope UI", () => {
     store.setState({ apiClient: replacement });
     await act(async () => {});
     expect(replacement.getModelCapacity).toHaveBeenCalledTimes(1);
-    expect(replacement.getModelCapacity).toHaveBeenCalledWith("vision-model");
+    expect(replacement.getModelCapacity).toHaveBeenCalledWith(
+      "vision-model",
+      expect.any(AbortSignal),
+    );
 
     resolveOld({ model: "vision-model", status: "loaded", context_length: 128000 });
     await act(async () => {});
@@ -414,7 +558,7 @@ describe("system and QQ model scope UI", () => {
     expect(client.getQqStatus).not.toHaveBeenCalled();
     // 容量只按 knowledge_organize 的模型读（org-default），不是 vision-model。
     expect(client.getModelCapacity).toHaveBeenCalledTimes(1);
-    expect(client.getModelCapacity).toHaveBeenCalledWith("org-default");
+    expect(client.getModelCapacity).toHaveBeenCalledWith("org-default", expect.any(AbortSignal));
   });
 
   it("cold organization load failure offers retry and the retry succeeds without a duplicate read", async () => {
@@ -446,4 +590,144 @@ describe("system and QQ model scope UI", () => {
     expect(screen.getByText(translate("qq.models.title"))).toBeTruthy();
     expect(screen.getByText(translate("qq.aux.title"))).toBeTruthy();
   });
+});
+
+describe("QQ current-host conflict recovery", () => {
+  it.each(["model", "allocation"] as const)(
+    "refreshes a dirty %s conflict in place without saving or losing other scope drafts",
+    async (kind) => {
+      let hidden = false;
+      vi.spyOn(document, "visibilityState", "get").mockImplementation(() =>
+        hidden ? "hidden" : "visible",
+      );
+      let remote: Awaited<ReturnType<typeof api.getOrganizationSettings>> = {
+        revision: 1,
+        model_name: "org-default",
+        vision_model_name: "M1",
+        transcription_model_name: null,
+        auxiliary_allocation: {
+          qq_sticker_annotate: { mode: "fixed", input_limit: 100, output_reserved: 10 },
+        },
+      };
+      const saveOrganizationSettings = vi.fn<typeof api.saveOrganizationSettings>(async (body) => {
+        if (body.expected_revision !== remote.revision)
+          throw new ApiError(409, "ORGANIZATION_REVISION_CONFLICT", "conflict");
+        remote = { ...remote, ...body, revision: remote.revision + 1 };
+        return remote;
+      });
+      const client = createClient({
+        getOrganizationSettings: vi.fn(async () => remote),
+        saveOrganizationSettings,
+      });
+      resetStore(client);
+      render(<QqConnectionTab active task="runtime" />);
+      await waitFor(() => expect(store.getState().organizationEditor?.source.revision).toBe(1));
+      act(() => {
+        store.getState().patchOrganization("private-shared-draft");
+        if (kind === "model") store.getState().patchOrganizationPurposes({ visionModelName: "M2" });
+        else
+          store.getState().patchOrganizationAllocation({
+            qq_sticker_annotate: { mode: "fixed", input_limit: 200, output_reserved: 10 },
+          });
+      });
+      act(() => {
+        hidden = true;
+        fireEvent(document, new Event("visibilitychange"));
+      });
+      remote = {
+        ...remote,
+        revision: 2,
+        ...(kind === "model"
+          ? { vision_model_name: "M3" }
+          : {
+              auxiliary_allocation: {
+                qq_sticker_annotate: { mode: "fixed", input_limit: 300, output_reserved: 10 },
+              },
+            }),
+      };
+      act(() => {
+        hidden = false;
+        fireEvent(document, new Event("visibilitychange"));
+      });
+      await waitFor(() => expect(store.getState().organizationError).toBeTruthy());
+      expect(store.getState().organizationEditor?.source.revision).toBe(1);
+      const scope = kind === "model" ? "qq-models" : "allocation";
+      await act(async () => {
+        expect(
+          await store
+            .getState()
+            .saveOrganization(
+              scope,
+              kind === "allocation" ? ["qq_sticker_annotate", "qq_media_describe"] : undefined,
+            ),
+        ).toBe(false);
+      });
+      expect(saveOrganizationSettings).toHaveBeenCalledTimes(1);
+      expect(remote.revision).toBe(2);
+      const baseline = screen.getByRole("region", { name: translate("materials.savedBaseline") });
+      const refresh = screen.getByRole("button", {
+        name: translate("materials.refreshOrganization"),
+      });
+      await act(async () => fireEvent.click(refresh));
+      await waitFor(() => expect(store.getState().organizationEditor?.source.revision).toBe(2));
+      expect(saveOrganizationSettings).toHaveBeenCalledTimes(1);
+      expect(store.getState().organizationEditor?.modelName).toBe("private-shared-draft");
+      expect(
+        store.getState().organizationEditor?.[kind === "model" ? "visionModelName" : "modelName"],
+      ).toBe(kind === "model" ? "M2" : "private-shared-draft");
+      expect(baseline.textContent).toContain(kind === "model" ? "M3" : "300");
+      expect(baseline.textContent).not.toContain("input_limit");
+      if (kind === "allocation")
+        expect(
+          store.getState().organizationEditor?.auxiliaryAllocation?.qq_sticker_annotate
+            ?.input_limit,
+        ).toBe(200);
+      expect(store.getState().organizationError).toBeNull();
+      const modelGroup = screen
+        .getByRole("combobox", { name: translate("models.purpose.vision") })
+        .closest("section")!;
+      await act(async () =>
+        fireEvent.click(
+          kind === "model"
+            ? within(modelGroup).getByRole("button", { name: translate("library.save") })
+            : screen.getByTestId("aux-save-global-btn"),
+        ),
+      );
+      await waitFor(() => expect(saveOrganizationSettings).toHaveBeenCalledTimes(2));
+      const body = saveOrganizationSettings.mock.calls[1]![0];
+      expect(body.expected_revision).toBe(2);
+      expect(body).not.toHaveProperty("model_name");
+      if (kind === "model") {
+        expect(body.vision_model_name).toBe("M2");
+        expect(body).not.toHaveProperty("auxiliary_allocation");
+      } else {
+        expect(body.auxiliary_allocation?.qq_sticker_annotate?.input_limit).toBe(200);
+        expect(body).not.toHaveProperty("vision_model_name");
+      }
+      expect(client.updateQqSettings).not.toHaveBeenCalled();
+    },
+  );
+});
+
+it("keeps clean QQ runtime compact and shows only changed saved fields while refresh remains reachable", async () => {
+  const client = createClient();
+  resetStore(client);
+  render(<QqConnectionTab active task="runtime" />);
+  await waitFor(() => expect(store.getState().organizationEditor).not.toBeNull());
+  expect(screen.queryByRole("region", { name: translate("materials.savedBaseline") })).toBeNull();
+  expect(screen.queryByRole("heading", { name: translate("materials.localDraft") })).toBeNull();
+  expect(
+    screen.getByRole("button", { name: translate("materials.refreshOrganization") }),
+  ).toBeTruthy();
+  act(() => store.getState().patchOrganizationPurposes({ visionModelName: "different-vision" }));
+  const baseline = screen.getByRole("region", { name: translate("materials.savedBaseline") });
+  expect(baseline.textContent).toContain("vision-model");
+  expect(baseline.textContent).not.toContain(translate("models.purpose.transcription"));
+  expect(baseline.textContent).not.toContain(translate("schemes.allocation.aux.inputLimit"));
+  act(() => store.getState().discardOrganization("qq-models"));
+  expect(screen.queryByRole("region", { name: translate("materials.savedBaseline") })).toBeNull();
+  expect(
+    screen.getByRole("button", { name: translate("materials.refreshOrganization") }),
+  ).toBeTruthy();
+  expect(client.saveOrganizationSettings).not.toHaveBeenCalled();
 });

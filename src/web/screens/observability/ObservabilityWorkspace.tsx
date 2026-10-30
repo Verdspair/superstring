@@ -169,7 +169,7 @@ export function ExecutionWorkspace({
           {header && (
             <header className="flex flex-wrap items-start justify-between gap-4">
               <div className="space-y-2">
-                <h1 className="text-xl font-semibold tracking-tight">
+                <h1 className="workspace-section-title">
                   {t("observability.integrated.globalTitle")}
                 </h1>
                 <p className="text-sm text-muted-foreground">

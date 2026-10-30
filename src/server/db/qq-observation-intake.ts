@@ -12,7 +12,7 @@
 // read. It therefore never appears as a consolidation candidate. That is honest
 // rather than convenient: we cannot summarise an image we cannot yet read.
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { QqMessagePart } from "../../shared/contracts/qq-message";
 import { QQ_SYSTEM_FACE_LABELS } from "../../shared/qq-system-face-labels";
 import { fail, QqObservationConflictError } from "../errors";
@@ -24,96 +24,6 @@ import { purgeExpiredObservationText, storeObservationText } from "./qq-observat
 import { readQqRetentionDays } from "./qq-settings-repository";
 import { nowIso, type Orm } from "./repositories";
 import * as schema from "./schema";
-
-/**
- * The newest message a partner sent in this conversation, with the two facts the immediate reply
- * path needs (P5s): which event it is, and whether it was aimed at the assistant.
- *
- * Deliberately the same member/anonymous filter as `newestMemberMessageSeconds` — the screening is
- * the same question ("did a real partner speak?"), so the two must not drift apart.
- */
-export function newestMemberEventFor(
-  orm: Orm,
-  scope: {
-    accountId: string;
-    conversationKind: "group" | "private";
-    peerId: string;
-    agentId: string;
-  },
-  options: {
-    readonly attentionMembers?: readonly string[];
-    /**
-     * 只要"冲着助手来的"那一条。
-     *
-     * 为什么需要：立即路径此前只看**最新一条**消息，于是被 @ 之后、她开口之前只要群里又有人说了话，
-     * 那条 @ 就不再是最新消息——这一轮会去回别人，或者（她还没说过话时）整轮跳过，@ 被静默丢掉。
-     * 被叫到的那一条与最新的一条是两个不同的问题，所以这里给第二个问题一个显式的开关。
-     */
-    readonly addressedOnly?: boolean;
-  } = {},
-): {
-  eventKey: string;
-  occurredAtSeconds: number;
-  addressed: boolean;
-  /** 谁说的（匿名/系统为 null）——复核要不要跑，判据里要用它。 */
-  speakerId: string | null;
-} | null {
-  const row = orm
-    .select({
-      eventKey: schema.qqEvents.eventKey,
-      occurredAtSeconds: schema.qqEvents.occurredAtSeconds,
-      addressed: schema.qqEvents.addressed,
-      speakerId: schema.qqEvents.speakerId,
-    })
-    .from(schema.qqEvents)
-    .where(
-      and(
-        eq(schema.qqEvents.accountId, scope.accountId),
-        eq(schema.qqEvents.conversationKind, scope.conversationKind),
-        eq(schema.qqEvents.peerId, scope.peerId),
-        eq(schema.qqEvents.agentId, scope.agentId),
-        inArray(schema.qqEvents.speakerKind, ["member", "anonymous"]),
-        ...(options.addressedOnly ? [eq(schema.qqEvents.addressed, 1)] : []),
-        // 0031: the hard attention mode narrows "did a real partner speak?" to the listed people,
-        // so an @ from anyone else cannot start a reply either. Passed in rather than read from the
-        // binding here, because this function's caller already resolved the binding and its mode.
-        ...(options.attentionMembers === undefined
-          ? []
-          : [inArray(schema.qqEvents.speakerId, [...options.attentionMembers])]),
-      ),
-    )
-    .orderBy(desc(schema.qqEvents.occurredAtSeconds), desc(schema.qqEvents.eventKey))
-    .limit(1)
-    .get();
-  if (!row) return null;
-  return Object.freeze({
-    eventKey: row.eventKey,
-    occurredAtSeconds: row.occurredAtSeconds,
-    // NULL is a row written before migration 0027. "Unknown" is read as "not addressed": the
-    // other direction answers messages nobody aimed at the assistant.
-    addressed: row.addressed === 1,
-    speakerId: row.speakerId,
-  });
-}
-
-/**
- * 这一轮写好的句子要不要因为"群里又有新消息"而重来。
- *
- * 原来的判据是"群友事件数变了"——活跃群里任何一句闲话都会触发一次复核模型调用。用户选的口径是：
- * **只有冲着她来的新消息（被 @、回复她、私聊）或者来自她正在回的那个人**才值得重来；别人插一句
- * 无关的话，句子照发。
- *
- * 纯规则，读的事实由调用方给：`newest` 是当下最新的一条群友事件（含是否被叫到与发言人）。
- */
-export function memberEventNeedsReview(input: {
-  readonly newest: { readonly addressed: boolean; readonly speakerId: string | null } | null;
-  /** 这一轮在回谁；`null`＝没有具体对象（冷场发起）或匿名。 */
-  readonly targetSpeakerId: string | null;
-}): boolean {
-  if (input.newest === null) return false;
-  if (input.newest.addressed) return true;
-  return input.targetSpeakerId !== null && input.newest.speakerId === input.targetSpeakerId;
-}
 
 export interface RecordedObservation {
   readonly eventKey: string;

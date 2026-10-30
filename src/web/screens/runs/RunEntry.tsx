@@ -39,8 +39,7 @@ import {
 import { TraceTimeline } from "../observability/TraceTimeline";
 import { DeliveryEvidence } from "./DeliveryEvidence";
 
-// Root-selected renderer read bound for the trace waterfall chain (no shared
-// web read-concurrency owner exists). Chunks keep trace order and stop
+// Chunks bound concurrent waterfall reads, preserve trace order, and stop
 // launching new reads after a failure, matching the previous serial behavior.
 const WATERFALL_READ_CONCURRENCY = 4;
 
@@ -97,8 +96,9 @@ function RunEntry(
         </Button>
       </DialogTrigger>
       <DialogContent
+        scrollMode="body"
         showCloseButton={false}
-        className="gap-4 sm:max-w-6xl"
+        className="h-[min(90dvh,calc(100dvh-2rem))] gap-4 sm:max-w-6xl"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           close.current?.focus();
@@ -123,7 +123,7 @@ function RunEntry(
             </Button>
           </DialogClose>
         </header>
-        <ScrollArea className="h-[75dvh] pr-3 [&_[data-radix-scroll-area-viewport]>div]:block!">
+        <ScrollArea className="min-h-0 flex-1 pr-3">
           {open &&
             ("runId" in props ? <RunWorkspace runId={props.runId} /> : <RunAttempts {...props} />)}
         </ScrollArea>
@@ -801,6 +801,7 @@ export function RunWorkspace({
                     <div className="border-t p-3">
                       <EvidenceWorkbench
                         item={technicalSpan}
+                        renderRun={(runId) => <RunWorkspace runId={runId} />}
                         fullEvidence
                         includeDelivery={false}
                       />

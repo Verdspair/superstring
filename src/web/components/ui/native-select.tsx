@@ -21,7 +21,7 @@ function NativeSelect({
       data-slot="native-select"
       data-size={size}
       className={cn(
-        "h-[38px] w-full min-w-0 appearance-none rounded-[6px] border border-border bg-card pr-[32px] pl-[12px] text-[13.5px] leading-normal text-foreground transition-colors outline-none select-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-1 focus-visible:ring-primary disabled:pointer-events-none disabled:cursor-not-allowed aria-invalid:border-destructive aria-invalid:bg-destructive/10 aria-invalid:ring-1 aria-invalid:ring-destructive data-[size=sm]:h-[32px] data-[size=sm]:rounded-[6px] data-[size=sm]:px-2.5 data-[size=sm]:text-[12.5px]",
+        "h-[38px] w-full min-w-0 appearance-none rounded-[8px] border border-border bg-card pr-[32px] pl-[12px] text-[13.5px] leading-normal text-foreground transition-colors outline-none select-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-1 focus-visible:ring-primary disabled:pointer-events-none disabled:cursor-not-allowed aria-invalid:border-destructive aria-invalid:bg-destructive/10 aria-invalid:ring-1 aria-invalid:ring-destructive data-[size=sm]:h-[32px] data-[size=sm]:rounded-[8px] data-[size=sm]:px-2.5 data-[size=sm]:text-[12.5px]",
         selectClassName,
       )}
       {...props}

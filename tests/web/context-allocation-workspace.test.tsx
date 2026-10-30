@@ -13,12 +13,29 @@ import type { QqGroupConfigResponse } from "../../src/shared/contracts/qq-group-
 import { api } from "../../src/web/api";
 import { DesignSystemProvider } from "../../src/web/design-system/Providers";
 import { newPageEditor } from "../../src/web/features/agents/page-drafts";
-import {
-  getContextAllocationTarget,
-  openContextAllocation,
-  resetContextAllocationTarget,
-  setContextAllocationTarget,
-} from "../../src/web/features/context-allocation";
+
+const getContextAllocationTarget = () => store.getState().contextAllocationTarget;
+const openContextAllocation = (
+  target: Partial<import("../../src/web/features/context-allocation").ContextAllocationTarget> = {},
+) => store.getState().openContextAllocation(target);
+const resetContextAllocationTarget = () =>
+  store.setState({
+    contextAllocationTarget: {
+      purpose: "assistant",
+      agentId: null,
+      schemeId: null,
+      bindingId: null,
+      returnRoute: null,
+      returnLabel: null,
+    },
+  });
+const setContextAllocationTarget = (
+  target: Partial<import("../../src/web/features/context-allocation").ContextAllocationTarget>,
+) =>
+  store.setState((state) => ({
+    contextAllocationTarget: { ...state.contextAllocationTarget, ...target },
+  }));
+
 import { selectLocale } from "../../src/web/i18n";
 import { CapabilityEditor } from "../../src/web/screens/assistants/StudioEditors";
 import { SchemesWorkspace } from "../../src/web/screens/connections/SchemesWorkspace";

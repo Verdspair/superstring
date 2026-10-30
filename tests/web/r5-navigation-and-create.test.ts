@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { type AgentResponse, P5ConfigSchema } from "../../src/shared/contracts";
+import {
+  type AgentResponse,
+  P5ConfigSchema,
+  PersonaResponseSchema,
+} from "../../src/shared/contracts";
 import { ApiError, type SuperstringApi } from "../../src/web/api";
+import { newPageEditor } from "../../src/web/features/agents/page-drafts";
 import { fixtureStore as useSuperstringStore } from "./helpers/chat-fixture";
 
 const NOW = "2026-09-12T03:00:00.000Z";
@@ -45,6 +50,25 @@ const draft = {
   config_version: 1,
   persona_intensity: 60,
 };
+
+function personaFixture(id = AGENT_ID) {
+  return PersonaResponseSchema.parse({
+    id: "persona",
+    agent_id: id,
+    core_identity: "",
+    communication_style: "",
+    interaction_boundaries: "",
+    example_dialogues: "",
+    advanced_instructions: "",
+    created_at: NOW,
+    updated_at: NOW,
+  });
+}
+function dirtyEditor(agent = buildAgentResponse(AGENT_ID, draft.name)) {
+  const editor = newPageEditor(agent, personaFixture(agent.id));
+  editor.draft.description = "未保存描述";
+  return editor;
+}
 
 function fakeClient(overrides: Partial<SuperstringApi> = {}): SuperstringApi {
   return overrides as SuperstringApi;
@@ -303,8 +327,8 @@ describe("R5 未保存导航保护", () => {
           updated_at: NOW,
         },
       ],
-      activeSection: "A",
-      dirty: true,
+      dirty: false,
+      pageEditor: dirtyEditor(),
     });
   });
 
@@ -314,7 +338,7 @@ describe("R5 未保存导航保护", () => {
     expect(state.page).toBe("settings");
     expect(state.settingsView).toBe("agents");
     expect(state.pendingNavigation).toEqual({ kind: "page", page: "chat", settingsView: "hub" });
-    expect(state.navigationConfirmMessage).toBe("当前 Agent 有未保存修改，是否先保存再离开？");
+    expect(state.navigationConfirmMessage).toBe("设置中有未保存页面，是否全部保存再继续？");
   });
 
   it("取消导航会保留草稿、dirty 与当前位置", () => {
@@ -323,7 +347,7 @@ describe("R5 未保存导航保护", () => {
     const state = useSuperstringStore.getState();
     expect(state.page).toBe("settings");
     expect(state.settingsView).toBe("agents");
-    expect(state.dirty).toBe(true);
+    expect(useSuperstringStore.getState().settingsTaskDirty("identity")).toBe(true);
     expect(state.pendingNavigation).toBeNull();
   });
 
@@ -347,7 +371,9 @@ describe("R5 未保存导航保护", () => {
   });
 
   it("保存失败时保持目标排队、保持 dirty，并继续显示确认区", async () => {
-    const updateAgent = vi.fn().mockRejectedValue(new Error("版本冲突"));
+    const updateAgent = vi
+      .fn()
+      .mockRejectedValue(new ApiError(409, "VERSION_CONFLICT", "版本冲突"));
     useSuperstringStore.setState({ apiClient: fakeClient({ updateAgent }) });
     useSuperstringStore.getState().requestPageNavigation("chat");
 
@@ -357,8 +383,8 @@ describe("R5 未保存导航保护", () => {
     expect(state.page).toBe("settings");
     expect(state.pendingNavigation).toEqual({ kind: "page", page: "chat", settingsView: "hub" });
     expect(state.navigationConfirmOpen).toBe(true);
-    expect(state.navigationConfirmMessage).toContain("保存失败：版本冲突");
-    expect(state.dirty).toBe(true);
+    expect(state.navigationConfirmMessage).toContain("保存未全部完成");
+    expect(useSuperstringStore.getState().settingsTaskDirty("identity")).toBe(true);
   });
 
   it("切换 Agent 时 dirty 会阻止立即读取目标 Agent", () => {
@@ -373,142 +399,105 @@ describe("R5 未保存导航保护", () => {
   });
 });
 
-describe("R6 A/B/C 分区保存隔离", () => {
-  const savedAgent = {
-    id: AGENT_ID,
-    ...draft,
-    system_prompt: "",
-    created_at: NOW,
-    updated_at: NOW,
-  };
-
-  beforeEach(() => {
+describe("R6 当前任务保存隔离", () => {
+  const savedAgent = buildAgentResponse(AGENT_ID, draft.name);
+  beforeEach(() =>
     useSuperstringStore.setState({
-      status: "ready",
       editorAgentId: AGENT_ID,
       editorDraft: draft,
       agents: [savedAgent],
-      dirty: true,
-    });
-  });
-
-  it("A 只提交基础字段，不覆盖 B/C 草稿", async () => {
-    const updateAgent = vi.fn().mockResolvedValue(savedAgent);
-    useSuperstringStore.setState({
-      activeSection: "A",
-      apiClient: fakeClient({ updateAgent }),
-    });
-
-    expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(true);
-
+      pageEditor: newPageEditor(savedAgent, personaFixture()),
+    }),
+  );
+  it("基础页只提交基础字段，不覆盖模型与上下文草稿", async () => {
+    const updateAgent = vi
+      .fn()
+      .mockResolvedValue({ ...savedAgent, name: "改名", config_version: 2 });
+    useSuperstringStore.setState({ apiClient: fakeClient({ updateAgent }) });
+    useSuperstringStore.getState().patchPageAgent("basic", { name: "改名" });
+    useSuperstringStore.getState().patchPageAgent("models", { model_name: "未保存模型" });
+    expect(await useSuperstringStore.getState().saveSettingsPage("basic")).toBe(true);
     expect(updateAgent).toHaveBeenCalledWith(AGENT_ID, {
-      name: draft.name,
+      name: "改名",
       description: draft.description,
-      additional_instructions: draft.additional_instructions,
-      model_name: draft.model_name,
-      temperature: draft.temperature,
       is_active: draft.is_active,
       expected_version: draft.config_version,
     });
+    expect(useSuperstringStore.getState().pageEditor?.draft.model_name).toBe("未保存模型");
   });
-
-  it("B 只提交记忆字段并保留持久化的 C 配置", async () => {
-    const changed = {
-      ...draft,
-      context_compression_model_name: "不应随 B 保存",
-      p5_config: {
-        ...draft.p5_config,
-        retrieval_mode: "broad" as const,
-        context_window: 65536,
-      },
-    };
-    const updateAgent = vi.fn().mockResolvedValue(savedAgent);
-    useSuperstringStore.setState({
-      activeSection: "B",
-      editorDraft: changed,
-      apiClient: fakeClient({ updateAgent }),
+  it("资料任务只提交记忆读取字段并保留持久化的上下文及私有历史值", async () => {
+    const updateAgent = vi.fn().mockResolvedValue({
+      ...savedAgent,
+      config_version: 2,
+      p5_config: { ...savedAgent.p5_config, memory_read: { enabled: false, max_bytes: 2048 } },
     });
-
-    expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(true);
-
+    useSuperstringStore.setState({ apiClient: fakeClient({ updateAgent }) });
+    useSuperstringStore.getState().patchPageAgent("memory-tools", {
+      p5_config: { ...draft.p5_config, memory_read: { enabled: false, max_bytes: 2048 } },
+    });
+    useSuperstringStore
+      .getState()
+      .patchPageAgent("context", { p5_config: { ...draft.p5_config, context_window: 65536 } });
+    useSuperstringStore
+      .getState()
+      .patchPageAgent("models", { context_compression_model_name: "不应随资料保存" });
+    expect(await useSuperstringStore.getState().saveSettingsTask("materials")).toBe(true);
     const payload = updateAgent.mock.calls[0][1];
     expect(payload).not.toHaveProperty("name");
     expect(payload).not.toHaveProperty("context_compression_model_name");
     expect(payload.p5_config.context_window).toBe(savedAgent.p5_config.context_window);
-    expect(payload.p5_config.retrieval_mode).toBe("broad");
-    expect(useSuperstringStore.getState().editorDraft?.context_compression_model_name).toBe(
-      "不应随 B 保存",
+    expect(payload.p5_config.memory_read).toEqual({ enabled: false, max_bytes: 2048 });
+    expect(payload.p5_config.retrieval_mode).toBe(savedAgent.p5_config.retrieval_mode);
+    expect(useSuperstringStore.getState().pageEditor?.draft.context_compression_model_name).toBe(
+      "不应随资料保存",
     );
-    expect(useSuperstringStore.getState().editorDraft?.p5_config.context_window).toBe(65536);
+    expect(useSuperstringStore.getState().pageEditor?.draft.p5_config.context_window).toBe(65536);
   });
-
-  it("C 只提交上下文字段并保留持久化的 B 配置", async () => {
-    const changed = {
-      ...draft,
-      memory_retrieval_prompt: "不应随 C 保存",
-      p5_config: {
-        ...draft.p5_config,
-        retrieval_mode: "broad" as const,
-        context_window: 65536,
-      },
-    };
+  it("上下文只提交当前上下文字段并保留记忆读取草稿", async () => {
     const updateAgent = vi.fn().mockResolvedValue({
       ...savedAgent,
-      context_compression_model_name: changed.context_compression_model_name,
-      p5_config: {
-        ...savedAgent.p5_config,
-        context_window: 65536,
-      },
       config_version: 2,
+      p5_config: { ...savedAgent.p5_config, context_window: 65536 },
     });
     useSuperstringStore.setState({
-      activeSection: "C",
-      editorDraft: changed,
       apiClient: fakeClient({
         updateAgent,
-        getModelCapacity: vi.fn().mockResolvedValue({
-          model: draft.model_name,
-          status: "loaded",
-          context_length: 131072,
-        }),
+        getModelCapacity: vi
+          .fn()
+          .mockResolvedValue({ model: draft.model_name, status: "loaded", context_length: 131072 }),
       }),
     });
-
-    expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(true);
-
+    useSuperstringStore
+      .getState()
+      .patchPageAgent("context", { p5_config: { ...draft.p5_config, context_window: 65536 } });
+    useSuperstringStore.getState().patchPageAgent("memory-tools", {
+      p5_config: { ...draft.p5_config, memory_read: { enabled: false, max_bytes: 2048 } },
+    });
+    expect(await useSuperstringStore.getState().saveSettingsPage("context")).toBe(true);
     const payload = updateAgent.mock.calls[0][1];
     expect(payload).not.toHaveProperty("name");
     expect(payload).not.toHaveProperty("memory_retrieval_prompt");
     expect(payload.p5_config.retrieval_mode).toBe(savedAgent.p5_config.retrieval_mode);
     expect(payload.p5_config.context_window).toBe(65536);
-    expect(useSuperstringStore.getState().editorDraft?.memory_retrieval_prompt).toBe(
-      "不应随 C 保存",
-    );
-    expect(useSuperstringStore.getState().editorDraft?.p5_config.retrieval_mode).toBe("broad");
-  });
-
-  it("C 自定义预算保存前 fail closed 校验模型实际容量", async () => {
-    const changed = {
-      ...draft,
-      p5_config: { ...draft.p5_config, context_window: 65536 },
-    };
-    const updateAgent = vi.fn();
-    useSuperstringStore.setState({
-      activeSection: "C",
-      editorDraft: changed,
-      apiClient: fakeClient({
-        updateAgent,
-        getModelCapacity: vi.fn().mockResolvedValue({
-          model: draft.model_name,
-          status: "loaded",
-          context_length: 32768,
-        }),
-      }),
+    expect(useSuperstringStore.getState().pageEditor?.draft.p5_config.memory_read).toEqual({
+      enabled: false,
+      max_bytes: 2048,
     });
-
-    expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(false);
+  });
+  it("上下文自定义预算保存前 fail closed 校验模型实际容量", async () => {
+    const updateAgent = vi.fn();
+    const getModelCapacity = vi
+      .fn()
+      .mockResolvedValue({ model: draft.model_name, status: "loaded", context_length: 32768 });
+    useSuperstringStore.setState({ apiClient: fakeClient({ updateAgent, getModelCapacity }) });
+    useSuperstringStore
+      .getState()
+      .patchPageAgent("context", { p5_config: { ...draft.p5_config, context_window: 65536 } });
+    expect(await useSuperstringStore.getState().saveSettingsPage("context")).toBe(false);
+    expect(getModelCapacity).toHaveBeenCalledWith(draft.model_name);
     expect(updateAgent).not.toHaveBeenCalled();
-    expect(useSuperstringStore.getState().feedback).toBe("自定义上下文超过模型实际容量32768");
+    expect(useSuperstringStore.getState().error).toBe("自定义上下文超过模型实际容量32768");
+    expect(useSuperstringStore.getState().settingsTaskDirty("conversation")).toBe(true);
   });
 });
 
@@ -601,7 +590,8 @@ describe("R5 首次打开入口默认规则", () => {
       editorAgentId: AGENT_ID,
       editorDraft: { ...draft },
       agents: [buildAgentResponse(AGENT_ID, "助手A")],
-      dirty: true,
+      dirty: false,
+      pageEditor: dirtyEditor(),
     });
 
     useSuperstringStore.getState().openAgentSettings();
@@ -675,8 +665,8 @@ describe("R5 dirty 切换新建取消/放弃/保存失败", () => {
     editorAgentId: AGENT_ID,
     editorDraft: { ...draft },
     agents: [buildAgentResponse(AGENT_ID, "助手A")],
-    activeSection: "A" as const,
-    dirty: true,
+    dirty: false,
+    pageEditor: dirtyEditor(),
   };
 
   it("取消保留草稿", () => {
@@ -692,7 +682,7 @@ describe("R5 dirty 切换新建取消/放弃/保存失败", () => {
     const state = useSuperstringStore.getState();
     expect(state.editorAgentId).toBe(AGENT_ID);
     expect(state.editorDraft?.name).toBe(draft.name);
-    expect(state.dirty).toBe(true);
+    expect(useSuperstringStore.getState().settingsTaskDirty("identity")).toBe(true);
     expect(state.pendingNavigation).toBeNull();
   });
 
@@ -709,7 +699,9 @@ describe("R5 dirty 切换新建取消/放弃/保存失败", () => {
   });
 
   it("保存失败保留草稿不重置", async () => {
-    const updateAgent = vi.fn().mockRejectedValue(new Error("版本冲突"));
+    const updateAgent = vi
+      .fn()
+      .mockRejectedValue(new ApiError(409, "VERSION_CONFLICT", "版本冲突"));
     useSuperstringStore.setState({
       ...base,
       apiClient: fakeClient({ updateAgent }),
@@ -721,7 +713,7 @@ describe("R5 dirty 切换新建取消/放弃/保存失败", () => {
     const state = useSuperstringStore.getState();
     expect(state.editorAgentId).toBe(AGENT_ID);
     expect(state.editorDraft?.name).toBe(draft.name);
-    expect(state.dirty).toBe(true);
+    expect(useSuperstringStore.getState().settingsTaskDirty("identity")).toBe(true);
     expect(state.pendingNavigation).toEqual({ kind: "agent", id: "__new__" });
     expect(state.navigationConfirmOpen).toBe(true);
   });
@@ -733,17 +725,21 @@ describe("R5 创建流程真实行为", () => {
     const createAgent = vi.fn().mockResolvedValue(created);
     const updateAgent = vi.fn().mockResolvedValue({ ...created, description: "改后" });
     useSuperstringStore.setState({
-      apiClient: fakeClient({ createAgent, updateAgent }),
+      apiClient: fakeClient({
+        createAgent,
+        updateAgent,
+        getPersona: vi.fn().mockResolvedValue(personaFixture(NEW_ID)),
+      }),
     });
 
     await useSuperstringStore.getState().editAgent("__new__");
-    useSuperstringStore.getState().patchDraft({ name: "新建助手" });
-    expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(true);
+    useSuperstringStore.getState().patchNewAgentDraft({ name: "新建助手" });
+    expect(await useSuperstringStore.getState().createAgent()).toBe(true);
     expect(useSuperstringStore.getState().editorAgentId).toBe(NEW_ID);
     expect(useSuperstringStore.getState().feedback).toContain("新建助手");
 
-    useSuperstringStore.getState().patchDraft({ description: "改后" });
-    expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(true);
+    useSuperstringStore.getState().patchPageAgent("basic", { description: "改后" });
+    expect(await useSuperstringStore.getState().saveSettingsTask("identity")).toBe(true);
     expect(createAgent).toHaveBeenCalledTimes(1);
     expect(updateAgent).toHaveBeenCalledTimes(1);
   });
@@ -753,8 +749,8 @@ describe("R5 创建流程真实行为", () => {
     useSuperstringStore.setState({ apiClient: fakeClient({ createAgent }) });
 
     await useSuperstringStore.getState().editAgent("__new__");
-    useSuperstringStore.getState().patchDraft({ name: "草稿名" });
-    expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(false);
+    useSuperstringStore.getState().patchNewAgentDraft({ name: "草稿名" });
+    expect(await useSuperstringStore.getState().createAgent()).toBe(false);
 
     const state = useSuperstringStore.getState();
     expect(state.editorDraft).not.toBeNull();
@@ -765,20 +761,16 @@ describe("R5 创建流程真实行为", () => {
   });
 });
 
-describe("R5 创建前分区保护", () => {
-  it("新建草稿保存非 A 分区被拦截并提示先创建基础记录", async () => {
-    await useSuperstringStore.getState().editAgent("__new__");
-    useSuperstringStore.getState().patchDraft({ name: "草稿名" });
-    // 新建草稿实际只停留在 A 分区；直接构造非 A 位置，验证保存层仍拒绝未创建的跨分区保存。
-    useSuperstringStore.setState({ activeSection: "B" });
+describe("R5 创建前任务保护", () => {
+  it("未创建草稿不能走已有记录任务保存，并保留草稿与dirty", async () => {
     const createAgent = vi.fn();
     useSuperstringStore.setState({ apiClient: fakeClient({ createAgent }) });
-
-    expect(await useSuperstringStore.getState().saveCurrentSection()).toBe(false);
-
-    const state = useSuperstringStore.getState();
-    expect(state.feedback).toContain("请先创建 Agent 基础记录");
-    expect(state.editorDraft?.name).toBe("草稿名");
+    await useSuperstringStore.getState().editAgent("__new__");
+    useSuperstringStore.getState().patchNewAgentDraft({ name: "草稿名" });
+    for (const task of ["identity", "conversation", "materials", "tools"] as const)
+      expect(await useSuperstringStore.getState().saveSettingsTask(task)).toBe(false);
+    expect(useSuperstringStore.getState().editorDraft?.name).toBe("草稿名");
+    expect(useSuperstringStore.getState().dirty).toBe(true);
     expect(createAgent).not.toHaveBeenCalled();
   });
 });
@@ -793,11 +785,11 @@ describe("R5 放弃修改并离开页面", () => {
       editorDraft: { ...draft },
       agents: [buildAgentResponse(AGENT_ID, "助手A"), buildAgentResponse(OTHER_AGENT_ID, "助手B")],
       selectedNewSessionAgentId: OTHER_AGENT_ID,
-      activeSection: "A",
-      dirty: true,
+      dirty: false,
+      pageEditor: dirtyEditor(),
       apiClient: editClient(OTHER_AGENT_ID, "助手B"),
     });
-    useSuperstringStore.getState().patchDraft({ name: "改动" });
+    useSuperstringStore.getState().patchPageAgent("basic", { name: "改动" });
     useSuperstringStore.getState().requestPageNavigation("chat");
 
     await useSuperstringStore.getState().confirmDiscardAndContinue();
@@ -828,8 +820,8 @@ describe("R5 放弃时目标读取失败可重试", () => {
       editorAgentId: AGENT_ID,
       editorDraft: { ...draft },
       agents: [buildAgentResponse(AGENT_ID, "助手A")],
-      activeSection: "A",
-      dirty: true,
+      dirty: false,
+      pageEditor: dirtyEditor(),
       apiClient: fakeClient({
         getAgent,
         getPersona: vi.fn(),

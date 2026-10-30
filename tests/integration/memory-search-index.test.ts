@@ -105,13 +105,72 @@ function fixture() {
       conversationId: conversation.id,
       owner: { ...owner, id: options.ownerId ?? owner.id },
       scopes: null,
-      mode: "standard",
       query: text,
       ...(options.cursor ? { cursor: options.cursor } : {}),
       budget: DEFAULT_STANDARD_PRESET.max_tokens,
     });
   };
   return { business, orm, seed, query, turnId };
+}
+
+function traceSearchReads(db: ReturnType<typeof openBusinessDb>["db"]) {
+  const query = db.query;
+  const prepare = db.prepare;
+  const calls: {
+    sql: string;
+    method: "get" | "all" | "values";
+    countVector: boolean;
+    inTransaction: boolean;
+  }[] = [];
+  const wrap = (sql: string, statement: ReturnType<typeof db.query>) =>
+    new Proxy(statement, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if ((key === "get" || key === "all" || key === "values") && typeof value === "function") {
+          const method = key;
+          return (...params: unknown[]) => {
+            const result = Reflect.apply(value, target, params);
+            const countVector =
+              key === "get" &&
+              result !== null &&
+              typeof result === "object" &&
+              ["entries", "mappings", "indexed", "invalid"].every((field) =>
+                Object.hasOwn(result, field),
+              );
+            calls.push({ sql, method, countVector, inTransaction: db.inTransaction });
+            return result;
+          };
+        }
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  db.query = ((sql: string, ...args: unknown[]) =>
+    wrap(sql, Reflect.apply(query, db, [sql, ...args]))) as typeof db.query;
+  db.prepare = ((sql: string, ...args: unknown[]) =>
+    wrap(sql, Reflect.apply(prepare, db, [sql, ...args]))) as typeof db.prepare;
+  return {
+    calls,
+    reset() {
+      calls.length = 0;
+    },
+    stop() {
+      db.query = query;
+      db.prepare = prepare;
+    },
+    counts() {
+      // The layout pass has the invalid predicate but no exact-match score expression.
+      const layoutProbes = calls.filter(({ sql, method, countVector }) => {
+        if (countVector) return false;
+        const normalized = sql.replace(/["`]/g, "").replace(/\s+/g, " ").toLowerCase();
+        return (
+          (method === "all" || method === "values") &&
+          normalized.includes("folded_search is null") &&
+          !normalized.includes("instr(")
+        );
+      });
+      return { integrity: calls.filter((call) => call.countVector), layoutProbes };
+    },
+  };
 }
 
 describe("memory search trigram index", () => {
@@ -281,6 +340,101 @@ describe("memory search trigram index", () => {
           .get(),
       ).toBeNull();
       expect((await f.query("needle", { rebuild: false })).items).toEqual([]);
+    } finally {
+      f.business.close();
+    }
+  });
+  for (const size of [1, 400, 4000]) {
+    it(`reads one live integrity vector and skips only the empty scoped layout probe for ${size} rows`, async () => {
+      const f = fixture();
+      try {
+        f.business.db.transaction(() => {
+          for (let n = 0; n < size; n++)
+            f.seed(
+              `work_${String(n).padStart(5, "0")}`,
+              n === 0 ? "needle" : "ordinary",
+              n === 0 ? "花园" : "unrelated",
+            );
+        })();
+        let afterId: string | undefined;
+        do {
+          const page = immediate(f.business.db, () =>
+            rebuildMemorySearchProjection(f.orm, DEFAULT_AGENT_ID, { afterId, limit: 300 }),
+          );
+          afterId = page.nextAfterId ?? undefined;
+        } while (afterId);
+        const trace = traceSearchReads(f.business.db);
+        try {
+          const first = await f.query("needle", { rebuild: false });
+          expect(first.status).toBe("ok");
+          expect(first.items.map((item) => item.id)).toEqual(["work_00000"]);
+          expect(trace.counts().integrity).toHaveLength(1);
+          expect(trace.counts().integrity.every((call) => call.inTransaction)).toBe(true);
+          expect(trace.counts().layoutProbes).toHaveLength(0);
+          trace.reset();
+          const short = await f.query("花园", { rebuild: false });
+          expect(short.items.map((item) => item.id)).toEqual(["work_00000"]);
+          expect(trace.counts().integrity).toHaveLength(0);
+          expect(trace.counts().layoutProbes).toHaveLength(1);
+          trace.reset();
+          f.business.db
+            .query("UPDATE memory_entries SET folded_search=NULL WHERE id='work_00000'")
+            .run();
+          const invalid = await f.query("needle", { rebuild: false });
+          expect(invalid.status).toBe("unavailable");
+          expect(invalid.code).toBe("MEMORY_SEARCH_REPAIR_NEEDED");
+          expect(invalid.items).toEqual([]);
+          expect(trace.counts().integrity).toHaveLength(1);
+          expect(trace.counts().layoutProbes).toHaveLength(1);
+          trace.reset();
+          const invalidShort = await f.query("花园", { rebuild: false });
+          expect(invalidShort.code).toBe("MEMORY_SEARCH_REPAIR_NEEDED");
+          expect(trace.counts().integrity).toHaveLength(0);
+          expect(trace.counts().layoutProbes).toHaveLength(1);
+        } finally {
+          trace.stop();
+        }
+      } finally {
+        f.business.close();
+      }
+    });
+  }
+
+  it("keeps live index loss fallback and ignores only source-ineligible malformed rows", async () => {
+    const f = fixture();
+    try {
+      f.seed("good", "needle", "花园");
+      f.seed("orphan", "needle", "unavailable source");
+      await f.query("needle");
+      f.business.db.query("DELETE FROM memory_sources WHERE memory_id='orphan'").run();
+      f.business.db.query("UPDATE memory_entries SET folded_search=NULL WHERE id='orphan'").run();
+      const trace = traceSearchReads(f.business.db);
+      try {
+        expect((await f.query("needle", { rebuild: false })).items.map((item) => item.id)).toEqual([
+          "good",
+        ]);
+        expect(trace.counts().integrity).toHaveLength(1);
+        expect(trace.counts().layoutProbes).toHaveLength(1);
+        trace.reset();
+        f.business.db
+          .query(
+            "DELETE FROM memory_search_fts WHERE rowid=(SELECT index_id FROM memory_search_index_ids WHERE memory_id='good')",
+          )
+          .run();
+        expect((await f.query("needle", { rebuild: false })).items.map((item) => item.id)).toEqual([
+          "good",
+        ]);
+        expect(trace.counts().integrity).toHaveLength(1);
+        expect(trace.counts().layoutProbes).toHaveLength(1);
+        trace.reset();
+        f.business.db.query("DELETE FROM memory_search_index_ids WHERE memory_id='good'").run();
+        expect((await f.query("needle", { rebuild: false })).items.map((item) => item.id)).toEqual([
+          "good",
+        ]);
+        expect(trace.counts().integrity).toHaveLength(1);
+      } finally {
+        trace.stop();
+      }
     } finally {
       f.business.close();
     }

@@ -11,7 +11,13 @@ import { CapabilityPolicyPanel } from "./capability-policy-panel";
 import { ToolGrantsPanel } from "./tool-grants-panel";
 
 // 端点草稿持久在 store：跨路由保留，离开设置页时参与保存/放弃守卫。
-export function WebAccessPanel({ active = true }: { active?: boolean } = {}) {
+export function WebAccessPanel({
+  active = true,
+  embedded = false,
+}: {
+  active?: boolean;
+  embedded?: boolean;
+} = {}) {
   const { t } = useTranslation();
   const snapshot = useSuperstringStore((s) => s.webAccessSnapshot);
   const loading = useSuperstringStore((s) => s.webAccessLoading);
@@ -59,14 +65,16 @@ export function WebAccessPanel({ active = true }: { active?: boolean } = {}) {
     }
   };
   return (
-    <div className="w-full min-w-0 space-y-8 px-4 py-6">
+    <div className="w-full min-w-0 space-y-8 py-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 className="workspace-section-title">{t("connections.web.title")}</h2>
-          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            {t("connections.web.description")}
-          </p>
-        </div>
+        {!embedded && (
+          <div>
+            <h2 className="workspace-section-title">{t("connections.web.title")}</h2>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              {t("connections.web.description")}
+            </p>
+          </div>
+        )}
         <Button
           variant="outline"
           tooltip={t("hints.system.webRefresh")}

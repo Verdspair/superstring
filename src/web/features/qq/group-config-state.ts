@@ -57,6 +57,8 @@ export interface QqGroupConfigEditor {
   disabledCapabilities: QqGroupCapability[];
   /** 待切换的基础方案；与当前基线相同＝没有待办。 */
   schemeId?: string;
+  /** Target revision captured when the user chooses keep/reset, not at the later save. */
+  schemeRevision?: number;
   /** 换基线时已选的处置：keep 保留本群自定义，reset 全部跟随新方案。确认前不写入。 */
   schemeChange?: "keep" | "reset";
   /** reset 预览清空前的上一份自定义与非法原文：取消待办或改选 keep 时原样还原。 */
@@ -229,6 +231,34 @@ const changeValueText = (group: string, name: string, value: unknown): string =>
     : valueText(value);
 
 const copyValue = (value: unknown): unknown => (Array.isArray(value) ? [...value] : value);
+
+/** Values the user is deciding to retain or clear when changing the base scheme. */
+export function qqGroupSchemeChangeRows(
+  overrides: QqGroupSchemeOverrides,
+  target: QqSchemeResponse,
+) {
+  const rows: { key: string; current: string; next: string }[] = [];
+  for (const [group, fields] of Object.entries(bagOf(overrides))) {
+    for (const [name, value] of Object.entries(fields)) {
+      if (value === undefined) continue;
+      const add = (field: string, current: unknown) => {
+        const next = baseFieldValue(target, group, field);
+        rows.push({
+          key: `${group}.${field}`,
+          current: changeValueText(group, field, current),
+          next: next === undefined ? "—" : changeValueText(group, field, next),
+        });
+      };
+      if (group === "media_input" && name === "stages") {
+        for (const [stage, enabled] of Object.entries(value as Record<string, unknown>))
+          add(`stages.${stage}`, enabled);
+      } else if (group === "allocation") {
+        add(`${name}.mode`, (value as { mode: string }).mode);
+      } else add(name, value);
+    }
+  }
+  return rows;
+}
 
 /** 只保留基础方案里存在且未退役的字段（0052 的嵌套 stages 逐字段过滤）；空组不保留（稀疏）。 */
 function sanitizeOverrides(
@@ -911,6 +941,7 @@ export function mergeQqGroupConfigEditor(
       ]),
     ],
     schemeId: editor.schemeId,
+    schemeRevision: editor.schemeRevision,
     schemeChange: editor.schemeChange,
     previousOverrides: editor.previousOverrides,
     previousRawTexts: editor.previousRawTexts,
@@ -1051,6 +1082,11 @@ export function createQqGroupConfigActions(
               qqGroupConfigLoading: false,
             };
           const merged = mergeQqGroupConfigEditor(editor, fresh);
+          if (merged.schemeId !== undefined) {
+            merged.schemeRevision = current.qqSchemes.find(
+              (row) => row.id === merged.schemeId,
+            )?.revision;
+          }
           return {
             qqGroupConfigEditor: merged,
             qqGroupConfigLoading: false,
@@ -1123,6 +1159,7 @@ export function createQqGroupConfigActions(
             qqGroupConfigEditor: {
               ...editor,
               schemeId: undefined,
+              schemeRevision: undefined,
               schemeChange: undefined,
               ...(change === "reset"
                 ? { overrides: overridesOf({}), rawTexts: {} }
@@ -1139,6 +1176,7 @@ export function createQqGroupConfigActions(
             qqGroupConfigEditor: {
               ...editor,
               schemeId,
+              schemeRevision: state.qqSchemes.find((row) => row.id === schemeId)?.revision,
               schemeChange: "reset",
               // 首次清空前留底；连续换目标不覆盖首次留底，取消时回到最初的草稿。
               previousOverrides: editor.previousOverrides ?? editor.overrides,
@@ -1151,6 +1189,7 @@ export function createQqGroupConfigActions(
           qqGroupConfigEditor: {
             ...editor,
             schemeId,
+            schemeRevision: state.qqSchemes.find((row) => row.id === schemeId)?.revision,
             schemeChange: "keep",
             // 改选 keep：还原 reset 预览清空的草稿，只留下「换目标」这一件待办。
             overrides: editor.previousOverrides ?? editor.overrides,
@@ -1176,7 +1215,17 @@ export function createQqGroupConfigActions(
           set({ error: msg("操作失败，请重试。"), feedback: "" });
           return false;
         }
-        expectedSchemeRevision = targetScheme.revision;
+        if (
+          editor.schemeRevision === undefined ||
+          targetScheme.revision !== editor.schemeRevision
+        ) {
+          set({
+            error: msg("读取配置已被其他操作修改；草稿已保留。请刷新保存基线，核对后再次保存。"),
+            feedback: "",
+          });
+          return false;
+        }
+        expectedSchemeRevision = editor.schemeRevision;
       }
       if (qqGroupConfigHasInvalidInputs(editor, targetScheme)) {
         set({ error: msg("请先修正方案中的无效数字，再保存。"), feedback: "" });

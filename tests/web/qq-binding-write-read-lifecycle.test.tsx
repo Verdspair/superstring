@@ -8,7 +8,15 @@ import type {
   QqSettingsResponse,
 } from "../../src/shared/contracts/qq";
 import { QqBindingResponseSchema } from "../../src/shared/contracts/qq";
+import {
+  mergeQqGroupScheme,
+  type QqGroupConfigResponse,
+} from "../../src/shared/contracts/qq-group-config";
 import { api } from "../../src/web/api";
+import {
+  qqGroupConfigEditorFrom,
+  qqGroupSchemeChangeRows,
+} from "../../src/web/features/qq/group-config-state";
 import { qqSchemeEditorFrom } from "../../src/web/features/qq/types";
 import { selectLocale } from "../../src/web/i18n";
 import { navigationBusy } from "../../src/web/state/unsaved-changes";
@@ -471,4 +479,78 @@ it("POST 完成不等待会话目录读取，读取成功后才发布真实私�
   await tick();
   expect(store.getState().directoryIds).toContain(summary.id);
   expect(store.getState().summaryById[summary.id]).toEqual(summary);
+});
+
+it("config-page scheme confirmation keeps its target revision until an explicit baseline refresh", async () => {
+  const base = bindingOf("30003", BINDING_ONE);
+  const targetId = "33333333-3333-4333-8333-333333333333";
+  const firstTarget = scheme({ id: targetId, name: "target", revision: 3 });
+  const freshTarget = { ...firstTarget, revision: 4 };
+  const config: QqGroupConfigResponse = {
+    binding: base,
+    base_scheme: scheme(),
+    effective_scheme: mergeQqGroupScheme(scheme(), {}),
+    overrides: {},
+    disabled_capabilities: [],
+    revision: 0,
+  };
+  const save = vi.fn().mockResolvedValue(config);
+  reset(
+    {
+      saveQqGroupConfig: save,
+      getQqGroupConfig: vi.fn().mockResolvedValue(config),
+      listQqSchemes: vi.fn().mockResolvedValue([scheme(), freshTarget]),
+    },
+    {
+      qqGroupConfigBindingId: base.id,
+      qqGroupConfigEditor: qqGroupConfigEditorFrom(config),
+      qqSchemes: [scheme(), firstTarget],
+    },
+  );
+  store.getState().patchQqGroupConfigScheme(targetId, "reset");
+  expect(store.getState().qqGroupConfigEditor?.schemeRevision).toBe(3);
+  store.setState({ qqSchemes: [scheme(), freshTarget] });
+  expect(await store.getState().saveQqGroupConfig()).toBe(false);
+  expect(save).not.toHaveBeenCalled();
+  expect(store.getState().qqGroupConfigEditor?.schemeId).toBe(targetId);
+  expect(await store.getState().refreshQqGroupConfig()).toBe(true);
+  expect(store.getState().qqGroupConfigEditor?.schemeRevision).toBe(4);
+  expect(await store.getState().saveQqGroupConfig()).toBe(true);
+  expect(save).toHaveBeenCalledWith(
+    BINDING_ONE,
+    expect.objectContaining({
+      scheme_id: targetId,
+      scheme_change: "reset",
+      expected_scheme_revision: 4,
+      expected_binding_revision: 1,
+      expected_revision: 0,
+    }),
+  );
+});
+
+it("scheme switch preview lists nested stages and allocation as actual scalar values", () => {
+  const rows = qqGroupSchemeChangeRows(
+    {
+      media_input: { stages: { evaluation: false }, ordinary_still_max_dimension: null },
+      allocation: { reply: { mode: "auto" } },
+      sticker_collections: { collection_ids: [] },
+      stickers: { sticker_min_repeat_minutes: 0 },
+      rhythm: { initiative_queue_on_busy: false },
+    },
+    scheme(),
+  );
+  expect(rows).toEqual(
+    expect.arrayContaining([
+      { key: "media_input.stages.evaluation", current: "false", next: "true" },
+      { key: "media_input.ordinary_still_max_dimension", current: "null", next: "null" },
+      { key: "allocation.reply.mode", current: "auto", next: "fixed" },
+      { key: "sticker_collections.collection_ids", current: "", next: "" },
+      { key: "stickers.sticker_min_repeat_minutes", current: "0", next: "10" },
+    ]),
+  );
+  expect(
+    rows.some(
+      (row) => row.current.includes("[object Object]") || row.next.includes("[object Object]"),
+    ),
+  ).toBe(false);
 });

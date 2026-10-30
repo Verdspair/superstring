@@ -296,6 +296,87 @@ describe("会话新建入口的打开边界", () => {
   });
 });
 
+describe("QQ 入口搜索说明与筛选", () => {
+  it.each([
+    ["zh-CN", "名称或号码"],
+    ["en", "Name or number"],
+  ] as const)("%s 保留字段名称和完整可访问说明", async (locale, placeholder) => {
+    selectLocale(locale);
+    setUp();
+    render(<Host initialKind="group" />);
+    const dialog = await openDialog();
+    const search = await within(dialog).findByRole("textbox", {
+      name: ui("qq.entry.search"),
+      description: ui("qq.entry.searchHint"),
+    });
+    expect(search.getAttribute("placeholder")).toBe(placeholder);
+    expect(search.getAttribute("aria-describedby")).toBeTruthy();
+  });
+
+  it("按名称或号码筛选，保留选中项并在切换类型时清空查询", async () => {
+    const binding = bindingOf(SCHEME_A, BINDING_A, "50005");
+    setUp({
+      listQqBindings: vi.fn().mockResolvedValue([binding]),
+      listQqConversations: vi
+        .fn()
+        .mockResolvedValue([
+          conversation("50005", "group", BINDING_A),
+          conversation("50006", "group"),
+          conversation("60006", "private"),
+        ]),
+    });
+    render(<Host initialKind="group" />);
+    const dialog = await openDialog();
+    const search = await within(dialog).findByRole("textbox", { name: ui("qq.entry.search") });
+    const picker = within(dialog).getByLabelText(
+      ui("schemes.bindings.pickConversation"),
+    ) as HTMLSelectElement;
+    act(() => {
+      store.setState((state) => ({
+        summaryById: {
+          ...state.summaryById,
+          searchFixture: {
+            id: "searchFixture",
+            channel: "onebot11",
+            topology: "direct",
+            sourceId: BINDING_A,
+            agentId: AGENT_A,
+            bindingEpoch: 1,
+            title: "Alpha Group",
+            participants: [],
+            updatedAt: NOW,
+            lastSeq: 0,
+            consumedSeq: 0,
+          },
+        },
+      }));
+    });
+    const values = () => Array.from(picker.options).map((option) => option.value);
+    await userEvent.type(search, "alpha");
+    expect(values()).toContain("10001:group:50005");
+    expect(values()).not.toContain("10001:group:50006");
+    expect(values()).not.toContain("10001:private:60006");
+    await userEvent.selectOptions(picker, "10001:group:50005");
+    await userEvent.clear(search);
+    await userEvent.type(search, "50006");
+    expect(values()).toContain("10001:group:50005");
+    expect(values()).toContain("10001:group:50006");
+    await userEvent.clear(search);
+    expect(values()).toContain("10001:group:50005");
+    expect(values()).toContain("10001:group:50006");
+    await userEvent.type(search, "50006");
+    await userEvent.selectOptions(
+      within(dialog).getByLabelText(ui("connections.conversationType")),
+      "private",
+    );
+    expect((search as HTMLInputElement).value).toBe("");
+    expect(values()).toContain("10001:private:60006");
+    expect(values()).not.toContain("10001:group:50005");
+    expect(store.getState().qqInputs.manualPicked).toBe("");
+    expect(within(dialog).getByLabelText(ui("qq.entry.privateNumber"))).toBeTruthy();
+  });
+});
+
 describe("QQ 入口的草稿语义", () => {
   it("群/私聊只预填 qqInputs；已有手工目标不被改写，取消后草稿原样保留", async () => {
     setUp();
