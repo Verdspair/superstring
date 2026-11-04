@@ -130,6 +130,7 @@ export function TaskLedger({
     owner: typeof owner;
     id: string;
     selection: typeof selectedTask.current;
+    invalidated: boolean;
   } | null>(null);
   const [operation, setOperation] = useState<typeof mutation.current>(null);
   const saving = operation?.owner === owner && operation.id === detail?.id;
@@ -357,6 +358,17 @@ export function TaskLedger({
     onSuspend: suspend,
   });
 
+  const refreshTasks = useCallback(
+    (changedConversationId?: string | null) => {
+      load();
+      if (
+        detailRef.current &&
+        (!changedConversationId || detailRef.current.conversationId === changedConversationId)
+      )
+        refreshDetail();
+    },
+    [load, refreshDetail],
+  );
   useEffect(() => {
     if (!active) return;
     const targetConversationId = conversationId ?? effectiveFilters.conversationId;
@@ -365,7 +377,8 @@ export function TaskLedger({
         event.event === "ready" ||
         (event.event === "conversation_changed" &&
           (!targetConversationId || event.conversationId === targetConversationId));
-      if (!matches || document.visibilityState === "hidden") return;
+      if (!matches || currentOwner.current !== owner || document.visibilityState === "hidden")
+        return;
       if (
         event.event === "ready" &&
         isInitialRead.current &&
@@ -373,14 +386,15 @@ export function TaskLedger({
         listRef.current === null
       )
         return;
-      load(undefined, false);
-      if (
-        detailRef.current &&
-        (!event.conversationId || detailRef.current.conversationId === event.conversationId)
-      )
-        refreshDetail();
+      const invocation = mutation.current;
+      if (invocation?.owner === owner && invocation.selection === selectedTask.current) {
+        // The mutation's final read covers events already received during its request.
+        invocation.invalidated = true;
+        return;
+      }
+      refreshTasks(event.conversationId);
     });
-  }, [conversationId, effectiveFilters.conversationId, load, refreshDetail, active]);
+  }, [conversationId, effectiveFilters.conversationId, refreshTasks, active, owner]);
   const updateDraft = <K extends keyof FilterDraft>(key: K, value: FilterDraft[K]) =>
     setDraft((previous) => ({ ...previous, [key]: value }));
   const applyFilters = () =>
@@ -415,7 +429,12 @@ export function TaskLedger({
       setNotice(t("connections.tasks.approvalUnavailable"));
       return;
     }
-    const invocation = { owner, id: detail.id, selection: selectedTask.current };
+    const invocation = {
+      owner,
+      id: detail.id,
+      selection: selectedTask.current,
+      invalidated: false,
+    };
     mutation.current = invocation;
     setOperation(invocation);
     setError("");
@@ -434,6 +453,7 @@ export function TaskLedger({
         document.visibilityState !== "hidden"
       );
     };
+    let succeeded = false;
     try {
       if (approve === undefined) await apiClient.cancelTask(detail.id);
       else if (call?.approvalRevision)
@@ -454,14 +474,20 @@ export function TaskLedger({
               : "connections.tasks.rejected",
         ),
       );
-      readDetail(invocation.id);
-      load();
+      succeeded = true;
     } catch (caught) {
       if (isCurrent()) setError(errorText(caught));
     } finally {
       if (mutation.current === invocation) {
         mutation.current = null;
-        if (currentOwner.current === owner) setOperation(null);
+        if (currentOwner.current === owner) {
+          setOperation(null);
+          if (
+            (succeeded && selectedTask.current === invocation.selection) ||
+            invocation.invalidated
+          )
+            refreshTasks();
+        }
       }
     }
   };

@@ -1030,6 +1030,8 @@ export function createLmStudioClient(
    * impossible to explain.
    */
   const effectiveModel = async (model: string, signal?: AbortSignal): Promise<string> => {
+    signal?.throwIfAborted();
+    if (routeOfExternal(model) !== null) return model;
     const chosen = pickUsableModel({
       configured: model,
       availableLocal: await loadedLocalModels(signal),

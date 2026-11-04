@@ -10,7 +10,6 @@ import { z } from "zod";
 import { codePointLength, isBlank, unicodeStrip } from "../../shared/contracts/code-point-string";
 import type { AuxiliaryAllocationProfile } from "../../shared/contracts/context-allocation";
 import { fail } from "../errors";
-import { isAlnum } from "./alnum-table";
 import { fullCasefold } from "./casefold-table";
 import { qqMemoryScopeKey } from "./qq-binding-contract";
 
@@ -55,33 +54,6 @@ export const AGENT_LEVEL_SCOPE_KEY = "agent";
 /** Historical Web storage key; runtime read eligibility uses source and conversation authority. */
 export function scopeKey(_scope: string, _sessionId: string, agentId: string): string {
   return agentId;
-}
-
-/**
- * Fingerprint canonicalisation — NFKC + casefold, keeping only
- * alphanumerics. Used for suppression-comparison fingerprints.
- * Full casefolding is more aggressive than `toLowerCase()`: `ß` → `ss`
- * ligatures decompose, the long-s folds, and every Greek final/symbol variant
- * folds to its canonical letter (`ς` → `σ`, `ϐ` → `β`, …). Because `canonical()`
- * keeps every Unicode letter here, a partial fold map is NOT sufficient — it
- * silently changes which drafts count as duplicates of a blocked memory and can
- * publish an entry the contract drops (#96). We therefore fold through the
- * generated full Unicode table (casefold-table.ts).
- * The `isAlnum()` filter is a frozen Unicode table too, NOT `/[^\p{L}\p{N}]/u`.
- * Character classes follow the JS engine's Unicode version, which is newer than
- * the pinned Unicode version's and is a strict superset: it keeps 9661 code points
- * (U+088F, U+1C89, …) that the contract's `isAlnum()` rejects. Using the regex
- * would skip the cheap containment short-circuit for those characters and could
- * publish a memory the contract never creates (alnum-table.ts).
- */
-export function canonical(text: string): string {
-  const folded = fullCasefold(text.normalize("NFKC"));
-  let kept = "";
-  for (const char of folded) {
-    const codePoint = char.codePointAt(0);
-    if (codePoint !== undefined && isAlnum(codePoint)) kept += char;
-  }
-  return kept;
 }
 
 // Model-output contracts

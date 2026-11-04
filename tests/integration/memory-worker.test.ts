@@ -45,18 +45,12 @@ import { openBusinessDb } from "../../src/server/db/schema-gate";
 import type { ModelGateway } from "../../src/server/llm/model-gateway";
 import { estimateMessages } from "../../src/server/modules/memory-query";
 import {
-  ALNUM_CODE_POINT_COUNT,
-  ALNUM_RANGE_COUNT,
-  isAlnum,
-} from "../../src/server/services/alnum-table";
-import {
   CASEFOLD_ENTRY_COUNT,
   CASEFOLD_UNICODE_VERSION,
   fullCasefold,
 } from "../../src/server/services/casefold-table";
 import {
   buildConsolidationPrompt,
-  canonical,
   codePointLength,
   DRAFT_RESULT_JSON_SCHEMA,
   MAX_SOURCE_CHARS,
@@ -288,6 +282,7 @@ describe("0.2.1 correction suppression", () => {
       );
       ctx.gateway.replies = [
         JSON.stringify({ memory: { ...VALID_DRAFT.memory, body: "错误金额999元" } }),
+        '{"blocked":true}',
       ];
       await ctx.service.runJob(job.id);
       expect(jobById(ctx.orm, job.id).status).toBe("succeeded");
@@ -562,21 +557,6 @@ describe("parse-result strictness", () => {
     ).toThrow();
   });
 
-  it("is the same normalization the suppression check uses", () => {
-    expect(canonical("我 喜欢，精炼！")).toBe(canonical("我喜欢精炼"));
-  });
-
-  it("folds with the full Unicode casefold, not toLowerCase (#96)", () => {
-    // `canonical()` keeps every Unicode letter, so a partial fold map is not
-    // enough: these pairs are equal under the contract but NOT under toLowerCase().
-    expect(canonical("ς")).toBe(canonical("σ"));
-    expect(canonical("ϐϑϖϰϱϵ")).toBe(canonical("βθπκρε"));
-    expect(canonical("\u0345")).toBe("ι");
-    // NFKC runs first, so compatibility forms collapse before folding.
-    expect(canonical("ﬁ")).toBe(canonical("FI"));
-    expect(canonical("Straße")).toBe(canonical("STRASSE"));
-  });
-
   it("pins the generated casefold table so it cannot drift silently", () => {
     // The table is generated, not written by hand. These assertions
     // fail loudly if the module is regenerated against a different Unicode
@@ -590,37 +570,6 @@ describe("parse-result strictness", () => {
     expect(fullCasefold("ς")).toBe("σ");
     expect(fullCasefold("ꭰ")).toBe("Ꭰ");
     expect(fullCasefold("İ")).toBe("i\u0307");
-  });
-
-  it("filters with the contract's alphanumeric set, not the host engine's \\p{L}\\p{N} (#96)", () => {
-    // `\p{L}\p{N}` follows the JS engine's Unicode version, which is newer than
-    // the pinned Unicode version's and is a strict superset (9661 extra code points).
-    // Those characters must be dropped so the fingerprint matches the contract.
-    const jsOnly = [0x088f, 0x1c89, 0x1c8a, 0x0c5c, 0x0cdc];
-    for (const codePoint of jsOnly) {
-      const char = String.fromCodePoint(codePoint);
-      // Guard the premise: if the host engine ever drops these, the assertion
-      // below would pass vacuously and stop testing anything.
-      expect(/^[\p{L}\p{N}]$/u.test(char)).toBe(true);
-      expect(canonical(char)).toBe("");
-      expect(isAlnum(codePoint)).toBe(false);
-    }
-    // ..while the characters the contract DOES accept are still kept, so this is not
-    // simply a stricter filter in general. (Casefold lowercases first, which is
-    // why the ASCII probe comes back as "a".)
-    expect(canonical("A")).toBe("a");
-    expect(canonical("7")).toBe("7");
-    expect(canonical("汉")).toBe("汉");
-    expect(canonical("\u{1f600}")).toBe("");
-    // Casefold runs BEFORE the filter, so a character the contract rejects can still
-    // contribute: U+A7CB folds to U+0264, which IS alphanumeric in 15.0.0.
-    expect(canonical("\uA7CB")).toBe(canonical("\u0264"));
-    expect(isAlnum(0xa7cb)).toBe(false);
-    expect(ALNUM_RANGE_COUNT).toBe(747);
-    expect(ALNUM_CODE_POINT_COUNT).toBe(137935);
-    expect(isAlnum(0x41)).toBe(true);
-    expect(isAlnum(0x30)).toBe(true);
-    expect(isAlnum(0x20)).toBe(false);
   });
 });
 
@@ -1270,26 +1219,41 @@ describe("job execution", () => {
     expect(job.errorCode).toBe("MEMORY_TIMEOUT");
   });
 
-  it("drops a draft that repeats a suppressed memory, via canonical containment", async () => {
-    const { orm, gateway, service } = setup();
-    const sessionId = newSession(orm);
-    configureAuto(orm, AGENT_ID, 1);
-    const turnId = completedTurn(orm, sessionId, "t1");
-    seedEntry(orm, { name: "旧偏好", body: "我喜欢精炼的汉语回复", status: "suppressed", turnId });
-    gateway.replies = [
-      JSON.stringify({
-        memory: { ...VALID_DRAFT.memory, body: "我喜欢精炼的汉语回复。" },
-      }),
-    ];
+  it.each([false, true])(
+    "uses the original comparator for a text-contained draft blocked=%s",
+    async (blocked) => {
+      const { business, orm, gateway, service } = setup();
+      try {
+        const sessionId = newSession(orm);
+        configureAuto(orm, AGENT_ID, 1);
+        const turnId = completedTurn(orm, sessionId, "t1");
+        seedEntry(orm, {
+          name: "旧偏好",
+          body: "我喜欢精炼的汉语回复",
+          status: "suppressed",
+          turnId,
+        });
+        gateway.replies = [
+          JSON.stringify({
+            memory: { ...VALID_DRAFT.memory, body: "我喜欢精炼的汉语回复。" },
+          }),
+          JSON.stringify({ blocked }),
+        ];
 
-    service.scheduleAuto();
-    await service.runCycle();
+        service.scheduleAuto();
+        await service.runCycle();
 
-    // Short-circuited before the semantic check: exactly one model call.
-    expect(gateway.calls).toHaveLength(1);
-    expect(jobs(orm)[0].status).toBe("succeeded");
-    expect(entries(orm, AGENT_ID).filter((e) => e.status === "active")).toHaveLength(0);
-  });
+        expect(gateway.calls).toHaveLength(2);
+        expect(gateway.calls[1]!.responseSchema).toEqual(SUPPRESSION_RESULT_JSON_SCHEMA);
+        expect(jobs(orm)[0].status).toBe("succeeded");
+        expect(entries(orm, AGENT_ID).filter((e) => e.status === "active")).toHaveLength(
+          blocked ? 0 : 1,
+        );
+      } finally {
+        business.close();
+      }
+    },
+  );
 
   it("drops a draft the semantic suppression pass marks as blocked", async () => {
     const { orm, gateway, service } = setup();

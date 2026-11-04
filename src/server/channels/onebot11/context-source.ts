@@ -150,7 +150,11 @@ import {
   readRelatedReplyDeliveries,
 } from "./concurrent-reply-context";
 import { failureCode } from "./failure-code";
-import type { QqMediaInputService, QqMediaProjection } from "./media-input-service";
+import type {
+  QqMediaInputService,
+  QqMediaOnDemandResult,
+  QqMediaProjection,
+} from "./media-input-service";
 import {
   loadQqMessageFact,
   loadQqMessageFactState,
@@ -617,6 +621,8 @@ export interface BotContextSourceOptions {
 export interface MediaPhaseState {
   readonly media: Map<QqImagePhase, QqMediaProjection>;
   readonly fallback: Map<QqImagePhase, string>;
+  /** Prepared handles from this run's reads; bytes remain exclusively in its resolver. */
+  explicitReads?: readonly QqMediaOnDemandResult[];
   /** 该边界准备时捕获的回复档视图（生成目标用）；未捕获＝回退到共享视图。 */
   view?: View;
   /**
@@ -627,6 +633,7 @@ export interface MediaPhaseState {
     /** 冻结的 focus（本目标问题锚）。 */
     focus: ReturnType<NonNullable<BotContextSourceOptions["mediaInput"]>["focus"]>;
     detailMediaIds: ReadonlySet<string> | undefined;
+    explicitReads: readonly QqMediaOnDemandResult[];
     classificationGate: string | null | undefined;
   };
 }
@@ -736,6 +743,25 @@ function advancePreparation(): void {
     if (preparationQueue.length > 0) setImmediate(advancePreparation);
     else preparationScheduled = false;
   }
+}
+
+/** Each trusted identity stays next to its exact frame and participates in ordinary text cost. */
+export function qqMediaImageMessages(images: QqMediaProjection["images"]): ModelMessage[] {
+  return images.map((image) => ({
+    role: "user",
+    content: [
+      {
+        kind: "text",
+        text: contextDumps({
+          kind: "qq_media_image",
+          trust: "data_only",
+          mediaId: image.mediaId,
+          messageIds: image.messageIds,
+        }),
+      },
+      image.content,
+    ],
+  }));
 }
 
 /** One authorized context owner with explicit decision/reply projections for every Bot topology. */
@@ -1457,6 +1483,7 @@ export class BotContextSource {
                 )
               : new Map();
             this.observations = input.observations;
+            this.boundary.mediaInput = undefined;
             // observations 被替换＝上一批的投影已并入基线，旧预留不再代表"在飞结果"。
             this.reservations.clear();
             this.assertCurrent();
@@ -1512,7 +1539,7 @@ export class BotContextSource {
             this.assertSources(decisionMedia.sources);
             return this.withPendingPlan({
               ...view.material,
-              pending: [...(view.material.pending ?? []), ...decisionMedia.messages],
+              pending: [...decisionMedia.messages, ...(view.material.pending ?? [])],
               sources: uniqueSources([...(view.material.sources ?? []), ...decisionMedia.sources]),
             });
           }
@@ -1561,6 +1588,7 @@ export class BotContextSource {
           assistantQq: focus.assistantQq,
         },
         detailMediaIds: detailIds === undefined ? undefined : new Set(detailIds),
+        explicitReads: this.successfulMediaReads(),
         classificationGate: mediaOptions.classificationGate?.() ?? null,
       };
     } else if (input.boundary) {
@@ -1578,7 +1606,7 @@ export class BotContextSource {
     const generationMaterial = generationMedia
       ? {
           ...view.material,
-          pending: [...(view.material.pending ?? []), ...generationMedia.messages],
+          pending: [...generationMedia.messages, ...(view.material.pending ?? [])],
           sources: uniqueSources([...(view.material.sources ?? []), ...generationMedia.sources]),
         }
       : view.material;
@@ -1695,7 +1723,7 @@ export class BotContextSource {
     const evaluationMaterial = evaluationMedia
       ? {
           ...view.material,
-          pending: [...(view.material.pending ?? []), ...evaluationMedia.messages],
+          pending: [...evaluationMedia.messages, ...(view.material.pending ?? [])],
           sources: uniqueSources([...(view.material.sources ?? []), ...evaluationMedia.sources]),
         }
       : view.material;
@@ -1821,7 +1849,7 @@ export class BotContextSource {
     const evaluationMaterial = evaluationMedia
       ? {
           ...view.material,
-          pending: [...(view.material.pending ?? []), ...evaluationMedia.messages],
+          pending: [...evaluationMedia.messages, ...(view.material.pending ?? [])],
           sources: uniqueSources([...(view.material.sources ?? []), ...evaluationMedia.sources]),
         }
       : view.material;
@@ -2103,12 +2131,65 @@ ${intent.trim()}`,
     if (context.runId !== undefined && context.runId !== this.runId) {
       this.terminalBudgetFeedback = false;
       this.budgetFeedbackBatchEligible = false;
+      this.boundary.explicitReads = undefined;
+      this.boundary.mediaInput = undefined;
       this.runId = context.runId;
     }
     // capture 真实调用 owner——registry（registerEvidence/history.read）必须以同一
     // (owner, runId) 登记+查询，否则同 run 读 miss。来源域读取（SourceRef 末验）仍按
     // this.owner（qq_binding）——不放宽授权/存储边界，不跨 run。
     this.runOwner = context.owner;
+  }
+  /** Retain the original prepared handles, not another image preparation/cache lifecycle. */
+  retainMediaRead(read: QqMediaOnDemandResult): void {
+    this.assertSources(read.sources);
+    this.boundary.explicitReads = [
+      ...(this.boundary.explicitReads ?? []).filter((entry) => entry.mediaId !== read.mediaId),
+      read,
+    ];
+  }
+  private successfulMediaReads(): readonly QqMediaOnDemandResult[] {
+    const reads = (this.boundary.explicitReads ?? []).filter((read) =>
+      this.observations.some((observation) => {
+        if (
+          observation.name !== "media.read" ||
+          observation.value === null ||
+          typeof observation.value !== "object"
+        )
+          return false;
+        const value = observation.value as Record<string, unknown>;
+        if (
+          value.status !== "ok" ||
+          value.mediaId !== read.mediaId ||
+          !Array.isArray(value.images) ||
+          value.images.length !== read.images.length
+        )
+          return false;
+        const servedImages = value.images;
+        return read.images.every((image, index) => {
+          const served = servedImages[index] as Record<string, unknown> | undefined;
+          return (
+            served !== undefined &&
+            served.sourceId === image.mediaId &&
+            image.sources.some((source) => source.revision === served.revision) &&
+            served.sha256 === image.sha256 &&
+            served.mimeType === image.mimeType &&
+            served.width === image.width &&
+            served.height === image.height &&
+            served.frameIndex === image.frameIndex
+          );
+        });
+      }),
+    );
+    const order = (read: QqMediaOnDemandResult) =>
+      this.observations.findIndex(
+        (observation) =>
+          observation.name === "media.read" &&
+          observation.value !== null &&
+          typeof observation.value === "object" &&
+          (observation.value as Record<string, unknown>).mediaId === read.mediaId,
+      );
+    return reads.sort((left, right) => order(left) - order(right));
   }
   /** 宿主发送边界读取：本相已准备的媒体投影（无接线或未准备时 undefined）。 */
   mediaProjection(
@@ -2209,6 +2290,21 @@ ${intent.trim()}`,
     const media = this.options.mediaInput;
     if (media?.capabilityEnabled !== true || this.runId === undefined) return null;
     signal.throwIfAborted();
+    if (!boundary.mediaInput) {
+      const focus = media.focus();
+      const detailIds = media.detailMediaIds?.();
+      boundary.mediaInput = {
+        focus: {
+          triggerMessageIds: [...focus.triggerMessageIds],
+          responseMessageIds: [...focus.responseMessageIds],
+          responseQqs: [...focus.responseQqs],
+          assistantQq: focus.assistantQq,
+        },
+        detailMediaIds: detailIds === undefined ? undefined : new Set(detailIds),
+        explicitReads: this.successfulMediaReads(),
+        classificationGate: media.classificationGate?.() ?? null,
+      };
+    }
     const binding = this.options.binding;
     const conversationRow = this.options.journal.get(this.options.conversationId);
     if (!conversationRow) fail("CONTEXT_SOURCE_INVALID", "会话已失效");
@@ -2276,6 +2372,7 @@ ${intent.trim()}`,
       // 本 run 已明确读取的 mediaId（media.read 成功记账）：细问升普通规格 + explicit 桶。
       // 目标边界用**本函数一次的 snapshot**（下方 detailIds），过滤/取舍与传给服务的是同一份。
       detailMediaIds: detailIds,
+      explicitReads: boundary.mediaInput.explicitReads,
     };
     const fallbackReason = boundary.fallback.get(phase);
     const projection = fallbackReason
@@ -2299,9 +2396,14 @@ ${intent.trim()}`,
               ? { classificationPolicy: media.classificationPolicy }
               : {}),
         });
+    const explicitlyReadIds = new Set(
+      boundary.mediaInput.explicitReads.map((read) => read.mediaId),
+    );
     const requestedImages =
       detailIds && detailIds.size > 0
-        ? projection.images.filter((image) => detailIds.has(image.mediaId))
+        ? projection.images.filter(
+            (image) => detailIds.has(image.mediaId) || explicitlyReadIds.has(image.mediaId),
+          )
         : projection.images;
     const seenImages = new Set<string>();
     const images = requestedImages.filter((image) => {
@@ -2316,7 +2418,11 @@ ${intent.trim()}`,
       return true;
     });
     const omittedImages = projection.images.filter(
-      (image) => detailIds && detailIds.size > 0 && !detailIds.has(image.mediaId),
+      (image) =>
+        detailIds &&
+        detailIds.size > 0 &&
+        !detailIds.has(image.mediaId) &&
+        !explicitlyReadIds.has(image.mediaId),
     );
     const omissions = [...projection.omissions];
     for (const image of omittedImages) {
@@ -2333,11 +2439,7 @@ ${intent.trim()}`,
     const suppliedProjection = { ...projection, images, omissions };
     boundary.media.set(phase, suppliedProjection);
     const messages: ModelMessage[] = [];
-    if (suppliedProjection.images.length > 0)
-      messages.push({
-        role: "user",
-        content: suppliedProjection.images.map((image) => image.content),
-      });
+    messages.push(...qqMediaImageMessages(suppliedProjection.images));
     if (suppliedProjection.notes.length > 0)
       messages.push(
         textMessage(
@@ -3572,11 +3674,7 @@ ${intent.trim()}`,
           limit: compression.watermark_trigger,
           at: readAt,
         });
-        const tail = this.compressionRecords(buffer);
-        const bufferRecords = tail.filter(
-          (_, index) => buffer[index]!.occurredAtSeconds < windowStart,
-        );
-        if (tail.length >= compression.watermark_trigger) {
+        if (!fit && buffer.length >= compression.watermark_trigger) {
           const readBudget =
             o.runtime.p5_config.summary_read_max_tokens ?? o.runtime.p5_config.summary_max_tokens;
           const target = Math.min(
@@ -3585,43 +3683,46 @@ ${intent.trim()}`,
             tokenMode ? readBudget : roomFor(material, baseline),
           );
           if (target > 0) {
+            const tail = this.compressionRecords(buffer);
+            const bufferRecords = tail.filter(
+              (_, index) => buffer[index]!.occurredAtSeconds < windowStart,
+            );
             const seqs = tail.flatMap((record) => (record.seq === null ? [] : [record.seq]));
             const bufferSeqs = bufferRecords.flatMap((record) =>
               record.seq === null ? [] : [record.seq],
             );
             const times = buffer.map((message) => message.occurredAtSeconds);
-            if (!fit)
-              this.compressionJob = createBotCompressionJob({
-                orm: o.orm,
-                gateway: o.gateway,
-                agentRuntime: o.agentRuntime,
-                runtime: o.runtime,
-                owner: this.owner,
-                conversationId: o.conversationId,
-                agentId: o.binding.agentId,
-                expected: stored,
-                records: tail,
-                throughSeq: bufferSeqs.length
-                  ? Math.max(historical, ...bufferSeqs)
-                  : Math.max(0, historical),
-                coveredSeq: seqs.length ? Math.max(coveredSeq, ...seqs) : coveredSeq,
-                recordSeconds: times,
-                sources: material.sources ?? [],
-                target,
-                packageLimit: compression.package_limit,
-                task: schemePrompts(o.scheme).compress,
-                usage: o.usage,
-                budget: o.budget,
-                assertStartable: o.assertStartable,
-                assertCurrent: o.assertBackgroundCurrent ?? o.assertCurrent,
-                assertSources: (sources) => this.assertSources(sources, false),
-                now: () => this.now(),
-                onFailure: (code) => {
-                  const event = { kind: "supplemental_summary_failed" as const, code };
-                  if (o.onDiagnostic) o.onDiagnostic(event);
-                  else console.warn("bot_context", event);
-                },
-              });
+            this.compressionJob = createBotCompressionJob({
+              orm: o.orm,
+              gateway: o.gateway,
+              agentRuntime: o.agentRuntime,
+              runtime: o.runtime,
+              owner: this.owner,
+              conversationId: o.conversationId,
+              agentId: o.binding.agentId,
+              expected: stored,
+              records: tail,
+              throughSeq: bufferSeqs.length
+                ? Math.max(historical, ...bufferSeqs)
+                : Math.max(0, historical),
+              coveredSeq: seqs.length ? Math.max(coveredSeq, ...seqs) : coveredSeq,
+              recordSeconds: times,
+              sources: material.sources ?? [],
+              target,
+              packageLimit: compression.package_limit,
+              task: schemePrompts(o.scheme).compress,
+              usage: o.usage,
+              budget: o.budget,
+              assertStartable: o.assertStartable,
+              assertCurrent: o.assertBackgroundCurrent ?? o.assertCurrent,
+              assertSources: (sources) => this.assertSources(sources, false),
+              now: () => this.now(),
+              onFailure: (code) => {
+                const event = { kind: "supplemental_summary_failed" as const, code };
+                if (o.onDiagnostic) o.onDiagnostic(event);
+                else console.warn("bot_context", event);
+              },
+            });
           }
         }
         // 协议、已有工具观察与近期窗口先占预算；包装不下就从最早的整包开始丢。

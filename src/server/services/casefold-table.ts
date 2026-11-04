@@ -2,14 +2,11 @@
 // Regenerate with tools/ops/generate_casefold_table.py whenever the pinned
 // Unicode version changes.
 // WHY THIS FILE EXISTS
-// `canonical()` is
-// normalize("NFKC") -> casefold -> keep alphanumeric.
-// and the context keyword extractor also
-// calls `str.casefold()`.
+// Memory search projections and context keyword matching use full Unicode
+// casefold so equivalent letter forms share the same search representation.
 // JavaScript only exposes `toLowerCase()`, which is NOT the same operation:
 // "\u03c2".casefold() === "\u03c3" but "\u03c2".toLowerCase() === "\u03c2"
-// Using `toLowerCase()` therefore produces different suppression
-// fingerprints and can publish a memory the contract would drop.
+// Using `toLowerCase()` would give those search terms different representations.
 // The table below stores every code point where full casefold differs
 // from lower(), including one-to-many folds (e.g. "\u00df" -> "ss").
 // Generated from: Unicode 15.0.0

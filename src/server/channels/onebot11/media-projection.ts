@@ -36,6 +36,8 @@ export interface QqMediaCandidateInput {
   phase: QqImagePhase;
   capabilityEnabled: boolean;
   detailMediaIds: ReadonlySet<string>;
+  /** Trusted same-run reads, separate from the automatic focus/direct range. */
+  explicitCandidates?: readonly QqSelectedMediaCandidate[];
   now: string;
 }
 
@@ -235,6 +237,13 @@ export function selectQqMediaCandidates(input: QqMediaCandidateInput): QqMediaCa
 
   let budget = settings.max_images;
   const selectedIds = new Set<string>();
+  for (const candidate of input.explicitCandidates ?? []) {
+    if (budget <= 0) break;
+    if (selectedIds.has(candidate.mediaId)) continue;
+    selectedIds.add(candidate.mediaId);
+    budget -= 1;
+    selected.push({ ...candidate, messageIds: [...candidate.messageIds] });
+  }
   for (const entry0 of ordered) {
     if (budget <= 0) break;
     if (selectedIds.has(entry0.mediaId)) continue;
@@ -273,12 +282,18 @@ export function selectQqMediaCandidates(input: QqMediaCandidateInput): QqMediaCa
       });
     }
   }
+  const explicitIds = new Set(input.explicitCandidates?.map((candidate) => candidate.mediaId));
+  for (const candidate of input.explicitCandidates ?? []) {
+    if (selectedIds.has(candidate.mediaId)) continue;
+    for (const messageId of candidate.messageIds)
+      addOmission({ mediaId: candidate.mediaId, messageId, reason: "not_supplied" });
+  }
   for (const fact of facts) {
     if (!usableFact(fact, nowMs)) continue;
     const inScope = usableFocusIds.has(fact.id) || scopeDirectMessageIds.has(fact.id);
     if (inScope) continue;
     for (const part of fact.parts) {
-      if (part.kind === "image")
+      if (part.kind === "image" && !selectedIds.has(part.mediaId) && !explicitIds.has(part.mediaId))
         addOmission({ mediaId: part.mediaId, messageId: fact.id, reason: "not_selected" });
     }
   }

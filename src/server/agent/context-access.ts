@@ -590,6 +590,10 @@ export function assertContextSources(options: {
   const accessRefs = sources.filter((source) => source.kind === "memory_access");
   const accessVerdicts = memoryAccessStates(db, accessRefs, owner, { userId: DEFAULT_USER_ID });
   const accessStates = new Map(accessRefs.map((source, index) => [source, accessVerdicts[index]]));
+  const isBatchableQqSource = (source: SourceRef): boolean =>
+    source.kind === "qq_observation" ||
+    source.kind === "qq_outbound_message_fact" ||
+    (source.kind === "qq_message_fact" && owner.kind !== "memory_job");
   for (let index = 0; index < sources.length; ) {
     if (sources[index]!.kind === "memory_blocked_source") {
       states.push(blockedStates.get(sources[index]!));
@@ -606,37 +610,7 @@ export function assertContextSources(options: {
       index++;
       continue;
     }
-    if (sources[index]!.kind === "qq_message_fact" && owner.kind !== "memory_job") {
-      let end = index + 1;
-      while (end < sources.length && sources[end]!.kind === "qq_message_fact") end++;
-      states.push(
-        ...qqMessageFactSourceAccessMany(
-          db,
-          sources.slice(index, end),
-          owner,
-          { userId: DEFAULT_USER_ID },
-          now,
-        ),
-      );
-      index = end;
-      continue;
-    }
-    if (sources[index]!.kind === "qq_outbound_message_fact") {
-      let end = index + 1;
-      while (end < sources.length && sources[end]!.kind === "qq_outbound_message_fact") end++;
-      states.push(
-        ...qqOutboundFactSourceAccessMany(
-          db,
-          sources.slice(index, end),
-          owner,
-          { userId: DEFAULT_USER_ID },
-          now,
-        ),
-      );
-      index = end;
-      continue;
-    }
-    if (sources[index]!.kind !== "qq_observation") {
+    if (!isBatchableQqSource(sources[index]!)) {
       let end = index + 1;
       while (
         end < sources.length &&
@@ -653,22 +627,46 @@ export function assertContextSources(options: {
       continue;
     }
     let end = index + 1;
-    while (end < sources.length && sources[end]!.kind === "qq_observation") end++;
+    while (end < sources.length && isBatchableQqSource(sources[end]!)) end++;
+    // Only direct QQ refs share a segment; resolver/domain refs remain ordering barriers.
     const segment = sources.slice(index, end);
-    const rows = observationRows(
-      db,
-      segment.filter((ref) => !refCapExpired(ref, now)).map((ref) => ref.id),
-    );
-    for (const source of segment) {
-      states.push(
-        observationVerdict({
-          row: rows.get(source.id) ?? null,
-          source,
+    const groups = new Map<string, number[]>();
+    for (const [offset, source] of segment.entries()) {
+      const offsets = groups.get(source.kind) ?? [];
+      offsets.push(offset);
+      groups.set(source.kind, offsets);
+    }
+    for (const [kind, offsets] of groups) {
+      const refs = offsets.map((offset) => segment[offset]!);
+      let verdicts: (SourceAccess | undefined)[];
+      if (kind === "qq_message_fact") {
+        verdicts = qqMessageFactSourceAccessMany(db, refs, owner, { userId: DEFAULT_USER_ID }, now);
+      } else if (kind === "qq_outbound_message_fact") {
+        verdicts = qqOutboundFactSourceAccessMany(
+          db,
+          refs,
           owner,
-          principal: { userId: DEFAULT_USER_ID },
+          { userId: DEFAULT_USER_ID },
           now,
-        }),
-      );
+        );
+      } else {
+        const rows = observationRows(
+          db,
+          refs.filter((ref) => !refCapExpired(ref, now)).map((ref) => ref.id),
+        );
+        verdicts = refs.map((source) =>
+          observationVerdict({
+            row: rows.get(source.id) ?? null,
+            source,
+            owner,
+            principal: { userId: DEFAULT_USER_ID },
+            now,
+          }),
+        );
+      }
+      for (const [offset, position] of offsets.entries()) {
+        states[index + position] = verdicts[offset];
+      }
     }
     index = end;
   }

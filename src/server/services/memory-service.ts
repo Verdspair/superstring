@@ -62,7 +62,6 @@ import { estimateTokens } from "../services/token-estimate";
 import {
   buildConsolidationPrompt,
   type ConsolidationConfig,
-  canonical,
   codePointLength,
   DRAFT_RESULT_JSON_SCHEMA,
   MAX_SOURCE_CHARS,
@@ -674,15 +673,9 @@ export class MemoryService {
   }
 
   /**
-   * `generate`.
-   * Three independent chances to discard a draft, all returning `null` (which
-   * is a *successful* job with no new memory, not a failure):
-   * 1. the model itself said `{"memory": null}`;
-   * 2. a cheap canonical containment check against blocked entries;
-   * 3. a model-judged semantic comparison, in bounded chunks of 8.
-   * The containment check strips case and punctuation via `canonical()`, so
-   * "我 喜欢：精炼" and "我喜欢精炼" collide. It is a short-circuit, not the
-   * authority — step 3 catches paraphrase that shares no substring.
+   * A null draft or a blocked semantic comparison produces a successful job
+   * with no new memory. Text containment alone cannot establish the same fact:
+   * quotations, negation and corrections may retain the blocked wording.
    */
   async generate(
     kind: string,
@@ -906,20 +899,6 @@ export class MemoryService {
     const draft = parseResult(text);
     if (draft === null) return null;
 
-    const candidateEventIds = new Set(publication?.records.map((record) => record.eventKey) ?? []);
-    for (const [index, entry] of blocked.entries()) {
-      const original = canonical(String(entry.body ?? ""));
-      const candidate = canonical(draft.body);
-      if (original && (candidate.includes(original) || original.includes(candidate))) {
-        const evidence = context.blockedContexts?.[index];
-        const independentlyDifferent =
-          context.candidateSpeaker &&
-          evidence &&
-          context.candidateSpeaker !== evidence.speaker &&
-          evidence.sourceIds.every((id) => !candidateEventIds.has(id));
-        if (!independentlyDifferent) return null;
-      }
-    }
     const compared = blocked.map((value, index) => ({
       ...value,
       source_context: context.blockedContexts?.[index]

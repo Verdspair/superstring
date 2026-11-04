@@ -146,6 +146,7 @@ import {
   BotContextSource,
   type BotContextTarget,
   type MediaPhaseState as QqMediaPhaseState,
+  qqMediaImageMessages,
 } from "./context-source";
 import { qqDeliveryAuthorize } from "./delivery-authority";
 import type {
@@ -1771,7 +1772,7 @@ export class OneBotHost {
             part: image.content,
             bytes: new Uint8Array(bytes),
             sources: image.sources,
-            assertCurrent: () => source.assertCurrent(),
+            assertCurrent: () => source.assertSources(image.sources),
           });
         }
       };
@@ -1798,21 +1799,16 @@ export class OneBotHost {
         messages: readonly ModelMessage[],
         notes: readonly { mediaId: string; text: string; taskId: string }[],
       ): ModelMessage[] => {
-        const stripped = messages
-          .map((message) => ({
-            ...message,
-            content: message.content.filter((part) => part.kind !== "image"),
-          }))
-          .filter((message) => message.content.length > 0);
-        return notes.length > 0
-          ? [
-              ...stripped,
-              textMessage(
-                "user",
-                contextDumps({ kind: "qq_media_notes", trust: "data_only", notes }),
-              ),
-            ]
-          : stripped;
+        const stripped = messages.filter(
+          (message) => !message.content.some((part) => part.kind === "image"),
+        );
+        if (notes.length === 0) return stripped;
+        const note = textMessage(
+          "user",
+          contextDumps({ kind: "qq_media_notes", trust: "data_only", notes }),
+        );
+        // Preserve the terminal question/audience envelope, including batch judgement recovery.
+        return [...stripped.slice(0, -1), note, ...stripped.slice(-1)];
       };
       // 媒体的可变 run 钩子（detailMediaIds/classificationGate 等）按**本 run** 绑：子 run 不复用
       // 父的集合/门控；service/guard/repo 只读共享。
@@ -2464,6 +2460,7 @@ export class OneBotHost {
             })),
           });
         }
+        source.retainMediaRead(result);
         return {
           category: result.category,
           images: result.images.map((image) => ({
@@ -2672,7 +2669,7 @@ export class OneBotHost {
             part: image.content,
             bytes: new Uint8Array(bytes),
             sources: image.sources,
-            assertCurrent: () => source.assertCurrent(),
+            assertCurrent: () => source.assertSources(image.sources),
           };
         });
       };
@@ -2768,23 +2765,16 @@ export class OneBotHost {
                         bakedImages[index]?.variantId !== image.variantId,
                     );
                   if (shapeChanged) {
-                    // 旧图 slot 按序换入新投影 part；剩余 fresh（旧 slot 少于新帧数）按序附为
-                    // user 图资料消息——不漏帧、不复制已有 part、不重渲 material。
-                    let cursor = 0;
-                    const replaced = hook.messages.map((message) => ({
-                      ...message,
-                      content: message.content.flatMap((part) => {
-                        if (part.kind !== "image") return [part];
-                        if (cursor >= freshImages.length) return [];
-                        return [freshImages[cursor++].content];
-                      }),
-                    }));
-                    const remaining = freshImages.slice(cursor).map((image) => image.content);
-                    const withImages =
-                      remaining.length === 0
-                        ? replaced
-                        : [...replaced, { role: "user" as const, content: remaining }];
-                    const messages = withImages.filter((message) => message.content.length > 0);
+                    // Replace complete identity/frame pairs at the original material position,
+                    // never append extra frames after the terminal audience envelope.
+                    const messages: ModelMessage[] = [];
+                    let inserted = false;
+                    for (const message of hook.messages) {
+                      if (message.content.some((part) => part.kind === "image")) {
+                        if (!inserted) messages.push(...qqMediaImageMessages(freshImages));
+                        inserted = true;
+                      } else messages.push(message);
+                    }
                     if (
                       source.measurePhaseInput("batchEvaluation", messages, {
                         responseSchema: QQ_BATCH_JUDGEMENT_RESPONSE_SCHEMA,

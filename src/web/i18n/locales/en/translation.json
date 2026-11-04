@@ -768,7 +768,7 @@
   "connections.quoteReplyMode": "Quote mode",
   "connections.readingTheAccessState": "Reading the access state…",
   "connections.readingUsage": "Reading usage…",
-  "connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues": "Recent messages and output reserve have separate budgets. Values are estimated capacity.",
+  "connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues": "Recent messages and output reserve have separate budgets. The output reserve must be below the context capacity of the model used for this tier, leaving room for instructions, messages, protocol and a safety margin. If space is insufficient, reduce this tier’s output reserve or use a higher-capacity model.",
   "connections.refreshState": "Refresh state",
   "connections.replyBudgetEstimatedBytes": "Reply: budget (estimated bytes)",
   "connections.replyContext": "Reply context",

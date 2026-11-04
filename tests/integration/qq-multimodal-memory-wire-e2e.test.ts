@@ -920,17 +920,32 @@ describe("raw wire 保留（id58 补块）", () => {
       // schema 逐字：三次调用（判断/决策/生成）全带结构化响应 schema。
       expect((h.model?.calls ?? []).map((call) => call.schema)).toEqual([true, true, true]);
 
-      // 有序片段：带图调用里 image 所在 user message 的 part 序列逐字（text 在前、image 在后）。
+      // 带图消息的标签须与同一来源事实及图片内容相邻且一致。
+      const eventKey = eventKeyOfMessage(h, "-7101");
+      const mediaId = (
+        h.db.query("SELECT id FROM qq_media_notes WHERE event_key=?").get(eventKey) as {
+          id: string;
+        }
+      ).id;
       let sawImage = false;
       for (const call of received) {
         for (const message of call.messages) {
           const kinds = message.content.map((part) => part.kind);
           if (kinds.includes("image")) {
             sawImage = true;
-            // 原生装配：图片是独立 user message（整段只有 image part），与文字材料分列。
-            expect(kinds).toEqual(["image"]);
-            const imagePart = message.content.find((part) => part.kind === "image");
-            if (imagePart?.kind !== "image") throw new Error("unreachable");
+            expect(message.role).toBe("user");
+            expect(kinds).toEqual(["text", "image"]);
+            const labelPart = message.content[0];
+            const imagePart = message.content[1];
+            if (labelPart?.kind !== "text" || imagePart?.kind !== "image")
+              throw new Error("expected labeled image");
+            expect(JSON.parse(labelPart.text)).toEqual({
+              kind: "qq_media_image",
+              trust: "data_only",
+              mediaId,
+              messageIds: [eventKey],
+            });
+            expect(imagePart.sourceId).toBe(mediaId);
             // image part 只有来源元数据：无 bytes/base64；来源引用是引用对象而非路径字符串。
             expect(Object.keys(imagePart).sort()).toEqual([
               "height",
@@ -994,15 +1009,19 @@ describe("raw wire 保留（id58 补块）", () => {
       );
       expect(imageMessage).toBeDefined();
       const parts = (imageMessage?.content as Array<{ type: string }>) ?? [];
-      // 该消息只有 image part ⇒ wire 片段恰为 ["image_url"]（空 text 缓冲不产出 text 段）；
-      // 有序性由「同序遍历 + flushText」保证，混合消息会是 [text,image_url,…] 交错序。
-      expect(parts.map((part) => part.type)).toEqual(["image_url"]);
+      expect(parts.map((part) => part.type)).toEqual(["text", "image_url"]);
+      expect(JSON.parse((parts[0] as unknown as { text: string }).text)).toEqual({
+        kind: "qq_media_image",
+        trust: "data_only",
+        mediaId,
+        messageIds: [eventKey],
+      });
       const dataUrl = (
         parts.find((part) => part.type === "image_url") as unknown as {
           image_url: { url: string };
         }
       ).image_url.url;
-      expect(dataUrl.startsWith("data:image/png;base64,")).toBe(true);
+      expect(dataUrl).toBe(`data:image/png;base64,${Buffer.from(bytes).toString("base64")}`);
       // 该 data URL 不在任何持久面里。
       expect(persisted).not.toContain(dataUrl);
     } finally {

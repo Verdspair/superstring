@@ -1,11 +1,8 @@
 """Regenerate `src/server/services/casefold-table.ts` from CPython's real casefold data.
 
 WHY THIS EXISTS
-    `canonical()` is defined as
-
-        "".join(c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum())
-
-    and the context keyword extractor also calls `str.casefold()`.
+    Memory search projections and context keyword matching use full Unicode
+    casefold so equivalent letter forms share the same search representation.
 
     JavaScript only exposes `toLowerCase()`, which is NOT the same operation
     (`"\u03c2".casefold() == "\u03c3"` but `"\u03c2".toLowerCase() == "\u03c2"`).
@@ -59,13 +56,11 @@ def render(pairs: list[tuple[int, str]]) -> str:
 // CPython / Unicode version changes.
 //
 // WHY THIS FILE EXISTS
-//   `canonical()` is defined as
-//     "".join(c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum())
-//   and the context keyword extractor also calls `str.casefold()`.
+//   Memory search projections and context keyword matching use full Unicode
+//   casefold so equivalent letter forms share the same search representation.
 //   JavaScript only exposes `toLowerCase()`, which is NOT the same operation:
 //     "\\u03c2".casefold() === "\\u03c3"   but   "\\u03c2".toLowerCase() === "\\u03c2"
-//   Using `toLowerCase()` therefore produces different suppression
-//   fingerprints and can publish a memory the contract would drop.
+//   Using `toLowerCase()` would give those search terms different representations.
 //
 //   The table below stores every code point where CPython's casefold differs
 //   from lower(), including one-to-many folds (e.g. "\\u00df" -> "ss").

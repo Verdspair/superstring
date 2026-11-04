@@ -510,6 +510,259 @@ it.each(["approve", "reject", "cancel"] as const)(
   },
 );
 
+it.each([
+  { operation: "approve", eventDuringMutation: true },
+  { operation: "reject", eventDuringMutation: true },
+  { operation: "cancel", eventDuringMutation: true },
+  { operation: "approve", eventDuringMutation: false },
+] as const)(
+  "reads back $operation once after completion with in-flight SSE=$eventDuringMutation",
+  async ({ operation, eventDuringMutation }) => {
+    const completion = deferred<{ ok: true }>();
+    const refreshedDetail = deferred<TaskDetail>();
+    const refreshedList = deferred<TaskList>();
+    const order: string[] = [];
+    const after: TaskDetail = {
+      ...waitingDetail,
+      status: operation === "approve" ? "queued" : "cancelled",
+      waitingOrdinal: null,
+      waitingReason: null,
+      calls: [
+        {
+          ...waitingDetail.calls[0],
+          status: operation === "approve" ? "approved" : "cancelled",
+          approvalRevision: null,
+        },
+      ],
+    };
+    const approveTask = vi.fn<SuperstringApi["approveTask"]>(() => {
+      order.push("mutation");
+      return completion.promise;
+    });
+    const cancelTask = vi.fn<SuperstringApi["cancelTask"]>(() => {
+      order.push("mutation");
+      return completion.promise;
+    });
+    const getTask = vi
+      .fn<SuperstringApi["getTask"]>()
+      .mockResolvedValueOnce(waitingDetail)
+      .mockImplementation(() => {
+        order.push("detail");
+        return refreshedDetail.promise;
+      });
+    const listTasks = vi
+      .fn<SuperstringApi["listTasks"]>()
+      .mockResolvedValueOnce(waitingPage)
+      .mockImplementation(() => {
+        order.push("list");
+        return refreshedList.promise;
+      });
+    setupLibrary({ listTasks, getTask, approveTask, cancelTask });
+    render(<TaskLedger active conversationId={A} />);
+    await openTaskDetail();
+    await submitTaskOperation(operation);
+    if (eventDuringMutation) {
+      await act(async () => {
+        for (const seq of [1, 2])
+          notifyConversationChange({
+            event: "conversation_changed",
+            conversationId: A,
+            seq,
+            bindingEpoch: 1,
+          });
+      });
+    }
+    expect(order).toEqual(["mutation"]);
+    expect(listTasks).toHaveBeenCalledTimes(1);
+    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alertdialog").getAttribute("aria-busy")).toBe("true");
+    await act(async () => {
+      order.push("ack");
+      completion.resolve({ ok: true });
+    });
+    await waitFor(() => expect(getTask).toHaveBeenCalledTimes(2));
+    expect(listTasks).toHaveBeenCalledTimes(2);
+    expect(order.slice(0, 2)).toEqual(["mutation", "ack"]);
+    expect(order.slice(2).sort()).toEqual(["detail", "list"]);
+    expect(getTask.mock.calls[1][1]?.aborted).toBe(false);
+    expect(listTasks.mock.calls[1][1]?.aborted).toBe(false);
+    await act(async () => {
+      refreshedDetail.resolve(after);
+      refreshedList.resolve({ ...page, items: [after] });
+    });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: "核对并批准" })).toBeNull();
+    const detailPanel = screen.getByRole("dialog");
+    expect(
+      within(detailPanel).getAllByText(operation === "approve" ? "排队中" : "已取消").length,
+    ).toBeGreaterThan(0);
+    expect(
+      within(screen.getByRole("table", { hidden: true })).getByText(
+        operation === "approve" ? "排队中" : "已取消",
+      ),
+    ).toBeTruthy();
+    expect(operation === "cancel" ? cancelTask : approveTask).toHaveBeenCalledTimes(1);
+    expect(getTask).toHaveBeenCalledTimes(2);
+    expect(listTasks).toHaveBeenCalledTimes(2);
+    expect(getTask.mock.calls[1][1]?.aborted).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "关闭面板" }));
+    expect(await screen.findByRole("status")).toHaveProperty(
+      "textContent",
+      operation === "approve"
+        ? "已批准这一次调用。"
+        : operation === "reject"
+          ? "已拒绝这次调用。"
+          : "已取消。",
+    );
+  },
+);
+
+it.each([false, true])(
+  "flushes a failed mutation's event invalidation only when dirty=%s",
+  async (dirty) => {
+    const completion = deferred<{ ok: true }>();
+    const refreshedDetail = deferred<TaskDetail>();
+    const refreshedList = deferred<TaskList>();
+    const approveTask = vi.fn<SuperstringApi["approveTask"]>(() => completion.promise);
+    const getTask = vi
+      .fn<SuperstringApi["getTask"]>()
+      .mockResolvedValueOnce(waitingDetail)
+      .mockReturnValue(refreshedDetail.promise);
+    const listTasks = vi
+      .fn<SuperstringApi["listTasks"]>()
+      .mockResolvedValueOnce(waitingPage)
+      .mockReturnValue(refreshedList.promise);
+    setupLibrary({ listTasks, getTask, approveTask });
+    render(<TaskLedger active conversationId={A} />);
+    await openTaskDetail();
+    await submitTaskOperation("approve");
+    if (dirty)
+      await act(async () => {
+        notifyConversationChange({
+          event: "conversation_changed",
+          conversationId: A,
+          seq: 1,
+          bindingEpoch: 1,
+        });
+      });
+    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(listTasks).toHaveBeenCalledTimes(1);
+    await act(async () => completion.reject(new Error("current conflict after event")));
+    expect(approveTask).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText("current conflict after event").length).toBeGreaterThan(0);
+    if (!dirty) {
+      expect(getTask).toHaveBeenCalledTimes(1);
+      expect(listTasks).toHaveBeenCalledTimes(1);
+      const submit = within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "批准这一次",
+      });
+      expect((submit as HTMLButtonElement).disabled).toBe(false);
+      return;
+    }
+    await waitFor(() => expect(getTask).toHaveBeenCalledTimes(2));
+    expect(listTasks).toHaveBeenCalledTimes(2);
+    expect(getTask.mock.calls[1][1]?.aborted).toBe(false);
+    expect(listTasks.mock.calls[1][1]?.aborted).toBe(false);
+    const cancelled: TaskDetail = {
+      ...waitingDetail,
+      status: "cancelled",
+      waitingOrdinal: null,
+      waitingReason: null,
+      calls: [{ ...waitingDetail.calls[0], status: "cancelled", approvalRevision: null }],
+    };
+    await act(async () => {
+      refreshedDetail.resolve(cancelled);
+      refreshedList.resolve({ ...page, items: [cancelled] });
+    });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: "核对并批准" })).toBeNull();
+    expect(within(screen.getByRole("dialog")).getAllByText("已取消").length).toBeGreaterThan(0);
+    expect(within(screen.getByRole("table", { hidden: true })).getByText("已取消")).toBeTruthy();
+    expect(approveTask).toHaveBeenCalledTimes(1);
+    expect(getTask).toHaveBeenCalledTimes(2);
+    expect(listTasks).toHaveBeenCalledTimes(2);
+  },
+);
+
+it("keeps a new event after mutation acknowledgement authoritative over its in-flight readback", async () => {
+  const completion = deferred<{ ok: true }>();
+  const firstDetail = deferred<TaskDetail>();
+  const latestDetail = deferred<TaskDetail>();
+  const firstList = deferred<TaskList>();
+  const latestList = deferred<TaskList>();
+  const approveTask = vi.fn<SuperstringApi["approveTask"]>(() => completion.promise);
+  const getTask = vi
+    .fn<SuperstringApi["getTask"]>()
+    .mockResolvedValueOnce(waitingDetail)
+    .mockReturnValueOnce(firstDetail.promise)
+    .mockReturnValueOnce(latestDetail.promise);
+  const listTasks = vi
+    .fn<SuperstringApi["listTasks"]>()
+    .mockResolvedValueOnce(waitingPage)
+    .mockReturnValueOnce(firstList.promise)
+    .mockReturnValueOnce(latestList.promise);
+  const getTaskBody = vi
+    .fn<SuperstringApi["getTaskBody"]>()
+    .mockResolvedValue(bodyPage("body before later revocation"));
+  setupLibrary({ listTasks, getTask, getTaskBody, approveTask });
+  render(<TaskLedger active conversationId={A} />);
+  await openTaskDetail();
+  fireEvent.click(screen.getByRole("button", { name: "参数" }));
+  expect(await screen.findByText("body before later revocation")).toBeTruthy();
+  await submitTaskOperation("approve");
+  await act(async () => completion.resolve({ ok: true }));
+  await waitFor(() => expect(getTask).toHaveBeenCalledTimes(2));
+  expect(getTask.mock.calls[1][1]?.aborted).toBe(false);
+  await act(async () => {
+    notifyConversationChange({
+      event: "conversation_changed",
+      conversationId: A,
+      seq: 2,
+      bindingEpoch: 1,
+    });
+  });
+  await waitFor(() => expect(getTask).toHaveBeenCalledTimes(3));
+  expect(getTask.mock.calls[1][1]?.aborted).toBe(true);
+  expect(getTask.mock.calls[2][1]?.aborted).toBe(false);
+  expect(listTasks).toHaveBeenCalledTimes(2);
+  expect(listTasks.mock.calls[1][1]?.aborted).toBe(false);
+  const revoked: TaskDetail = {
+    ...waitingDetail,
+    status: "cancelled",
+    dataStatus: "revoked",
+    waitingOrdinal: null,
+    waitingReason: null,
+    calls: [
+      {
+        ...waitingDetail.calls[0],
+        status: "cancelled",
+        approvalRevision: null,
+        argumentsPreview: { ...bodyPage(""), status: "revoked", text: null, total: null },
+        resultStatus: "revoked",
+      },
+    ],
+  };
+  await act(async () => {
+    latestDetail.resolve(revoked);
+    firstList.resolve(waitingPage);
+  });
+  await waitFor(() => expect(listTasks).toHaveBeenCalledTimes(3));
+  await act(async () => {
+    latestList.resolve({ ...page, items: [revoked] });
+    firstDetail.resolve(waitingDetail);
+  });
+  expect(await screen.findByText("来源已失效，正文不再显示。")).toBeTruthy();
+  expect(screen.queryByText("body before later revocation")).toBeNull();
+  expect(screen.queryByRole("button", { name: "核对并批准" })).toBeNull();
+  expect(within(screen.getByRole("dialog")).getAllByText("已取消").length).toBeGreaterThan(0);
+  expect(within(screen.getByRole("table", { hidden: true })).getByText("已取消")).toBeTruthy();
+  expect(approveTask).toHaveBeenCalledTimes(1);
+  expect(getTask).toHaveBeenCalledTimes(3);
+  expect(listTasks).toHaveBeenCalledTimes(3);
+  fireEvent.click(screen.getByRole("button", { name: "参数" }));
+  expect(getTaskBody).toHaveBeenCalledTimes(1);
+});
+
 it.each(["approve", "cancel"] as const)(
   "does not let a late %s completion reload or announce into an inactive retained ledger",
   async (operation) => {
@@ -524,6 +777,16 @@ it.each(["approve", "cancel"] as const)(
     await submitTaskOperation(operation);
     expect(operation === "approve" ? approveTask : cancelTask).toHaveBeenCalledTimes(1);
 
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: A,
+        seq: 1,
+        bindingEpoch: 1,
+      });
+    });
+    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(listTasks).toHaveBeenCalledTimes(1);
     // ConversationWorkspace retains this ledger when the user leaves its tasks tab.
     view.rerender(<TaskLedger active={false} />);
     await act(async () => completion.resolve({ ok: true }));
@@ -553,6 +816,16 @@ it.each(["approve", "cancel"] as const)(
     await submitTaskOperation(operation);
     expect(operation === "approve" ? approveTask : cancelTask).toHaveBeenCalledTimes(1);
 
+    await act(async () => {
+      notifyConversationChange({
+        event: "conversation_changed",
+        conversationId: A,
+        seq: 1,
+        bindingEpoch: 1,
+      });
+    });
+    expect(detailA).toHaveBeenCalledTimes(1);
+    expect(listA).toHaveBeenCalledTimes(1);
     const currentDetail: TaskDetail = {
       ...waitingDetail,
       calls: [{ ...waitingDetail.calls[0], name: "fixture.current-client" }],
@@ -815,6 +1088,14 @@ it("reopens cancellation after document hide without inheriting the previous inv
   fireEvent(window, new Event("blur"));
   fireEvent(window, new Event("focus"));
   expect(firstDialog.getAttribute("aria-busy")).toBe("true");
+  await act(async () => {
+    notifyConversationChange({
+      event: "conversation_changed",
+      conversationId: A,
+      seq: 1,
+      bindingEpoch: 1,
+    });
+  });
   expect(cancelTask).toHaveBeenCalledExactlyOnceWith(D);
   expect(list).toHaveBeenCalledTimes(1);
   expect(getTask).toHaveBeenCalledTimes(1);

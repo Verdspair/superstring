@@ -3402,8 +3402,60 @@ export function measureVisualPage(selector) {
   const clipBox = (element) => {
     const rect = element.getBoundingClientRect();
     const style = styleOf(element);
-    const scaleX = element.offsetWidth ? rect.width / element.offsetWidth : 1;
-    const scaleY = element.offsetHeight ? rect.height / element.offsetHeight : 1;
+    if (element instanceof SVGSVGElement) {
+      const borderLeft = parseFloat(style.borderLeftWidth) || 0;
+      const borderRight = parseFloat(style.borderRightWidth) || 0;
+      const borderTop = parseFloat(style.borderTopWidth) || 0;
+      const borderBottom = parseFloat(style.borderBottomWidth) || 0;
+      const width = parseFloat(style.width);
+      const height = parseFloat(style.height);
+      const outerWidth =
+        width +
+        (style.boxSizing === "border-box"
+          ? 0
+          : borderLeft +
+            borderRight +
+            (parseFloat(style.paddingLeft) || 0) +
+            (parseFloat(style.paddingRight) || 0));
+      const outerHeight =
+        height +
+        (style.boxSizing === "border-box"
+          ? 0
+          : borderTop +
+            borderBottom +
+            (parseFloat(style.paddingTop) || 0) +
+            (parseFloat(style.paddingBottom) || 0));
+      const scaleX = outerWidth > 0 ? rect.width / outerWidth : 1;
+      const scaleY = outerHeight > 0 ? rect.height / outerHeight : 1;
+      return {
+        left: rect.left + borderLeft * scaleX,
+        top: rect.top + borderTop * scaleY,
+        right: rect.right - borderRight * scaleX,
+        bottom: rect.bottom - borderBottom * scaleY,
+      };
+    }
+    // Integer offset dimensions round fractional layout sizes; an identity CSS chain stays 1:1.
+    let identityChain = true;
+    for (let node = element; node; node = node.parentElement) {
+      const nodeStyle = styleOf(node);
+      if (
+        nodeStyle.zoom !== "1" ||
+        (nodeStyle.transform !== "none" &&
+          new DOMMatrixReadOnly(nodeStyle.transform).isIdentity !== true) ||
+        ["scale", "rotate", "translate", "perspective"].some(
+          (property) => nodeStyle.getPropertyValue(property) !== "none",
+        )
+      ) {
+        identityChain = false;
+        break;
+      }
+    }
+    const scaleX = identityChain ? 1 : element.offsetWidth ? rect.width / element.offsetWidth : 1;
+    const scaleY = identityChain
+      ? 1
+      : element.offsetHeight
+        ? rect.height / element.offsetHeight
+        : 1;
     const left =
       rect.left + (element.clientLeft ?? parseFloat(style.borderLeftWidth) ?? 0) * scaleX;
     const top = rect.top + (element.clientTop ?? parseFloat(style.borderTopWidth) ?? 0) * scaleY;
@@ -3422,16 +3474,35 @@ export function measureVisualPage(selector) {
           scaleY,
     };
   };
+  const establishesFixedContainingBlock = (element, style) => {
+    const transforms = ["transform", "translate", "rotate", "scale", "perspective"];
+    const filters = element === rootElement ? [] : ["filter", "backdrop-filter"];
+    const willChange = style.willChange.split(",").map((property) => property.trim());
+    return (
+      [...transforms, ...filters].some(
+        (property) =>
+          style.getPropertyValue(property) !== "none" && style.getPropertyValue(property) !== "",
+      ) ||
+      /(?:^|\s)(?:layout|paint|strict|content)(?:\s|$)/.test(style.contain) ||
+      ["auto", "hidden"].includes(style.contentVisibility) ||
+      [...transforms, ...filters].some((property) => willChange.includes(property))
+    );
+  };
   const issues = [];
   const add = (element, kind, original, start = element, text = null) => {
     if (original.width <= 0 || original.height <= 0) return;
     const rect = rectOf(original);
+    let pendingFixed = start !== element && styleOf(element).position === "fixed";
     for (let ancestor = start; ancestor; ancestor = ancestor.parentElement) {
       const style = styleOf(ancestor);
       if (style.display === "contents") continue;
+      if (pendingFixed && establishesFixedContainingBlock(ancestor, style)) pendingFixed = false;
+      // Fixed descendants escape ordinary overflow until their containing block. Inner
+      // overflow still applies, and legacy clips are independent of this overflow chain.
+      const overflowApplies = !pendingFixed;
       const box = clipBox(ancestor);
-      const hiddenX = ["hidden", "clip"].includes(style.overflowX);
-      const hiddenY = ["hidden", "clip"].includes(style.overflowY);
+      const hiddenX = overflowApplies && ["hidden", "clip"].includes(style.overflowX);
+      const hiddenY = overflowApplies && ["hidden", "clip"].includes(style.overflowY);
       const legacy = legacyClipRect(style);
       const border = ancestor.getBoundingClientRect();
       const legacyX = legacy
@@ -3472,15 +3543,16 @@ export function measureVisualPage(selector) {
       // Content beyond an auto/scroll viewport is reachable, not lost. Only its currently
       // exposed part can be clipped by an outer hidden/clip ancestor. Its OWN hidden text
       // was checked above before reaching this scroll container.
-      if (["auto", "scroll"].includes(style.overflowX)) {
+      if (overflowApplies && ["auto", "scroll"].includes(style.overflowX)) {
         rect.left = Math.max(rect.left, box.left);
         rect.right = Math.min(rect.right, box.right);
       }
-      if (["auto", "scroll"].includes(style.overflowY)) {
+      if (overflowApplies && ["auto", "scroll"].includes(style.overflowY)) {
         rect.top = Math.max(rect.top, box.top);
         rect.bottom = Math.min(rect.bottom, box.bottom);
       }
       if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+      if (style.position === "fixed") pendingFixed = true;
     }
   };
   const elements = [...document.querySelectorAll("body *")];
@@ -3949,6 +4021,44 @@ async function inspectFocus(page, locale) {
   const last = trace[trace.length - 1];
   return { reached: false, visible: false, description: last.description, trace };
 }
+async function captureViewportEvidence(page, file) {
+  const measure = () => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+    dpr: window.devicePixelRatio,
+  });
+  const before = await page.evaluate(measure);
+  if (
+    !Object.values(before).every(Number.isFinite) ||
+    before.width <= 0 ||
+    before.height <= 0 ||
+    before.dpr <= 0
+  )
+    throw new Error(
+      "Viewport capture has invalid dimensions, scroll position or device pixel ratio",
+    );
+  const bytes = await page.screenshot({ path: file, fullPage: false });
+  const after = await page.evaluate(measure);
+  if (
+    after.width !== before.width ||
+    after.height !== before.height ||
+    after.dpr !== before.dpr ||
+    after.scrollX !== before.scrollX ||
+    after.scrollY !== before.scrollY
+  )
+    throw new Error("Viewport capture changed viewport, scroll position or device pixel ratio");
+  if (
+    bytes.length < 24 ||
+    !bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex")) ||
+    bytes.toString("ascii", 12, 16) !== "IHDR" ||
+    bytes.readUInt32BE(16) !== Math.round(before.width * before.dpr) ||
+    bytes.readUInt32BE(20) !== Math.round(before.height * before.dpr)
+  )
+    throw new Error("Viewport capture PNG dimensions do not match viewport and device pixel ratio");
+}
+
 /**
  * A failing run must leave evidence behind. The throw used to reach `finally`, close the browser
  * and leave nothing to look at; from now on the current page's state, its screenshot and the
@@ -3965,6 +4075,7 @@ async function captureFailure(error, active) {
     error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
     stack: error instanceof Error ? (error.stack ?? null) : null,
     passed: false,
+    captureScope: "viewport-only; internal scrolled/offscreen content not captured",
     screenshots: [],
     page: null,
     metrics: active?.metrics ?? null,
@@ -3980,7 +4091,7 @@ async function captureFailure(error, active) {
   if (active?.page) {
     const file = `qq-pages-failure-${slug(active.name ?? "unknown")}-${stamp}.png`;
     try {
-      await active.page.screenshot({ path: resolve(outputDir, file), fullPage: true });
+      await captureViewportEvidence(active.page, resolve(outputDir, file));
       detail.screenshots.push(file);
     } catch (screenshotError) {
       detail.screenshotError = String(screenshotError);
@@ -4341,7 +4452,7 @@ try {
         );
         if (viewport.width === 1440 || (viewport.width < 400 && locale === "zh-CN")) {
           const file = `qq-pages-${slug(name)}.png`;
-          await page.screenshot({ path: resolve(outputDir, file), fullPage: true });
+          await captureViewportEvidence(page, resolve(outputDir, file));
           screenshots.push(file);
         }
         const overlayClose = await closeVisitOverlay(page, entry, navigation, locale);
@@ -4414,7 +4525,7 @@ try {
             );
             if (viewport.width === 1440 || (viewport.width < 400 && locale === "zh-CN")) {
               const file = `qq-pages-${slug(tabCheck)}.png`;
-              await page.screenshot({ path: resolve(outputDir, file), fullPage: true });
+              await captureViewportEvidence(page, resolve(outputDir, file));
               screenshots.push(file);
             }
             results.push({
@@ -4501,7 +4612,7 @@ try {
             );
             if (viewport.width === 1440 || (viewport.width < 400 && locale === "zh-CN")) {
               const file = `qq-pages-${slug(tabCheck)}.png`;
-              await page.screenshot({ path: resolve(outputDir, file), fullPage: true });
+              await captureViewportEvidence(page, resolve(outputDir, file));
               screenshots.push(file);
             }
             results.push({
@@ -4565,7 +4676,7 @@ try {
       );
       if (theme === firstTheme || theme === lastTheme) {
         const file = `qq-pages-${slug(name)}.png`;
-        await page.screenshot({ path: resolve(outputDir, file), fullPage: true });
+        await captureViewportEvidence(page, resolve(outputDir, file));
         screenshots.push(file);
       }
       const overlayClose = await closeVisitOverlay(page, themePage, navigation, "zh-CN");
@@ -4610,7 +4721,7 @@ try {
       `${name}: HTTP error (${JSON.stringify(hygiene.httpErrors[0])})`,
     );
     const file = `qq-pages-${slug(name)}.png`;
-    await page.screenshot({ path: resolve(outputDir, file), fullPage: true });
+    await captureViewportEvidence(page, resolve(outputDir, file));
     screenshots.push(file);
     const overlayClose = await closeVisitOverlay(page, themePage, navigation, "zh-CN");
     results.push({ name, passed: true, metrics, overlayClose });
@@ -4666,6 +4777,7 @@ try {
       channel: executablePath ? "custom executable" : channel,
     },
     passed: true,
+    captureScope: "viewport-only; internal scrolled/offscreen content not captured",
     coverageLimitation:
       "Only listed scenarios were visited; this is not full surface, overlay, TTL, permission lifecycle or desktop WCO coverage.",
     unverifiedOrBlocked: [

@@ -312,6 +312,8 @@ export interface QqMediaProjectionInput {
   readonly capabilityEnabled?: boolean;
   /** 明确细问的 mediaId（升普通规格 + explicit 桶）；缺省空集。 */
   readonly detailMediaIds?: ReadonlySet<string>;
+  /** Already prepared by a successful media.read in this run; never a byte cache. */
+  readonly explicitReads?: readonly QqMediaOnDemandResult[];
   /** per-call 覆盖 owner；缺省按 scope 精确派生 conversation owner，不扩大来源。 */
   readonly owner?: RunOwner;
   /**
@@ -533,8 +535,36 @@ export function createQqMediaInputService(
       phase: input.phase,
       capabilityEnabled: true,
       detailMediaIds: input.detailMediaIds ?? DEFAULT_DETAIL_MEDIA_IDS,
+      explicitCandidates: input.explicitReads?.map((read) => ({
+        mediaId: read.mediaId,
+        category: read.category,
+        messageIds: [...read.messageIds],
+        detail: read.detail,
+      })),
       now: input.now,
     });
+  }
+
+  function assertExplicitReadsCurrent(input: QqMediaProjectionInput, owner: RunOwner): void {
+    for (const read of input.explicitReads ?? []) {
+      input.signal.throwIfAborted();
+      input.assertCurrent();
+      const live = createQqMediaSourceRef(options.store, input.scope, read.mediaId, input.now);
+      if (read.sources.length === 0 || read.images.length === 0)
+        fail("CONTEXT_SOURCE_INVALID", "按需图片缺少已准备画面或来源");
+      for (const source of read.sources) {
+        if (
+          source.kind !== "qq_media_source" ||
+          source.id !== read.mediaId ||
+          live === null ||
+          live.revision !== source.revision ||
+          live.expiresAt !== source.expiresAt ||
+          qqMediaSourceAccess(db, source, owner, { userId: DEFAULT_USER_ID }, input.now) !==
+            "available"
+        )
+          fail("CONTEXT_SOURCE_INVALID", "按需图片来源已变化");
+      }
+    }
   }
 
   /** description 路径（§8.1）：typed baseline 读取，命中缓存不花尝试；缺读不编内容。 */
@@ -596,6 +626,7 @@ export function createQqMediaInputService(
       notes.push({ mediaId: candidate.mediaId, text: result.note, taskId: result.taskId });
       sources.push(taskRef);
     }
+    assertExplicitReadsCurrent(input, owner);
     return {
       phase: input.phase,
       requestedMode: input.settings.mode,
@@ -905,7 +936,10 @@ export function createQqMediaInputService(
       input.signal.throwIfAborted();
       input.assertCurrent();
       verifyScope(input.scope, owner);
-      const prepared = await prepareNativeCandidate(input, owner, candidate, scopeIdentity);
+      const read = input.explicitReads?.find((entry) => entry.mediaId === candidate.mediaId);
+      const prepared: Awaited<ReturnType<typeof prepareNativeCandidate>> = read
+        ? { images: [...read.images], source: read.sources[0] ?? null }
+        : await prepareNativeCandidate(input, owner, candidate, scopeIdentity);
       images.push(...prepared.images);
       if (prepared.source === null) {
         // §7.5：该图仍在 facts/selected 里，窗口文字不受影响；其他 prepared 成功的图照常发送。
@@ -923,6 +957,7 @@ export function createQqMediaInputService(
     input.signal.throwIfAborted();
     verifyScope(input.scope, owner);
     input.assertCurrent();
+    assertExplicitReadsCurrent(input, owner);
     return {
       phase: input.phase,
       requestedMode: input.settings.mode,
@@ -1087,6 +1122,7 @@ export function createQqMediaInputService(
       if (!input.settings.stages[input.phase]) {
         return stageDisabledProjection(input);
       }
+      assertExplicitReadsCurrent(input, owner);
       return input.settings.mode === "description"
         ? await describe(input, owner)
         : await prepareNative(input, owner);
@@ -1101,6 +1137,7 @@ export function createQqMediaInputService(
       if (!input.settings.stages[input.phase]) {
         return stageDisabledProjection(input);
       }
+      assertExplicitReadsCurrent(input, owner);
       const projection = await describe(input, owner);
       return { ...projection, requestedMode: "native" };
     },

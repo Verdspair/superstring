@@ -106,7 +106,7 @@ Superstring 运行在本地，支持 Windows、macOS 与 Linux。会话记录、
 
 ### 多模态与媒体处理
 
-- **图片输入双模式**：支持原生图片输入（`native`）与文本描述（`description`）双模式。原生模式将图片直接传入支持视觉的模型；描述模式调用已配置的视觉模型提取文字描述。可在决策、评估与生成三阶段独立控制图片输入；不支持原生图片的模型可使用描述模式，模型明确报错不支持图片时也会回退提取描述并记录负缓存（非所有网络错误均自动回退）。图片描述完成后直接提供文字结果，较长内容可继续读取。
+- **图片输入双模式**：支持原生图片输入（`native`）与文本描述（`description`）双模式。原生模式将图片直接传入支持视觉的模型；描述模式调用已配置的视觉模型提取文字描述。可在决策、评估与生成三阶段独立控制图片输入；不支持原生图片的模型可使用描述模式，模型明确报错不支持图片时也会回退提取描述并记录负缓存（非所有网络错误均自动回退）。图片描述完成后直接提供文字结果，较长内容可继续读取。当前源码中，已披露的深层引用或窗口外 QQ 图片可显式读取，而非全部自动输入；读取成功后可在权限、来源有效期、当前阶段、模型能力及容量允许时提供给下一次模型请求，但不保证模型理解图片。
 - **图片缓存与准备**：图片资产按范围缓存，支持预生成多分辨率副本与动图抽帧；入站媒体按需读取，减少不必要的资源消耗。
 - **结构化回复记录**：记录多部件消息与回复引用链，支持按需多层引用；成员记录区分群名片与个人昵称，标注来源属于平台原始上报还是本地目录记录。
 - **表情素材管理**：导入表情素材，编辑说明与标签，经检查启用后授权给方案；支持文字、表情或图文混合回复。
@@ -288,7 +288,7 @@ Operational details:
 
 ### Multimodal and media processing
 
-- **Dual-mode image input**: Choose between native multimodal input (`native`) and text description extraction (`description`). Native mode passes images directly to image-capable models; description mode extracts text descriptions using a configured vision model. Image inputs are toggled independently across decision, evaluation, and generation stages; models lacking native image support can use description mode, and explicit model rejection triggers fallback to descriptions with in-process negative caching (general network failures do not trigger fallback). Completed image descriptions are returned directly; longer descriptions can be read in further pages.
+- **Dual-mode image input**: Choose between native multimodal input (`native`) and text description extraction (`description`). Native mode passes images directly to image-capable models; description mode extracts text descriptions using a configured vision model. Image inputs are toggled independently across decision, evaluation, and generation stages; models lacking native image support can use description mode, and explicit model rejection triggers fallback to descriptions with in-process negative caching (general network failures do not trigger fallback). Completed image descriptions are returned directly; longer descriptions can be read in further pages. In current source, disclosed QQ images in deeper references or outside the recent window can be read explicitly rather than all being supplied automatically. After a successful read, they may be supplied to the next model request when permissions, source validity, the current stage, model capability, and capacity allow; this does not guarantee that the model understands them.
 - **Image caching and preparation**: Scoped asset caches store multi-resolution variants and animated GIF frames; inbound media is loaded on demand, reducing unnecessary processing.
 - **Structured reply records**: Tracks multi-part messages and structured reply quote chains with multi-level quoting. Member records distinguish group cards from personal nicknames, tracking platform wire events versus local directory sources.
 - **Sticker management**: Import sticker collections, manage tags and descriptions, and authorize collections for chat schemes; supports text, sticker, or combined responses.

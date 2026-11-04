@@ -68,7 +68,7 @@
 
 - QQ 艾特与合法引用助手消息的请求可独立执行；每会话艾特／普通任务上限默认 4／1（1–64）。全局／每服务模型请求上限另行配置，默认 4／2（1–256），同时生效。
 - 输入防刷屏默认对新方案开启、对已有方案关闭。同成员首条起 3 秒内至少 3 条纯图片消息按一个候选处理，他人插话不打断；自动排除的图片仍可按需读取，直接请求不受分组等待影响。
-- 所有图片类别共用静图与动图规格，取消单独表情画质和补充时间窗；图片设置收敛为基本／高级，保留自定义阶段。
+- 所有图片类别共用静图与动图规格，取消单独表情画质和补充时间窗；图片设置收敛为基本／高级，保留自定义阶段。已披露的深层引用或窗口外 QQ 图片可按需显式读取；读取成功后，在权限、来源有效期、当前阶段、模型能力及容量允许时可提供给下一次模型请求，不保证模型理解图片。
 - 保存普通 QQ 方案设置时不再误中断正在执行的回应任务；进行中的任务保留原有配置，后续新任务采用新设置；会话暂停与权限停用仍立即生效。
 - 较新回复确认后，已被完整覆盖的旧自主回复提前停止；多成员任务只跳过已覆盖成员，不同艾特任务保持独立。
 - 聊天记录加载失败后重试拉取最新页，不从最早记录重新开始。
@@ -150,7 +150,7 @@ These features are source updates on main. The v0.4.0-alpha-2 packages have not 
 
 - QQ mentions and valid replies to assistant messages run as independent tasks. Per-conversation mention and ordinary task limits default to 4 and 1 (range 1–64). Global and per-service model request limits are configured separately, default to 4 and 2 (range 1–256), and both apply.
 - Input anti-spam is enabled for new schemes and kept off for existing schemes. At least three image-only messages from one sender within three seconds of the first form one candidate; other senders do not break it. Excluded images remain readable on demand, and direct requests do not wait for grouping.
-- All image categories share still-image and animation settings. Separate expression quality settings and supplement time windows are removed. Basic and advanced image settings retain custom stage choices.
+- All image categories share still-image and animation settings. Separate expression quality settings and supplement time windows are removed. Basic and advanced image settings retain custom stage choices. Disclosed QQ images in deeper references or outside the recent window can be read explicitly on demand. After a successful read, they may be supplied to the next model request when permissions, source validity, the current stage, model capability, and capacity allow; this does not guarantee that the model understands them.
 - Saving standard QQ scheme settings no longer mistakenly interrupts an in-flight reply task; running tasks retain their original configuration and new tasks apply updated values. Conversation pauses and permission changes still take effect immediately.
 - After a newer reply is confirmed, fully covered autonomous replies stop early. Multi-member tasks skip only covered members, and separate mention tasks remain independent.
 - Chat history load failures retry from the newest page instead of restarting from the earliest records.

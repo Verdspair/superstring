@@ -760,7 +760,7 @@
   "connections.quoteReplyMode": "引用模式",
   "connections.readingTheAccessState": "正在读取接入状态…",
   "connections.readingUsage": "读取使用情况…",
-  "connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues": "近期原文与输出预留分别预算；数值为估算容量。",
+  "connections.recentMessagesAndOutputReserveHaveSeparateBudgetsValues": "近期原文与输出预留分别计算预算。输出预留须小于该档实际使用模型的上下文容量，并为指令、消息、协议和安全余量留出空间。空间不足时，降低该档输出预留或使用容量更大的模型。",
   "connections.refreshState": "刷新状态",
   "connections.replyBudgetEstimatedBytes": "回复：预算（估算字节）",
   "connections.replyContext": "回复上下文",

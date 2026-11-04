@@ -295,6 +295,7 @@ describe("suppression source context", () => {
         memoryIds: ["parent-a", "parent-b"],
       });
       const gateway = new Gateway();
+      gateway.blocked = true;
       const service = new MemoryService({
         orm: h.orm,
         db: h.db,
@@ -367,6 +368,7 @@ describe("suppression source context", () => {
         turnIds: [candidate.turn.id],
       });
       const gateway = new Gateway();
+      gateway.blocked = true;
       const service = new MemoryService({
         orm: h.orm,
         db: h.db,
@@ -383,7 +385,7 @@ describe("suppression source context", () => {
       expect(result.status).toBe("succeeded");
       expect(result.resultId).toBeNull();
       expect(JSON.stringify(gateway.calls)).not.toContain("FOREIGN-WEB-SECRET");
-      expect(gateway.calls).toHaveLength(1);
+      expect(gateway.calls).toHaveLength(2);
     } finally {
       h.close();
     }
@@ -596,6 +598,7 @@ describe("suppression source context", () => {
       f.observe(102, 20002);
       gateway.calls.length = 0;
       const next = f.enqueue();
+      gateway.blocked = true;
       await service.runJob(next.id);
       const after = f.h.orm
         .select()
@@ -604,10 +607,11 @@ describe("suppression source context", () => {
         .get()!;
       expect(after.status).toBe("succeeded");
       expect(after.resultId).toBeNull();
-      expect(gateway.calls).toHaveLength(1);
+      expect(gateway.calls).toHaveLength(2);
       f.observe(103, 20002);
       gateway.calls.length = 0;
       gateway.draftBody = "unrelated candidate";
+      gateway.blocked = false;
       const unknown = f.enqueue();
       await service.runJob(unknown.id);
       const unavailable = f.h.orm
@@ -798,45 +802,80 @@ describe("suppression source context", () => {
     }
   });
 
-  it("keeps a same-speaker collision on the conservative shortcut", async () => {
-    const f = fixture();
-    try {
-      const gateway = new Gateway();
-      const service = new MemoryService({
-        orm: f.h.orm,
-        db: f.h.db,
-        gateway,
-        heartbeatIntervalMs: 5,
-        jobTimeoutMs: 2000,
-      });
-      f.observe(101, 20001);
-      const first = f.enqueue();
-      await service.runJob(first.id);
-      const result = f.h.orm
-        .select()
-        .from(schema.memoryJobs)
-        .where(eq(schema.memoryJobs.id, first.id))
-        .get()!;
-      if (!result.resultId) throw new Error("missing first memory");
-      f.h.orm.transaction((tx) => govern(tx, DEFAULT_AGENT_ID, [result.resultId!], "suppress"), {
-        behavior: "immediate",
-      });
-      f.observe(102, 20001);
-      gateway.calls.length = 0;
-      const next = f.enqueue();
-      await service.runJob(next.id);
-      const after = f.h.orm
-        .select()
-        .from(schema.memoryJobs)
-        .where(eq(schema.memoryJobs.id, next.id))
-        .get()!;
-      expect(after.status).toBe("succeeded");
-      expect(after.resultId).toBeNull();
-      expect(gateway.calls).toHaveLength(1);
-    } finally {
-      f.h.close();
-    }
-  });
+  it.each([
+    ["correction", "餐费是999元。", "“餐费是999元”是错误说法；30001更正餐费为80元。", false],
+    ["correction", "餐费是999元。", "“餐费是999元”是错误说法；30001更正餐费为80元。", true],
+    ["retold subject", "我喜欢茶。", "乙说“我喜欢茶”。", false],
+    ["retold subject", "我喜欢茶。", "乙说“我喜欢茶”。", true],
+    ["same fact", "我喜欢茶。", "我喜欢茶。", false],
+    ["same fact", "我喜欢茶。", "我喜欢茶。", true],
+  ] as const)(
+    "routes same-speaker %s to the original comparator",
+    async (_case, oldBody, candidateBody, blocked) => {
+      const f = fixture();
+      try {
+        const gateway = new Gateway();
+        gateway.draftBody = oldBody;
+        const service = new MemoryService({
+          orm: f.h.orm,
+          db: f.h.db,
+          gateway,
+          heartbeatIntervalMs: 5,
+          jobTimeoutMs: 2000,
+        });
+        f.observe(101, 20001, oldBody);
+        const first = f.enqueue();
+        await service.runJob(first.id);
+        const result = f.h.orm
+          .select()
+          .from(schema.memoryJobs)
+          .where(eq(schema.memoryJobs.id, first.id))
+          .get()!;
+        if (!result.resultId) throw new Error("missing first memory");
+        f.h.orm.transaction((tx) => govern(tx, DEFAULT_AGENT_ID, [result.resultId!], "suppress"), {
+          behavior: "immediate",
+        });
+        f.observe(102, 20001, candidateBody);
+        gateway.calls.length = 0;
+        gateway.draftBody = candidateBody;
+        gateway.blocked = blocked;
+        const next = f.enqueue();
+        await service.runJob(next.id);
+        const after = f.h.orm
+          .select()
+          .from(schema.memoryJobs)
+          .where(eq(schema.memoryJobs.id, next.id))
+          .get()!;
+        expect(after.status).toBe("succeeded");
+        expect(Boolean(after.resultId)).toBe(!blocked);
+        expect(gateway.calls).toHaveLength(2);
+        const comparison = gateway.calls[1]!;
+        expect(comparison.responseSchema?.title).toBe("SuppressionResult");
+        const payload = JSON.parse(comparison.messages[1]!.content as string);
+        expect(payload.candidate.body).toBe(candidateBody);
+        expect(payload.candidate_context).toMatchObject({
+          speaker: { id: "20001" },
+          subject: "unknown",
+        });
+        expect(payload.blocked[0]).toMatchObject({
+          body: oldBody,
+          source_context: { speaker: { id: "20001" } },
+          subject: "unknown",
+        });
+        if (after.resultId) {
+          expect(
+            f.h.orm
+              .select()
+              .from(schema.memoryEntries)
+              .where(eq(schema.memoryEntries.id, after.resultId))
+              .get()!.body,
+          ).toBe(candidateBody);
+        }
+      } finally {
+        f.h.close();
+      }
+    },
+  );
 
   it.each([false, true])(
     "routes different verified speakers to the original comparator blocked=%s",
