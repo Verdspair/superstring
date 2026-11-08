@@ -207,6 +207,17 @@ export function createMemoryActions(
   let managementReadTask: ReadTask | null = null;
   let managementResolve: ((value: boolean) => void) | null = null;
   let managementReadRequest = 0;
+  let pendingManagement: {
+    request: number;
+    page: number;
+    filters: import("../../../shared/contracts/memory").MemoryManagementQuery;
+    preserveDetail: boolean;
+    automaticMetadata: boolean;
+    resolveConversation: SuperstringState["resolveMemoryReadConversation"];
+    principalAgentId: string | undefined;
+    isCurrent: () => boolean;
+    promise: Promise<boolean>;
+  } | null = null;
   const currentContext = () => {
     const { editorAgentId, page, settingsView, settingsRoute, pageEditor, apiClient } = get();
     const epoch = managementEpoch;
@@ -226,6 +237,7 @@ export function createMemoryActions(
   let loadedManagement: { api: SuperstringState["apiClient"]; agentId: string } | null = null;
   const cancelManagement = () => {
     managementReadRequest++;
+    pendingManagement = null;
     managementReadTask?.cancel();
     managementReadTask = null;
     managementResolve?.(false);
@@ -256,7 +268,29 @@ export function createMemoryActions(
     const selectedFilters = { ...filters };
     const principal = selectedFilters.conversation_id;
     const principalSummary = principal ? get().summaryById[principal] : undefined;
+    const preserveDetail = options.preserveDetail === true;
+    const pending = pendingManagement;
+    // Only identical automatic reads join. Fresh metadata and changed detail-preservation
+    // intent retain their replacement semantics.
+    if (
+      pending &&
+      options.metadata === false &&
+      pending.automaticMetadata &&
+      document.visibilityState !== "hidden" &&
+      pending.isCurrent() &&
+      pending.page === page &&
+      pending.preserveDetail === preserveDetail &&
+      pending.resolveConversation === resolveConversation &&
+      pending.principalAgentId === principalSummary?.agentId &&
+      Object.keys({ ...pending.filters, ...selectedFilters }).every(
+        (key) =>
+          pending.filters[key as keyof typeof selectedFilters] ===
+          selectedFilters[key as keyof typeof selectedFilters],
+      )
+    )
+      return pending.promise;
     const previousLoaded = loadedManagement;
+    pendingManagement = null;
     managementReadTask?.cancel();
     managementReadTask = null;
     managementResolve?.(false);
@@ -291,7 +325,7 @@ export function createMemoryActions(
           jobs: SuperstringState["memoryJobs"];
         }
       | { kind: "page"; result: Awaited<ReturnType<typeof api.listMemoryEntries>> };
-    return new Promise<boolean>((resolve) => {
+    const promise = new Promise<boolean>((resolve) => {
       managementResolve = resolve;
       const task = startRead<Stage>(
         async (signal, progress) => {
@@ -352,6 +386,7 @@ export function createMemoryActions(
             loadedManagement = { api, agentId: id };
           },
           success: (stage) => {
+            if (pendingManagement?.request === request) pendingManagement = null;
             if (managementReadTask === task) managementReadTask = null;
             if (managementResolve === resolve) managementResolve = null;
             if (!isCurrent() || stage.kind !== "page") {
@@ -369,6 +404,7 @@ export function createMemoryActions(
             resolve(true);
           },
           failure: (reason) => {
+            if (pendingManagement?.request === request) pendingManagement = null;
             if (managementReadTask === task) managementReadTask = null;
             if (managementResolve === resolve) managementResolve = null;
             if (isCurrent())
@@ -380,6 +416,18 @@ export function createMemoryActions(
       );
       managementReadTask = task;
     });
+    pendingManagement = {
+      request,
+      page,
+      filters: selectedFilters,
+      preserveDetail,
+      automaticMetadata: options.metadata === false,
+      resolveConversation,
+      principalAgentId: principalSummary?.agentId,
+      isCurrent,
+      promise,
+    };
+    return promise;
   };
   return {
     loadMemoryManagement: loadManagement,
