@@ -29,6 +29,7 @@ import {
   parseProviderUsage,
   reportModelResponse,
 } from "./model-response";
+import { createModelHttpError } from "./request-errors";
 import { modelRequestFormat, type PreparedRequestFormat } from "./request-format";
 import {
   type StructuredOutputLevel,
@@ -238,12 +239,14 @@ export function createLmStudioVisionClient(
           httpStatus = response.status;
           if (!response.ok) {
             const text = await response.text().catch(() => "");
+            const error = createModelHttpError(response.status, text);
             console.warn(
               `[vision] ${request.model} 调用被拒 HTTP ${response.status}（${Date.now() - startedAt}ms）：${summariseBody(text)}`,
             );
-            const error = new Error(`vision call failed: ${response.status}`);
-            (error as { status?: number }).status = response.status;
-            throw mapModelError(error, routeContext);
+            const providerMessage = error.message;
+            // Preserve vision's status-only input to the existing timeout/network message mapping.
+            error.message = `vision call failed: ${response.status}`;
+            throw mapModelError(Object.assign(error, { providerMessage }), routeContext);
           }
           const raw = await response.text().catch(() => "");
           try {

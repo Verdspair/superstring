@@ -48,17 +48,21 @@ import {
   reportModelResponse,
 } from "./model-response";
 import {
+  createModelHttpError,
+  isModelRequestShapeRejection,
+  isModelUnavailableFailure,
+  markImageContentRejection,
+} from "./request-errors";
+import {
   measureContextTokens,
   modelRequestFormat,
   nativeToolDeclarations,
   type PreparedRequestFormat,
 } from "./request-format";
 import {
-  markImageContentRejection,
   type StructuredOutputLevel,
   strictSchemaAccepted,
   structuredOutputKey,
-  structuredOutputRejected,
   structuredOutputStart,
   toStrictRequiredSchema,
   withStructuredOutputChain,
@@ -321,7 +325,13 @@ function summariseToolCalls(calls: unknown): string {
  * 要求"报错码要能定位"。整条消息兜底，一行、截断。
  */
 function providerReason(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+  const diagnostic = (error as { providerMessage?: unknown } | null)?.providerMessage;
+  const message =
+    typeof diagnostic === "string"
+      ? diagnostic
+      : error instanceof Error
+        ? error.message
+        : String(error);
   const oneLine = message.replace(/\s+/g, " ").trim();
   return oneLine.length > 300 ? `${oneLine.slice(0, 300)}…` : oneLine;
 }
@@ -465,12 +475,18 @@ export function mapModelError(
   // 请求的形状"（4xx）与"服务坏了/超时"（5xx、网络），只靠文案猜是不行的。
   const withStatus = (mapped: ModelUnavailableError): ModelUnavailableError => {
     if (typeof status === "number") (mapped as { status?: number }).status = status;
+    const providerErrorCode = (error as { providerErrorCode?: unknown } | null)?.providerErrorCode;
+    if (typeof providerErrorCode === "string")
+      (mapped as { providerErrorCode?: string }).providerErrorCode = providerErrorCode;
     // provider 自己说的话（HTTP 状态行 + 响应体，来自 request() 组装的原始消息）留在错误对象上，
     // 只给日志用：用户文案保持上面那张表的措辞，错误信封也只取 code/message，不会带出去。
     (mapped as { providerMessage?: string }).providerMessage = providerReason(error);
     return mapped;
   };
 
+  if (isModelUnavailableFailure(error)) {
+    return withStatus(new ModelUnavailableError("MODEL_NOT_LOADED", "LM Studio 未加载指定模型"));
+  }
   if (name === "TimeoutError" || name === "AbortError" || /timed? ?out/i.test(message)) {
     return withStatus(new ModelUnavailableError("MODEL_TIMEOUT", "本地模型响应超时，请重试"));
   }
@@ -481,9 +497,6 @@ export function mapModelError(
         route.kind === "external" ? MODEL_EXTERNAL_AUTH_MESSAGE : MODEL_AUTH_MESSAGE,
       ),
     );
-  }
-  if (status === 404 || ((status === 400 || status === 404) && /model/i.test(message))) {
-    return withStatus(new ModelUnavailableError("MODEL_NOT_LOADED", "LM Studio 未加载指定模型"));
   }
   if (
     name === "ConnectionRefused" ||
@@ -625,8 +638,8 @@ export function localhostFetch(url: string | URL, init: RequestInit = {}): Promi
 /** A request owns its timeout until body consumption (including streaming) ends.
  *
  * `imageRejection` lets a caller classify the provider's own picture rejection at the
- * HTTP boundary, BEFORE the generic mapping turns a 400 into MODEL_NOT_LOADED or a
- * structured/tools fallback consumes extra requests. It is passed only by callers
+ * HTTP boundary, BEFORE a structured/tools fallback consumes extra requests. Typed model
+ * unavailability is classified first and never becomes an image capability rejection. It is passed only by callers
  * whose request actually carries image parts, and runs on the non-auth 4xx
  * window — it can never mask a
  * source/authorization failure or a timeout. Three outcomes, all decided here:
@@ -636,7 +649,7 @@ export function localhostFetch(url: string | URL, init: RequestInit = {}): Promi
  *   **mapped** error, marked via `markImageContentRejection`: original generic code
  *   and status survive, no negative cache, and neither the tools retry nor the
  *   structured-output chain treats it as a shape failure;
- * - every other in-window failure goes through `mapModelError` unchanged.
+ * - every other in-window failure goes through `mapModelError`.
  */
 function requestLifetime(
   timeoutMs: number,
@@ -657,6 +670,7 @@ function requestLifetime(
       if (caller?.aborted) throw caller.reason ?? error;
       if (error instanceof ModelUnavailableError) throw error;
       if (timeout.signal.aborted) throw mapModelError(timeout.signal.reason, route);
+      if (isModelUnavailableFailure(error)) throw mapModelError(error, route);
       const status = (error as { status?: number } | null)?.status;
       if (
         imageRejection !== undefined &&
@@ -738,9 +752,7 @@ async function request(
     // 状态码在 4xx 抛错之前交给调用方捕获：尝试级元数据要能带上失败响应的真实 HTTP 状态。
     onResponseStatus?.(response.status);
     if (!response.ok) {
-      const err = new Error(`LM Studio ${response.status}: ${await response.text()}`);
-      (err as { status?: number }).status = response.status;
-      throw err;
+      throw createModelHttpError(response.status, await response.text());
     }
     return response;
   } catch (error) {
@@ -1454,7 +1466,7 @@ export function createLmStudioClient(
         try {
           return await send(level, sendTools);
         } catch (error) {
-          if (!sendTools || !structuredOutputRejected(error)) throw error;
+          if (!sendTools || !isModelRequestShapeRejection(error)) throw error;
           const status = (error as { status?: number }).status;
           rememberToolsUnavailable(key);
           announceToolsFallback(key, used, status, providerReason(error));

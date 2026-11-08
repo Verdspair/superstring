@@ -7,9 +7,12 @@
 // the local route's schema is never touched.
 import { describe, expect, it } from "bun:test";
 import {
+  markImageContentRejection,
+  isModelRequestShapeRejection as structuredOutputRejected,
+} from "../../src/server/llm/request-errors";
+import {
   rememberStructuredOutput,
   strictSchemaAccepted,
-  structuredOutputRejected,
   structuredOutputStart,
   toStrictRequiredSchema,
 } from "../../src/server/llm/strict-json-schema";
@@ -159,5 +162,51 @@ describe("structuredOutputRejected 的降级资格", () => {
     }
     expect(structuredOutputRejected(new Error("fetch failed"))).toBe(false);
     expect(structuredOutputRejected(undefined)).toBe(false);
+  });
+});
+
+// These facts are internal HTTP metadata, not the app error code or a parsed message.
+describe("typed model availability excludes request-shape fallback", () => {
+  for (const status of [400, 404]) {
+    for (const providerErrorCode of ["model_not_loaded", "model_not_found"]) {
+      it(`${providerErrorCode} HTTP ${status} is not a shape rejection`, () => {
+        expect(structuredOutputRejected({ status, providerErrorCode })).toBe(false);
+      });
+    }
+  }
+
+  it("requires exact typed code and status, preserving unidentified 400/404/422 fallback", () => {
+    for (const status of [400, 404, 422]) {
+      for (const providerErrorCode of [
+        undefined,
+        null,
+        404,
+        "MODEL_NOT_LOADED",
+        "invalid_json_schema",
+      ]) {
+        expect(structuredOutputRejected({ status, providerErrorCode })).toBe(true);
+      }
+      expect(
+        structuredOutputRejected({
+          status,
+          code: "MODEL_NOT_LOADED",
+          message: "model is not loaded",
+        }),
+      ).toBe(true);
+    }
+    expect(structuredOutputRejected({ status: 422, providerErrorCode: "model_not_loaded" })).toBe(
+      true,
+    );
+    for (const status of [401, 403, 408, 413, 429, 500, 503]) {
+      expect(structuredOutputRejected({ status, providerErrorCode: "model_not_loaded" })).toBe(
+        false,
+      );
+    }
+  });
+
+  it("keeps marked image content ineligible even for an otherwise generic 400", () => {
+    const error = Object.assign(new Error("image decode failed"), { status: 400 });
+    expect(markImageContentRejection(error)).toBe(error);
+    expect(structuredOutputRejected(error)).toBe(false);
   });
 });

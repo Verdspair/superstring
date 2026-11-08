@@ -620,3 +620,192 @@ describe("vision transport maps errors by the resolved route", () => {
     expect(failure?.message).not.toContain("外部模型服务");
   });
 });
+
+describe("vision typed HTTP model errors and shape fallback", () => {
+  type Failure = {
+    code?: string;
+    status?: number;
+    statusCode?: number;
+    providerErrorCode?: string;
+    message?: string;
+    providerMessage?: string;
+  };
+  const capture = (pending: Promise<unknown>) =>
+    pending.then(
+      () => null,
+      (error: unknown) => error as Failure,
+    );
+  const schema = {
+    type: "object",
+    properties: { answer: { type: "string" } },
+    required: ["answer"],
+    additionalProperties: false,
+  };
+  const images = [{ mimeType: "image/png", bytes: new Uint8Array([1, 2, 3]) }];
+  const ok = () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: '{"answer":"ok"}' } }] }), {
+      status: 200,
+    });
+  const formatOf = (body: Record<string, unknown>) =>
+    (body.response_format as { type?: string } | undefined)?.type;
+
+  for (const status of [400, 404]) {
+    for (const code of ["model_not_loaded", "model_not_found"]) {
+      it(`typed ${code} HTTP ${status}: one vision send per call and no remembered downgrade`, async () => {
+        const seen: { url: string; authorization: string; body: Record<string, unknown> }[] = [];
+        let unavailable = true;
+        const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+          seen.push({
+            url: String(url),
+            authorization:
+              (init?.headers as Record<string, string> | undefined)?.authorization ?? "",
+            body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+          });
+          return unavailable
+            ? new Response(
+                JSON.stringify({ error: { code, message: "Requested model is not loaded" } }),
+                { status },
+              )
+            : ok();
+        }) as unknown as typeof fetch;
+        const model = `typed-vision/${crypto.randomUUID()}`;
+        const client = createLmStudioVisionClient({ ...config, apiKey: "local-only" }, fetchImpl, {
+          externalModel: () => ({
+            baseUrl: "https://provider.example/v1",
+            apiKey: "synthetic-provider-key",
+          }),
+        });
+        const request = { model, prompt: "describe", images, responseSchema: schema };
+        const first = await capture(client.annotate(request));
+        expect(seen).toHaveLength(1);
+        expect(first).toMatchObject({
+          code: "MODEL_NOT_LOADED",
+          status,
+          statusCode: 503,
+          providerErrorCode: code,
+        });
+        const second = await capture(client.annotate(request));
+        expect(seen).toHaveLength(2);
+        expect(second).toMatchObject({ code: "MODEL_NOT_LOADED", status, providerErrorCode: code });
+        unavailable = false;
+        expect(await client.annotate(request)).toBe('{"answer":"ok"}');
+        expect(seen).toHaveLength(3);
+        for (const call of seen) {
+          expect(call.url).toBe("https://provider.example/v1/chat/completions");
+          expect(call.authorization).toBe("Bearer synthetic-provider-key");
+          expect(call.body).toEqual(seen[0]?.body);
+          expect(formatOf(call.body)).toBe("json_schema");
+        }
+        expect(first?.message).not.toContain("synthetic-provider-key");
+      });
+    }
+  }
+
+  it("vision parses a typed code beyond the log truncation before translating the error", async () => {
+    let calls = 0;
+    const raw = JSON.stringify({
+      padding: "x".repeat(400),
+      error: { code: "model_not_found", message: "unavailable" },
+    });
+    expect(raw.indexOf('"code"')).toBeGreaterThan(300);
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new Response(raw, { status: 400 });
+    }) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient(config, fetchImpl);
+    const failure = await capture(
+      client.annotate({
+        model: `long-typed-vision/${crypto.randomUUID()}`,
+        prompt: "p",
+        images,
+        responseSchema: schema,
+      }),
+    );
+    expect(calls).toBe(1);
+    expect(failure).toMatchObject({
+      code: "MODEL_NOT_LOADED",
+      status: 400,
+      providerErrorCode: "model_not_found",
+    });
+    expect(failure?.providerMessage?.length).toBeLessThanOrEqual(301);
+  });
+
+  it("invalid_json_schema mentioning model still downgrades vision and remembers success", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      seen.push(body);
+      return formatOf(body) === "json_schema"
+        ? new Response(
+            JSON.stringify({
+              error: {
+                code: "invalid_json_schema",
+                message: "response_format json_schema is not supported by this model",
+              },
+            }),
+            { status: 400 },
+          )
+        : ok();
+    }) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient(config, fetchImpl);
+    const request = {
+      model: `schema-vision/${crypto.randomUUID()}`,
+      prompt: "p",
+      images,
+      responseSchema: schema,
+    };
+    expect(await client.annotate(request)).toBe('{"answer":"ok"}');
+    expect(await client.annotate(request)).toBe('{"answer":"ok"}');
+    expect(seen.map(formatOf)).toEqual(["json_schema", "json_object", "json_object"]);
+    expect(seen[1]?.messages).toEqual(seen[0]?.messages);
+  });
+
+  for (const status of [400, 422]) {
+    for (const [label, raw] of [
+      ["absent code", '{"error":{"message":"model is not loaded"}}'],
+      ["non-string code", '{"error":{"code":false,"message":"model is not loaded"}}'],
+      ["malformed JSON", '{"error":{"code":"model_not_loaded"'],
+      ["plain text", "model is not loaded"],
+    ] as const) {
+      it(`vision ${label} HTTP ${status} keeps existing generic shape fallback`, async () => {
+        const seen: Record<string, unknown>[] = [];
+        const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          seen.push(body);
+          return formatOf(body) === "json_schema" ? new Response(raw, { status }) : ok();
+        }) as unknown as typeof fetch;
+        const client = createLmStudioVisionClient(config, fetchImpl);
+        expect(
+          await client.annotate({
+            model: `unknown-vision/${crypto.randomUUID()}`,
+            prompt: "p",
+            images,
+            responseSchema: schema,
+          }),
+        ).toBe('{"answer":"ok"}');
+        expect(seen.map(formatOf)).toEqual(["json_schema", "json_object"]);
+      });
+    }
+  }
+
+  it("vision retains invalid_json_schema diagnostics without misclassifying model wording", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          error: { code: "invalid_json_schema", message: "format not supported by this model" },
+        }),
+        { status: 400 },
+      )) as unknown as typeof fetch;
+    const client = createLmStudioVisionClient(config, fetchImpl);
+    const failure = await capture(
+      client.annotate({ model: "diagnostic-vision", prompt: "p", images }),
+    );
+    expect(failure).toMatchObject({
+      code: "MODEL_ERROR",
+      status: 400,
+      statusCode: 503,
+      providerErrorCode: "invalid_json_schema",
+    });
+    expect(failure?.providerMessage).toContain("format not supported by this model");
+  });
+});

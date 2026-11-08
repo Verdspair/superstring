@@ -1318,3 +1318,356 @@ describe("模型错误文案按解析出的路由来源区分", () => {
     expect(external.message).not.toContain("LM_STUDIO_API_KEY");
   });
 });
+
+// Typed wire codes identify model availability. Human wording alone remains a shape-fallback input.
+describe("model request errors preserve typed HTTP facts", () => {
+  type Failure = {
+    code?: string;
+    status?: number;
+    statusCode?: number;
+    providerErrorCode?: string;
+    providerMessage?: string;
+  };
+  const capture = (pending: Promise<unknown>) =>
+    pending.then(
+      () => null,
+      (error: unknown) => error as Failure,
+    );
+  const schema = {
+    type: "object",
+    properties: { answer: { type: "string" } },
+    required: ["answer"],
+    additionalProperties: false,
+  };
+  const tools = [{ name: "lookup", description: "Look up a value", parameters: schema }];
+  const ok = {
+    status: 200,
+    raw: JSON.stringify({
+      choices: [{ finish_reason: "stop", message: { content: '{"answer":"ok"}' } }],
+    }),
+  };
+  async function withRawErrorStub(
+    respond: (body: Record<string, unknown>) => { status: number; raw: string },
+    check: (
+      gateway: ReturnType<typeof createLmStudioClient>,
+      seen: Record<string, unknown>[],
+      warnings: string[],
+    ) => Promise<void>,
+  ) {
+    const seen: Record<string, unknown>[] = [];
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    const stub = http.createServer((req, res) => {
+      if (!req.url?.endsWith("/chat/completions")) {
+        res.writeHead(500);
+        res.end("unexpected non-chat request");
+        return;
+      }
+      let raw = "";
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        const body = JSON.parse(raw) as Record<string, unknown>;
+        seen.push(body);
+        const answer = respond(body);
+        res.writeHead(answer.status, { "content-type": "application/json" });
+        res.end(answer.raw);
+      });
+    });
+    await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+    const model = `typed-http/${crypto.randomUUID()}`;
+    const baseUrl = `http://127.0.0.1:${(stub.address() as { port: number }).port}/v1`;
+    const gateway = createLmStudioClient(
+      { baseUrl: "http://127.0.0.1:1/v1", model, timeoutSeconds: 5, apiKey: "local-only" },
+      {
+        externalModel: (selected) =>
+          selected === model
+            ? { baseUrl, apiKey: "synthetic-provider-key", contextWindow: 8192 }
+            : null,
+      },
+    );
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    try {
+      await check(gateway, seen, warnings);
+    } finally {
+      console.warn = originalWarn;
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  }
+  const formatOf = (body: Record<string, unknown> | undefined) =>
+    (body?.response_format as { type?: string } | undefined)?.type;
+  const fallbackWarnings = (warnings: string[]) =>
+    warnings.filter(
+      (line) => line.includes("[model-tools]") || line.includes("[model-structured]"),
+    );
+
+  for (const status of [400, 404]) {
+    for (const code of ["model_not_loaded", "model_not_found"]) {
+      for (const withTools of [false, true]) {
+        it(`typed ${code} ${status}, tools=${withTools}: one send, no cache`, async () => {
+          let unavailable = true;
+          await withRawErrorStub(
+            () =>
+              unavailable
+                ? {
+                    status,
+                    raw: JSON.stringify({
+                      error: { code, message: "Requested model is not loaded" },
+                    }),
+                  }
+                : ok,
+            async (gateway, seen, warnings) => {
+              const call = () =>
+                gateway.complete({
+                  messages,
+                  responseSchema: schema,
+                  ...(withTools ? { tools } : {}),
+                });
+              const first = await capture(call());
+              expect(seen).toHaveLength(1);
+              expect(first).toMatchObject({
+                code: "MODEL_NOT_LOADED",
+                status,
+                statusCode: 503,
+                providerErrorCode: code,
+              });
+              const second = await capture(call());
+              expect(seen).toHaveLength(2);
+              expect(second).toMatchObject({
+                code: "MODEL_NOT_LOADED",
+                status,
+                providerErrorCode: code,
+              });
+              unavailable = false;
+              expect(await call()).toBe('{"answer":"ok"}');
+              expect(seen).toHaveLength(3);
+              for (const body of seen) {
+                expect(formatOf(body)).toBe("json_schema");
+                expect(body.response_format).toEqual(seen[0]?.response_format);
+                expect(body.messages).toEqual(messages);
+                expect(body.tools).toEqual(seen[0]?.tools);
+                if (withTools) expect(body.tools).toHaveLength(1);
+                else expect(body.tools).toBeUndefined();
+              }
+              expect(fallbackWarnings(warnings)).toEqual([]);
+            },
+          );
+        });
+      }
+    }
+  }
+
+  for (const withTools of [false, true]) {
+    it(`typed HTTP 400 without schema, tools=${withTools}: no tools-only retry`, async () => {
+      await withRawErrorStub(
+        () => ({
+          status: 400,
+          raw: '{"error":{"code":"model_not_loaded","message":"unavailable"}}',
+        }),
+        async (gateway, seen) => {
+          const call = () => gateway.complete({ messages, ...(withTools ? { tools } : {}) });
+          const failure = await capture(call());
+          expect(seen).toHaveLength(1);
+          expect(failure).toMatchObject({
+            code: "MODEL_NOT_LOADED",
+            status: 400,
+            providerErrorCode: "model_not_loaded",
+          });
+          await capture(call());
+          expect(seen).toHaveLength(2);
+          expect(seen.map(formatOf)).toEqual([undefined, undefined]);
+          if (withTools) {
+            expect(seen[0]?.tools).toHaveLength(1);
+            expect(seen[1]?.tools).toEqual(seen[0]?.tools);
+          }
+        },
+      );
+    });
+  }
+
+  it("extracts a typed code after 300 raw characters without exposing an unbounded diagnostic", async () => {
+    const raw = JSON.stringify({
+      padding: "x".repeat(400),
+      error: { code: "model_not_found", message: "unavailable" },
+    });
+    expect(raw.indexOf('"code"')).toBeGreaterThan(300);
+    await withRawErrorStub(
+      () => ({ status: 400, raw }),
+      async (gateway, seen) => {
+        const failure = await capture(
+          gateway.complete({ messages, responseSchema: schema, tools }),
+        );
+        expect(seen).toHaveLength(1);
+        expect(failure).toMatchObject({
+          code: "MODEL_NOT_LOADED",
+          status: 400,
+          providerErrorCode: "model_not_found",
+        });
+        expect(failure?.providerMessage?.length).toBeLessThanOrEqual(301);
+        expect(failure?.providerMessage).not.toContain("model_not_found");
+      },
+    );
+  });
+
+  it("typed availability overrides image capability wording without poisoning vision", async () => {
+    let unavailable = true;
+    const imageMessages = [
+      {
+        role: "user",
+        content: [{ type: "image_url" as const, image_url: { url: "data:image/png;base64,AQ==" } }],
+      },
+    ];
+    await withRawErrorStub(
+      () =>
+        unavailable
+          ? {
+              status: 400,
+              raw: '{"error":{"code":"model_not_loaded","message":"vision is not supported"}}',
+            }
+          : ok,
+      async (gateway, seen) => {
+        const call = () =>
+          gateway.complete({ messages: imageMessages, responseSchema: schema, tools });
+        const failure = await capture(call());
+        expect(failure).toMatchObject({
+          code: "MODEL_NOT_LOADED",
+          status: 400,
+          providerErrorCode: "model_not_loaded",
+        });
+        expect(seen).toHaveLength(1);
+        unavailable = false;
+        expect(await call()).toBe('{"answer":"ok"}');
+        expect(seen).toHaveLength(2);
+        expect(seen[1]?.messages).toEqual(seen[0]?.messages);
+        expect(formatOf(seen[1])).toBe("json_schema");
+        expect(seen[1]?.tools).toHaveLength(1);
+      },
+    );
+  });
+
+  it("invalid_json_schema mentioning model still falls back and remembers success", async () => {
+    await withRawErrorStub(
+      (body) =>
+        formatOf(body) === "json_schema"
+          ? {
+              status: 400,
+              raw: JSON.stringify({
+                error: {
+                  code: "invalid_json_schema",
+                  message: "response_format json_schema is not supported by this model",
+                },
+              }),
+            }
+          : ok,
+      async (gateway, seen) => {
+        const call = () => gateway.complete({ messages, responseSchema: schema });
+        expect(await call()).toBe('{"answer":"ok"}');
+        expect(await call()).toBe('{"answer":"ok"}');
+        expect(seen.map(formatOf)).toEqual(["json_schema", "json_object", "json_object"]);
+      },
+    );
+  });
+
+  it("explicit tools rejection mentioning model still removes tools once and keeps the schema", async () => {
+    await withRawErrorStub(
+      (body) =>
+        body.tools !== undefined
+          ? {
+              status: 400,
+              raw: JSON.stringify({
+                error: {
+                  code: "unsupported_parameter",
+                  message: "tools are not supported by this model",
+                },
+              }),
+            }
+          : ok,
+      async (gateway, seen) => {
+        const call = () => gateway.complete({ messages, responseSchema: schema, tools });
+        expect(await call()).toBe('{"answer":"ok"}');
+        expect(await call()).toBe('{"answer":"ok"}');
+        expect(seen).toHaveLength(3);
+        expect(seen[0]?.tools).toHaveLength(1);
+        expect(seen.slice(1).map((body) => body.tools)).toEqual([undefined, undefined]);
+        expect(seen.map(formatOf)).toEqual(["json_schema", "json_schema", "json_schema"]);
+      },
+    );
+  });
+
+  const unidentified: readonly (readonly [string, string])[] = [
+    ["absent", '{"error":{"message":"model is not loaded"}}'],
+    ["non-string", '{"error":{"code":404,"message":"model is not loaded"}}'],
+    ["malformed JSON", '{"error":{"code":"model_not_loaded"'],
+    ["top-level", '{"code":"model_not_loaded","message":"model is not loaded"}'],
+    ["wrong field", '{"error":{"type":"model_not_loaded","message":"model is not loaded"}}'],
+    ["array", '{"error":[{"code":"model_not_loaded"}]}'],
+    ["plain text", "Requested model is not loaded"],
+    ["unknown", '{"error":{"code":"unknown_code","message":"model is not loaded"}}'],
+    ["case-sensitive", '{"error":{"code":"MODEL_NOT_LOADED","message":"model is not loaded"}}'],
+  ];
+  for (const status of [400, 422]) {
+    for (const [label, raw] of unidentified) {
+      it(`unidentified ${label} HTTP ${status} preserves generic shape fallback`, async () => {
+        await withRawErrorStub(
+          (body) => (formatOf(body) === "json_schema" ? { status, raw: raw ?? "" } : ok),
+          async (gateway, seen) => {
+            expect(await gateway.complete({ messages, responseSchema: schema })).toBe(
+              '{"answer":"ok"}',
+            );
+            expect(seen.map(formatOf)).toEqual(["json_schema", "json_object"]);
+          },
+        );
+      });
+    }
+  }
+
+  it("unknown 404 maps to MODEL_ERROR and retains format fallback", async () => {
+    let allowFallback = false;
+    await withRawErrorStub(
+      (body) =>
+        allowFallback && formatOf(body) === "json_object"
+          ? ok
+          : { status: 404, raw: '{"error":{"message":"unknown endpoint"}}' },
+      async (gateway, seen) => {
+        const failure = await capture(gateway.complete({ messages }));
+        expect(failure).toMatchObject({ code: "MODEL_ERROR", status: 404, statusCode: 503 });
+        expect(failure?.providerErrorCode).toBeUndefined();
+        allowFallback = true;
+        expect(await gateway.complete({ messages, responseSchema: schema })).toBe(
+          '{"answer":"ok"}',
+        );
+        expect(seen.map(formatOf)).toEqual([undefined, "json_schema", "json_object"]);
+      },
+    );
+  });
+
+  it("maps only exact typed 400/404 availability, not a broad model word or every 404", () => {
+    for (const status of [400, 404]) {
+      const known = Object.assign(new Error("opaque provider response"), {
+        status,
+        providerErrorCode: "model_not_found",
+      });
+      expect(mapModelError(known)).toMatchObject({
+        code: "MODEL_NOT_LOADED",
+        status,
+        providerErrorCode: "model_not_found",
+      });
+      const unknown = Object.assign(new Error("response_format not supported by this model"), {
+        status,
+        providerErrorCode: "invalid_json_schema",
+      });
+      expect(mapModelError(unknown)).toMatchObject({
+        code: "MODEL_ERROR",
+        status,
+        providerErrorCode: "invalid_json_schema",
+      });
+    }
+    expect(
+      mapModelError(Object.assign(new Error("model is not loaded"), { status: 400 })),
+    ).toMatchObject({ code: "MODEL_ERROR", status: 400 });
+    expect(
+      mapModelError(Object.assign(new Error("unknown endpoint"), { status: 404 })),
+    ).toMatchObject({ code: "MODEL_ERROR", status: 404 });
+  });
+});
